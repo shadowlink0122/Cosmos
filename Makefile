@@ -1,12 +1,11 @@
 # Cosmos OS Makefile
 # 使い方:
-#   make          - カーネルコンパイル＆リンク
+#   make          - コンパイル＆リンク
 #   make compile  - コンパイルのみ
 #   make run      - QEMUで実行（OVMFを自動ダウンロード）
 #   make clean    - 生成ファイル削除
 
-# Cmコンパイラ（サブモジュール内）
-CM ?= Cm/cm
+CM ?= cm
 LLD ?= lld-link
 QEMU ?= qemu-system-x86_64
 
@@ -18,7 +17,8 @@ OVMF_FW ?= $(OVMF_DIR)/OVMF.fd
 OVMF_URL ?= https://retrage.github.io/edk2-nightly/bin/RELEASEX64_OVMF.fd
 
 # カーネルソース
-KERNEL_SRC = kernel/boot/efi_main.cm
+KERNEL_DIR = kernel/boot
+KERNEL_SRC = $(KERNEL_DIR)/efi_main.cm
 KERNEL_OBJ = .tmp/build/kernel.o
 EFI = .tmp/build/BOOTX64.EFI
 ESP_DIR = .tmp/esp
@@ -30,7 +30,7 @@ all: $(EFI)
 
 # Cmソースをコンパイル（uefiターゲット）
 compile: $(KERNEL_OBJ)
-$(KERNEL_OBJ): $(KERNEL_SRC) $(CM)
+$(KERNEL_OBJ): $(KERNEL_SRC)
 	@mkdir -p .tmp/build
 	$(CM) compile --target=uefi -o $(KERNEL_OBJ) $(KERNEL_SRC)
 
@@ -41,8 +41,8 @@ $(EFI): $(KERNEL_OBJ)
 
 # ESP (EFI System Partition) ディレクトリ構造を作成
 setup-esp: $(EFI)
-	mkdir -p $(ESP_BOOT)
-	cp $(EFI) $(ESP_BOOT)/BOOTX64.EFI
+	@mkdir -p $(ESP_BOOT)
+	@cp $(EFI) $(ESP_BOOT)/BOOTX64.EFI
 
 # OVMFファームウェアをダウンロード
 download-ovmf:
