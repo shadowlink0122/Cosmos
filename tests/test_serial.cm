@@ -1,0 +1,53 @@
+//! platform: uefi
+// tests::test_serial - シリアル出力の単体テスト
+//
+// 最小構成でUART COM1の動作を検証する。
+// UEFI Boot Servicesのテキスト出力とシリアル出力の両方をテスト。
+//
+// ビルド: make test-serial
+
+import ../kernel/libs/efi_core;
+import ../kernel/libs/efi_text;
+import ../kernel/drivers/serial;
+
+ulong efi_main(void* image_handle, void* system_table) {
+    // UEFI テキスト出力テスト（これが動けばUEFI基盤はOK）
+    efi_clear_screen(system_table);
+    efi_println(system_table, "=== Serial Unit Test ===" as void*);
+    efi_println(system_table, "UEFI text output: OK" as void*);
+
+    // シリアル初期化テスト
+    efi_println(system_table, "Initializing serial..." as void*);
+    serial_init();
+    efi_println(system_table, "serial_init() returned OK" as void*);
+
+    // シリアル出力テスト
+    serial_puts("[TEST] Serial putc test: " as void*);
+    serial_putc(65);  // 'A'
+    serial_putc(66);  // 'B'
+    serial_putc(67);  // 'C'
+    serial_putc(10);  // LF
+
+    serial_println("[TEST] Serial println test: OK" as void*);
+
+    // 16進出力テスト
+    serial_puts("[TEST] Hex output: " as void*);
+    serial_print_hex(0xDEADBEEF);
+    serial_putc(10);
+
+    // 最終マーカー（自動テストで検索するキーワード）
+    serial_println("[TEST] ALL SERIAL TESTS PASSED" as void*);
+
+    efi_println(system_table, "Serial test complete. Check serial log." as void*);
+    efi_println(system_table, "System halting." as void*);
+
+    // 3秒待機してからHLT
+    // (QEMUのシリアルバッファがフラッシュされるのを待つ)
+    ulong count = 0;
+    ulong max_count = 100000000;
+    while (count < max_count) {
+        count += 1;
+    }
+
+    return 0;
+}

@@ -24,7 +24,16 @@ EFI = .tmp/build/BOOTX64.EFI
 ESP_DIR = .tmp/esp
 ESP_BOOT = $(ESP_DIR)/EFI/BOOT
 
-.PHONY: all compile link run clean setup-esp download-ovmf
+# テスト
+TEST_DIR = tests
+TEST_SERIAL_SRC = $(TEST_DIR)/test_serial.cm
+TEST_SERIAL_OBJ = .tmp/build/test_serial.o
+TEST_SERIAL_EFI = .tmp/build/TEST_SERIAL.EFI
+TEST_LOG = .tmp/serial.log
+QEMU_TIMEOUT ?= 10
+TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || echo "")
+
+.PHONY: all compile link run clean setup-esp download-ovmf test test-serial
 
 all: $(EFI)
 
@@ -60,7 +69,7 @@ download-ovmf:
 		echo "OVMF: $(OVMF_FW) (キャッシュ済み)"; \
 	fi
 
-# QEMUでUEFIアプリケーションを実行
+# QEMUでUEFIアプリケーションを実行（GUI）
 run: setup-esp download-ovmf
 	@echo "=== Cosmos OS QEMU 起動 ==="
 	@echo "OVMF: $(OVMF_FW)"
@@ -74,5 +83,74 @@ run: setup-esp download-ovmf
 		-display default,show-cursor=on \
 		-serial mon:stdio
 
+# ============================================================
+# テストターゲット
+# ============================================================
+
+# シリアル単体テスト: 最小構成でUART COM1出力を検証
+test-serial: download-ovmf
+	@echo "=== シリアル単体テスト ==="
+	@mkdir -p .tmp/build
+	$(CM) compile --target=uefi -o $(TEST_SERIAL_OBJ) $(TEST_SERIAL_SRC)
+	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(TEST_SERIAL_EFI) $(TEST_SERIAL_OBJ)
+	@mkdir -p $(ESP_BOOT)
+	@cp $(TEST_SERIAL_EFI) $(ESP_BOOT)/BOOTX64.EFI
+	@rm -f $(TEST_LOG)
+	@echo "QEMU起動中（$(QEMU_TIMEOUT)秒タイムアウト）..."
+	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_FW) \
+		-drive format=raw,file=fat:rw:$(ESP_DIR) \
+		-net none \
+		-display none \
+		-serial file:$(TEST_LOG) \
+		2>/dev/null || true
+	@echo ""
+	@echo "--- シリアル出力ログ ---"
+	@cat $(TEST_LOG) 2>/dev/null || echo "(ログなし)"
+	@echo ""
+	@echo "--- テスト結果 ---"
+	@if grep -q "ALL SERIAL TESTS PASSED" $(TEST_LOG) 2>/dev/null; then \
+		echo "✓ PASS: シリアル出力テスト"; \
+	else \
+		echo "✗ FAIL: シリアル出力テスト"; \
+		echo "  ログ: $(TEST_LOG)"; \
+	fi
+
+# メインカーネルテスト: シリアルログでブートフローを検証
+test: setup-esp download-ovmf
+	@echo "=== メインカーネルテスト ==="
+	@rm -f $(TEST_LOG)
+	@echo "QEMU起動中（$(QEMU_TIMEOUT)秒タイムアウト）..."
+	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_FW) \
+		-drive format=raw,file=fat:rw:$(ESP_DIR) \
+		-net none \
+		-display none \
+		-serial file:$(TEST_LOG) \
+		2>/dev/null || true
+	@echo ""
+	@echo "--- シリアル出力ログ ---"
+	@cat $(TEST_LOG) 2>/dev/null || echo "(ログなし)"
+	@echo ""
+	@echo "--- テスト結果 ---"
+	@PASS=0; FAIL=0; \
+	if grep -q "Serial console initialized" $(TEST_LOG) 2>/dev/null; then \
+		echo "✓ PASS: シリアル初期化"; PASS=$$((PASS+1)); \
+	else \
+		echo "✗ FAIL: シリアル初期化"; FAIL=$$((FAIL+1)); \
+	fi; \
+	if grep -q "ExitBootServices OK" $(TEST_LOG) 2>/dev/null; then \
+		echo "✓ PASS: ExitBootServices"; PASS=$$((PASS+1)); \
+	else \
+		echo "✗ FAIL: ExitBootServices"; FAIL=$$((FAIL+1)); \
+	fi; \
+	if grep -q "booted successfully" $(TEST_LOG) 2>/dev/null; then \
+		echo "✓ PASS: カーネル起動"; PASS=$$((PASS+1)); \
+	else \
+		echo "✗ FAIL: カーネル起動"; FAIL=$$((FAIL+1)); \
+	fi; \
+	echo ""; \
+	echo "結果: $$PASS passed, $$FAIL failed"
+
 clean:
-	rm -rf .tmp/build .tmp/esp
+	rm -rf .tmp/build .tmp/esp .tmp/serial.log
