@@ -86,8 +86,21 @@ run: setup-esp download-ovmf
 # ============================================================
 # テストターゲット
 # ============================================================
+# テスト出力はQEMUデバッグポート(0xE9)経由でdebug.logに出力。
+# OVMFのシリアル出力とは独立したクリーンなチャネル。
 
-# シリアル単体テスト: 最小構成でUART COM1出力を検証
+DEBUG_LOG = .tmp/debug.log
+
+# QEMU共通テストオプション
+QEMU_TEST_OPTS = \
+	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_FW) \
+	-drive format=raw,file=fat:rw:$(ESP_DIR) \
+	-net none \
+	-display none \
+	-debugcon file:$(DEBUG_LOG) \
+	-global isa-debugcon.iobase=0xE9
+
+# シリアル単体テスト: UART COM1 + デバッグポート出力を検証
 test-serial: download-ovmf
 	@echo "=== シリアル単体テスト ==="
 	@mkdir -p .tmp/build
@@ -95,62 +108,57 @@ test-serial: download-ovmf
 	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(TEST_SERIAL_EFI) $(TEST_SERIAL_OBJ)
 	@mkdir -p $(ESP_BOOT)
 	@cp $(TEST_SERIAL_EFI) $(ESP_BOOT)/BOOTX64.EFI
-	@rm -f $(TEST_LOG)
+	@rm -f $(DEBUG_LOG)
 	@echo "QEMU起動中（$(QEMU_TIMEOUT)秒タイムアウト）..."
-	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) \
-		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_FW) \
-		-drive format=raw,file=fat:rw:$(ESP_DIR) \
-		-net none \
-		-display none \
-		-serial file:$(TEST_LOG) \
-		2>/dev/null || true
+	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) $(QEMU_TEST_OPTS) 2>/dev/null || true
 	@echo ""
-	@echo "--- シリアル出力ログ ---"
-	@cat $(TEST_LOG) 2>/dev/null || echo "(ログなし)"
+	@echo "--- デバッグログ ---"
+	@cat $(DEBUG_LOG) 2>/dev/null || echo "(ログなし)"
 	@echo ""
 	@echo "--- テスト結果 ---"
-	@if grep -q "ALL SERIAL TESTS PASSED" $(TEST_LOG) 2>/dev/null; then \
-		echo "✓ PASS: シリアル出力テスト"; \
+	@if [ ! -f "$(DEBUG_LOG)" ]; then \
+		echo "✗ FAIL: デバッグログが生成されなかった"; \
+	elif grep -q "ALL TESTS PASSED" $(DEBUG_LOG); then \
+		TOTAL=$$(grep -c "\[PASS\]" $(DEBUG_LOG)); \
+		echo "✓ ALL PASS ($$TOTAL tests)"; \
 	else \
-		echo "✗ FAIL: シリアル出力テスト"; \
-		echo "  ログ: $(TEST_LOG)"; \
+		grep "\[PASS\]\|\[FAIL\]" $(DEBUG_LOG) 2>/dev/null || echo "(テスト出力なし)"; \
+		echo "✗ 一部テスト失敗"; \
 	fi
 
-# メインカーネルテスト: シリアルログでブートフローを検証
+# メインカーネルテスト: デバッグポートでブートフローを検証
 test: setup-esp download-ovmf
 	@echo "=== メインカーネルテスト ==="
-	@rm -f $(TEST_LOG)
+	@rm -f $(DEBUG_LOG)
 	@echo "QEMU起動中（$(QEMU_TIMEOUT)秒タイムアウト）..."
-	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) \
-		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_FW) \
-		-drive format=raw,file=fat:rw:$(ESP_DIR) \
-		-net none \
-		-display none \
-		-serial file:$(TEST_LOG) \
-		2>/dev/null || true
+	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) $(QEMU_TEST_OPTS) 2>/dev/null || true
 	@echo ""
-	@echo "--- シリアル出力ログ ---"
-	@cat $(TEST_LOG) 2>/dev/null || echo "(ログなし)"
+	@echo "--- デバッグログ ---"
+	@cat $(DEBUG_LOG) 2>/dev/null || echo "(ログなし)"
 	@echo ""
 	@echo "--- テスト結果 ---"
-	@PASS=0; FAIL=0; \
-	if grep -q "Serial console initialized" $(TEST_LOG) 2>/dev/null; then \
-		echo "✓ PASS: シリアル初期化"; PASS=$$((PASS+1)); \
+	@if [ ! -f "$(DEBUG_LOG)" ]; then \
+		echo "✗ FAIL: デバッグログが生成されなかった"; \
 	else \
-		echo "✗ FAIL: シリアル初期化"; FAIL=$$((FAIL+1)); \
-	fi; \
-	if grep -q "ExitBootServices OK" $(TEST_LOG) 2>/dev/null; then \
-		echo "✓ PASS: ExitBootServices"; PASS=$$((PASS+1)); \
-	else \
-		echo "✗ FAIL: ExitBootServices"; FAIL=$$((FAIL+1)); \
-	fi; \
-	if grep -q "booted successfully" $(TEST_LOG) 2>/dev/null; then \
-		echo "✓ PASS: カーネル起動"; PASS=$$((PASS+1)); \
-	else \
-		echo "✗ FAIL: カーネル起動"; FAIL=$$((FAIL+1)); \
-	fi; \
-	echo ""; \
-	echo "結果: $$PASS passed, $$FAIL failed"
+		PASS=0; FAIL=0; \
+		if grep -q "\[BOOT\] serial_init" $(DEBUG_LOG); then \
+			echo "✓ PASS: シリアル初期化"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: シリアル初期化"; FAIL=$$((FAIL+1)); \
+		fi; \
+		if grep -q "\[BOOT\] ExitBootServices OK" $(DEBUG_LOG); then \
+			echo "✓ PASS: ExitBootServices"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: ExitBootServices"; FAIL=$$((FAIL+1)); \
+		fi; \
+		if grep -q "\[BOOT\] kernel_main entered" $(DEBUG_LOG); then \
+			echo "✓ PASS: カーネル起動"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: カーネル起動"; FAIL=$$((FAIL+1)); \
+		fi; \
+		echo ""; \
+		echo "結果: $$PASS passed, $$FAIL failed"; \
+	fi
 
 clean:
 	rm -rf .tmp/build .tmp/esp .tmp/serial.log

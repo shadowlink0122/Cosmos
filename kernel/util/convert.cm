@@ -29,7 +29,7 @@ export void efi_print_ushort_hex(void* st, ushort value) {
     ulong i = 0;
     while (i < 4) {
         ulong shift = (3 - i) * 4;
-        ulong mask = 15;
+        ulong mask = 15 as ulong;
         ulong nibble = (v >> shift) & mask;
         efi_put_char(st, nibble_to_hex_char(nibble));
         i += 1;

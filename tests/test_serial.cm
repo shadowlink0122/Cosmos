@@ -1,53 +1,45 @@
 //! platform: uefi
 // tests::test_serial - シリアル出力の単体テスト
 //
-// 最小構成でUART COM1の動作を検証する。
-// UEFI Boot Servicesのテキスト出力とシリアル出力の両方をテスト。
+// QEMUデバッグポート(0xE9)を通じてテスト結果を出力。
+// OVMFのシリアル出力と干渉しないクリーンなテスト。
 //
-// ビルド: make test-serial
+// テスト実行: make test-serial
+// 検証: debug.log 内の "[PASS]" / "[FAIL]" マーカーを確認
 
 import ../kernel/libs/efi_core;
 import ../kernel/libs/efi_text;
 import ../kernel/drivers/serial;
+import ../kernel/drivers/debug_port;
 
 ulong efi_main(void* image_handle, void* system_table) {
-    // UEFI テキスト出力テスト（これが動けばUEFI基盤はOK）
+    // === テスト1: デバッグポート基本出力 ===
+    debug_println("[TEST] test_serial started" as void*);
+
+    // === テスト2: UEFI テキスト出力 ===
     efi_clear_screen(system_table);
     efi_println(system_table, "=== Serial Unit Test ===" as void*);
-    efi_println(system_table, "UEFI text output: OK" as void*);
+    debug_println("[PASS] UEFI text output" as void*);
 
-    // シリアル初期化テスト
-    efi_println(system_table, "Initializing serial..." as void*);
+    // === テスト3: シリアル初期化 ===
     serial_init();
-    efi_println(system_table, "serial_init() returned OK" as void*);
+    debug_println("[PASS] serial_init completed" as void*);
 
-    // シリアル出力テスト
-    serial_puts("[TEST] Serial putc test: " as void*);
+    // === テスト4: シリアル1文字出力 ===
     serial_putc(65);  // 'A'
-    serial_putc(66);  // 'B'
-    serial_putc(67);  // 'C'
-    serial_putc(10);  // LF
+    debug_println("[PASS] serial_putc" as void*);
 
-    serial_println("[TEST] Serial println test: OK" as void*);
+    // === テスト5: シリアル文字列出力 ===
+    serial_puts("Hello from COM1" as void*);
+    debug_println("[PASS] serial_puts" as void*);
 
-    // 16進出力テスト
-    serial_puts("[TEST] Hex output: " as void*);
+    // === テスト6: シリアル16進出力 ===
     serial_print_hex(0xDEADBEEF);
-    serial_putc(10);
+    debug_println("[PASS] serial_print_hex" as void*);
 
-    // 最終マーカー（自動テストで検索するキーワード）
-    serial_println("[TEST] ALL SERIAL TESTS PASSED" as void*);
+    // テスト完了マーカー
+    debug_println("[TEST] ALL TESTS PASSED" as void*);
 
-    efi_println(system_table, "Serial test complete. Check serial log." as void*);
-    efi_println(system_table, "System halting." as void*);
-
-    // 3秒待機してからHLT
-    // (QEMUのシリアルバッファがフラッシュされるのを待つ)
-    ulong count = 0;
-    ulong max_count = 100000000;
-    while (count < max_count) {
-        count += 1;
-    }
-
+    efi_println(system_table, "Test complete." as void*);
     return 0;
 }

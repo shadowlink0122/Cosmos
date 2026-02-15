@@ -6,7 +6,7 @@
 // 注意: string型は関数パラメータとして渡すとデータが壊れるため、
 //       全てのインターフェースは void* + ulong で受け取る
 // 注意: ASMに渡す値は全てulongにキャストすること
-// 注意: 全てのASMブロックはmust{}で囲むこと（最適化除去防止）
+// 注意: ASMブロックでmust{}は使用しないこと（Cmコンパイラのバグ: ASM出力変数の制御フロー破壊）
 // 注意: ASM内ではvolatileレジスタ(R10,R11,RAX,RCX,RDX,R8,R9)のみ使用
 //       Win64 ABI callee-saved(RBX,RDI,RSI,R12-R15)は使用禁止
 
@@ -36,31 +36,29 @@ export void efi_puts_raw(void* system_table, void* msg_data, ulong msg_len) {
     // volatileレジスタのみ使用:
     // fn_val, co_valはcall後に必要→スタックに保存
     // md_val, msg_lenはループ前にR10,R11へ移動
-    must {
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:co_val};
-            movq ${r:md_val}, %r10;
-            movq ${r:msg_len}, %r11;
-            subq $$512, %rsp;
-            xorq %rcx, %rcx;
-            0:
-                cmpq %r11, %rcx;
-                jge 1f;
-                movzbl (%r10, %rcx), %eax;
-                movw %ax, (%rsp, %rcx, 2);
-                incq %rcx;
-                jmp 0b;
-            1:
-                movw $$0, (%rsp, %rcx, 2);
-                movq 512(%rsp), %rcx;
-                movq 520(%rsp), %r10;
-                movq %rsp, %rdx;
-                subq $$32, %rsp;
-                callq *%r10;
-                addq $$560, %rsp
-        `);
-    }
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:co_val};
+        movq ${r:md_val}, %r10;
+        movq ${r:msg_len}, %r11;
+        subq $$512, %rsp;
+        xorq %rcx, %rcx;
+        0:
+        cmpq %r11, %rcx;
+        jge 1f;
+        movzbl (%r10, %rcx), %eax;
+        movw %ax, (%rsp, %rcx, 2);
+        incq %rcx;
+        jmp 0b;
+        1:
+        movw $$0, (%rsp, %rcx, 2);
+        movq 512(%rsp), %rcx;
+        movq 520(%rsp), %r10;
+        movq %rsp, %rdx;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$560, %rsp
+    `);
 }
 
 /// NUL終端文字列の長さを計算（ASM実装）
@@ -69,20 +67,18 @@ export ulong efi_strlen(void* data) {
     ulong data_val = data as ulong;
     ulong result = 0;
     // volatileレジスタのみ使用: R10(データポインタ), RCX(カウンタ), EAX(バイト読込)
-    must {
-        __asm__(`
-            movq ${r:data_val}, %r10;
-            xorq %rcx, %rcx;
-            0:
-                movzbl (%r10, %rcx), %eax;
-                testb %al, %al;
-                jz 1f;
-                incq %rcx;
-                jmp 0b;
-            1:
-                movq %rcx, ${=r:result}
-        `);
-    }
+    __asm__(`
+        movq ${r:data_val}, %r10;
+        xorq %rcx, %rcx;
+        0:
+        movzbl (%r10, %rcx), %eax;
+        testb %al, %al;
+        jz 1f;
+        incq %rcx;
+        jmp 0b;
+        1:
+        movq %rcx, ${=r:result}
+    `);
     return result;
 }
 
@@ -115,18 +111,16 @@ export void efi_clear_screen(void* system_table) {
     ulong fn_val = clear_fn_addr as ulong;
     ulong co_val = con_out as ulong;
     ulong result = 0;
-    must {
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:co_val};
-            popq %rcx;
-            popq %r10;
-            subq $$32, %rsp;
-            callq *%r10;
-            addq $$32, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:co_val};
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
 }
 
 /// テキスト属性設定（前景色）
@@ -143,20 +137,18 @@ export void efi_set_color(void* system_table, ulong attribute) {
     ulong co_val = con_out as ulong;
     ulong attr_val = attribute;
     ulong result = 0;
-    must {
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:co_val};
-            pushq ${r:attr_val};
-            popq %rdx;
-            popq %rcx;
-            popq %r10;
-            subq $$32, %rsp;
-            callq *%r10;
-            addq $$32, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:co_val};
+        pushq ${r:attr_val};
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
 }
 
 // ============================================================
@@ -203,7 +195,7 @@ export void efi_print_hex(void* system_table, ulong value) {
     ulong i = 0;
     while (i < 16) {
         ulong shift = (15 - i) * 4;
-        ulong mask = 15;
+        ulong mask = 15 as ulong;
         ulong nibble = (value >> shift) & mask;
         efi_put_char(system_table, nibble_to_hex_char(nibble));
         i += 1;
@@ -255,19 +247,17 @@ export void efi_put_char(void* system_table, ushort unicode_char) {
     ulong co_val = con_out as ulong;
     ulong ch_val = unicode_char as ulong;
     ulong r = 0;
-    must {
-        // UCS-2バッファをスタック上に直接構築（Cm配列変換を回避）
-        __asm__(`
-            subq $$48, %rsp;
-            movq ${r:ch_val}, %rax;
-            movw %ax, 32(%rsp);
-            movw $$0, 34(%rsp);
-            leaq 32(%rsp), %rdx;
-            movq ${r:co_val}, %rcx;
-            movq ${r:fn_val}, %r10;
-            callq *%r10;
-            addq $$48, %rsp;
-            movq %rax, ${=r:r}
-        `);
-    }
+    // UCS-2バッファをスタック上に直接構築（Cm配列変換を回避）
+    __asm__(`
+        subq $$48, %rsp;
+        movq ${r:ch_val}, %rax;
+        movw %ax, 32(%rsp);
+        movw $$0, 34(%rsp);
+        leaq 32(%rsp), %rdx;
+        movq ${r:co_val}, %rcx;
+        movq ${r:fn_val}, %r10;
+        callq *%r10;
+        addq $$48, %rsp;
+        movq %rax, ${=r:r}
+    `);
 }

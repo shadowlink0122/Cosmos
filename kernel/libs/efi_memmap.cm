@@ -21,22 +21,20 @@ export ulong efi_alloc_pool(void* system_table, ulong size, void** out_buffer) {
     ulong buf_addr = out_buffer as ulong;
 
     ulong result = 0;
-    must {
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:pool_type};
-            pushq ${r:size};
-            pushq ${r:buf_addr};
-            popq %r8;
-            popq %rdx;
-            popq %rcx;
-            popq %r10;
-            subq $$32, %rsp;
-            callq *%r10;
-            addq $$32, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:pool_type};
+        pushq ${r:size};
+        pushq ${r:buf_addr};
+        popq %r8;
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
     return result;
 }
 
@@ -52,25 +50,23 @@ export ulong efi_free_pool(void* system_table, void* buffer) {
     ulong buf_val = buffer as ulong;
 
     ulong result = 0;
-    must {
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:buf_val};
-            popq %rcx;
-            popq %r10;
-            subq $$32, %rsp;
-            callq *%r10;
-            addq $$32, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:buf_val};
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
     return result;
 }
 
 /// GetMemoryMap (BootServices + 0x38)
 /// map_size [in/out], map, map_key [out], desc_size [out], desc_ver [out]
 export ulong efi_get_memory_map(void* system_table, ulong* map_size, void* map,
-                                 ulong* map_key, ulong* desc_size, ulong* desc_ver) {
+ulong* map_key, ulong* desc_size, ulong* desc_ver) {
     ulong* st = system_table as ulong*;
     ulong bs_addr = *(st + 12);
     ulong* bs = bs_addr as ulong*;
@@ -86,29 +82,27 @@ export ulong efi_get_memory_map(void* system_table, ulong* map_size, void* map,
     ulong dv_val = desc_ver as ulong;
 
     ulong result = 0;
-    must {
-        // 6つの値をpush/popで安全にレジスタへ配置
-        // R10=fn, R11=dv(5th arg→stack)
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:ms_val};
-            pushq ${r:mp_val};
-            pushq ${r:mk_val};
-            pushq ${r:ds_val};
-            pushq ${r:dv_val};
-            popq %r11;
-            popq %r9;
-            popq %r8;
-            popq %rdx;
-            popq %rcx;
-            popq %r10;
-            subq $$48, %rsp;
-            movq %r11, 32(%rsp);
-            callq *%r10;
-            addq $$48, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    // 6つの値をpush/popで安全にレジスタへ配置
+    // R10=fn, R11=dv(5th arg→stack)
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:ms_val};
+        pushq ${r:mp_val};
+        pushq ${r:mk_val};
+        pushq ${r:ds_val};
+        pushq ${r:dv_val};
+        popq %r11;
+        popq %r9;
+        popq %r8;
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$48, %rsp;
+        movq %r11, 32(%rsp);
+        callq *%r10;
+        addq $$48, %rsp;
+        movq %rax, ${=r:result}
+    `);
     return result;
 }
 
@@ -146,17 +140,15 @@ export ulong efi_stall(void* system_table, ulong microseconds) {
     ulong fn_val = stall_fn;
 
     ulong result = 0;
-    must {
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:microseconds};
-            popq %rcx;
-            popq %r10;
-            subq $$32, %rsp;
-            callq *%r10;
-            addq $$32, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:microseconds};
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
     return result;
 }

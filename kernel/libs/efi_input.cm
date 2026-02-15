@@ -28,30 +28,28 @@ export ulong efi_read_key(void* system_table, ushort* out_scan, ushort* out_char
     ulong char_ptr = out_char as ulong;
 
     ulong result = 0;
-    must {
-        // scan_ptr, char_ptrをスタックに退避（call後に使用）
-        // ASMスタック上にEFI_INPUT_KEYバッファを確保
-        // volatileレジスタのみ使用
-        __asm__(`
-            pushq ${r:scan_ptr};
-            pushq ${r:char_ptr};
-            pushq ${r:fn_val};
-            pushq ${r:ci_val};
-            popq %rcx;
-            popq %r10;
-            subq $$48, %rsp;
-            leaq 32(%rsp), %rdx;
-            callq *%r10;
-            movzwl 32(%rsp), %r10d;
-            movzwl 34(%rsp), %r11d;
-            addq $$48, %rsp;
-            popq %rcx;
-            popq %rdx;
-            movw %r10w, (%rdx);
-            movw %r11w, (%rcx);
-            movq %rax, ${=r:result}
-        `);
-    }
+    // scan_ptr, char_ptrをスタックに退避（call後に使用）
+    // ASMスタック上にEFI_INPUT_KEYバッファを確保
+    // volatileレジスタのみ使用
+    __asm__(`
+        pushq ${r:scan_ptr};
+        pushq ${r:char_ptr};
+        pushq ${r:fn_val};
+        pushq ${r:ci_val};
+        popq %rcx;
+        popq %r10;
+        subq $$48, %rsp;
+        leaq 32(%rsp), %rdx;
+        callq *%r10;
+        movzwl 32(%rsp), %r10d;
+        movzwl 34(%rsp), %r11d;
+        addq $$48, %rsp;
+        popq %rcx;
+        popq %rdx;
+        movw %r10w, (%rdx);
+        movw %r11w, (%rcx);
+        movq %rax, ${=r:result}
+    `);
 
     return result;
 }
@@ -86,23 +84,21 @@ export ulong efi_wait_for_key(void* system_table) {
     ulong idx_val = (&index) as ulong;
 
     ulong result = 0;
-    must {
-        // WaitForEvent(NumberOfEvents=RCX, Event=RDX, Index=R8)
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:num_events};
-            pushq ${r:ea_val};
-            pushq ${r:idx_val};
-            popq %r8;
-            popq %rdx;
-            popq %rcx;
-            popq %r10;
-            subq $$32, %rsp;
-            callq *%r10;
-            addq $$32, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    // WaitForEvent(NumberOfEvents=RCX, Event=RDX, Index=R8)
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:num_events};
+        pushq ${r:ea_val};
+        pushq ${r:idx_val};
+        popq %r8;
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
 
     return result;
 }

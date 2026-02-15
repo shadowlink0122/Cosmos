@@ -36,8 +36,7 @@ export ulong gop_init(void* system_table, ulong* out_fb, ulong* out_width, ulong
     // GUIDをimmediate定数としてASM内に直接記述（Cm変数参照はASM内で不正値になるため）
     // GOP GUID: {0x9042a9de, 0x23dc, 0x4a38, {0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a}}
     // qword[0] = 0x4A3823DC9042A9DE, qword[1] = 0x6A5180D0DE7AFB96
-    must {
-        __asm__(`
+    __asm__(`
         pushq ${r:locate_fn};
         popq %r10;
         subq $$64, %rsp;
@@ -53,8 +52,7 @@ export ulong gop_init(void* system_table, ulong* out_fb, ulong* out_width, ulong
         movq 32(%rsp), ${=r:gop_ptr};
         addq $$64, %rsp;
         movq %rax, ${=r:result}
-        `);
-    }
+    `);
 
     // エラーチェック
     long signed_result = result as long;

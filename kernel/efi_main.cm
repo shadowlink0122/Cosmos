@@ -19,6 +19,7 @@ import ./util/graphics;
 import ./boot_info;
 import ./gdt;
 import ./drivers/serial;
+import ./drivers/debug_port;
 
 // ============================================================
 // ExitBootServices
@@ -40,20 +41,18 @@ ulong efi_exit_boot_services(void* system_table, void* image_handle, ulong map_k
     ulong ih_val = image_handle as ulong;
 
     ulong result = 0;
-    must {
-        __asm__(`
-            pushq ${r:fn_val};
-            pushq ${r:ih_val};
-            pushq ${r:map_key};
-            popq %rdx;
-            popq %rcx;
-            popq %r10;
-            subq $$32, %rsp;
-            callq *%r10;
-            addq $$32, %rsp;
-            movq %rax, ${=r:result}
-        `);
-    }
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:ih_val};
+        pushq ${r:map_key};
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
     return result;
 }
 
@@ -94,6 +93,8 @@ void collect_fb_info(void* system_table, BootInfo* info) {
 /// メモリマップを取得してBootInfoに格納する
 /// 戻り値: 0=成功
 ulong collect_memory_map(void* system_table, BootInfo* info) {
+    debug_println("[BOOT] collect_memory_map: start" as void*);
+
     // まずサイズを問い合わせ
     ulong map_size = 0;
     ulong map_key = 0;
@@ -103,24 +104,26 @@ ulong collect_memory_map(void* system_table, BootInfo* info) {
     // 最初の呼び出しでサイズを取得（バッファNULL）
     ulong status = efi_get_memory_map(system_table, &map_size, 0 as void*, &map_key, &desc_size, &desc_ver);
 
-    // バッファサイズに余裕を持たせる（ExitBootServicesで変わる可能性があるため）
+    // バッファサイズに余裕を持たせる
     ulong alloc_size = map_size + 4096;
 
     // バッファを確保
     void* map_buffer = 0 as void*;
     status = efi_alloc_pool(system_table, alloc_size, &map_buffer);
+
     long signed_status = status as long;
     if (signed_status < 0) {
-        serial_println("[Cosmos] ERROR: AllocatePool failed for memory map" as void*);
+        debug_println("[BOOT] collect_memory_map: FAIL alloc" as void*);
         return status;
     }
 
-    // メモリマップを取得（alloc_sizeで再取得）
+    // メモリマップを取得
     ulong actual_map_size = alloc_size;
     status = efi_get_memory_map(system_table, &actual_map_size, map_buffer, &map_key, &desc_size, &desc_ver);
+
     signed_status = status as long;
     if (signed_status < 0) {
-        serial_println("[Cosmos] ERROR: GetMemoryMap failed" as void*);
+        debug_println("[BOOT] collect_memory_map: FAIL get_map" as void*);
         return status;
     }
 
@@ -132,11 +135,7 @@ ulong collect_memory_map(void* system_table, BootInfo* info) {
     (*info).mmap.desc_version = desc_ver as uint;
     (*info).mmap.entry_count = (actual_map_size / desc_size) as uint;
 
-    serial_println("[Cosmos] Memory map collected" as void*);
-    serial_puts("[Cosmos]   Entries: " as void*);
-    serial_print_hex((*info).mmap.entry_count as ulong);
-    serial_putc(10);
-
+    debug_println("[BOOT] collect_memory_map: OK" as void*);
     return 0;
 }
 
@@ -147,6 +146,7 @@ ulong collect_memory_map(void* system_table, BootInfo* info) {
 /// ExitBootServices後のカーネルエントリポイント
 /// Boot Servicesは使用不可。シリアルとFBのみ使用可能。
 void kernel_main(BootInfo* info) {
+    debug_println("[BOOT] kernel_main entered" as void*);
     serial_println("[Cosmos] === Kernel Main ===" as void*);
     serial_println("[Cosmos] ExitBootServices completed successfully" as void*);
 
@@ -175,10 +175,10 @@ void kernel_main(BootInfo* info) {
     serial_println("[Cosmos] ==============================" as void*);
 
     // HLTループ（カーネル待機）
+    serial_println("[Cosmos] Entering halt loop" as void*);
+    debug_println("[BOOT] halt" as void*);
     while (true) {
-        must {
-            __asm__("hlt");
-        }
+        __asm__("hlt");
     }
 }
 
@@ -188,9 +188,13 @@ void kernel_main(BootInfo* info) {
 
 ulong efi_main(void* image_handle, void* system_table) {
     // シリアルコンソール初期化（UART COM1 115200 8N1）
+    // デバッグポート出力（テスト検証用）
+    debug_println("[BOOT] efi_main entered" as void*);
+
     serial_init();
     serial_println("[Cosmos] Serial console initialized" as void*);
     serial_println("[Cosmos] UEFI boot started" as void*);
+    debug_println("[BOOT] serial_init completed" as void*);
 
     efi_clear_screen(system_table);
 
@@ -235,7 +239,7 @@ ulong efi_main(void* image_handle, void* system_table) {
         efi_println(system_table, "  ERROR: Memory map collection failed!" as void*);
         efi_println(system_table, "  System halted." as void*);
         while (true) {
-            must { __asm__("hlt"); }
+            __asm__("hlt");
         }
     }
 
@@ -248,6 +252,7 @@ ulong efi_main(void* image_handle, void* system_table) {
 
     efi_println(system_table, "[Phase 1] Calling ExitBootServices..." as void*);
     serial_println("[Cosmos] Calling ExitBootServices..." as void*);
+    debug_println("[BOOT] calling ExitBootServices" as void*);
 
     // ExitBootServices呼び出し
     // 注意: この後 ConOut 等の Boot Services は一切使用不可
@@ -264,7 +269,7 @@ ulong efi_main(void* image_handle, void* system_table) {
         ulong retry_desc_size = 0;
         ulong retry_desc_ver = 0;
         efi_get_memory_map(system_table, &retry_map_size, boot_info.mmap.map_buffer,
-                           &retry_map_key, &retry_desc_size, &retry_desc_ver);
+        &retry_map_key, &retry_desc_size, &retry_desc_ver);
 
         boot_info.mmap.map_key = retry_map_key;
 
@@ -274,8 +279,9 @@ ulong efi_main(void* image_handle, void* system_table) {
 
         if (signed_exit < 0) {
             serial_println("[Cosmos] FATAL: ExitBootServices retry failed!" as void*);
+            debug_println("[BOOT] FATAL: ExitBootServices retry failed" as void*);
             while (true) {
-                must { __asm__("hlt"); }
+                __asm__("hlt");
             }
         }
     }
@@ -286,6 +292,7 @@ ulong efi_main(void* image_handle, void* system_table) {
     // ============================================================
 
     serial_println("[Cosmos] ExitBootServices OK" as void*);
+    debug_println("[BOOT] ExitBootServices OK" as void*);
 
     // カーネルメインに制御を移す
     kernel_main(&boot_info);

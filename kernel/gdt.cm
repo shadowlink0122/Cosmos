@@ -62,32 +62,30 @@ export void gdt_load(ulong* gdt_table) {
     ulong cs_sel = KERNEL_CS;
     ulong ds_sel = KERNEL_DS;
 
-    must {
-        __asm__(`
-            subq $$16, %rsp;
-            movq ${r:gdt_limit}, %rax;
-            movw %ax, (%rsp);
-            movq ${r:gdt_addr}, %rax;
-            movq %rax, 2(%rsp);
+    __asm__(`
+        subq $$16, %rsp;
+        movq ${r:gdt_limit}, %rax;
+        movw %ax, (%rsp);
+        movq ${r:gdt_addr}, %rax;
+        movq %rax, 2(%rsp);
 
-            lgdt (%rsp);
+        lgdt (%rsp);
 
-            movq ${r:ds_sel}, %rax;
-            movw %ax, %ds;
-            movw %ax, %es;
-            movw %ax, %ss;
-            movw $$0, %ax;
-            movw %ax, %fs;
-            movw %ax, %gs;
+        movq ${r:ds_sel}, %rax;
+        movw %ax, %ds;
+        movw %ax, %es;
+        movw %ax, %ss;
+        movw $$0, %ax;
+        movw %ax, %fs;
+        movw %ax, %gs;
 
-            leaq 2f(%rip), %rax;
-            pushq ${r:cs_sel};
-            pushq %rax;
-            lretq;
-            2:
-            addq $$16, %rsp
-        `);
-    }
+        leaq 2f(%rip), %rax;
+        pushq ${r:cs_sel};
+        pushq %rax;
+        lretq;
+        2:
+        addq $$16, %rsp
+    `);
 }
 
 /// GDTを初期化してロードする
