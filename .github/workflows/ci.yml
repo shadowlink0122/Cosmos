@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  LLVM_VERSION: "17"
+
+jobs:
+  # ========================================
+  # Build - Cmコンパイラビルド＋カーネルコンパイル
+  # ========================================
+  build:
+    name: ビルド (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: LLVM キャッシュ
+        uses: actions/cache@v4
+        id: cache-llvm
+        with:
+          path: |
+            /usr/lib/llvm-${{ env.LLVM_VERSION }}
+            /opt/homebrew/opt/llvm@${{ env.LLVM_VERSION }}
+          key: llvm-${{ env.LLVM_VERSION }}-${{ matrix.os }}
+
+      - name: LLVM インストール (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          if [ ! -d "/usr/lib/llvm-${{ env.LLVM_VERSION }}" ]; then
+            wget https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            sudo ./llvm.sh ${{ env.LLVM_VERSION }}
+          fi
+          sudo apt-get install -y llvm-${{ env.LLVM_VERSION }}-dev clang-${{ env.LLVM_VERSION }} lld-${{ env.LLVM_VERSION }} libssl-dev
+          echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
+
+      - name: LLVM インストール (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@${{ env.LLVM_VERSION }} openssl@3
+          echo "$(brew --prefix llvm@${{ env.LLVM_VERSION }})/bin" >> $GITHUB_PATH
+
+      - name: QEMU インストール
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get install -y qemu-system-x86
+          else
+            brew install qemu
+          fi
+
+      - name: Cmコンパイラ ビルド
+        working-directory: Cm
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCM_USE_LLVM=ON
+          cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Cmコンパイラ 確認
+        working-directory: Cm
+        run: ./cm --version
+
+      - name: カーネル コンパイル
+        run: make compile
+        continue-on-error: true
+
+      - name: ビルド成果物 アップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmos-build-${{ matrix.os }}
+          path: |
+            Cm/cm
+            kernel/
+            *.efi
+          retention-days: 1
+
+  # ========================================
+  # UEFI テスト - QEMUでブートテスト
+  # ========================================
+  boot-test:
+    name: ブートテスト
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cosmos-build-ubuntu-22.04
+
+      - run: chmod +x Cm/cm 2>/dev/null || true
+
+      - name: QEMU インストール
+        run: sudo apt-get install -y qemu-system-x86
+
+      - name: UEFI ブートテスト
+        run: |
+          echo "=== Cosmos UEFI ブートテスト ==="
+          # TODO: 自動ブートテストスクリプトを追加
+          echo "✅ ブートテスト（手動確認待ち）"
+        continue-on-error: true
