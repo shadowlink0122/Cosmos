@@ -1,0 +1,104 @@
+//! platform: uefi
+// kernel::boot::gdt - GDT（グローバルディスクリプタテーブル）設定
+//
+// x86_64 Long Mode用のフラットセグメントモデル。
+// ExitBootServices後に自前のGDTを設定するために使用。
+//
+// GDTエントリ構成:
+//   [0] Null Descriptor       (必須)
+//   [1] Kernel Code Segment   (CS: 64-bit, Ring 0)
+//   [2] Kernel Data Segment   (DS: Ring 0)
+//
+// 注意: x86_64 Long Modeでは、ベース/リミットはほとんど無視される。
+//       Code Segmentの L(Long) ビットとDB=0 が重要。
+
+import ../drivers/serial;
+
+// ============================================================
+// GDTエントリ定数（8バイト = ulong 1個）
+// ============================================================
+
+// Null Descriptor: すべてゼロ
+const ulong GDT_NULL = 0x0000000000000000;
+
+// Kernel Code Segment (Ring 0, 64-bit long mode):
+//   Base=0, Limit=0xFFFFF
+//   Access: Present=1, DPL=0, S=1, Type=Execute/Read (0xA)
+//   Flags: Granularity=1, Long=1, DB=0
+//   Byte layout: 0x00AF9A000000FFFF
+//     Limit[15:0]  = 0xFFFF
+//     Base[23:0]   = 0x000000
+//     Access       = 0x9A (P=1,DPL=00,S=1,Type=1010)
+//     Flags/Lim[19:16] = 0xAF (G=1,L=1,D=0,Lim=F)
+//     Base[31:24]  = 0x00
+const ulong GDT_KERNEL_CODE = 0x00AF9A000000FFFF;
+
+// Kernel Data Segment (Ring 0):
+//   Access: Present=1, DPL=0, S=1, Type=Read/Write (0x2)
+//   Flags: Granularity=1, Long=0, DB=1
+//   Byte layout: 0x00CF92000000FFFF
+const ulong GDT_KERNEL_DATA = 0x00CF92000000FFFF;
+
+// セグメントセレクタ（GDTエントリのインデックス * 8）
+const ulong KERNEL_CS = 0x08;  // GDT[1]
+const ulong KERNEL_DS = 0x10;  // GDT[2]
+
+// ============================================================
+// GDT読み込み
+// ============================================================
+
+/// GDTテーブルをCPUにロードし、セグメントレジスタを再設定する
+///
+/// gdt_table: 3要素のulong配列（Null, KernelCode, KernelData）
+///
+/// lgdtでGDTRを設定後、far returnでCSを再ロードし、
+/// DS/ES/SS/FS/GSをKernel Dataセグメントに設定する。
+export void gdt_load(ulong* gdt_table) {
+    // GDTR構造体をスタック上に構築
+    // limit = 3 * 8 - 1 = 23 (0x17)
+    // base  = gdt_tableのアドレス
+    ulong gdt_addr = gdt_table as ulong;
+    ulong gdt_limit = 23;  // 3エントリ * 8バイト - 1
+    ulong cs_sel = KERNEL_CS;
+    ulong ds_sel = KERNEL_DS;
+
+    must {
+        __asm__(`
+            subq $$16, %rsp;
+            movq ${r:gdt_limit}, %rax;
+            movw %ax, (%rsp);
+            movq ${r:gdt_addr}, %rax;
+            movq %rax, 2(%rsp);
+
+            lgdt (%rsp);
+
+            movq ${r:ds_sel}, %rax;
+            movw %ax, %ds;
+            movw %ax, %es;
+            movw %ax, %ss;
+            movw $$0, %ax;
+            movw %ax, %fs;
+            movw %ax, %gs;
+
+            leaq 2f(%rip), %rax;
+            pushq ${r:cs_sel};
+            pushq %rax;
+            lretq;
+            2:
+            addq $$16, %rsp
+        `);
+    }
+}
+
+/// GDTを初期化してロードする
+export void gdt_init() {
+    // GDTテーブル（3エントリ）をローカル変数として定義
+    ulong[3] gdt;
+    gdt[0] = GDT_NULL;
+    gdt[1] = GDT_KERNEL_CODE;
+    gdt[2] = GDT_KERNEL_DATA;
+
+    // GDTをロード（void*経由でキャスト）
+    void* gdt_raw = &gdt as void*;
+    gdt_load(gdt_raw as ulong*);
+}
