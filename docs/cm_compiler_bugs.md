@@ -1,8 +1,11 @@
-# Cm コンパイラ バグレポート (UEFI開発で発見)
+# Cm コンパイラ — UEFI開発で発見された問題点と回避策
 
-## 報告日: 2026-02-15
+> Cosmos OS開発中に発見されたCmコンパイラの制約・バグとその回避策をまとめたドキュメント。
+> 対象: `--target=uefi` (x86_64)、macOS環境
 
-## バグ1: `__asm__` 出力変数の while 条件不具合（重大）
+---
+
+## 1. `__asm__` 出力変数の while 条件不具合（重大）
 
 ### 概要
 `__asm__`の出力制約（`${=r:var}`）で更新された変数を`while(var != 0)`の条件で使用すると、
@@ -17,89 +20,136 @@ __asm__(`
     movzbl (%r10), %eax;
     movq %rax, ${=r:byte_val}
 `);
-// byte_val == 0 のとき、ループが停止すべきだが停止しない
-while (byte_val != 0) {
-    outb(0xE9, byte_val);  // NULバイト(0x00)が出力される→値は0
-    ...
-    __asm__(`... movq %rax, ${=r:byte_val}`);
-}
-```
-
-### 症状
-- `byte_val`は0に更新されている（port 0xE9にNULバイト出力で確認）
-- しかし`while (byte_val != 0)`の条件が`false`にならずループ継続
-- NUL終端文字列の読み取りが停止せず、.rdataセクション全体を出力
-
-### 回避策
-```cm
-// while(true) + if + break パターンを使うと正常動作する
-while (true) {
-    ulong byte_val = 0;  // ループ内でのスコープ宣言
-    __asm__(`... movq %rax, ${=r:byte_val}`);
-    if (byte_val == 0) {
-        break;
-    }
+while (byte_val != 0) {   // ← byte_val == 0 でもループ継続
     outb(0xE9, byte_val);
+    __asm__(`... movq %rax, ${=r:byte_val}`);
 }
 ```
 
 ### 推定原因
-コンパイラがASM出力変数の更新をwhile条件の再評価に伝播できていない。
-定数畳み込みまたはSSA最適化の不具合。`if(var == 0) break`では正しく評価される。
+定数畳み込みまたはSSA最適化がASM出力変数の更新をwhile条件の再評価に伝播していない。
+
+### 回避策
+```cm
+while (true) {
+    ulong byte_val = 0;  // ループ内でスコープ宣言
+    __asm__(`... movq %rax, ${=r:byte_val}`);
+    if (byte_val == 0) { break; }
+    outb(0xE9, byte_val);
+}
+```
 
 ---
 
-## バグ2: 整数リテラル型推論の不具合
+## 2. 整数リテラル型推論の不具合
 
 ### 概要
-`ulong`コンテキストで使用される整数リテラルが`i32`として型推論され、
+`ulong`コンテキストで使用される小さい整数リテラル（`0xFF`、`1`、`15`等）が`i32`として型推論され、
 LLVM IRレベルで型不一致エラーが発生する。
 
 ### 再現コード
 ```cm
-ulong value = some_value;
-ulong mask = 15;           // i32として推論される
-ulong result = value & mask;  // LLVM: "and i64 %val, i32 15" → エラー
+ulong packed = some_value;
+ulong byte_val = (packed >> shift) & 0xFF;  // ← 0xFF が i32 扱い
+ulong mask = 1 << bit_pos;                  // ← 1 が i32 扱い
 ```
 
-### LLVM IRエラー
+### エラーメッセージ
 ```
 Both operands to a binary operator are not of the same type!
-  %bitand = and i64 %load22, i32 15
+  %bitand = and i64 %load, i32 255
 ```
 
 ### 回避策
 ```cm
-ulong mask = 15 as ulong;  // 明示的キャスト
+ulong mask_ff = 0xFF as ulong;
+ulong byte_val = (packed >> shift) & mask_ff;
+
+ulong one = 1 as ulong;
+ulong mask = one << bit_pos;
 ```
 
 ---
 
-## バグ3: `must { __asm__() }` の制御フロー干渉
+## 3. `stoll: out of range` — 大きな16進リテラル
 
 ### 概要
-`must { }` ブロックで `__asm__` をラップすると、
-ASM出力変数や周囲の制御フローに悪影響を与える。
+`ulong`型に`0x8000000000000000`以上の値を代入すると、コンパイラ内部の`stoll`（signed long long変換）でオーバーフローエラーが発生する。
+
+### 再現コード
+```cm
+ulong val = 0xFE6C6C0000000000;  // ← stoll: out of range
+```
+
+### 回避策
+ビット演算で構築する:
+```cm
+// 0xFE6C6C0000000000 を回避
+ulong val = (0x7E6C6C0000000000) | (0x0080000000000000 << 1);
+```
+または、上位ビットが立たない値に設計を変更する。
+
+---
+
+## 4. `must { __asm__() }` の制御フロー干渉
+
+### 概要
+`must { }` ブロックで `__asm__` をラップすると、ASM出力変数や周囲の制御フローに悪影響を与える。
 
 ### 症状
-- `must`内の`__asm__`出力変数がスコープ外で期待どおりに動作しない
+- `must`内の`__asm__`出力変数がスコープ外で正常に動作しない
 - `while(true) { must { __asm__("hlt"); } }` がhaltループから脱出する
 
 ### 回避策
 ```cm
-// ❌ 使用禁止
-must { __asm__("hlt"); }
-
 // ✅ mustなしで直接使用
 __asm__("hlt");
 ```
 
 ---
 
-## 影響範囲とテスト環境
+## 5. const式でのI/Oポート計算
 
-- **Cmバージョン**: 最新（2026-02-15時点）
-- **ターゲット**: `--target=uefi` (x86_64)
-- **LLVM**: lld-link使用
-- **OS**: macOS
-- **全バグの影響**: UEFIブートローダーの動作不良（メモリマップ取得不能、ExitBootServices失敗、haltループ脱出）
+### 概要
+`const`定数を使った加算式が関数引数で正しく評価されない場合がある。
+
+### 再現コード
+```cm
+const ulong COM1_PORT = 0x3F8;
+const ulong REG_IER = 1;
+outb(COM1_PORT + REG_IER, 0x00);  // 期待: 0x3F9、実際: 不定
+```
+
+### 回避策
+```cm
+outb(0x3F9, 0x00);  // リテラル値を直接使用
+```
+
+---
+
+## 7. ローカル配列とポインタ変数のスタックオフセット重複（重大）
+
+### 概要
+ローカル配列（例: `ulong[3] gdt;`）とそのアドレスを格納する変数（例: `void* gdt_raw = &gdt as void*;`）が同一スタックオフセットに配置される。
+
+### 症状
+配列の最終要素が上書きされ、GDT等のテーブルが破壊。x86_64ではトリプルフォルト再起動ループ。
+
+### 回避策
+ASM内で直接スタック上にテーブルを構築し、ローカル配列+ポインタ変数の組み合わせを避ける。
+
+### 発見日
+2026-02-16
+
+---
+
+## 影響範囲
+
+| 項目 | 値 |
+|-----|-----|
+| **Cmバージョン** | 最新（2026-02-16時点） |
+| **ターゲット** | `--target=uefi` (x86_64 PE/COFF) |
+| **リンカ** | lld-link |
+| **OS** | macOS (Apple Silicon) |
+| **影響** | ブートローダー動作不良、GDTクラッシュ、フォントレンダリング失敗、コンパイルエラー |
+

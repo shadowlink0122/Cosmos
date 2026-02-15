@@ -13,6 +13,7 @@
 //       Code Segmentの L(Long) ビットとDB=0 が重要。
 
 import ./drivers/serial;
+import ./drivers/debug_port;
 
 // ============================================================
 // GDTエントリ定数（8バイト = ulong 1個）
@@ -22,20 +23,10 @@ import ./drivers/serial;
 const ulong GDT_NULL = 0x0000000000000000;
 
 // Kernel Code Segment (Ring 0, 64-bit long mode):
-//   Base=0, Limit=0xFFFFF
-//   Access: Present=1, DPL=0, S=1, Type=Execute/Read (0xA)
-//   Flags: Granularity=1, Long=1, DB=0
 //   Byte layout: 0x00AF9A000000FFFF
-//     Limit[15:0]  = 0xFFFF
-//     Base[23:0]   = 0x000000
-//     Access       = 0x9A (P=1,DPL=00,S=1,Type=1010)
-//     Flags/Lim[19:16] = 0xAF (G=1,L=1,D=0,Lim=F)
-//     Base[31:24]  = 0x00
 const ulong GDT_KERNEL_CODE = 0x00AF9A000000FFFF;
 
 // Kernel Data Segment (Ring 0):
-//   Access: Present=1, DPL=0, S=1, Type=Read/Write (0x2)
-//   Flags: Granularity=1, Long=0, DB=1
 //   Byte layout: 0x00CF92000000FFFF
 const ulong GDT_KERNEL_DATA = 0x00CF92000000FFFF;
 
@@ -44,33 +35,52 @@ const ulong KERNEL_CS = 0x08;  // GDT[1]
 const ulong KERNEL_DS = 0x10;  // GDT[2]
 
 // ============================================================
-// GDT読み込み
+// GDT読み込み（オールインワン）
 // ============================================================
 
-/// GDTテーブルをCPUにロードし、セグメントレジスタを再設定する
+/// GDTを初期化してCPUにロードし、セグメントレジスタを再設定する
 ///
-/// gdt_table: 3要素のulong配列（Null, KernelCode, KernelData）
-///
-/// lgdtでGDTRを設定後、far returnでCSを再ロードし、
-/// DS/ES/SS/FS/GSをKernel Dataセグメントに設定する。
-export void gdt_load(ulong* gdt_table) {
-    // GDTR構造体をスタック上に構築
-    // limit = 3 * 8 - 1 = 23 (0x17)
-    // base  = gdt_tableのアドレス
-    ulong gdt_addr = gdt_table as ulong;
-    ulong gdt_limit = 23;  // 3エントリ * 8バイト - 1
+/// Cmコンパイラのスタックレイアウトバグ回避:
+///   ローカル配列と別のローカル変数がスタックで重複する問題があるため、
+///   配列確保・設定・ロードを一つの関数内で完結させ、
+///   中間ポインタ変数（void* gdt_raw等）を使用しない。
+///   GDTテーブルはASM内で直接スタックに構築する。
+export void gdt_init() {
+    debug_println("[BOOT] gdt_init: start" as void*);
+
+    // GDT定数をローカル変数にコピー（ASMから参照するため）
+    ulong gdt_null = GDT_NULL;
+    ulong gdt_code = GDT_KERNEL_CODE;
+    ulong gdt_data = GDT_KERNEL_DATA;
     ulong cs_sel = KERNEL_CS;
     ulong ds_sel = KERNEL_DS;
+    ulong gdt_limit = 23 as ulong;  // 3 * 8 - 1
 
+    // GDTテーブルをASMスタック上に直接構築し、lgdtでロード
+    // その後、far returnでCSを再設定し、DS/ES/SS/FS/GSを設定
     __asm__(`
-        subq $$16, %rsp;
+        // GDTテーブル領域（24バイト = 3エントリ）とGDTR（10バイト）をスタックに確保
+        // 合計: 24 + 16（アライメント）= 48バイト（余裕を持って確保）
+        subq $$48, %rsp;
+
+        // GDTエントリをスタックに書き込み
+        movq ${r:gdt_null}, %rax;
+        movq %rax, (%rsp);          // [0] Null Descriptor
+        movq ${r:gdt_code}, %rax;
+        movq %rax, 8(%rsp);         // [1] Kernel Code
+        movq ${r:gdt_data}, %rax;
+        movq %rax, 16(%rsp);        // [2] Kernel Data
+
+        // GDTR構造体を構築（offset 24に配置）
         movq ${r:gdt_limit}, %rax;
-        movw %ax, (%rsp);
-        movq ${r:gdt_addr}, %rax;
-        movq %rax, 2(%rsp);
+        movw %ax, 24(%rsp);         // limit = 23
+        movq %rsp, %rax;
+        movq %rax, 26(%rsp);        // base = GDTテーブルのスタックアドレス
 
-        lgdt (%rsp);
+        // lgdt: GDTをCPUにロード
+        lgdt 24(%rsp);
 
+        // セグメントレジスタを再設定
         movq ${r:ds_sel}, %rax;
         movw %ax, %ds;
         movw %ax, %es;
@@ -79,24 +89,15 @@ export void gdt_load(ulong* gdt_table) {
         movw %ax, %fs;
         movw %ax, %gs;
 
+        // far return でCSを再設定
         leaq 2f(%rip), %rax;
         pushq ${r:cs_sel};
         pushq %rax;
         lretq;
         2:
-        addq $$16, %rsp
+        addq $$48, %rsp
     `);
-}
 
-/// GDTを初期化してロードする
-export void gdt_init() {
-    // GDTテーブル（3エントリ）をローカル変数として定義
-    ulong[3] gdt;
-    gdt[0] = GDT_NULL;
-    gdt[1] = GDT_KERNEL_CODE;
-    gdt[2] = GDT_KERNEL_DATA;
-
-    // GDTをロード（void*経由でキャスト）
-    void* gdt_raw = &gdt as void*;
-    gdt_load(gdt_raw as ulong*);
+    debug_println("[BOOT] gdt_init: done" as void*);
+    serial_println("[Cosmos] GDT initialized" as void*);
 }

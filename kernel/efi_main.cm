@@ -18,8 +18,13 @@ import ./util/convert;
 import ./util/graphics;
 import ./boot_info;
 import ./gdt;
+import ./idt;
+import ./isr;
 import ./drivers/serial;
 import ./drivers/debug_port;
+import ./drivers/pic;
+import ./lib/font;
+import ./lib/print;
 
 // ============================================================
 // ExitBootServices
@@ -152,26 +157,82 @@ void kernel_main(BootInfo* info) {
 
     // GDT設定
     gdt_init();
-    serial_println("[Cosmos] GDT initialized" as void*);
 
-    // フレームバッファにピクセルを書き込んでテスト
+    // PIC 8259A初期化（IRQリマップ 32-47、全マスク）
+    pic_init();
+    debug_println("[BOOT] PIC initialized" as void*);
+
+    // IDTテーブルの配置先を確保
+    // メモリマップバッファ（ExitBootServices後は不要）の先頭4096バイトをIDTに転用
+    uint* idt_table = (*info).mmap.map_buffer as uint*;
+    idt_init(idt_table);
+    debug_println("[BOOT] IDT initialized" as void*);
+
+    // ISRスタブ登録（例外0-31）
+    isr_init(idt_table);
+    debug_println("[BOOT] ISR registered" as void*);
+
+    // IDTを再ロード（ISR登録後）
+    idt_load(idt_table);
+    serial_println("[Cosmos] IDT loaded with ISR stubs" as void*);
+    debug_println("[BOOT] IDT reloaded" as void*);
+
+    // フレームバッファテキストコンソール初期化
     ulong fb = (*info).fb.base_addr;
-    ulong stride = (*info).fb.stride as ulong;
+    ulong fb_w = (*info).fb.width as ulong;
+    ulong fb_h = (*info).fb.height as ulong;
+    ulong fb_stride = (*info).fb.stride as ulong;
+
     if (fb != 0) {
-        serial_println("[Cosmos] Writing to framebuffer..." as void*);
-        // 画面上部に白いラインを描画（動作確認用）
-        uint* fb_ptr = fb as uint*;
-        ulong x = 0;
-        while (x < stride) {
-            // BGRAフォーマット: 白 = 0xFFFFFFFF
-            *(fb_ptr + x) = 0xFFFFFFFF as uint;
-            x += 1;
-        }
-        serial_println("[Cosmos] Framebuffer test line drawn" as void*);
+        serial_println("[Cosmos] Initializing framebuffer console..." as void*);
+
+        // FBConsole構造体をスタック上に確保・初期化（Consoleインターフェース実装）
+        FBConsole console;
+        fb_init(&console, fb, fb_w, fb_h, fb_stride);
+
+        // 画面クリア（暗い背景色）
+        console.clear();
+        serial_println("[Cosmos] Framebuffer cleared" as void*);
+
+        // ブートメッセージをフレームバッファに表示
+        console.println("" as void*);
+        console.set_color(0x00FFFFFF);  // 白
+        console.println("  ========================================" as void*);
+        console.println("  Cosmos OS v0.2.0" as void*);
+        console.println("  ========================================" as void*);
+        console.println("" as void*);
+
+        console.set_color(0x0000FF00);  // 緑
+        console.println("  [OK] ExitBootServices" as void*);
+        console.println("  [OK] GDT initialized" as void*);
+        console.println("  [OK] PIC initialized (IRQ 32-47)" as void*);
+        console.println("  [OK] IDT initialized (256 entries)" as void*);
+        console.println("  [OK] ISR registered (exceptions 0-31)" as void*);
+        console.println("  [OK] Serial console (COM1 115200 8N1)" as void*);
+        console.println("  [OK] Framebuffer console" as void*);
+        console.println("" as void*);
+
+        console.set_color(0x00FFFFFF);  // 白
+        console.puts("  Framebuffer: " as void*);
+        serial_print_hex(fb_w);
+        console.puts("  Resolution: " as void*);
+        console.println("" as void*);
+        console.println("" as void*);
+
+        console.set_color(0x0000FFFF);  // シアン
+        console.println("  Cosmos OS v0.2.0 booted successfully!" as void*);
+        console.println("" as void*);
+
+        console.set_color(0x00808080);  // グレー
+        console.println("  Written in Cm - a systems programming language" as void*);
+
+        serial_println("[Cosmos] Boot messages displayed on framebuffer" as void*);
+    } else {
+        serial_println("[Cosmos] WARNING: No framebuffer available" as void*);
     }
 
     serial_println("[Cosmos] ==============================" as void*);
-    serial_println("[Cosmos] Cosmos OS v0.1.0 booted successfully!" as void*);
+    serial_println("[Cosmos] Cosmos OS v0.2.0 booted successfully!" as void*);
     serial_println("[Cosmos] ==============================" as void*);
 
     // HLTループ（カーネル待機）

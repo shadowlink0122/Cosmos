@@ -1,0 +1,140 @@
+//! platform: uefi
+// kernel::idt - IDT（割り込みディスクリプタテーブル）設定
+//
+// x86_64 Long Mode用のIDT。256エントリ、各16バイト。
+// CPU例外（ベクタ0-31）およびハードウェア割り込み（ベクタ32+）を処理。
+//
+// IDTエントリ構造（16バイト = uint * 4）:
+//   [0] uint: offset_low(16) | selector(16)
+//   [1] uint: ist(3) | reserved(5) | type_attr(8) | offset_mid(16)
+//   [2] uint: offset_high(32)
+//   [3] uint: reserved(32)
+//
+// Type/Attributes:
+//   0x8E = Interrupt Gate, DPL=0, Present
+//   0x8F = Trap Gate, DPL=0, Present
+
+import ./drivers/serial;
+import ./drivers/debug_port;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// IDTエントリ数
+const ulong IDT_ENTRIES = 256;
+
+// セレクタ: カーネルコードセグメント（GDT[1] = 0x08）
+const ulong IDT_CS = 0x08;
+
+// ゲートタイプ
+const ulong IDT_INTERRUPT_GATE = 0x8E;  // P=1, DPL=0, Interrupt Gate
+const ulong IDT_TRAP_GATE      = 0x8F;  // P=1, DPL=0, Trap Gate
+
+// ============================================================
+// IDTエントリ設定関数
+// ============================================================
+
+/// IDTテーブルの指定ベクタにゲートディスクリプタを設定する
+export void idt_set_gate(uint* idt_base, ulong vector, ulong handler, ulong type_attr) {
+    // 各エントリは4つのuint（16バイト）
+    ulong four = 4 as ulong;
+    ulong idx = vector * four;
+
+    // ビットマスク定数（リテラル型推論回避）
+    ulong mask_16 = 0xFFFF as ulong;
+    ulong sixteen = 16 as ulong;
+    ulong thirtytwo = 32 as ulong;
+    ulong eight = 8 as ulong;
+
+    // ハンドラアドレスの分割
+    ulong offset_low  = handler & mask_16;
+    ulong offset_mid  = (handler >> sixteen) & mask_16;
+    ulong offset_high = handler >> thirtytwo;
+
+    // selector = KERNEL_CS(0x08)
+    ulong selector = IDT_CS;
+
+    // [0] offset_low(16) | selector(16)
+    ulong entry0 = (selector << sixteen) | offset_low;
+
+    // [1] IST(0) | reserved(0) | type_attr(8) | offset_mid(16)
+    ulong entry1 = (offset_mid << sixteen) | (type_attr << eight);
+
+    // ポインタ演算でエントリの各uintにアクセス
+    ulong base_addr = idt_base as ulong;
+    ulong entry_size = 4 as ulong;  // sizeof(uint) = 4
+    ulong byte_offset = idx * entry_size;
+
+    // uint*へのオフセットアクセス
+    uint* p0 = (base_addr + byte_offset) as uint*;
+    ulong es = entry_size;
+    uint* p1 = (base_addr + byte_offset + es) as uint*;
+    uint* p2 = (base_addr + byte_offset + es + es) as uint*;
+    uint* p3 = (base_addr + byte_offset + es + es + es) as uint*;
+
+    *p0 = entry0 as uint;
+    *p1 = entry1 as uint;
+    *p2 = offset_high as uint;
+    *p3 = 0 as uint;
+}
+
+// ============================================================
+// IDTロード
+// ============================================================
+
+/// IDTRを構築し、lidt命令でIDTをCPUにロードする
+export void idt_load(uint* idt_base) {
+    ulong idt_addr = idt_base as ulong;
+    ulong idt_limit = 4095 as ulong;  // 256 * 16 - 1
+
+    __asm__(`
+        subq $$16, %rsp;
+        movq ${r:idt_limit}, %rax;
+        movw %ax, (%rsp);
+        movq ${r:idt_addr}, %rax;
+        movq %rax, 2(%rsp);
+        lidt (%rsp);
+        addq $$16, %rsp
+    `);
+}
+
+// ============================================================
+// デフォルトハンドラ
+// ============================================================
+
+/// 未登録ベクタのデフォルトハンドラ（iretqで即リターン）
+export void idt_default_handler() {
+    __asm__(`iretq`);
+}
+
+// ============================================================
+// IDT初期化（メインエントリ）
+// ============================================================
+
+/// IDTを初期化してCPUにロードする
+export void idt_init(uint* idt_table) {
+    debug_println("[BOOT] idt_init: start" as void*);
+
+    // デフォルトハンドラのアドレスを取得
+    void* handler_ptr = idt_default_handler as void*;
+    ulong default_addr = handler_ptr as ulong;
+
+    debug_println("[BOOT] idt_init: filling entries" as void*);
+
+    // 全256エントリをデフォルトハンドラで初期化
+    ulong i = 0;
+    ulong one = 1 as ulong;
+    while (i < IDT_ENTRIES) {
+        idt_set_gate(idt_table, i, default_addr, IDT_INTERRUPT_GATE);
+        i = i + one;
+    }
+
+    debug_println("[BOOT] idt_init: loading IDTR" as void*);
+
+    // IDTをCPUにロード
+    idt_load(idt_table);
+
+    serial_println("[Cosmos] IDT initialized (256 entries)" as void*);
+    debug_println("[BOOT] idt_init: done" as void*);
+}

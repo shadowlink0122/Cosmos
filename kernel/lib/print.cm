@@ -1,0 +1,273 @@
+//! platform: uefi
+// kernel::lib::print - フレームバッファテキスト描画（printk相当）
+//
+// ExitBootServices後のフレームバッファへの文字列描画を提供する。
+// 8x16ビットマップフォントを使用してピクセル単位で文字を描画。
+//
+// interface/implパターンでConsole抽象化を提供:
+//   console.clear();
+//   console.set_color(0x0000FF00);
+//   console.println("Hello" as void*);
+
+import ./font;
+import ../drivers/serial;
+
+// ============================================================
+// Console インターフェース（テキスト出力抽象化）
+// ============================================================
+
+/// テキストコンソールの共通インターフェース
+/// FBConsole以外の実装（シリアルコンソール等）も将来追加可能
+export interface Console {
+    void putc(ulong ch);
+    void puts(void* data);
+    void println(void* data);
+    void clear();
+    void set_color(ulong fg);
+    void newline();
+}
+
+// ============================================================
+// テキストカーソル管理用構造体
+// ============================================================
+
+/// フレームバッファテキストコンソール状態
+export struct FBConsole {
+    ulong fb_addr;     // フレームバッファの物理アドレス
+    ulong width;       // 水平解像度（ピクセル）
+    ulong height;      // 垂直解像度（ピクセル）
+    ulong stride;      // 1行あたりのピクセル数
+    ulong cursor_x;    // テキストカーソル列（文字単位）
+    ulong cursor_y;    // テキストカーソル行（文字単位）
+    ulong fg_color;    // 前景色（BGRA）
+    ulong bg_color;    // 背景色（BGRA）
+}
+
+// ============================================================
+// カラー定数
+// ============================================================
+
+const ulong FB_COLOR_WHITE = 0x00FFFFFF;
+const ulong FB_COLOR_BLACK = 0x00000000;
+const ulong FB_COLOR_GREEN = 0x0000FF00;
+const ulong FB_COLOR_DARK_BG = 0x00101020;
+
+// ============================================================
+// 初期化
+// ============================================================
+
+/// FBConsoleを初期化する
+export void fb_init(FBConsole* con, ulong fb_addr, ulong width, ulong height, ulong stride) {
+    (*con).fb_addr = fb_addr;
+    (*con).width = width;
+    (*con).height = height;
+    (*con).stride = stride;
+    (*con).cursor_x = 0;
+    (*con).cursor_y = 0;
+    (*con).fg_color = FB_COLOR_GREEN;   // デフォルト: 緑文字
+    (*con).bg_color = FB_COLOR_DARK_BG; // デフォルト: 暗い背景
+}
+
+// ============================================================
+// Console インターフェース実装
+// ============================================================
+
+impl FBConsole for Console {
+    /// 1文字を出力（テキストカーソル自動進行）
+    void putc(ulong ch) {
+        fb_putc(&self, ch);
+    }
+
+    /// NUL終端文字列を出力
+    void puts(void* data) {
+        fb_puts(&self, data);
+    }
+
+    /// 文字列を改行付きで出力
+    void println(void* data) {
+        fb_println(&self, data);
+    }
+
+    /// 画面を背景色でクリアする
+    void clear() {
+        fb_clear(&self);
+    }
+
+    /// 前景色を設定する
+    void set_color(ulong fg) {
+        self.fg_color = fg;
+    }
+
+    /// 改行処理
+    void newline() {
+        fb_newline(&self);
+    }
+}
+
+/// 前景色を設定する
+export void fb_set_color(FBConsole* con, ulong fg) {
+    (*con).fg_color = fg;
+}
+
+// ============================================================
+// 画面操作
+// ============================================================
+
+/// 画面を背景色でクリアする
+export void fb_clear(FBConsole* con) {
+    ulong fb = (*con).fb_addr;
+    ulong stride = (*con).stride;
+    ulong height = (*con).height;
+    ulong bg = (*con).bg_color;
+
+    if (fb == 0) { return; }
+
+    // 1行ずつ塗りつぶし
+    ulong y = 0;
+    while (y < height) {
+        ulong x = 0;
+        while (x < stride) {
+            ulong offset = (y * stride + x) * 4;
+            uint* pixel = (fb + offset) as uint*;
+            *pixel = bg as uint;
+            x += 1;
+        }
+        y += 1;
+    }
+
+    // カーソルをリセット
+    (*con).cursor_x = 0;
+    (*con).cursor_y = 0;
+}
+
+// ============================================================
+// 文字描画
+// ============================================================
+
+/// 指定位置に1文字を描画する（ピクセル座標で指定、内部用）
+export void draw_char(FBConsole* con, ulong px, ulong py, ulong ch) {
+    ulong fb = (*con).fb_addr;
+    ulong screen_w = (*con).width;
+    ulong screen_h = (*con).height;
+    ulong stride = (*con).stride;
+    ulong fg = (*con).fg_color;
+    ulong bg = (*con).bg_color;
+
+    if (fb == 0) { return; }
+
+    ulong row = 0;
+    while (row < FONT_HEIGHT) {
+        ulong bits = font_get_row(ch, row);
+        ulong col = 0;
+        while (col < FONT_WIDTH) {
+            ulong sx = px + col;
+            ulong sy = py + row;
+
+            // 画面外チェック
+            if (sx < screen_w) {
+                if (sy < screen_h) {
+                    ulong offset = (sy * stride + sx) * 4;
+                    uint* pixel = (fb + offset) as uint*;
+
+                    // ビットパターンのMSBが左端: bit7=col0, bit6=col1, ...
+                    ulong bit_pos = 7 - col;
+                    ulong one = 1 as ulong;
+                    ulong mask = one << bit_pos;
+                    if ((bits & mask) != 0) {
+                        *pixel = fg as uint;
+                    } else {
+                        *pixel = bg as uint;
+                    }
+                }
+            }
+            col += 1;
+        }
+        row += 1;
+    }
+}
+
+// ============================================================
+// テキスト出力
+// ============================================================
+
+/// テキストカーソルで管理される列数の最大値を計算
+export ulong max_cols(FBConsole* con) {
+    return (*con).width / FONT_WIDTH;
+}
+
+/// テキストカーソルで管理される行数の最大値を計算
+export ulong max_rows(FBConsole* con) {
+    return (*con).height / FONT_HEIGHT;
+}
+
+/// 改行処理
+export void fb_newline(FBConsole* con) {
+    (*con).cursor_x = 0;
+    ulong rows = max_rows(con);
+    ulong next_y = (*con).cursor_y + 1;
+    if (next_y >= rows) {
+        // 画面下端に達した場合、最下行にとどまる
+        // （スクロール機能は将来実装）
+        (*con).cursor_y = rows - 1;
+    } else {
+        (*con).cursor_y = next_y;
+    }
+}
+
+/// 1文字を出力（テキストカーソル自動進行）
+export void fb_putc(FBConsole* con, ulong ch) {
+    // 改行文字
+    if (ch == 10) {
+        fb_newline(con);
+        return;
+    }
+    // キャリッジリターン
+    if (ch == 13) {
+        (*con).cursor_x = 0;
+        return;
+    }
+
+    // テキスト座標 → ピクセル座標
+    ulong px = (*con).cursor_x * FONT_WIDTH;
+    ulong py = (*con).cursor_y * FONT_HEIGHT;
+
+    // 文字を描画
+    draw_char(con, px, py, ch);
+
+    // カーソル前進
+    ulong cols = max_cols(con);
+    ulong next_x = (*con).cursor_x + 1;
+    if (next_x >= cols) {
+        fb_newline(con);
+    } else {
+        (*con).cursor_x = next_x;
+    }
+}
+
+/// NUL終端文字列を出力
+export void fb_puts(FBConsole* con, void* data) {
+    ulong data_val = data as ulong;
+    ulong i = 0;
+
+    while (true) {
+        ulong byte_val = 0;
+        ulong addr = data_val + i;
+        __asm__(`
+            movq ${r:addr}, %r10;
+            xorq %rax, %rax;
+            movzbl (%r10), %eax;
+            movq %rax, ${=r:byte_val}
+        `);
+        if (byte_val == 0) {
+            break;
+        }
+        fb_putc(con, byte_val);
+        i += 1;
+    }
+}
+
+/// 文字列を改行付きで出力
+export void fb_println(FBConsole* con, void* data) {
+    fb_puts(con, data);
+    fb_newline(con);
+}

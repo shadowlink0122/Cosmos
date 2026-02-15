@@ -18,9 +18,9 @@ UEFIベースプログラム（`kernel/boot/`）を土台に、UEFI Boot Service
 
 | タスク | 詳細 | 状態 |
 |-------|------|------|
-| BootInfo構造体定義 | メモリマップ、フレームバッファ情報、ACPIポインタ等をまとめる構造体 | ❌ |
-| メモリマップ保存 | GetMemoryMap → BootInfo に格納 | ❌ |
-| GOP情報保存 | FBアドレス、解像度、ストライドを BootInfo に格納 | ❌ |
+| BootInfo構造体定義 | メモリマップ、フレームバッファ情報、ACPIポインタ等をまとめる構造体 | ✅ |
+| メモリマップ保存 | GetMemoryMap → BootInfo に格納 | ✅ |
+| GOP情報保存 | FBアドレス、解像度、ストライドを BootInfo に格納 | ✅ |
 
 **新規ファイル:**
 - `kernel/boot/boot_info.cm` — BootInfo構造体定義
@@ -31,9 +31,9 @@ UEFIベースプログラム（`kernel/boot/`）を土台に、UEFI Boot Service
 
 | タスク | 詳細 | 状態 |
 |-------|------|------|
-| ExitBootServices呼び出し | Boot Services関数テーブルから呼び出し | ❌ |
-| メモリマップキー管理 | ExitBootServices に渡す MapKey の取得と整合性 | ❌ |
-| リトライ処理 | MapKeyが古い場合の再取得ループ | ❌ |
+| ExitBootServices呼び出し | Boot Services関数テーブルから呼び出し | ✅ |
+| メモリマップキー管理 | ExitBootServices に渡す MapKey の取得と整合性 | ✅ |
+| リトライ処理 | MapKeyが古い場合の再取得ループ | ✅ |
 
 > [!CAUTION]
 > `ExitBootServices()` 後は ConOut, AllocatePool, GetMemoryMap 等の Boot Services が**一切使用不可**になる。
@@ -44,9 +44,9 @@ UEFIベースプログラム（`kernel/boot/`）を土台に、UEFI Boot Service
 
 | タスク | 詳細 | 状態 |
 |-------|------|------|
-| GDTテーブル定義 | Nullセグメント + カーネルCS/DS | ❌ |
-| GDTR構造体 | ベースアドレス + リミット | ❌ |
-| `lgdt` + セグメント再ロード | ASMによるGDT適用 | ❌ |
+| GDTテーブル定義 | Nullセグメント + カーネルCS/DS | ✅ |
+| GDTR構造体 | ベースアドレス + リミット | ✅ |
+| `lgdt` + セグメント再ロード | ASMによるGDT適用 | ✅ |
 
 **新規ファイル:**
 - `kernel/boot/gdt.cm` — GDT定義＋ロード
@@ -57,9 +57,9 @@ UEFIベースプログラム（`kernel/boot/`）を土台に、UEFI Boot Service
 
 | タスク | 詳細 | 状態 |
 |-------|------|------|
-| UART 0x3F8 初期化 | ボーレート設定、FIFO有効化 | ❌ |
-| 文字出力 | 1バイト出力関数 | ❌ |
-| 文字列出力 | シリアル版 println 相当 | ❌ |
+| UART 0x3F8 初期化 | ボーレート設定、FIFO有効化 | ✅ |
+| 文字出力 | 1バイト出力関数 | ✅ |
+| 文字列出力 | シリアル版 println 相当 | ✅ |
 
 **新規ファイル:**
 - `kernel/drivers/serial.cm` — UART ドライバ
@@ -70,9 +70,9 @@ UEFIベースプログラム（`kernel/boot/`）を土台に、UEFI Boot Service
 
 | タスク | 詳細 | 状態 |
 |-------|------|------|
-| FB直接描画 | BootInfoから取得したFBアドレスに直接ピクセル書込み | ❌ |
-| カーネルprintk相当 | フォントレンダリング + FB出力 | ❌ |
-| 起動メッセージ表示 | 「Cosmos OS v0.1.0 booted successfully」の表示 | ❌ |
+| FB直接描画 | BootInfoから取得したFBアドレスに直接ピクセル書込み | ✅ |
+| カーネルprintk相当 | フォントレンダリング + FB出力 | ✅ |
+| 起動メッセージ表示 | 「Cosmos OS v0.1.0 booted successfully」の表示 | ✅ |
 
 **既存活用:**
 - `kernel/boot/util/graphics.cm` の描画プリミティブを再利用
@@ -111,13 +111,13 @@ kernel/
 
 ## 完了条件
 
-- [ ] BootInfo構造体にメモリマップ・GOP情報を格納できる
-- [ ] ExitBootServicesが正常に完了する
-- [ ] GDTが設定され、セグメントレジスタが再ロードされる
-- [ ] シリアルコンソール（UART 0x3F8）でデバッグ出力が確認できる
-- [ ] ExitBootServices後にフレームバッファに文字列を表示できる
-- [ ] QEMUの `-serial mon:stdio` で起動メッセージが出力される
-- [ ] README.md が整備されている
+- [x] BootInfo構造体にメモリマップ・GOP情報を格納できる
+- [x] ExitBootServicesが正常に完了する
+- [x] GDTが設定され、セグメントレジスタが再ロードされる
+- [x] シリアルコンソール（UART 0x3F8）でデバッグ出力が確認できる
+- [x] ExitBootServices後にフレームバッファに文字列を表示できる
+- [x] QEMUの `-serial mon:stdio` で起動メッセージが出力される
+- [x] README.md が整備されている
 
 ---
 

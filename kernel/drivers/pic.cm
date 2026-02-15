@@ -1,0 +1,141 @@
+//! platform: uefi
+// kernel::drivers::pic - PIC 8259A 初期化・制御
+//
+// カスケード接続された2つの8259A PICを初期化し、
+// IRQ 0-7 をベクタ 32-39 に、IRQ 8-15 をベクタ 40-47 にリマップする。
+//
+// 初期段階では全IRQをマスク（無効化）する。
+// 将来、タイマーやキーボード割り込みを有効化する際にマスクを解除。
+
+import ./serial;
+
+// ============================================================
+// PICポートアドレス
+// ============================================================
+
+const ulong PIC1_CMD  = 0x20;   // マスターPICコマンドポート
+const ulong PIC1_DATA = 0x21;   // マスターPICデータポート
+const ulong PIC2_CMD  = 0xA0;   // スレーブPICコマンドポート
+const ulong PIC2_DATA = 0xA1;   // スレーブPICデータポート
+
+// ICW（初期化コマンドワード）定数
+const ulong ICW1_INIT = 0x11;   // ICW1: 初期化開始 + ICW4が必要
+const ulong ICW4_8086 = 0x01;   // ICW4: 8086/88モード
+
+// IRQベースベクタ
+const ulong PIC1_OFFSET = 32;   // マスター: IRQ 0-7 → ベクタ 32-39
+const ulong PIC2_OFFSET = 40;   // スレーブ: IRQ 8-15 → ベクタ 40-47
+
+// EOIコマンド
+const ulong PIC_EOI = 0x20;     // End Of Interrupt
+
+// ============================================================
+// I/Oポート操作（serial.cmのoutb/inbを再利用）
+// ============================================================
+
+/// 指定I/Oポートに1バイト書き込み
+export void pic_outb(ulong port, ulong value) {
+    __asm__(`
+        movq ${r:port}, %rdx;
+        movq ${r:value}, %rax;
+        outb %al, %dx
+    `);
+}
+
+/// I/Oポートからの応答待ち（短いディレイ）
+export void io_wait() {
+    // ポート0x80への書き込みでI/Oサイクル分のディレイを生成
+    __asm__(`
+        xorq %rax, %rax;
+        outb %al, $$0x80
+    `);
+}
+
+// ============================================================
+// PIC初期化
+// ============================================================
+
+/// PIC 8259Aを初期化し、IRQをベクタ32-47にリマップする
+///
+/// 初期化シーケンス:
+///   1. ICW1: 初期化開始（ICW4が必要であることを通知）
+///   2. ICW2: ベクタオフセット設定
+///   3. ICW3: カスケード接続設定
+///   4. ICW4: 動作モード設定（8086モード）
+///   5. 全IRQをマスク
+export void pic_init() {
+    // ICW1: 初期化開始
+    pic_outb(PIC1_CMD, ICW1_INIT);
+    io_wait();
+    pic_outb(PIC2_CMD, ICW1_INIT);
+    io_wait();
+
+    // ICW2: ベクタオフセット
+    pic_outb(PIC1_DATA, PIC1_OFFSET);  // マスター: IRQ0 → ベクタ32
+    io_wait();
+    pic_outb(PIC2_DATA, PIC2_OFFSET);  // スレーブ: IRQ8 → ベクタ40
+    io_wait();
+
+    // ICW3: カスケード接続
+    pic_outb(PIC1_DATA, 4);   // マスター: IRQ2にスレーブ接続（ビット2）
+    io_wait();
+    pic_outb(PIC2_DATA, 2);   // スレーブ: カスケードID = 2
+    io_wait();
+
+    // ICW4: 8086モード
+    pic_outb(PIC1_DATA, ICW4_8086);
+    io_wait();
+    pic_outb(PIC2_DATA, ICW4_8086);
+    io_wait();
+
+    // 全IRQをマスク（無効化）
+    pic_outb(PIC1_DATA, 0xFF);
+    pic_outb(PIC2_DATA, 0xFF);
+
+    serial_println("[Cosmos] PIC initialized (IRQ remapped to vectors 32-47)" as void*);
+}
+
+/// 指定IRQ番号をアンマスク（有効化）する
+///
+/// irq: IRQ番号（0-15）
+export void pic_unmask(ulong irq) {
+    ulong port = PIC1_DATA;
+    ulong irq_line = irq;
+    if (irq >= 8) {
+        port = PIC2_DATA;
+        irq_line = irq - 8;
+    }
+
+    // 現在のマスクを読み取り
+    ulong mask = 0;
+    __asm__(`
+        movq ${r:port}, %rdx;
+        xorq %rax, %rax;
+        inb %dx, %al;
+        movq %rax, ${=r:mask}
+    `);
+
+    // 対象ビットをクリア
+    ulong one = 1 as ulong;
+    ulong bit = one << irq_line;
+    ulong inv = bit ^ 0xFF;
+    mask = mask & inv;
+
+    pic_outb(port, mask);
+}
+
+/// 全IRQをマスク（無効化）する
+export void pic_mask_all() {
+    pic_outb(PIC1_DATA, 0xFF);
+    pic_outb(PIC2_DATA, 0xFF);
+}
+
+/// EOI（End Of Interrupt）を送信する
+///
+/// irq: IRQ番号（0-15）
+export void pic_eoi(ulong irq) {
+    if (irq >= 8) {
+        pic_outb(PIC2_CMD, PIC_EOI);
+    }
+    pic_outb(PIC1_CMD, PIC_EOI);
+}

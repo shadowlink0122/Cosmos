@@ -30,7 +30,7 @@ TEST_SERIAL_SRC = $(TEST_DIR)/test_serial.cm
 TEST_SERIAL_OBJ = .tmp/build/test_serial.o
 TEST_SERIAL_EFI = .tmp/build/TEST_SERIAL.EFI
 TEST_LOG = .tmp/serial.log
-QEMU_TIMEOUT ?= 10
+QEMU_TIMEOUT ?= 15
 TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || echo "")
 
 .PHONY: all compile link run clean setup-esp download-ovmf test test-serial
@@ -155,6 +155,26 @@ test: setup-esp download-ovmf
 			echo "✓ PASS: カーネル起動"; PASS=$$((PASS+1)); \
 		else \
 			echo "✗ FAIL: カーネル起動"; FAIL=$$((FAIL+1)); \
+		fi; \
+		if grep -q "\[BOOT\] gdt_init: done" $(DEBUG_LOG); then \
+			echo "✓ PASS: GDT初期化"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: GDT初期化"; FAIL=$$((FAIL+1)); \
+		fi; \
+		if grep -q "\[BOOT\] PIC initialized" $(DEBUG_LOG); then \
+			echo "✓ PASS: PIC初期化"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: PIC初期化"; FAIL=$$((FAIL+1)); \
+		fi; \
+		if grep -q "\[BOOT\] IDT initialized" $(DEBUG_LOG); then \
+			echo "✓ PASS: IDT初期化"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: IDT初期化"; FAIL=$$((FAIL+1)); \
+		fi; \
+		if grep -q "\[BOOT\] ISR registered" $(DEBUG_LOG); then \
+			echo "✓ PASS: ISR登録"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: ISR登録"; FAIL=$$((FAIL+1)); \
 		fi; \
 		echo ""; \
 		echo "結果: $$PASS passed, $$FAIL failed"; \
