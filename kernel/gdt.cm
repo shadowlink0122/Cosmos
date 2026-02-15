@@ -12,7 +12,7 @@
 // 注意: x86_64 Long Modeでは、ベース/リミットはほとんど無視される。
 //       Code Segmentの L(Long) ビットとDB=0 が重要。
 
-import ../drivers/serial;
+import ./drivers/serial;
 
 // ============================================================
 // GDTエントリ定数（8バイト = ulong 1個）

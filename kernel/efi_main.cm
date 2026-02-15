@@ -18,7 +18,7 @@ import ./util/convert;
 import ./util/graphics;
 import ./boot_info;
 import ./gdt;
-import ../drivers/serial;
+import ./drivers/serial;
 
 // ============================================================
 // ExitBootServices

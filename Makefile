@@ -17,7 +17,7 @@ OVMF_FW ?= $(OVMF_DIR)/OVMF.fd
 OVMF_URL ?= https://retrage.github.io/edk2-nightly/bin/RELEASEX64_OVMF.fd
 
 # カーネルソース
-KERNEL_DIR = kernel/boot
+KERNEL_DIR = kernel
 KERNEL_SRC = $(KERNEL_DIR)/efi_main.cm
 KERNEL_OBJ = .tmp/build/kernel.o
 EFI = .tmp/build/BOOTX64.EFI
