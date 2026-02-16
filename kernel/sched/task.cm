@@ -4,7 +4,8 @@
 // カーネルタスクの状態を管理する構造体と操作関数。
 // TCBは固定アドレス0x1000に配列として配置（最大8タスク）。
 //
-// Cmのselfコピー問題を回避するため、全操作はフリー関数+ポインタ経由。
+// Cmのselfコピー問題はv0.14.1で修正済みだが、
+// 固定アドレスTCB設計に適したフリー関数+ポインタ方式を維持。
 
 import ../drivers/serial;
 import ../drivers/debug_port;
@@ -85,7 +86,7 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
     // PMMからスタック割当（4ページ = 16KB）
     // FBConsole呼出しチェーン(fb_puts→draw_char→font_get_row→font_data)の
     // 深い呼出し深度に対応するため、1ページでは不足
-    ulong stack_pages = 4 as ulong;
+    ulong stack_pages = 4;
     ulong stack_base = pmm->alloc_pages(stack_pages);
     if (stack_base == 0) {
         debug.println("[TASK] ERROR: cannot alloc stack" as void*);
@@ -115,7 +116,7 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
     //   [stack_top - 48] = 0 (r13)
     //   [stack_top - 56] = 0 (r14)
     //   [stack_top - 64] = 0 (r15)
-    ulong zero = 0 as ulong;
+    ulong zero = 0;
 
     // アラインメントパッド（疑似return address）
     ulong addr_pad = stack_top - 8;
@@ -178,7 +179,7 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
 /// idleタスクはスタック割当不要（現在のカーネルスタックを使用）
 export void task_create_idle() {
     DebugPort debug(0xE9);
-    ulong zero = 0 as ulong;
+    ulong zero = 0;
 
     tcb_write(zero, TCB_OFF_ID, zero);
     tcb_write(zero, TCB_OFF_STATE, TASK_RUNNING);

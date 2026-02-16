@@ -64,7 +64,7 @@ export ulong shell_streq(ulong buf_addr, ulong buf_len, void* target) {
         return 0;
     }
 
-    ulong i = 0 as ulong;
+    ulong i = 0;
     while (i < buf_len) {
         ulong ch_buf = 0;
         ulong buf_byte_addr = buf_addr + i;
@@ -121,7 +121,7 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
     debug.print_hex(buf_len);
     debug.println("" as void*);
 
-    ulong matched = 0 as ulong;
+    ulong matched = 0;
 
     if (shell_streq(buf_addr, buf_len, "help" as void*) != 0) {
         cmd_help();
@@ -176,12 +176,12 @@ export void shell_process_input() {
     }
 
     // Enter (0x0A)
-    ulong enter = 0x0A as ulong;
+    ulong enter = 0x0A;
     if (ch == enter) {
         serial.println("" as void*);
         fb_newline(con);
         shell_exec(SHELL_BUF_ADDR, pos);
-        ulong zero = 0 as ulong;
+        ulong zero = 0;
         *pos_ptr = zero;
         // プロンプト再表示
         serial.puts("cosmos> " as void*);
@@ -192,7 +192,7 @@ export void shell_process_input() {
     }
 
     // Backspace (0x08)
-    ulong backspace = 0x08 as ulong;
+    ulong backspace = 0x08;
     if (ch == backspace) {
         if (pos > 0) {
             pos = pos - 1;
@@ -228,12 +228,12 @@ export void shell_init() {
     FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
 
     // バッファをクリア
-    ulong zero = 0 as ulong;
+    ulong zero = 0;
     ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
     *pos_ptr = zero;
 
-    ulong i = 0 as ulong;
-    ulong buf_qwords = 16 as ulong;
+    ulong i = 0;
+    ulong buf_qwords = 16;
     while (i < buf_qwords) {
         ulong addr = SHELL_BUF_ADDR + (i * 8);
         ulong* ptr = addr as ulong*;

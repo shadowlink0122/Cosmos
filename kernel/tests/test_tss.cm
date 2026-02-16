@@ -22,16 +22,10 @@ export void test_tss(TestRunner* runner) {
     assert_nonzero(runner, rsp0, "TSS RSP0 is nonzero" as void*);
 
     // テスト2: IOPBオフセットがTSSサイズに設定されている
-    // ASMでバイト読取り（ushort*デリファレンス非対応回避）
-    ulong iopb_read = 0;
-    ulong iopb_addr = TSS_BASE_ADDR + TSS_OFF_IOPB;
-    __asm__(`
-        movq ${r:iopb_addr}, %rdi;
-        xorq %rax, %rax;
-        movb (%rdi), %al;
-        movb 1(%rdi), %ah;
-        movq %rax, ${=r:iopb_read}
-    `);
+    // 注: ushort*デリファレンスはJITでは動作するがUEFIターゲットでは非対応
+    // ulong*で読み取り、下位16bitをマスクして取得
+    ulong* iopb_qword = (TSS_BASE_ADDR + TSS_OFF_IOPB) as ulong*;
+    ulong iopb_read = *iopb_qword & 0xFFFF;
     ulong expected_iopb = TSS_SIZE;
     assert_eq(runner, iopb_read, expected_iopb, "TSS IOPB offset equals TSS_SIZE" as void*);
 
@@ -40,24 +34,20 @@ export void test_tss(TestRunner* runner) {
     ulong* gdt_slot3 = (0x800 + 24) as ulong*;  // GDT base + 3*8
     ulong gdt_val = *gdt_slot3;
     // type+P bitを抽出: byte 5 (bits 40-47) should be 0x89
-    ulong shift40 = 40 as ulong;
-    ulong ff_mask = 0xFF as ulong;
-    ulong type_byte = (gdt_val >> shift40) & ff_mask;
+    ulong type_byte = (gdt_val >> 40) & 0xFF;
     // ltr実行後はbusy bit (0x8B)になっている可能性がある
-    ulong is_valid = 0 as ulong;
-    ulong type_available = 0x89 as ulong;
-    ulong type_busy = 0x8B as ulong;
-    if (type_byte == type_available) {
-        is_valid = 1 as ulong;
+    ulong is_valid = 0;
+    if (type_byte == 0x89) {
+        is_valid = 1;
     }
-    if (type_byte == type_busy) {
-        is_valid = 1 as ulong;
+    if (type_byte == 0x8B) {
+        is_valid = 1;
     }
     assert_true(runner, is_valid, "TSS GDT descriptor type is valid (0x89 or 0x8B)" as void*);
 
     // テスト4: RSP0の更新が正しく反映される
     ulong original_rsp0 = rsp0;
-    ulong test_rsp0 = 0xDEADBEEF as ulong;
+    ulong test_rsp0 = 0xDEADBEEF;
     tss_set_rsp0(test_rsp0);
     ulong new_rsp0 = *rsp0_ptr;
     assert_eq(runner, new_rsp0, test_rsp0, "TSS RSP0 update works" as void*);

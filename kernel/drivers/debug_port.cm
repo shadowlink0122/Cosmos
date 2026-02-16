@@ -68,7 +68,7 @@ impl DebugPort {
         outb(self.port, 48);   // '0'
         outb(self.port, 120);  // 'x'
 
-        ulong mask = 15 as ulong;
+        ulong mask = 15;
         ulong char_0 = 48;
         ulong char_A = 65;
         ulong max_digits = 16;

@@ -77,7 +77,7 @@ export void irq0_handler() {
 export ulong pit_check_resched() {
     ulong* ptr = PIT_RESCHED_ADDR as ulong*;
     ulong val = *ptr;
-    ulong zero = 0 as ulong;
+    ulong zero = 0;
     *ptr = zero;
     return val;
 }
@@ -108,7 +108,7 @@ impl PIT {
 
         // tickカウンタを0に初期化
         ulong* tick_ptr = PIT_TICK_ADDR as ulong*;
-        ulong zero = 0 as ulong;
+        ulong zero = 0;
         *tick_ptr = zero;
 
         // リスケジュールフラグを0に初期化
@@ -116,34 +116,32 @@ impl PIT {
         *resched_ptr = zero;
 
         // PITコマンド送信: Channel 0, Access LSB/MSB, Mode 2 (Rate Generator)
-        ulong cmd_port = 0x43 as ulong;
-        ulong cmd_val = 0x34 as ulong;
+        ulong cmd_port = 0x43;
+        ulong cmd_val = 0x34;
         outb(cmd_port, cmd_val);
         io_wait();
 
-        // 除数を送信: LSBから
-        ulong ch0_port = 0x40 as ulong;
-        ulong ff_mask = 0xFF as ulong;
-        ulong divisor = 11932 as ulong;
-        ulong shift8 = 8 as ulong;
-        ulong divisor_low = divisor & ff_mask;
-        ulong divisor_high = (divisor >> shift8) & ff_mask;
-        outb(ch0_port, divisor_low);
+        // 100Hz (1193182 / 100 = 11932)
+        ulong ch0_port = 0x40;
+        ulong divisor = 11932;
+        ulong low_byte = divisor & 0xFF;
+        ulong high_byte = (divisor >> 8) & 0xFF;
+        outb(ch0_port, low_byte);
         io_wait();
-        outb(ch0_port, divisor_high);
+        outb(ch0_port, high_byte);
         io_wait();
 
         // IDTにベクタ32（IRQ0）のハンドラを登録
         IDT idt;
         idt.table = idt_table;
-        ulong vec32 = 32 as ulong;
+        ulong vec32 = 32;
         idt.set_gate(vec32, fn_addr(irq0_handler as void*), IDT_INTERRUPT_GATE);
 
         // IDTを再ロード
         idt.load();
 
         // PICのIRQ0をアンマスク（有効化）
-        ulong irq0 = 0 as ulong;
+        ulong irq0 = 0;
         pic->unmask(irq0);
 
         self.frequency = 100;

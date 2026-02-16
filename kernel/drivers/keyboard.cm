@@ -207,7 +207,7 @@ export ulong kb_read_scancode() {
     `);
 
     // read_idx = (read_idx + 1) % 64
-    ulong ring_mask = 63 as ulong;
+    ulong ring_mask = 63;
     ulong new_read = (read_idx + 1) & ring_mask;
     *read_ptr = new_read;
 
@@ -252,7 +252,7 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
     SerialPort serial(0x3F8);
 
     // バッファを初期化
-    ulong zero = 0 as ulong;
+    ulong zero = 0;
     ulong* write_ptr = KB_WRITE_IDX as ulong*;
     *write_ptr = zero;
     ulong* read_ptr = KB_READ_IDX as ulong*;
@@ -263,8 +263,8 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
     *last_ptr = zero;
 
     // バッファ領域をゼロクリア（64バイト / 8 = 8 qwords）
-    ulong i = 0 as ulong;
-    ulong buf_qwords = 8 as ulong;
+    ulong i = 0;
+    ulong buf_qwords = 8;
     while (i < buf_qwords) {
         ulong addr = KB_BUF_ADDR + (i * 8);
         ulong* ptr = addr as ulong*;
@@ -275,14 +275,14 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
     // IDTにベクタ33（IRQ1）のハンドラを登録
     IDT idt;
     idt.table = idt_table;
-    ulong vec33 = 33 as ulong;
+    ulong vec33 = 33;
     idt.set_gate(vec33, fn_addr(irq1_handler as void*), IDT_INTERRUPT_GATE);
 
     // IDTを再ロード
     idt.load();
 
     // PICのIRQ1をアンマスク（有効化）
-    ulong irq1 = 1 as ulong;
+    ulong irq1 = 1;
     pic->unmask(irq1);
 
     debug.println("[KBD] PS/2 keyboard initialized" as void*);

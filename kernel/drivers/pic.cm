@@ -106,9 +106,9 @@ impl PIC8259A {
         ulong mask = inb(port);
 
         // 対象ビットをクリア
-        ulong one = 1 as ulong;
+        ulong one = 1;
         ulong bit = one << irq_line;
-        ulong ff = 0xFF as ulong;
+        ulong ff = 0xFF;
         ulong inv = bit ^ ff;
         mask = mask & inv;
 

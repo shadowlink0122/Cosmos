@@ -110,7 +110,7 @@ impl SerialPort {
     /// 送信バッファが空になるまで待機
     void wait_ready() {
         ulong lsr_port = self.port + 5;  // LSR
-        ulong thre_mask = 0x20 as ulong;
+        ulong thre_mask = 0x20;
         ulong status = inb(lsr_port);
         ulong thre = status & thre_mask;
         while (thre == 0) {
@@ -163,7 +163,7 @@ impl SerialPort {
         self.putc(48);   // '0'
         self.putc(120);  // 'x'
 
-        ulong mask = 15 as ulong;
+        ulong mask = 15;
         ulong char_0 = 48;  // '0'
         ulong char_A = 65;  // 'A'
         ulong max_digits = 16;

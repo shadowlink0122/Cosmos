@@ -89,7 +89,7 @@ export void sched_init(PMM* pmm) {
     DebugPort debug(0xE9);
 
     // スケジューラ状態を初期化
-    ulong zero = 0 as ulong;
+    ulong zero = 0;
     sched_set_current(zero);
     sched_set_count(1);       // idleタスク1つ
     sched_set_enabled(zero);  // まだ無効
@@ -114,7 +114,7 @@ export ulong sched_spawn(ulong entry_fn) {
     ulong count = sched_task_count();
     if (count >= MAX_TASKS) {
         debug.println("[SCHED] ERROR: max tasks reached" as void*);
-        ulong err = 0xFFFFFFFF as ulong;
+        ulong err = 0xFFFFFFFF;
         return err;
     }
 
@@ -124,12 +124,12 @@ export ulong sched_spawn(ulong entry_fn) {
     // タスクを生成
     ulong result = task_create(count, entry_fn, pmm);
     if (result == 0) {
-        ulong err = 0xFFFFFFFF as ulong;
+        ulong err = 0xFFFFFFFF;
         return err;
     }
 
     // 循環リストを構築: 新タスクのnext = 0（idleに戻る）
-    ulong zero = 0 as ulong;
+    ulong zero = 0;
     tcb_write(count, TCB_OFF_NEXT, zero);
 
     // 前のタスクのnextを新タスクに設定（循環リスト）
@@ -150,7 +150,7 @@ export ulong sched_spawn(ulong entry_fn) {
 /// スケジューラを有効化する
 export void sched_enable() {
     DebugPort debug(0xE9);
-    ulong one = 1 as ulong;
+    ulong one = 1;
     sched_set_enabled(one);
     debug.println("[SCHED] scheduler enabled" as void*);
 }
@@ -178,7 +178,7 @@ export void sched_timer_tick() {
 export ulong find_next_ready(ulong current_id) {
     ulong count = sched_task_count();
     ulong next_id = tcb_read(current_id, TCB_OFF_NEXT);
-    ulong checked = 0 as ulong;
+    ulong checked = 0;
 
     // 循環リストを最大count回巡回して探す
     while (checked < count) {
@@ -212,8 +212,7 @@ export void schedule() {
 
     ulong count = sched_task_count();
     // タスクが1つ以下なら切替不要
-    ulong one = 1 as ulong;
-    if (count <= one) {
+    if (count <= 1) {
         return;
     }
 

@@ -21,6 +21,10 @@
 | 8 | インライン展開ASMレジスタ | — | 回避策で対応 |
 | 9 | インライン展開ret | — | 回避策で対応 |
 
+> [!WARNING]
+> `ushort*`デリファレンスはJITでは動作するがUEFIターゲットでは
+> `Cannot dereference non-pointer`エラー。`ulong*`読取り+ビットマスクで代用。
+
 ---
 
 ## 1. `__asm__` 出力変数の while 条件不具合（重大）

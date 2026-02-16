@@ -25,7 +25,7 @@ export void cmd_ps() {
     fb_println(con, "  --  ----------  ---------" as void*);
 
     ulong count = sched_task_count();
-    ulong i = 0 as ulong;
+    ulong i = 0;
     while (i < count) {
         serial.puts("  " as void*);
         serial.print_hex(i);
