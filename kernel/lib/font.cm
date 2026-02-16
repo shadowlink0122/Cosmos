@@ -19,33 +19,53 @@ const ulong FONT_FIRST_CHAR = 0x20;
 const ulong FONT_LAST_CHAR = 0x7E;
 
 // ============================================================
-// フォントデータ取得
+// Font 構造体
 // ============================================================
 
-/// 指定した文字の指定した行のビットパターンを返す
+/// 8x16ビットマップフォント
+export struct Font {
+    ulong first_char;   // 最初の文字コード（0x20）
+    ulong last_char;    // 最後の文字コード（0x7E）
+}
+
+// ============================================================
+// Font メソッド実装
+// ============================================================
+
+impl Font {
+    /// 指定した文字の指定した行のビットパターンを返す
+    ulong get_row(ulong ch, ulong row) {
+        if (ch < self.first_char) { return 0; }
+        if (ch > self.last_char) { return 0; }
+        if (row >= FONT_HEIGHT) { return 0; }
+
+        ulong char_index = ch - self.first_char;
+        ulong data_index = char_index * 2;
+
+        ulong packed = 0;
+        if (row < 8) {
+            packed = font_data(data_index);
+        } else {
+            packed = font_data(data_index + 1);
+        }
+
+        ulong sub_row = row;
+        if (row >= 8) {
+            sub_row = row - 8;
+        }
+        ulong shift = (7 - sub_row) * 8;
+        ulong mask_ff = 0xFF as ulong;
+        ulong byte_val = (packed >> shift) & mask_ff;
+        return byte_val;
+    }
+}
+
+/// font_get_row互換ラッパー（他モジュールから呼び出し用）
 export ulong font_get_row(ulong ch, ulong row) {
-    if (ch < FONT_FIRST_CHAR) { return 0; }
-    if (ch > FONT_LAST_CHAR) { return 0; }
-    if (row >= FONT_HEIGHT) { return 0; }
-
-    ulong char_index = ch - FONT_FIRST_CHAR;
-    ulong data_index = char_index * 2;
-
-    ulong packed = 0;
-    if (row < 8) {
-        packed = font_data(data_index);
-    } else {
-        packed = font_data(data_index + 1);
-    }
-
-    ulong sub_row = row;
-    if (row >= 8) {
-        sub_row = row - 8;
-    }
-    ulong shift = (7 - sub_row) * 8;
-    ulong mask_ff = 0xFF as ulong;
-    ulong byte_val = (packed >> shift) & mask_ff;
-    return byte_val;
+    Font f;
+    f.first_char = FONT_FIRST_CHAR;
+    f.last_char = FONT_LAST_CHAR;
+    return f.get_row(ch, row);
 }
 
 // ============================================================

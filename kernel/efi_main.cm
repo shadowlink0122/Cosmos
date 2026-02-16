@@ -81,12 +81,12 @@ void collect_fb_info(void* system_table, BootInfo* info) {
         return;
     }
 
-    (*info).fb.base_addr = fb_base;
-    (*info).fb.width = width as uint;
-    (*info).fb.height = height as uint;
-    (*info).fb.stride = stride as uint;
-    (*info).fb.pixel_format = 0;  // BGRA（デフォルト）
-    (*info).fb.size = height * stride * 4;
+    info->fb.base_addr = fb_base;
+    info->fb.width = width as uint;
+    info->fb.height = height as uint;
+    info->fb.stride = stride as uint;
+    info->fb.pixel_format = 0;  // BGRA（デフォルト）
+    info->fb.size = height * stride * 4;
 
     serial.println("[Cosmos] Framebuffer info collected" as void*);
     serial.puts("[Cosmos]   Resolution: " as void*);
@@ -129,12 +129,12 @@ ulong collect_memory_map(void* system_table, BootInfo* info) {
         return status;
     }
 
-    (*info).mmap.map_buffer = map_buffer;
-    (*info).mmap.map_size = actual_map_size;
-    (*info).mmap.map_key = map_key;
-    (*info).mmap.desc_size = desc_size;
-    (*info).mmap.desc_version = desc_ver as uint;
-    (*info).mmap.entry_count = (actual_map_size / desc_size) as uint;
+    info->mmap.map_buffer = map_buffer;
+    info->mmap.map_size = actual_map_size;
+    info->mmap.map_key = map_key;
+    info->mmap.desc_size = desc_size;
+    info->mmap.desc_version = desc_ver as uint;
+    info->mmap.entry_count = (actual_map_size / desc_size) as uint;
 
     debug.println("[BOOT] collect_memory_map: OK" as void*);
     return 0;
@@ -170,7 +170,7 @@ void kernel_main(BootInfo* info) {
     debug.println("[BOOT] PIC initialized" as void*);
 
     // IDT初期化（256エントリ + lidt）
-    uint* idt_table = (*info).mmap.map_buffer as uint*;
+    uint* idt_table = info->mmap.map_buffer as uint*;
     IDT idt;
     idt.table = idt_table;
     idt.init();
@@ -190,10 +190,10 @@ void kernel_main(BootInfo* info) {
     debug.println("[BOOT] IDT reloaded" as void*);
 
     // フレームバッファテキストコンソール初期化
-    ulong fb = (*info).fb.base_addr;
-    ulong fb_w = (*info).fb.width as ulong;
-    ulong fb_h = (*info).fb.height as ulong;
-    ulong fb_stride = (*info).fb.stride as ulong;
+    ulong fb = info->fb.base_addr;
+    ulong fb_w = info->fb.width as ulong;
+    ulong fb_h = info->fb.height as ulong;
+    ulong fb_stride = info->fb.stride as ulong;
 
     if (fb != 0) {
         serial.println("[Cosmos] Initializing framebuffer console..." as void*);

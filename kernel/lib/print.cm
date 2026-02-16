@@ -58,14 +58,14 @@ const ulong FB_COLOR_DARK_BG = 0x00101020;
 
 /// FBConsoleを初期化する
 export void fb_init(FBConsole* con, ulong fb_addr, ulong width, ulong height, ulong stride) {
-    (*con).fb_addr = fb_addr;
-    (*con).width = width;
-    (*con).height = height;
-    (*con).stride = stride;
-    (*con).cursor_x = 0;
-    (*con).cursor_y = 0;
-    (*con).fg_color = FB_COLOR_GREEN;   // デフォルト: 緑文字
-    (*con).bg_color = FB_COLOR_DARK_BG; // デフォルト: 暗い背景
+    con->fb_addr = fb_addr;
+    con->width = width;
+    con->height = height;
+    con->stride = stride;
+    con->cursor_x = 0;
+    con->cursor_y = 0;
+    con->fg_color = FB_COLOR_GREEN;   // デフォルト: 緑文字
+    con->bg_color = FB_COLOR_DARK_BG; // デフォルト: 暗い背景
 }
 
 // ============================================================
@@ -106,7 +106,7 @@ impl FBConsole for Console {
 
 /// 前景色を設定する
 export void fb_set_color(FBConsole* con, ulong fg) {
-    (*con).fg_color = fg;
+    con->fg_color = fg;
 }
 
 // ============================================================
@@ -115,10 +115,10 @@ export void fb_set_color(FBConsole* con, ulong fg) {
 
 /// 画面を背景色でクリアする
 export void fb_clear(FBConsole* con) {
-    ulong fb = (*con).fb_addr;
-    ulong stride = (*con).stride;
-    ulong height = (*con).height;
-    ulong bg = (*con).bg_color;
+    ulong fb = con->fb_addr;
+    ulong stride = con->stride;
+    ulong height = con->height;
+    ulong bg = con->bg_color;
 
     if (fb == 0) { return; }
 
@@ -136,8 +136,8 @@ export void fb_clear(FBConsole* con) {
     }
 
     // カーソルをリセット
-    (*con).cursor_x = 0;
-    (*con).cursor_y = 0;
+    con->cursor_x = 0;
+    con->cursor_y = 0;
 }
 
 // ============================================================
@@ -146,12 +146,12 @@ export void fb_clear(FBConsole* con) {
 
 /// 指定位置に1文字を描画する（ピクセル座標で指定、内部用）
 export void draw_char(FBConsole* con, ulong px, ulong py, ulong ch) {
-    ulong fb = (*con).fb_addr;
-    ulong screen_w = (*con).width;
-    ulong screen_h = (*con).height;
-    ulong stride = (*con).stride;
-    ulong fg = (*con).fg_color;
-    ulong bg = (*con).bg_color;
+    ulong fb = con->fb_addr;
+    ulong screen_w = con->width;
+    ulong screen_h = con->height;
+    ulong stride = con->stride;
+    ulong fg = con->fg_color;
+    ulong bg = con->bg_color;
 
     if (fb == 0) { return; }
 
@@ -192,25 +192,25 @@ export void draw_char(FBConsole* con, ulong px, ulong py, ulong ch) {
 
 /// テキストカーソルで管理される列数の最大値を計算
 export ulong max_cols(FBConsole* con) {
-    return (*con).width / FONT_WIDTH;
+    return con->width / FONT_WIDTH;
 }
 
 /// テキストカーソルで管理される行数の最大値を計算
 export ulong max_rows(FBConsole* con) {
-    return (*con).height / FONT_HEIGHT;
+    return con->height / FONT_HEIGHT;
 }
 
 /// 改行処理
 export void fb_newline(FBConsole* con) {
-    (*con).cursor_x = 0;
+    con->cursor_x = 0;
     ulong rows = max_rows(con);
-    ulong next_y = (*con).cursor_y + 1;
+    ulong next_y = con->cursor_y + 1;
     if (next_y >= rows) {
         // 画面下端に達した場合、最下行にとどまる
         // （スクロール機能は将来実装）
-        (*con).cursor_y = rows - 1;
+        con->cursor_y = rows - 1;
     } else {
-        (*con).cursor_y = next_y;
+        con->cursor_y = next_y;
     }
 }
 
@@ -223,24 +223,24 @@ export void fb_putc(FBConsole* con, ulong ch) {
     }
     // キャリッジリターン
     if (ch == 13) {
-        (*con).cursor_x = 0;
+        con->cursor_x = 0;
         return;
     }
 
     // テキスト座標 → ピクセル座標
-    ulong px = (*con).cursor_x * FONT_WIDTH;
-    ulong py = (*con).cursor_y * FONT_HEIGHT;
+    ulong px = con->cursor_x * FONT_WIDTH;
+    ulong py = con->cursor_y * FONT_HEIGHT;
 
     // 文字を描画
     draw_char(con, px, py, ch);
 
     // カーソル前進
     ulong cols = max_cols(con);
-    ulong next_x = (*con).cursor_x + 1;
+    ulong next_x = con->cursor_x + 1;
     if (next_x >= cols) {
         fb_newline(con);
     } else {
-        (*con).cursor_x = next_x;
+        con->cursor_x = next_x;
     }
 }
 
