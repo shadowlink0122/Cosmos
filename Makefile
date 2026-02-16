@@ -226,6 +226,16 @@ test: setup-esp download-ovmf
 		else \
 			echo "✗ FAIL: ISR登録"; FAIL=$$((FAIL+1)); \
 		fi; \
+		if grep -q "\[BOOT\] PMM initialized" $(DEBUG_LOG); then \
+			echo "✓ PASS: PMM初期化"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: PMM初期化"; FAIL=$$((FAIL+1)); \
+		fi; \
+		if grep -q "\[BOOT\] PMM alloc/free test OK" $(DEBUG_LOG); then \
+			echo "✓ PASS: PMM alloc/free"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: PMM alloc/free"; FAIL=$$((FAIL+1)); \
+		fi; \
 		echo ""; \
 		echo "結果: $$PASS passed, $$FAIL failed"; \
 	fi

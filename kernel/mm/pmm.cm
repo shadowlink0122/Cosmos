@@ -1,0 +1,433 @@
+//! platform: uefi
+// kernel::mm::pmm - 物理メモリマネージャ (PMM)
+//
+// ビットマップ方式で物理メモリをページ単位（4KiB）で管理する。
+// UEFIメモリマップを解析し、利用可能な物理メモリ領域を追跡する。
+//
+// 使用例:
+//   PMM pmm(info->mmap.map_buffer, info->mmap.map_size,
+//           info->mmap.desc_size as ulong, info->mmap.entry_count as ulong);
+//   ulong page = pmm.alloc_page();
+//   pmm.free_page(page);
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// ページサイズ: 4KiB
+const ulong PAGE_SIZE = 4096;
+// ページシフト: 4096 = 2^12
+const ulong PAGE_SHIFT = 12;
+// 1つのulong内のビット数
+const ulong BITS_PER_ULONG = 64;
+
+// UEFIメモリタイプ（OS利用可能なもの）
+const ulong EFI_CONVENTIONAL_MEMORY = 7;
+const ulong EFI_BOOT_SERVICES_CODE  = 3;
+const ulong EFI_BOOT_SERVICES_DATA  = 4;
+
+// ============================================================
+// PMM 構造体
+// ============================================================
+
+/// ビットマップ物理メモリマネージャ
+export struct PMM {
+    ulong* bitmap;       // ビットマップ配列（1ビット = 1ページ）
+    ulong total_pages;   // 管理対象の総ページ数
+    ulong free_pages;    // 空きページ数
+    ulong bitmap_size;   // ビットマップサイズ（バイト）
+    ulong max_phys_addr; // 検出された最大物理アドレス
+}
+
+// ============================================================
+// PMM メソッド実装
+// ============================================================
+
+impl PMM {
+    /// コンストラクタ: UEFIメモリマップからビットマップPMMを初期化
+    ///
+    /// mmap_buf:    メモリマップバッファ
+    /// mmap_size:   メモリマップ全体のサイズ
+    /// desc_size:   1エントリのサイズ
+    /// entry_count: エントリ数
+    overload self(void* mmap_buf, ulong mmap_size, ulong desc_size, ulong entry_count) {
+        DebugPort debug(0xE9);
+
+        // --- Pass 1: 利用可能メモリの最大物理アドレスを検出 ---
+        // Conventional/BS_Code/BS_Dataのみカウント（MMIO/Reserved除外）
+        ulong max_addr = 0;
+        ulong idx = 0;
+        ulong type_mask = 4294967295;  // 0xFFFFFFFF
+
+        while (idx < entry_count) {
+            ulong offset = idx * desc_size;
+            ulong desc_addr = mmap_buf as ulong + offset;
+
+            // Type: offset +0 (uint32)
+            ulong* type_ptr = desc_addr as ulong*;
+            ulong type_raw = *type_ptr;
+            ulong mem_type = type_raw & type_mask;
+
+            // PhysicalStart: offset +8
+            ulong* phys_ptr = (desc_addr + 8) as ulong*;
+            ulong phys_start = *phys_ptr;
+
+            // NumberOfPages: offset +24
+            ulong* pages_ptr = (desc_addr + 24) as ulong*;
+            ulong num_pages = *pages_ptr;
+
+            // 利用可能なメモリタイプのみ最大アドレス計算
+            ulong is_ram = 0;
+            if (mem_type == EFI_CONVENTIONAL_MEMORY) { is_ram = 1; }
+            if (mem_type == EFI_BOOT_SERVICES_CODE)  { is_ram = 1; }
+            if (mem_type == EFI_BOOT_SERVICES_DATA)  { is_ram = 1; }
+
+            if (is_ram == 1) {
+                ulong region_end = phys_start + (num_pages * PAGE_SIZE);
+                if (region_end > max_addr) {
+                    max_addr = region_end;
+                }
+            }
+            idx += 1;
+        }
+
+        self.max_phys_addr = max_addr;
+
+        // --- ビットマップサイズ計算 ---
+        // 総ページ数 = max_addr / PAGE_SIZE
+        ulong total = max_addr >> PAGE_SHIFT;
+        self.total_pages = total;
+
+        // ビットマップサイズ = ceil(total_pages / 8) バイト
+        ulong bmp_bytes = (total + 7) / 8;
+        // ulongアラインメント
+        ulong bmp_ulongs = (bmp_bytes + 7) / 8;
+        ulong aligned_size = bmp_ulongs * 8;
+        self.bitmap_size = aligned_size;
+
+        // --- Pass 2: 利用可能領域にビットマップを配置 ---
+        // ビットマップを格納するのに十分大きい領域を探す
+        // 優先順位: ConventionalMemory > BS_Code/Data
+        // 可能なら1MiB以上のアドレスを選択
+        ulong bmp_pages = (aligned_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+        ulong bmp_addr = 0;
+        ulong best_size = 0;
+        idx = 0;
+
+        while (idx < entry_count) {
+            ulong offset = idx * desc_size;
+            ulong desc_addr = mmap_buf as ulong + offset;
+
+            ulong* type_ptr = desc_addr as ulong*;
+            ulong type_raw = *type_ptr;
+            ulong mem_type = type_raw & type_mask;
+
+            ulong* phys_ptr = (desc_addr + 8) as ulong*;
+            ulong phys_start = *phys_ptr;
+
+            ulong* pages_ptr = (desc_addr + 24) as ulong*;
+            ulong num_pages = *pages_ptr;
+
+            // 利用可能なメモリタイプか判定
+            ulong is_usable = 0;
+            if (mem_type == EFI_CONVENTIONAL_MEMORY) { is_usable = 1; }
+            if (mem_type == EFI_BOOT_SERVICES_CODE)  { is_usable = 1; }
+            if (mem_type == EFI_BOOT_SERVICES_DATA)  { is_usable = 1; }
+
+            if (is_usable == 1) {
+                if (num_pages >= bmp_pages) {
+                    // より大きい領域や、アドレスが高い領域を優先
+                    if (num_pages > best_size) {
+                        bmp_addr = phys_start;
+                        best_size = num_pages;
+                    }
+                }
+            }
+            idx += 1;
+        }
+
+        self.bitmap = bmp_addr as ulong*;
+
+        debug.puts("[PMM] bitmap at 0x" as void*);
+        debug.print_hex(bmp_addr);
+        debug.puts(", size=" as void*);
+        debug.print_hex(aligned_size);
+        debug.puts(", bmp_pages=" as void*);
+        debug.print_hex(bmp_pages);
+        debug.println("" as void*);
+
+        // ビットマップ配置に失敗した場合は空の状態で返す
+        if (bmp_addr == 0) {
+            self.total_pages = 0;
+            self.free_pages = 0;
+            self.bitmap_size = 0;
+            debug.println("[PMM] ERROR: no suitable region for bitmap" as void*);
+            return;
+        }
+
+        // --- 全ビットを1（使用中）で初期化 ---
+        ulong i = 0;
+        ulong fill_val = 0xFFFFFFFFFFFFFFFF as ulong;
+        while (i < bmp_ulongs) {
+            ulong* ptr = (bmp_addr + i * 8) as ulong*;
+            *ptr = fill_val;
+            i += 1;
+        }
+        self.free_pages = 0;
+
+        // --- Pass 3: 利用可能領域のビットをクリア（空きにする） ---
+        idx = 0;
+        while (idx < entry_count) {
+            ulong offset = idx * desc_size;
+            ulong desc_addr = mmap_buf as ulong + offset;
+
+            ulong* type_ptr = desc_addr as ulong*;
+            ulong type_raw = *type_ptr;
+            ulong mem_type = type_raw & type_mask;
+
+            ulong* phys_ptr = (desc_addr + 8) as ulong*;
+            ulong phys_start = *phys_ptr;
+
+            ulong* pages_ptr = (desc_addr + 24) as ulong*;
+            ulong num_pages = *pages_ptr;
+
+            // ConventionalMemory + BS_Code + BS_Data を利用可能とする
+            ulong is_usable = 0;
+            if (mem_type == EFI_CONVENTIONAL_MEMORY) { is_usable = 1; }
+            if (mem_type == EFI_BOOT_SERVICES_CODE)  { is_usable = 1; }
+            if (mem_type == EFI_BOOT_SERVICES_DATA)  { is_usable = 1; }
+
+            if (is_usable == 1) {
+                ulong page_idx = phys_start >> PAGE_SHIFT;
+                ulong p = 0;
+                while (p < num_pages) {
+                    self.clear_bit(page_idx + p);
+                    self.free_pages += 1;
+                    p += 1;
+                }
+            }
+            idx += 1;
+        }
+
+        // --- ビットマップ自身が占める領域を使用中にマーク ---
+        ulong bmp_start_page = bmp_addr >> PAGE_SHIFT;
+        ulong bp = 0;
+        while (bp < bmp_pages) {
+            self.set_bit(bmp_start_page + bp);
+            if (self.free_pages > 0) {
+                self.free_pages -= 1;
+            }
+            bp += 1;
+        }
+
+        // --- 低メモリ領域（0-1MiB）を予約 ---
+        ulong low_mem = 1048576;  // 1MiB
+        ulong low_pages = low_mem >> PAGE_SHIFT;  // 256ページ
+        ulong lp = 0;
+        while (lp < low_pages) {
+            if (lp < self.total_pages) {
+                if (self.test_bit(lp) == 0) {
+                    self.set_bit(lp);
+                    if (self.free_pages > 0) {
+                        self.free_pages -= 1;
+                    }
+                }
+            }
+            lp += 1;
+        }
+
+        debug.puts("[PMM] total=" as void*);
+        debug.print_hex(self.total_pages);
+        debug.puts(", free=" as void*);
+        debug.print_hex(self.free_pages);
+        debug.println("" as void*);
+    }
+
+    // ============================================================
+    // ビット操作
+    // ============================================================
+
+    /// 指定ページのビットをセット（使用中にする）
+    void set_bit(ulong page_idx) {
+        ulong qword_idx = page_idx / BITS_PER_ULONG;
+        ulong sixty_three = 63 as ulong;
+        ulong bit_offset = page_idx & sixty_three;
+        ulong one = 1 as ulong;
+        ulong mask = one << bit_offset;
+
+        ulong bmp_addr = self.bitmap as ulong;
+        ulong* ptr = (bmp_addr + qword_idx * 8) as ulong*;
+        *ptr = *ptr | mask;
+    }
+
+    /// 指定ページのビットをクリア（空きにする）
+    void clear_bit(ulong page_idx) {
+        ulong qword_idx = page_idx / BITS_PER_ULONG;
+        ulong sixty_three = 63 as ulong;
+        ulong bit_offset = page_idx & sixty_three;
+        ulong one = 1 as ulong;
+        ulong mask = one << bit_offset;
+        ulong all_ones = 0xFFFFFFFFFFFFFFFF as ulong;
+        ulong inv_mask = mask ^ all_ones;
+
+        ulong bmp_addr = self.bitmap as ulong;
+        ulong* ptr = (bmp_addr + qword_idx * 8) as ulong*;
+        *ptr = *ptr & inv_mask;
+    }
+
+    /// 指定ページのビットをテスト（1=使用中, 0=空き）
+    ulong test_bit(ulong page_idx) {
+        ulong qword_idx = page_idx / BITS_PER_ULONG;
+        ulong sixty_three = 63 as ulong;
+        ulong bit_offset = page_idx & sixty_three;
+        ulong one = 1 as ulong;
+        ulong mask = one << bit_offset;
+
+        ulong bmp_addr = self.bitmap as ulong;
+        ulong* ptr = (bmp_addr + qword_idx * 8) as ulong*;
+        ulong val = *ptr & mask;
+        if (val != 0) {
+            return 1;
+        }
+        return 0;
+    }
+
+    // ============================================================
+    // ページ割当・解放
+    // ============================================================
+
+    /// 1ページ（4KiB）を割当し、物理アドレスを返す
+    /// 割当失敗時は0を返す
+    ulong alloc_page() {
+        if (self.free_pages == 0) {
+            return 0;
+        }
+
+        // ビットマップを走査して空きビットを検索
+        ulong bmp_ulongs = self.bitmap_size / 8;
+        ulong bmp_addr = self.bitmap as ulong;
+        ulong qi = 0;
+        ulong all_used = 0xFFFFFFFFFFFFFFFF as ulong;
+
+        while (qi < bmp_ulongs) {
+            ulong* ptr = (bmp_addr + qi * 8) as ulong*;
+            ulong val = *ptr;
+
+            // 全ビットが1(使用中)ならスキップ
+            if (val != all_used) {
+                // 空きビットを検索
+                ulong bi = 0;
+                ulong one = 1 as ulong;
+                while (bi < BITS_PER_ULONG) {
+                    ulong mask = one << bi;
+                    ulong test = val & mask;
+                    if (test == 0) {
+                        // 空きビット発見 → セットして返す
+                        *ptr = val | mask;
+                        self.free_pages -= 1;
+                        ulong page_idx = qi * BITS_PER_ULONG + bi;
+                        return page_idx << PAGE_SHIFT;
+                    }
+                    bi += 1;
+                }
+            }
+            qi += 1;
+        }
+        return 0;
+    }
+
+    /// ページを解放する
+    void free_page(ulong phys_addr) {
+        ulong page_idx = phys_addr >> PAGE_SHIFT;
+        if (page_idx >= self.total_pages) {
+            return;
+        }
+        // 使用中のページのみ解放
+        if (self.test_bit(page_idx) == 1) {
+            self.clear_bit(page_idx);
+            self.free_pages += 1;
+        }
+    }
+
+    /// N個の連続ページを割当し、先頭物理アドレスを返す
+    /// 割当失敗時は0を返す
+    ulong alloc_pages(ulong count) {
+        if (count == 0) { return 0; }
+        if (self.free_pages < count) { return 0; }
+
+        // ビットマップを走査して連続空き領域を検索
+        ulong page_idx = 0;
+        while (page_idx + count <= self.total_pages) {
+            // countページ連続で空いているか確認
+            ulong found = 1;
+            ulong ci = 0;
+            while (ci < count) {
+                if (self.test_bit(page_idx + ci) == 1) {
+                    found = 0;
+                    page_idx = page_idx + ci + 1;
+                    break;
+                }
+                ci += 1;
+            }
+            if (found == 1) {
+                // 連続空き領域発見 → セットして返す
+                ulong mi = 0;
+                while (mi < count) {
+                    self.set_bit(page_idx + mi);
+                    mi += 1;
+                }
+                self.free_pages -= count;
+                return page_idx << PAGE_SHIFT;
+            }
+        }
+        return 0;
+    }
+
+    /// N個の連続ページを解放する
+    void free_pages(ulong phys_addr, ulong count) {
+        ulong page_idx = phys_addr >> PAGE_SHIFT;
+        ulong i = 0;
+        while (i < count) {
+            ulong pi = page_idx + i;
+            if (pi < self.total_pages) {
+                if (self.test_bit(pi) == 1) {
+                    self.clear_bit(pi);
+                    self.free_pages += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    // ============================================================
+    // 統計・デバッグ
+    // ============================================================
+
+    /// メモリ統計をシリアルに出力
+    void print_stats() {
+        SerialPort serial(0x3F8);
+        DebugPort debug(0xE9);
+
+        ulong mb_div = 1048576;
+        ulong total_mb = (self.total_pages * PAGE_SIZE) / mb_div;
+        ulong free_mb = (self.free_pages * PAGE_SIZE) / mb_div;
+        ulong used_mb = total_mb - free_mb;
+
+        serial.puts("[PMM] Total: " as void*);
+        serial.print_hex(total_mb);
+        serial.puts(" MB, Free: " as void*);
+        serial.print_hex(free_mb);
+        serial.puts(" MB, Used: " as void*);
+        serial.print_hex(used_mb);
+        serial.println(" MB" as void*);
+
+        debug.puts("[PMM] pages: total=" as void*);
+        debug.print_hex(self.total_pages);
+        debug.puts(", free=" as void*);
+        debug.print_hex(self.free_pages);
+        debug.println("" as void*);
+    }
+}

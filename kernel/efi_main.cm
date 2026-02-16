@@ -27,6 +27,7 @@ import ./drivers/debug_port;
 import ./drivers/pic;
 import ./lib/font;
 import ./lib/print;
+import ./mm/pmm;
 
 // ============================================================
 // ExitBootServices
@@ -178,6 +179,29 @@ void kernel_main(BootInfo* info) {
     idt.load();
     serial.println("[Cosmos] IDT loaded with ISR stubs" as void*);
     debug.println("[BOOT] IDT reloaded" as void*);
+
+    // 物理メモリマネージャ初期化
+    PMM pmm(info->mmap.map_buffer, info->mmap.map_size,
+            info->mmap.desc_size as ulong, info->mmap.entry_count as ulong);
+    pmm.print_stats();
+    serial.println("[Cosmos] PMM initialized (bitmap physical memory manager)" as void*);
+    debug.println("[BOOT] PMM initialized" as void*);
+
+    // PMM基本テスト: alloc → free → re-alloc
+    ulong page1 = pmm.alloc_page();
+    serial.puts("[PMM] alloc_page() = 0x" as void*);
+    serial.print_hex(page1);
+    serial.putc(10);
+    ulong page2 = pmm.alloc_page();
+    pmm.free_page(page1);
+    ulong page3 = pmm.alloc_page();
+    serial.puts("[PMM] alloc-free-alloc test: page3=0x" as void*);
+    serial.print_hex(page3);
+    serial.putc(10);
+    // page3 should == page1 (reuse freed page)
+    pmm.free_page(page2);
+    pmm.free_page(page3);
+    debug.println("[BOOT] PMM alloc/free test OK" as void*);
 
     // フレームバッファテキストコンソール初期化
     ulong fb = info->fb.base_addr;
