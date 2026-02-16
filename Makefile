@@ -86,9 +86,12 @@ help:
 # カーネルビルド
 # ============================================================
 
+# カーネル全.cmファイルを依存関係に含める（importされるファイルの変更も検出）
+KERNEL_SOURCES := $(shell find $(KERNEL_DIR) -name '*.cm' 2>/dev/null)
+
 # Cmソースをコンパイル（uefiターゲット）
 compile: $(KERNEL_OBJ)
-$(KERNEL_OBJ): $(KERNEL_SRC)
+$(KERNEL_OBJ): $(KERNEL_SOURCES)
 	@mkdir -p .tmp/build
 	$(CM) compile --target=uefi -o $(KERNEL_OBJ) $(KERNEL_SRC)
 
