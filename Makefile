@@ -241,6 +241,11 @@ test: setup-esp download-ovmf
 		else \
 			echo "✗ FAIL: ページング有効"; FAIL=$$((FAIL+1)); \
 		fi; \
+		if grep -q "\[BOOT\] heap initialized" $(DEBUG_LOG); then \
+			echo "✓ PASS: ヒープ初期化"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: ヒープ初期化"; FAIL=$$((FAIL+1)); \
+		fi; \
 		echo ""; \
 		echo "結果: $$PASS passed, $$FAIL failed"; \
 	fi

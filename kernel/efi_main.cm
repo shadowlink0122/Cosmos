@@ -29,6 +29,7 @@ import ./lib/font;
 import ./lib/print;
 import ./mm/pmm;
 import ./mm/vmm;
+import ./mm/heap;
 
 // ============================================================
 // ExitBootServices
@@ -209,6 +210,29 @@ void kernel_main(BootInfo* info) {
     vmm.print_stats();
     serial.println("[Cosmos] Paging enabled (identity mapped)" as void*);
     debug.println("[BOOT] paging enabled" as void*);
+
+    // カーネルヒープ初期化（64ページ = 256KB）
+    Heap heap(&pmm, 64);
+    heap.print_stats();
+    serial.println("[Cosmos] Kernel heap initialized (bump allocator)" as void*);
+
+    // ヒープ割当テスト
+    ulong ptr1 = heap.alloc(128);
+    ulong ptr2 = heap.alloc(256);
+    ulong ptr3 = heap.alloc(64);
+    serial.puts("[HEAP] test alloc: p1=0x" as void*);
+    serial.print_hex(ptr1);
+    serial.puts(", p2=0x" as void*);
+    serial.print_hex(ptr2);
+    serial.puts(", p3=0x" as void*);
+    serial.print_hex(ptr3);
+    serial.putc(10);
+    serial.puts("[HEAP] used=" as void*);
+    serial.print_hex(heap.used());
+    serial.puts(", free=" as void*);
+    serial.print_hex(heap.free_bytes());
+    serial.putc(10);
+    debug.println("[BOOT] heap initialized" as void*);
 
     // フレームバッファテキストコンソール初期化
     ulong fb = info->fb.base_addr;

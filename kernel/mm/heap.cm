@@ -1,0 +1,141 @@
+//! platform: uefi
+// kernel::mm::heap - カーネルヒープアロケータ
+//
+// Bump Allocator方式のシンプルなヒープ管理。
+// PMMから連続ページを割り当ててヒープ領域を確保し、
+// ポインタを前方に進めるだけの高速割当を提供する。
+//
+// 制限:
+//   - 個別のfreeは非対応（reset_all()で全解放のみ）
+//   - 初期カーネル起動時の一時的なメモリ割当に使用
+//
+// 使用例:
+//   Heap heap(&pmm, 64);  // 64ページ(256KB)のヒープ確保
+//   void* ptr = heap.alloc(1024);  // 1024バイト割当
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ./pmm;
+
+// ============================================================
+// 定数
+// ============================================================
+
+const ulong HEAP_PAGE_SIZE = 4096;
+const ulong HEAP_ALIGN = 8;  // 8バイトアラインメント
+
+// ============================================================
+// Heap 構造体
+// ============================================================
+
+/// Bump Allocatorベースのカーネルヒープ
+export struct Heap {
+    ulong base_addr;     // ヒープ領域の先頭物理アドレス
+    ulong size;          // ヒープ領域の総サイズ（バイト）
+    ulong offset;        // 現在の割当オフセット（次の割当位置）
+    ulong alloc_count;   // 割当回数
+}
+
+// ============================================================
+// Heap メソッド実装
+// ============================================================
+
+impl Heap {
+    /// コンストラクタ: PMMからヒープ用ページを割当
+    ///
+    /// pmm:        物理メモリマネージャ
+    /// num_pages:  ヒープに割り当てるページ数
+    overload self(PMM* pmm, ulong num_pages) {
+        DebugPort debug(0xE9);
+
+        // PMMから連続ページを割当
+        ulong base = pmm->alloc_pages(num_pages);
+        if (base == 0) {
+            debug.println("[HEAP] ERROR: cannot alloc heap pages" as void*);
+            self.base_addr = 0;
+            self.size = 0;
+            self.offset = 0;
+            self.alloc_count = 0;
+            return;
+        }
+
+        self.base_addr = base;
+        self.size = num_pages * HEAP_PAGE_SIZE;
+        self.offset = 0;
+        self.alloc_count = 0;
+
+        debug.puts("[HEAP] base=0x" as void*);
+        debug.print_hex(base);
+        debug.puts(", size=" as void*);
+        debug.print_hex(self.size);
+        debug.println("" as void*);
+    }
+
+    /// メモリ割当（8バイトアラインメント）
+    /// size: 割り当てるバイト数
+    /// 戻り値: 割り当てた領域のアドレス（失敗時は0）
+    ulong alloc(ulong size) {
+        if (self.base_addr == 0) {
+            return 0;
+        }
+
+        // 8バイトアラインメントに切り上げ
+        ulong align_mask = HEAP_ALIGN - 1;  // 7
+        ulong all_ones = 0xFFFFFFFFFFFFFFFF as ulong;
+        ulong inv_mask = align_mask ^ all_ones;  // ~7 in ulong
+        ulong aligned_size = (size + align_mask) & inv_mask;
+
+        // 空き容量チェック
+        ulong remaining = self.size - self.offset;
+        if (aligned_size > remaining) {
+            return 0;  // ヒープ不足
+        }
+
+        // 割当: 現在のオフセット位置を返す
+        ulong addr = self.base_addr + self.offset;
+        self.offset = self.offset + aligned_size;
+        self.alloc_count = self.alloc_count + 1;
+
+        return addr;
+    }
+
+    /// ヒープ全体をリセット（全メモリを再利用可能にする）
+    void reset_all() {
+        self.offset = 0;
+        self.alloc_count = 0;
+    }
+
+    /// 使用中のバイト数を返す
+    ulong used() {
+        return self.offset;
+    }
+
+    /// 空きバイト数を返す
+    ulong free_bytes() {
+        return self.size - self.offset;
+    }
+
+    /// 統計情報出力
+    void print_stats() {
+        SerialPort serial(0x3F8);
+        DebugPort debug(0xE9);
+
+        serial.puts("[HEAP] base=0x" as void*);
+        serial.print_hex(self.base_addr);
+        serial.puts(", total=" as void*);
+        serial.print_hex(self.size);
+        serial.puts(", used=" as void*);
+        serial.print_hex(self.offset);
+        serial.puts(", free=" as void*);
+        serial.print_hex(self.free_bytes());
+        serial.puts(", allocs=" as void*);
+        serial.print_hex(self.alloc_count);
+        serial.putc(10);
+
+        debug.puts("[HEAP] used=" as void*);
+        debug.print_hex(self.offset);
+        debug.puts(", free=" as void*);
+        debug.print_hex(self.free_bytes());
+        debug.println("" as void*);
+    }
+}
