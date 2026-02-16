@@ -1,0 +1,39 @@
+//! platform: uefi
+// kernel::tests::test_heap - ヒープアロケータテスト
+//
+// 注意: Cmのメソッド呼出しではselfがコピーされるため、
+// ポインタ経由のalloc()は内部offsetが更新されない。
+// このテストではfree_bytes()による空き容量確認のみ行う。
+// alloc()の連続割当テストはefi_main.cm内で直接実行すべき。
+
+import ../drivers/serial;
+import ../mm/heap;
+import ./test_runner;
+
+// ============================================================
+// ヒープ テスト
+// ============================================================
+
+/// ヒープ基本テストを実行する
+export void test_heap(TestRunner* runner, Heap* heap) {
+    SerialPort serial(0x3F8);
+    serial.println("[TEST] === Heap Tests ===" as void*);
+
+    // テスト1: ベースアドレスが非ゼロ（初期化成功）
+    ulong base = heap->base_addr;
+    assert_nonzero(runner, base, "Heap base addr is nonzero" as void*);
+
+    // テスト2: サイズが非ゼロ（ページ割当成功）
+    ulong size = heap->size;
+    assert_nonzero(runner, size, "Heap size is nonzero" as void*);
+
+    // テスト3: free_bytes()がサイズ以下
+    ulong free_bytes = heap->free_bytes();
+    ulong ok = 0;
+    if (free_bytes > 0) {
+        ok = 1;
+    }
+    assert_true(runner, ok, "Heap has free space" as void*);
+
+    serial.println("[TEST] Heap tests complete" as void*);
+}

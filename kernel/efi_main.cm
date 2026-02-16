@@ -30,6 +30,12 @@ import ./lib/print;
 import ./mm/pmm;
 import ./mm/vmm;
 import ./mm/heap;
+import ./drivers/pit;
+import ./tests/test_runner;
+import ./tests/test_pmm;
+import ./tests/test_heap;
+import ./tests/test_pit;
+import ./tests/test_boot;
 
 // ============================================================
 // ExitBootServices
@@ -157,7 +163,7 @@ void kernel_main(BootInfo* info) {
     serial.println("[Cosmos] === Kernel Main ===" as void*);
     serial.println("[Cosmos] ExitBootServices completed successfully" as void*);
 
-    // GDT設定
+    // GDT設定（固定アドレス0x800に永続配置）
     gdt_init();
 
     // PIC 8259A初期化（IRQリマップ 32-47、全マスク）
@@ -166,10 +172,12 @@ void kernel_main(BootInfo* info) {
     serial.println("[Cosmos] PIC initialized (IRQ remapped to vectors 32-47)" as void*);
     debug.println("[BOOT] PIC initialized" as void*);
 
-    // IDT初期化（256エントリ + lidt）
+    // IDT初期化（仮テーブル: メモリマップバッファを一時利用）
+    // 注: この領域はPMM初期化で上書きされるため、
+    //     PMM初期化後に専用ページで再構築する
     uint* idt_table = info->mmap.map_buffer as uint*;
     IDT idt(idt_table);
-    serial.println("[Cosmos] IDT initialized (256 entries)" as void*);
+    serial.println("[Cosmos] IDT initialized (temporary)" as void*);
     debug.println("[BOOT] IDT initialized" as void*);
 
     // ISRスタブ登録（例外0-31）
@@ -189,22 +197,6 @@ void kernel_main(BootInfo* info) {
     serial.println("[Cosmos] PMM initialized (bitmap physical memory manager)" as void*);
     debug.println("[BOOT] PMM initialized" as void*);
 
-    // PMM基本テスト: alloc → free → re-alloc
-    ulong page1 = pmm.alloc_page();
-    serial.puts("[PMM] alloc_page() = 0x" as void*);
-    serial.print_hex(page1);
-    serial.putc(10);
-    ulong page2 = pmm.alloc_page();
-    pmm.free_page(page1);
-    ulong page3 = pmm.alloc_page();
-    serial.puts("[PMM] alloc-free-alloc test: page3=0x" as void*);
-    serial.print_hex(page3);
-    serial.putc(10);
-    // page3 should == page1 (reuse freed page)
-    pmm.free_page(page2);
-    pmm.free_page(page3);
-    debug.println("[BOOT] PMM alloc/free test OK" as void*);
-
     // ページテーブル管理（UEFIのアイデンティティマッピングを継承）
     VMM vmm();
     vmm.print_stats();
@@ -215,23 +207,6 @@ void kernel_main(BootInfo* info) {
     Heap heap(&pmm, 64);
     heap.print_stats();
     serial.println("[Cosmos] Kernel heap initialized (bump allocator)" as void*);
-
-    // ヒープ割当テスト
-    ulong ptr1 = heap.alloc(128);
-    ulong ptr2 = heap.alloc(256);
-    ulong ptr3 = heap.alloc(64);
-    serial.puts("[HEAP] test alloc: p1=0x" as void*);
-    serial.print_hex(ptr1);
-    serial.puts(", p2=0x" as void*);
-    serial.print_hex(ptr2);
-    serial.puts(", p3=0x" as void*);
-    serial.print_hex(ptr3);
-    serial.putc(10);
-    serial.puts("[HEAP] used=" as void*);
-    serial.print_hex(heap.used());
-    serial.puts(", free=" as void*);
-    serial.print_hex(heap.free_bytes());
-    serial.putc(10);
     debug.println("[BOOT] heap initialized" as void*);
 
     // フレームバッファテキストコンソール初期化
@@ -242,55 +217,47 @@ void kernel_main(BootInfo* info) {
 
     if (fb != 0) {
         serial.println("[Cosmos] Initializing framebuffer console..." as void*);
-
-        // FBConsole構造体をスタック上に確保・初期化（Consoleインターフェース実装）
         FBConsole console;
         fb_init(&console, fb, fb_w, fb_h, fb_stride);
-
-        // 画面クリア
         console.clear();
-        serial.println("[Cosmos] Framebuffer cleared" as void*);
 
-        // ブートメッセージをフレームバッファに表示
-        console.println("" as void*);
-        console.set_color(0x00FFFFFF);  // 白
-        console.println("  ========================================" as void*);
+        console.set_color(0x00FFFFFF);
         console.println("  Cosmos OS v0.2.0" as void*);
-        console.println("  ========================================" as void*);
         console.println("" as void*);
+        console.set_color(0x0000FF00);
+        console.println("  [OK] Boot completed" as void*);
+        console.set_color(0x0000FFFF);
+        console.println("  Written in Cm" as void*);
 
-        console.set_color(0x0000FF00);  // 緑
-        console.println("  [OK] ExitBootServices" as void*);
-        console.println("  [OK] GDT initialized" as void*);
-        console.println("  [OK] PIC initialized (IRQ 32-47)" as void*);
-        console.println("  [OK] IDT initialized (256 entries)" as void*);
-        console.println("  [OK] ISR registered (exceptions 0-31)" as void*);
-        console.println("  [OK] Serial console (COM1 115200 8N1)" as void*);
-        console.println("  [OK] Framebuffer console" as void*);
-        console.println("" as void*);
-
-        console.set_color(0x00FFFFFF);  // 白
-        console.puts("  Framebuffer: " as void*);
-        serial.print_hex(fb_w);
-        console.puts("  Resolution: " as void*);
-        console.println("" as void*);
-        console.println("" as void*);
-
-        console.set_color(0x0000FFFF);  // シアン
-        console.println("  Cosmos OS v0.2.0 booted successfully!" as void*);
-        console.println("" as void*);
-
-        console.set_color(0x00808080);  // グレー
-        console.println("  Written in Cm - a systems programming language" as void*);
-
-        serial.println("[Cosmos] Boot messages displayed on framebuffer" as void*);
+        serial.println("[Cosmos] Framebuffer initialized" as void*);
     } else {
         serial.println("[Cosmos] WARNING: No framebuffer available" as void*);
     }
 
+    // PITタイマー初期化（100Hz）
+    PIT pit();
+    pit.init(&pic, idt_table);
+    serial.println("[Cosmos] PIT timer initialized (100Hz)" as void*);
+    debug.println("[BOOT] PIT initialized" as void*);
+
+    // 割り込み有効化（sti）
+    __asm__(`sti`);
+    serial.println("[Cosmos] Interrupts enabled" as void*);
+    debug.println("[BOOT] interrupts enabled" as void*);
+
+    // ============================================================
+    // カーネル統合テスト
+    // ============================================================
     serial.println("[Cosmos] ==============================" as void*);
-    serial.println("[Cosmos] Cosmos OS v0.2.0 booted successfully!" as void*);
+    serial.println("[Cosmos] Running kernel tests..." as void*);
     serial.println("[Cosmos] ==============================" as void*);
+
+    TestRunner runner();
+    test_boot(&runner, info, &pmm, &heap);
+    test_pmm(&runner, &pmm);
+    test_heap(&runner, &heap);
+    test_pit(&runner, &pit);
+    print_test_results(&runner);
 
     // HLTループ（カーネル待機）
     serial.println("[Cosmos] Entering halt loop" as void*);

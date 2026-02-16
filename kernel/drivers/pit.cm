@@ -1,0 +1,132 @@
+//! platform: uefi
+// kernel::drivers::pit - PIT 8254 タイマードライバ
+//
+// Programmable Interval Timer (8254) を100Hzに設定し、
+// IRQ0経由で定期的な割り込みを生成する。
+//
+// tickカウンタは固定メモリアドレス(0x900)に配置。
+// Cmではグローバル変数の書き込みが制限されるため、
+// IRQ0ハンドラ内でASM命令により直接インクリメントする。
+
+import ./serial;
+import ./debug_port;
+import ./pic;
+import ../idt;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// tickカウンタのメモリアドレス（固定位置）
+// GDTは0x800-0x83F（48バイト）に配置
+// tickカウンタは0x900に配置（8バイト = ulong）
+const ulong PIT_TICK_ADDR = 0x900;
+
+// ============================================================
+// PIT 構造体
+// ============================================================
+
+/// PITタイマードライバ
+export struct PIT {
+    ulong tick_count;    // タイマー割り込み回数（ローカルコピー）
+    ulong frequency;     // 設定されたHz値
+}
+
+// ============================================================
+// IRQ0ハンドラ（フリー関数）
+// ============================================================
+
+// IRQ0ハンドラはCm関数として定義。
+// objdumpで確認: Cmはこの関数にプロローグ(push rbp / mov rbp, rsp)を
+// 生成しない。そのためleaveも不要。
+//
+// 動作:
+//   1. RAX, RCX を退避（汎用レジスタ保護）
+//   2. 固定アドレス0x900のtickカウンタをインクリメント
+//   3. PIC EOI (0x20 → port 0x20) を送信
+//   4. RAX, RCX を復元
+//   5. iretq で割り込みから復帰
+export void irq0_handler() {
+    __asm__(`
+        pushq %rax;
+        pushq %rcx;
+        movq $$0x900, %rcx;
+        movq (%rcx), %rax;
+        incq %rax;
+        movq %rax, (%rcx);
+        movb $$0x20, %al;
+        outb %al, $$0x20;
+        popq %rcx;
+        popq %rax;
+        iretq
+    `);
+}
+
+// ============================================================
+// PIT メソッド実装
+// ============================================================
+
+impl PIT {
+    /// コンストラクタ: PIT初期化
+    overload self() {
+        self.tick_count = 0;
+        self.frequency = 0;
+    }
+
+    /// 現在のtickカウントを取得（固定アドレスから読み取り）
+    ulong get_ticks() {
+        ulong* tick_ptr = PIT_TICK_ADDR as ulong*;
+        return *tick_ptr;
+    }
+
+    /// PITを初期化し、100Hzのタイマー割り込みを開始する
+    /// pic: PIC8259Aへのポインタ（IRQ0アンマスク用）
+    /// idt_table: IDTテーブルへのポインタ（ベクタ32登録用）
+    void init(PIC8259A* pic, uint* idt_table) {
+        DebugPort debug(0xE9);
+        SerialPort serial(0x3F8);
+
+        // tickカウンタを0に初期化
+        ulong* tick_ptr = PIT_TICK_ADDR as ulong*;
+        ulong zero = 0 as ulong;
+        *tick_ptr = zero;
+
+        // PITコマンド送信: Channel 0, Access LSB/MSB, Mode 2 (Rate Generator)
+        ulong cmd_port = 0x43 as ulong;
+        ulong cmd_val = 0x34 as ulong;
+        outb(cmd_port, cmd_val);
+        io_wait();
+
+        // 除数を送信: LSBから
+        ulong ch0_port = 0x40 as ulong;
+        ulong ff_mask = 0xFF as ulong;
+        ulong divisor = 11932 as ulong;
+        ulong shift8 = 8 as ulong;
+        ulong divisor_low = divisor & ff_mask;
+        ulong divisor_high = (divisor >> shift8) & ff_mask;
+        outb(ch0_port, divisor_low);
+        io_wait();
+        outb(ch0_port, divisor_high);
+        io_wait();
+
+        // IDTにベクタ32（IRQ0）のハンドラを登録
+        IDT idt;
+        idt.table = idt_table;
+        ulong vec32 = 32 as ulong;
+        idt.set_gate(vec32, fn_addr(irq0_handler as void*), IDT_INTERRUPT_GATE);
+
+        // IDTを再ロード
+        idt.load();
+
+        // PICのIRQ0をアンマスク（有効化）
+        ulong irq0 = 0 as ulong;
+        pic->unmask(irq0);
+
+        self.frequency = 100;
+
+        debug.println("[PIT] 100Hz timer initialized" as void*);
+        serial.puts("[PIT] initialized at 100Hz, divisor=" as void*);
+        serial.print_hex(divisor);
+        serial.putc(10);
+    }
+}

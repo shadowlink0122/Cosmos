@@ -191,63 +191,20 @@ test: setup-esp download-ovmf
 		echo "✗ FAIL: デバッグログが生成されなかった"; \
 	else \
 		PASS=0; FAIL=0; \
-		if grep -q "\[BOOT\] serial_init" $(DEBUG_LOG); then \
-			echo "✓ PASS: シリアル初期化"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: シリアル初期化"; FAIL=$$((FAIL+1)); \
+		grep "\[TEST\] PASS:\|\[TEST\] FAIL:" $(DEBUG_LOG) 2>/dev/null | while read line; do \
+			echo "  $$line"; \
+		done; \
+		if grep -q "\[TEST\] PASS:" $(DEBUG_LOG) 2>/dev/null; then \
+			PASS=$$(grep -c "\[TEST\] PASS:" $(DEBUG_LOG)); \
 		fi; \
-		if grep -q "\[BOOT\] ExitBootServices OK" $(DEBUG_LOG); then \
-			echo "✓ PASS: ExitBootServices"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: ExitBootServices"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] kernel_main entered" $(DEBUG_LOG); then \
-			echo "✓ PASS: カーネル起動"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: カーネル起動"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] gdt_init: done" $(DEBUG_LOG); then \
-			echo "✓ PASS: GDT初期化"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: GDT初期化"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] PIC initialized" $(DEBUG_LOG); then \
-			echo "✓ PASS: PIC初期化"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: PIC初期化"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] IDT initialized" $(DEBUG_LOG); then \
-			echo "✓ PASS: IDT初期化"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: IDT初期化"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] ISR registered" $(DEBUG_LOG); then \
-			echo "✓ PASS: ISR登録"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: ISR登録"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] PMM initialized" $(DEBUG_LOG); then \
-			echo "✓ PASS: PMM初期化"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: PMM初期化"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] PMM alloc/free test OK" $(DEBUG_LOG); then \
-			echo "✓ PASS: PMM alloc/free"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: PMM alloc/free"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] paging enabled" $(DEBUG_LOG); then \
-			echo "✓ PASS: ページング有効"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: ページング有効"; FAIL=$$((FAIL+1)); \
-		fi; \
-		if grep -q "\[BOOT\] heap initialized" $(DEBUG_LOG); then \
-			echo "✓ PASS: ヒープ初期化"; PASS=$$((PASS+1)); \
-		else \
-			echo "✗ FAIL: ヒープ初期化"; FAIL=$$((FAIL+1)); \
+		if grep -q "\[TEST\] FAIL:" $(DEBUG_LOG) 2>/dev/null; then \
+			FAIL=$$(grep -c "\[TEST\] FAIL:" $(DEBUG_LOG)); \
 		fi; \
 		echo ""; \
 		echo "結果: $$PASS passed, $$FAIL failed"; \
+		if [ "$$FAIL" -gt 0 ]; then \
+			exit 1; \
+		fi; \
 	fi
 
 # ============================================================

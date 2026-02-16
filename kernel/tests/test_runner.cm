@@ -1,0 +1,112 @@
+//! platform: uefi
+// kernel::tests::test_runner - テスト実行フレームワーク
+//
+// カーネル統合テストの結果カウント・出力を管理する。
+// debug_port経由で[TEST]タグ付きの結果を出力し、
+// MakefileのgrepでPASS/FAILを判定する。
+//
+// 注意: Cmのメソッド呼び出し(self)はコピーされるため、
+// カウンタ更新にはポインタ経由のフリー関数を使用する。
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+
+// ============================================================
+// TestRunner 構造体
+// ============================================================
+
+/// テスト実行結果を管理する構造体
+export struct TestRunner {
+    ulong pass_count;   // PASSしたテスト数
+    ulong fail_count;   // FAILしたテスト数
+}
+
+// ============================================================
+// TestRunner メソッド実装
+// ============================================================
+
+impl TestRunner {
+    /// コンストラクタ
+    overload self() {
+        self.pass_count = 0;
+        self.fail_count = 0;
+    }
+}
+
+// ============================================================
+// テストアサーション関数（フリー関数 — ポインタ経由で確実に更新）
+// ============================================================
+
+/// 条件が真であることをアサート
+export void assert_true(TestRunner* runner, ulong condition, void* test_name) {
+    DebugPort debug(0xE9);
+    SerialPort serial(0x3F8);
+    ulong one = 1 as ulong;
+
+    if (condition != 0) {
+        debug.puts("[TEST] PASS: " as void*);
+        debug.println(test_name);
+        serial.puts("[TEST] PASS: " as void*);
+        serial.println(test_name);
+        ulong cur = runner->pass_count;
+        runner->pass_count = cur + one;
+    } else {
+        debug.puts("[TEST] FAIL: " as void*);
+        debug.println(test_name);
+        serial.puts("[TEST] FAIL: " as void*);
+        serial.println(test_name);
+        ulong cur = runner->fail_count;
+        runner->fail_count = cur + one;
+    }
+}
+
+/// 2つの値が等しいことをアサート
+export void assert_eq(TestRunner* runner, ulong a, ulong b, void* test_name) {
+    ulong condition = 0;
+    if (a == b) {
+        condition = 1;
+    }
+    assert_true(runner, condition, test_name);
+}
+
+/// aがbより大きいことをアサート
+export void assert_gt(TestRunner* runner, ulong a, ulong b, void* test_name) {
+    ulong condition = 0;
+    if (a > b) {
+        condition = 1;
+    }
+    assert_true(runner, condition, test_name);
+}
+
+/// aが0でないことをアサート
+export void assert_nonzero(TestRunner* runner, ulong a, void* test_name) {
+    ulong condition = 0;
+    if (a != 0) {
+        condition = 1;
+    }
+    assert_true(runner, condition, test_name);
+}
+
+/// テスト結果サマリーを出力
+export void print_test_results(TestRunner* runner) {
+    DebugPort debug(0xE9);
+    SerialPort serial(0x3F8);
+
+    debug.puts("[TEST] results: " as void*);
+    debug.print_hex(runner->pass_count);
+    debug.puts(" passed, " as void*);
+    debug.print_hex(runner->fail_count);
+    debug.println(" failed" as void*);
+
+    serial.puts("[TEST] results: " as void*);
+    serial.print_hex(runner->pass_count);
+    serial.puts(" passed, " as void*);
+    serial.print_hex(runner->fail_count);
+    serial.println(" failed" as void*);
+
+    if (runner->fail_count == 0) {
+        debug.println("[TEST] ALL PASSED" as void*);
+    } else {
+        debug.println("[TEST] SOME FAILED" as void*);
+    }
+}

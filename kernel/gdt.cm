@@ -11,6 +11,11 @@
 //
 // 注意: x86_64 Long Modeでは、ベース/リミットはほとんど無視される。
 //       Code Segmentの L(Long) ビットとDB=0 が重要。
+//
+// 重要: GDTデータは永続メモリに配置する必要がある。
+//       lgdt後もCPUがGDTを参照し続けるため、一時メモリ
+//       （関数のスタックフレーム等）に配置すると、
+//       割り込み発生時にCPUがGDTを読み直した際に#GPが起きる。
 
 import ./drivers/serial;
 import ./drivers/debug_port;
@@ -34,17 +39,19 @@ const ulong GDT_KERNEL_DATA = 0x00CF92000000FFFF;
 const ulong KERNEL_CS = 0x08;  // GDT[1]
 const ulong KERNEL_DS = 0x10;  // GDT[2]
 
+// GDTデータの永続配置アドレス
+// UEFIアイデンティティマッピング下で安全に使用可能な低メモリ領域
+// 0x800は従来のBDA/IVT領域の上で、UEFIでは通常未使用
+const ulong GDT_PERMANENT_ADDR = 0x800;
+
 // ============================================================
-// GDT読み込み（オールインワン）
+// GDT読み込み
 // ============================================================
 
 /// GDTを初期化してCPUにロードし、セグメントレジスタを再設定する
 ///
-/// Cmコンパイラのスタックレイアウトバグ回避:
-///   ローカル配列と別のローカル変数がスタックで重複する問題があるため、
-///   配列確保・設定・ロードを一つの関数内で完結させ、
-///   中間ポインタ変数（void* gdt_raw等）を使用しない。
-///   GDTテーブルはASM内で直接スタックに構築する。
+/// GDTデータは固定アドレス(0x800)に配置する。
+/// この領域はUEFI環境ではカーネルが自由に使用できる。
 export void gdt_init() {
     DebugPort debug;
     debug.port = 0xE9;
@@ -57,30 +64,30 @@ export void gdt_init() {
     ulong cs_sel = KERNEL_CS;
     ulong ds_sel = KERNEL_DS;
     ulong gdt_limit = 23 as ulong;  // 3 * 8 - 1
+    ulong gdt_addr = GDT_PERMANENT_ADDR;
 
-    // GDTテーブルをASMスタック上に直接構築し、lgdtでロード
-    // その後、far returnでCSを再設定し、DS/ES/SS/FS/GSを設定
+    // GDTエントリを固定アドレスに書き込み、lgdtでロード
+    // far returnでCSを再設定し、DS/ES/SS/FS/GSを設定
     __asm__(`
-        // GDTテーブル領域（24バイト = 3エントリ）とGDTR（10バイト）をスタックに確保
-        // 合計: 24 + 16（アライメント）= 48バイト（余裕を持って確保）
-        subq $$48, %rsp;
+        // 永続GDTアドレスをRDIにロード
+        movq ${r:gdt_addr}, %rdi;
 
-        // GDTエントリをスタックに書き込み
+        // GDTエントリを永続メモリに書き込み
         movq ${r:gdt_null}, %rax;
-        movq %rax, (%rsp);          // [0] Null Descriptor
+        movq %rax, (%rdi);          // [0] Null Descriptor
         movq ${r:gdt_code}, %rax;
-        movq %rax, 8(%rsp);         // [1] Kernel Code
+        movq %rax, 8(%rdi);         // [1] Kernel Code
         movq ${r:gdt_data}, %rax;
-        movq %rax, 16(%rsp);        // [2] Kernel Data
+        movq %rax, 16(%rdi);        // [2] Kernel Data
 
         // GDTR構造体を構築（offset 24に配置）
         movq ${r:gdt_limit}, %rax;
-        movw %ax, 24(%rsp);         // limit = 23
-        movq %rsp, %rax;
-        movq %rax, 26(%rsp);        // base = GDTテーブルのスタックアドレス
+        movw %ax, 24(%rdi);         // limit = 23
+        movq %rdi, %rax;
+        movq %rax, 26(%rdi);        // base = GDT先頭アドレス
 
         // lgdt: GDTをCPUにロード
-        lgdt 24(%rsp);
+        lgdt 24(%rdi);
 
         // セグメントレジスタを再設定
         movq ${r:ds_sel}, %rax;
@@ -97,7 +104,6 @@ export void gdt_init() {
         pushq %rax;
         lretq;
         2:
-        addq $$48, %rsp
     `);
 
     debug.println("[BOOT] gdt_init: done" as void*);
