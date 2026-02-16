@@ -5,39 +5,12 @@
 // x86 I/Oポート命令（out/in）を使用するため、
 // ExitBootServices前後どちらでも動作する。
 //
-// レジスタマップ (COM1: 0x3F8):
-//   +0 (DLAB=0): データ送受信 (THR/RBR)
-//   +1 (DLAB=0): 割り込み有効レジスタ (IER)
-//   +0 (DLAB=1): ボーレート除数下位 (DLL)
-//   +1 (DLAB=1): ボーレート除数上位 (DLM)
-//   +2: FIFO制御レジスタ (FCR)
-//   +3: 回線制御レジスタ (LCR)
-//   +4: モデム制御レジスタ (MCR)
-//   +5: 回線ステータスレジスタ (LSR)
+// impl SerialPort { ... } パターンでメソッド呼び出しを提供:
+//   serial.init();
+//   serial.println("Hello" as void*);
 
 // ============================================================
-// 定数
-// ============================================================
-
-const ulong COM1_PORT = 0x3F8;
-
-// レジスタオフセット
-const ulong REG_DATA = 0;  // データ送受信 / ボーレート下位(DLAB=1)
-const ulong REG_IER  = 1;  // 割り込み有効 / ボーレート上位(DLAB=1)
-const ulong REG_FCR  = 2;  // FIFO制御
-const ulong REG_LCR  = 3;  // 回線制御
-const ulong REG_MCR  = 4;  // モデム制御
-const ulong REG_LSR  = 5;  // 回線ステータス
-
-// LCR ビット
-const ulong LCR_DLAB = 0x80;  // Divisor Latch Access Bit
-const ulong LCR_8N1  = 0x03;  // 8データビット, パリティなし, 1ストップビット
-
-// LSR ビット
-const ulong LSR_THRE = 0x20;  // 送信保持レジスタ空
-
-// ============================================================
-// I/Oポート操作（ASM）
+// I/Oポート操作（ASM） — フリー関数として維持（他モジュールから参照）
 // ============================================================
 
 /// I/Oポートに1バイト出力
@@ -62,124 +35,123 @@ export ulong inb(ulong port) {
 }
 
 // ============================================================
-// シリアルポート初期化
+// SerialPort 構造体
 // ============================================================
 
-/// COM1 シリアルポートを初期化
-/// ボーレート: 115200, 8N1, FIFO有効
-export void serial_init() {
-    // リテラル値を使用（Cmコンパイラのconst式評価バグ回避）
-    // COM1 = 0x3F8
-    // +0: DATA/DLL, +1: IER/DLM, +2: FCR, +3: LCR, +4: MCR, +5: LSR
-
-    // 割り込みを無効化
-    outb(0x3F9, 0x00);  // IER = 0x3F8 + 1
-
-    // DLABをセットしてボーレート設定モードに入る
-    outb(0x3FB, 0x80);  // LCR = 0x3F8 + 3, DLAB = 0x80
-
-    // ボーレート除数 = 1 (115200 baud)
-    outb(0x3F8, 0x01);  // DLL = 0x3F8 + 0
-    outb(0x3F9, 0x00);  // DLM = 0x3F8 + 1
-
-    // 8N1: 8データビット, パリティなし, 1ストップビット
-    outb(0x3FB, 0x03);  // LCR = 0x3F8 + 3, 8N1 = 0x03
-
-    // FIFO有効化: 14バイトしきい値, FIFO クリア
-    outb(0x3FA, 0xC7);  // FCR = 0x3F8 + 2
-
-    // DTR + RTS + OUT2
-    outb(0x3FC, 0x0B);  // MCR = 0x3F8 + 4
-
-    // ループバックモードでテスト
-    outb(0x3FC, 0x1E);  // MCR ループバック設定
-    outb(0x3F8, 0xAE);  // DATA テストバイト送信
-
-    // テストバイトが返ってくるか確認
-    ulong test_result = inb(0x3F8);  // DATA
-    // ループバック解除して通常モードに戻す
-    outb(0x3FC, 0x0F);  // MCR
+/// UARTシリアルポート（COM1等）
+export struct SerialPort {
+    ulong port;    // ベースI/Oポートアドレス（COM1 = 0x3F8）
 }
 
 // ============================================================
-// シリアル出力
+// SerialPort メソッド実装
 // ============================================================
 
-/// 送信バッファが空になるまで待機
-export void serial_wait_ready() {
-    // COM1 LSR = 0x3F8 + 5 = 0x3FD
-    // リテラル値を使用（Cmコンパイラのconst式評価バグ回避）
-    ulong lsr_port = 0x3FD;
-    ulong thre_mask = 0x20 as ulong;
-    ulong status = inb(lsr_port);
-    ulong thre = status & thre_mask;
-    while (thre == 0) {
-        status = inb(lsr_port);
-        thre = status & thre_mask;
+impl SerialPort {
+    /// シリアルポートを初期化（ボーレート115200, 8N1, FIFO有効）
+    void init() {
+        ulong p = self.port;
+
+        // 割り込みを無効化
+        outb(p + 1, 0x00);  // IER
+
+        // DLABをセットしてボーレート設定モードに入る
+        outb(p + 3, 0x80);  // LCR, DLAB = 0x80
+
+        // ボーレート除数 = 1 (115200 baud)
+        outb(p, 0x01);      // DLL
+        outb(p + 1, 0x00);  // DLM
+
+        // 8N1: 8データビット, パリティなし, 1ストップビット
+        outb(p + 3, 0x03);  // LCR, 8N1
+
+        // FIFO有効化: 14バイトしきい値, FIFO クリア
+        outb(p + 2, 0xC7);  // FCR
+
+        // DTR + RTS + OUT2
+        outb(p + 4, 0x0B);  // MCR
+
+        // ループバックモードでテスト
+        outb(p + 4, 0x1E);  // MCR ループバック設定
+        outb(p, 0xAE);      // DATA テストバイト送信
+
+        // テストバイトが返ってくるか確認
+        ulong test_result = inb(p);
+        // ループバック解除して通常モードに戻す
+        outb(p + 4, 0x0F);  // MCR
     }
-}
 
-/// 1バイト出力
-export void serial_putc(ulong ch) {
-    serial_wait_ready();
-    // COM1 DATA = 0x3F8 + 0 = 0x3F8
-    outb(0x3F8, ch);
-}
-
-/// NUL終端文字列を出力
-export void serial_puts(void* data) {
-    ulong data_val = data as ulong;
-    ulong i = 0;
-
-    // Cmコンパイラのwhile(byte_val != 0)バグ回避:
-    // while(true) + if + break パターンを使用
-    while (true) {
-        ulong byte_val = 0;
-        ulong addr = data_val + i;
-        __asm__(`
-            movq ${r:addr}, %r10;
-            xorq %rax, %rax;
-            movzbl (%r10), %eax;
-            movq %rax, ${=r:byte_val}
-        `);
-        if (byte_val == 0) {
-            break;
+    /// 送信バッファが空になるまで待機
+    void wait_ready() {
+        ulong lsr_port = self.port + 5;  // LSR
+        ulong thre_mask = 0x20 as ulong;
+        ulong status = inb(lsr_port);
+        ulong thre = status & thre_mask;
+        while (thre == 0) {
+            status = inb(lsr_port);
+            thre = status & thre_mask;
         }
-        // '\n' の場合は '\r\n' に変換
-        if (byte_val == 10) {
-            serial_putc(13);
-        }
-        serial_putc(byte_val);
-        i += 1;
     }
-}
 
-/// 文字列を改行付きで出力
-export void serial_println(void* data) {
-    serial_puts(data);
-    serial_putc(13);  // CR
-    serial_putc(10);  // LF
-}
+    /// 1バイト出力
+    void putc(ulong ch) {
+        self.wait_ready();
+        outb(self.port, ch);
+    }
 
-/// 16進数出力（0x + 16桁）
-export void serial_print_hex(ulong value) {
-    serial_putc(48);   // '0'
-    serial_putc(120);  // 'x'
+    /// NUL終端文字列を出力
+    void puts(void* data) {
+        ulong data_val = data as ulong;
+        ulong i = 0;
 
-    ulong mask = 15 as ulong;
-    ulong char_0 = 48;  // '0'
-    ulong char_A = 65;  // 'A'
-    ulong max_digits = 16;
-    ulong i = 0;
-    while (i < max_digits) {
-        ulong shift = (15 - i) * 4;
-        ulong nibble = (value >> shift) & mask;
-        ulong ten = 10;
-        if (nibble < ten) {
-            serial_putc(char_0 + nibble);
-        } else {
-            serial_putc(char_A + nibble - ten);
+        while (true) {
+            ulong byte_val = 0;
+            ulong addr = data_val + i;
+            __asm__(`
+                movq ${r:addr}, %r10;
+                xorq %rax, %rax;
+                movzbl (%r10), %eax;
+                movq %rax, ${=r:byte_val}
+            `);
+            if (byte_val == 0) {
+                break;
+            }
+            // '\n' の場合は '\r\n' に変換
+            if (byte_val == 10) {
+                self.putc(13);
+            }
+            self.putc(byte_val);
+            i += 1;
         }
-        i += 1;
+    }
+
+    /// 文字列を改行付きで出力
+    void println(void* data) {
+        self.puts(data);
+        self.putc(13);  // CR
+        self.putc(10);  // LF
+    }
+
+    /// 16進数出力（0x + 16桁）
+    void print_hex(ulong value) {
+        self.putc(48);   // '0'
+        self.putc(120);  // 'x'
+
+        ulong mask = 15 as ulong;
+        ulong char_0 = 48;  // '0'
+        ulong char_A = 65;  // 'A'
+        ulong max_digits = 16;
+        ulong i = 0;
+        while (i < max_digits) {
+            ulong shift = (15 - i) * 4;
+            ulong nibble = (value >> shift) & mask;
+            ulong ten = 10;
+            if (nibble < ten) {
+                self.putc(char_0 + nibble);
+            } else {
+                self.putc(char_A + nibble - ten);
+            }
+            i += 1;
+        }
     }
 }

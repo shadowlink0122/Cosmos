@@ -4,80 +4,79 @@
 // QEMU固有のデバッグコンソール（ポート0xE9）への出力を提供する。
 // OVMFのシリアル出力と干渉しないクリーンなデバッグチャネル。
 //
-// QEMU起動時に以下のオプションで有効化:
-//   -debugcon file:debug.log
-//
-// 注意: このポートはQEMU固有。実機では使用不可。
+// impl DebugPort { ... } パターンでメソッド呼び出しを提供:
+//   debug.println("msg" as void*);
 
 import ./serial;  // outb関数を再利用
 
 // ============================================================
-// 定数
+// DebugPort 構造体
 // ============================================================
 
-// QEMUデバッグコンソールポート
-const ulong DEBUG_PORT = 0xE9;
-
-// ============================================================
-// デバッグ出力
-// ============================================================
-
-/// デバッグポートに1バイト出力
-export void debug_putc(ulong ch) {
-    outb(DEBUG_PORT, ch);
+/// QEMUデバッグコンソールポート
+export struct DebugPort {
+    ulong port;    // デバッグI/Oポートアドレス（QEMU = 0xE9）
 }
 
-/// デバッグポートにNUL終端文字列を出力
-export void debug_puts(void* data) {
-    ulong data_val = data as ulong;
-    ulong i = 0;
+// ============================================================
+// DebugPort メソッド実装
+// ============================================================
 
-    // Cmコンパイラのwhile(byte_val != 0)バグ回避:
-    // __asm__出力変数の値がwhile条件に反映されないため、
-    // while(true) + if + break パターンを使用
-    while (true) {
-        ulong byte_val = 0;
-        ulong addr = data_val + i;
-        __asm__(`
-            movq ${r:addr}, %r10;
-            xorq %rax, %rax;
-            movzbl (%r10), %eax;
-            movq %rax, ${=r:byte_val}
-        `);
-        if (byte_val == 0) {
-            break;
-        }
-        outb(DEBUG_PORT, byte_val);
-        i += 1;
+impl DebugPort {
+    /// デバッグポートに1バイト出力
+    void putc(ulong ch) {
+        outb(self.port, ch);
     }
-}
 
-/// デバッグポートに文字列を改行付きで出力
-export void debug_println(void* data) {
-    debug_puts(data);
-    outb(DEBUG_PORT, 13);  // CR
-    outb(DEBUG_PORT, 10);  // LF
-}
+    /// デバッグポートにNUL終端文字列を出力
+    void puts(void* data) {
+        ulong data_val = data as ulong;
+        ulong i = 0;
 
-/// デバッグポートに16進数出力
-export void debug_print_hex(ulong value) {
-    outb(DEBUG_PORT, 48);   // '0'
-    outb(DEBUG_PORT, 120);  // 'x'
-
-    ulong mask = 15 as ulong;
-    ulong char_0 = 48;
-    ulong char_A = 65;
-    ulong max_digits = 16;
-    ulong i = 0;
-    while (i < max_digits) {
-        ulong shift = (15 - i) * 4;
-        ulong nibble = (value >> shift) & mask;
-        ulong ten = 10;
-        if (nibble < ten) {
-            outb(DEBUG_PORT, char_0 + nibble);
-        } else {
-            outb(DEBUG_PORT, char_A + nibble - ten);
+        while (true) {
+            ulong byte_val = 0;
+            ulong addr = data_val + i;
+            __asm__(`
+                movq ${r:addr}, %r10;
+                xorq %rax, %rax;
+                movzbl (%r10), %eax;
+                movq %rax, ${=r:byte_val}
+            `);
+            if (byte_val == 0) {
+                break;
+            }
+            outb(self.port, byte_val);
+            i += 1;
         }
-        i += 1;
+    }
+
+    /// デバッグポートに文字列を改行付きで出力
+    void println(void* data) {
+        self.puts(data);
+        outb(self.port, 13);  // CR
+        outb(self.port, 10);  // LF
+    }
+
+    /// デバッグポートに16進数出力
+    void print_hex(ulong value) {
+        outb(self.port, 48);   // '0'
+        outb(self.port, 120);  // 'x'
+
+        ulong mask = 15 as ulong;
+        ulong char_0 = 48;
+        ulong char_A = 65;
+        ulong max_digits = 16;
+        ulong i = 0;
+        while (i < max_digits) {
+            ulong shift = (15 - i) * 4;
+            ulong nibble = (value >> shift) & mask;
+            ulong ten = 10;
+            if (nibble < ten) {
+                outb(self.port, char_0 + nibble);
+            } else {
+                outb(self.port, char_A + nibble - ten);
+            }
+            i += 1;
+        }
     }
 }

@@ -46,7 +46,9 @@ const ulong KERNEL_DS = 0x10;  // GDT[2]
 ///   中間ポインタ変数（void* gdt_raw等）を使用しない。
 ///   GDTテーブルはASM内で直接スタックに構築する。
 export void gdt_init() {
-    debug_println("[BOOT] gdt_init: start" as void*);
+    DebugPort debug;
+    debug.port = 0xE9;
+    debug.println("[BOOT] gdt_init: start" as void*);
 
     // GDT定数をローカル変数にコピー（ASMから参照するため）
     ulong gdt_null = GDT_NULL;
@@ -98,6 +100,8 @@ export void gdt_init() {
         addq $$48, %rsp
     `);
 
-    debug_println("[BOOT] gdt_init: done" as void*);
-    serial_println("[Cosmos] GDT initialized" as void*);
+    debug.println("[BOOT] gdt_init: done" as void*);
+    SerialPort serial;
+    serial.port = 0x3F8;
+    serial.println("[Cosmos] GDT initialized" as void*);
 }
