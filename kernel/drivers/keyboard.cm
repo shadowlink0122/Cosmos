@@ -286,5 +286,5 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
     pic->unmask(irq1);
 
     debug.println("[KBD] PS/2 keyboard initialized" as void*);
-    serial.println("[Cosmos] Keyboard initialized" as void*);
+    serial.println("[CosmOS] Keyboard initialized" as void*);
 }

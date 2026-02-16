@@ -1,5 +1,5 @@
 //! platform: uefi
-// Cosmos OS - Cm言語で開発するOS
+// CosmOS - Cm言語で開発するOS
 //
 // 全モジュールでinterface/implパターンを使用:
 //   serial.println(), debug.println(), pic.init(),
@@ -86,7 +86,7 @@ void collect_fb_info(void* system_table, BootInfo* info) {
     ulong status = gop_init(system_table, &fb_base, &width, &height, &stride);
     long signed_status = status as long;
     if (signed_status < 0) {
-        serial.println("[Cosmos] WARNING: GOP init failed" as void*);
+        serial.println("[CosmOS] WARNING: GOP init failed" as void*);
         return;
     }
 
@@ -97,8 +97,8 @@ void collect_fb_info(void* system_table, BootInfo* info) {
     info->fb.pixel_format = 0;  // BGRA（デフォルト）
     info->fb.size = height * stride * 4;
 
-    serial.println("[Cosmos] Framebuffer info collected" as void*);
-    serial.puts("[Cosmos]   Resolution: " as void*);
+    serial.println("[CosmOS] Framebuffer info collected" as void*);
+    serial.puts("[CosmOS]   Resolution: " as void*);
     serial.print_hex(width);
     serial.puts(" x " as void*);
     serial.print_hex(height);
@@ -161,8 +161,8 @@ void kernel_main(BootInfo* info) {
     DebugPort debug(0xE9);
 
     debug.println("[BOOT] kernel_main entered" as void*);
-    serial.println("[Cosmos] === Kernel Main ===" as void*);
-    serial.println("[Cosmos] ExitBootServices completed successfully" as void*);
+    serial.println("[CosmOS] === Kernel Main ===" as void*);
+    serial.println("[CosmOS] ExitBootServices completed successfully" as void*);
 
     // GDT設定（固定アドレス0x800に永続配置）
     gdt_init();
@@ -170,7 +170,7 @@ void kernel_main(BootInfo* info) {
     // PIC 8259A初期化（IRQリマップ 32-47、全マスク）
     PIC8259A pic();
     pic.init();
-    serial.println("[Cosmos] PIC initialized (IRQ remapped to vectors 32-47)" as void*);
+    serial.println("[CosmOS] PIC initialized (IRQ remapped to vectors 32-47)" as void*);
     debug.println("[BOOT] PIC initialized" as void*);
 
     // IDT初期化（仮テーブル: メモリマップバッファを一時利用）
@@ -178,36 +178,36 @@ void kernel_main(BootInfo* info) {
     //     PMM初期化後に専用ページで再構築する
     uint* idt_table = info->mmap.map_buffer as uint*;
     IDT idt(idt_table);
-    serial.println("[Cosmos] IDT initialized (temporary)" as void*);
+    serial.println("[CosmOS] IDT initialized (temporary)" as void*);
     debug.println("[BOOT] IDT initialized" as void*);
 
     // ISRスタブ登録（例外0-31）
     ISRManager isr(idt_table);
-    serial.println("[Cosmos] ISR stubs registered (vectors 0-31)" as void*);
+    serial.println("[CosmOS] ISR stubs registered (vectors 0-31)" as void*);
     debug.println("[BOOT] ISR registered" as void*);
 
     // IDTを再ロード（ISR登録後）
     idt.load();
-    serial.println("[Cosmos] IDT loaded with ISR stubs" as void*);
+    serial.println("[CosmOS] IDT loaded with ISR stubs" as void*);
     debug.println("[BOOT] IDT reloaded" as void*);
 
     // 物理メモリマネージャ初期化
     PMM pmm(info->mmap.map_buffer, info->mmap.map_size,
             info->mmap.desc_size as ulong, info->mmap.entry_count as ulong);
     pmm.print_stats();
-    serial.println("[Cosmos] PMM initialized (bitmap physical memory manager)" as void*);
+    serial.println("[CosmOS] PMM initialized (bitmap physical memory manager)" as void*);
     debug.println("[BOOT] PMM initialized" as void*);
 
     // ページテーブル管理（UEFIのアイデンティティマッピングを継承）
     VMM vmm();
     vmm.print_stats();
-    serial.println("[Cosmos] Paging enabled (identity mapped)" as void*);
+    serial.println("[CosmOS] Paging enabled (identity mapped)" as void*);
     debug.println("[BOOT] paging enabled" as void*);
 
     // カーネルヒープ初期化（64ページ = 256KB）
     Heap heap(&pmm, 64);
     heap.print_stats();
-    serial.println("[Cosmos] Kernel heap initialized (bump allocator)" as void*);
+    serial.println("[CosmOS] Kernel heap initialized (bump allocator)" as void*);
     debug.println("[BOOT] heap initialized" as void*);
 
     // フレームバッファテキストコンソール初期化
@@ -217,7 +217,7 @@ void kernel_main(BootInfo* info) {
     ulong fb_stride = info->fb.stride as ulong;
 
     if (fb != 0) {
-        serial.println("[Cosmos] Initializing framebuffer console..." as void*);
+        serial.println("[CosmOS] Initializing framebuffer console..." as void*);
 
         // グローバルFBConsoleを固定アドレスに初期化
         global_fb_init(fb, fb_w, fb_h, fb_stride);
@@ -228,7 +228,7 @@ void kernel_main(BootInfo* info) {
 
         // ブートバナー表示（QEMU画面）
         gcon->set_color(0x00FFFFFF);
-        gcon->puts("  Cosmos OS v0.5.0" as void*);
+        gcon->puts("  CosmOS v0.5.0" as void*);
         gcon->newline();
         gcon->newline();
         gcon->set_color(0x0000FF00);
@@ -239,25 +239,25 @@ void kernel_main(BootInfo* info) {
         gcon->newline();
         gcon->newline();
 
-        serial.println("[Cosmos] Framebuffer initialized" as void*);
+        serial.println("[CosmOS] Framebuffer initialized" as void*);
     } else {
-        serial.println("[Cosmos] WARNING: No framebuffer available" as void*);
+        serial.println("[CosmOS] WARNING: No framebuffer available" as void*);
     }
 
     // PITタイマー初期化（100Hz）
     PIT pit();
     pit.init(&pic, idt_table);
-    serial.println("[Cosmos] PIT timer initialized (100Hz)" as void*);
+    serial.println("[CosmOS] PIT timer initialized (100Hz)" as void*);
     debug.println("[BOOT] PIT initialized" as void*);
 
     // スケジューラ初期化
     sched_init(&pmm);
-    serial.println("[Cosmos] Scheduler initialized" as void*);
+    serial.println("[CosmOS] Scheduler initialized" as void*);
     debug.println("[BOOT] scheduler initialized" as void*);
 
     // 割り込み有効化（sti）
     __asm__(`sti`);
-    serial.println("[Cosmos] Interrupts enabled" as void*);
+    serial.println("[CosmOS] Interrupts enabled" as void*);
     debug.println("[BOOT] interrupts enabled" as void*);
 
     // TSS初期化（現在のRSPをカーネルスタックとして使用）
@@ -267,7 +267,7 @@ void kernel_main(BootInfo* info) {
     `);
     tss_init(current_rsp);
     tss_install_gdt();
-    serial.println("[Cosmos] TSS initialized" as void*);
+    serial.println("[CosmOS] TSS initialized" as void*);
     debug.println("[BOOT] TSS initialized" as void*);
 
     // キーボード初期化
@@ -277,10 +277,10 @@ void kernel_main(BootInfo* info) {
     // ============================================================
     // デモタスク生成（マルチタスク動作確認用）
     // ============================================================
-    serial.println("[Cosmos] Spawning demo tasks..." as void*);
+    serial.println("[CosmOS] Spawning demo tasks..." as void*);
     demo_spawn_tasks();
     sched_enable();
-    serial.println("[Cosmos] Scheduler enabled, demo tasks running" as void*);
+    serial.println("[CosmOS] Scheduler enabled, demo tasks running" as void*);
 
     // デモタスクを開始（schedule呼出しで最初のタスクに切替）
     schedule();
@@ -290,7 +290,7 @@ void kernel_main(BootInfo* info) {
     debug.println("[BOOT] shell initialized" as void*);
 
     // idleループ（タイマー割り込み+シェル+スケジューラ統合）
-    serial.println("[Cosmos] Entering idle loop with shell" as void*);
+    serial.println("[CosmOS] Entering idle loop with shell" as void*);
     debug.println("[BOOT] entering idle loop" as void*);
 
     while (true) {
@@ -324,15 +324,15 @@ ulong efi_main(void* image_handle, void* system_table) {
     debug.println("[BOOT] efi_main entered" as void*);
 
     SerialPort serial(0x3F8);
-    serial.println("[Cosmos] Serial console initialized" as void*);
-    serial.println("[Cosmos] UEFI boot started" as void*);
+    serial.println("[CosmOS] Serial console initialized" as void*);
+    serial.println("[CosmOS] UEFI boot started" as void*);
     debug.println("[BOOT] serial_init completed" as void*);
 
     efi_clear_screen(system_table);
 
     // バナー表示
     efi_println(system_table, "========================================" as void*);
-    efi_println(system_table, "  Cosmos OS v0.1.0" as void*);
+    efi_println(system_table, "  CosmOS v0.1.0" as void*);
     efi_println(system_table, "========================================" as void*);
     efi_println(system_table, "" as void*);
 
@@ -341,7 +341,7 @@ ulong efi_main(void* image_handle, void* system_table) {
     // ============================================================
 
     efi_println(system_table, "[Phase 1] Collecting boot information..." as void*);
-    serial.println("[Cosmos] Phase 1: Collecting boot information" as void*);
+    serial.println("[CosmOS] Phase 1: Collecting boot information" as void*);
 
     // BootInfo構造体をスタック上に確保
     BootInfo boot_info;
@@ -383,14 +383,14 @@ ulong efi_main(void* image_handle, void* system_table) {
     // ============================================================
 
     efi_println(system_table, "[Phase 1] Calling ExitBootServices..." as void*);
-    serial.println("[Cosmos] Calling ExitBootServices..." as void*);
+    serial.println("[CosmOS] Calling ExitBootServices..." as void*);
     debug.println("[BOOT] calling ExitBootServices" as void*);
 
     ulong exit_status = efi_exit_boot_services(system_table, image_handle, boot_info.mmap.map_key);
     long signed_exit = exit_status as long;
 
     if (signed_exit < 0) {
-        serial.println("[Cosmos] ExitBootServices failed, retrying..." as void*);
+        serial.println("[CosmOS] ExitBootServices failed, retrying..." as void*);
 
         ulong retry_map_size = boot_info.mmap.map_size + 4096;
         ulong retry_map_key = 0;
@@ -405,7 +405,7 @@ ulong efi_main(void* image_handle, void* system_table) {
         signed_exit = exit_status as long;
 
         if (signed_exit < 0) {
-            serial.println("[Cosmos] FATAL: ExitBootServices retry failed!" as void*);
+            serial.println("[CosmOS] FATAL: ExitBootServices retry failed!" as void*);
             debug.println("[BOOT] FATAL: ExitBootServices retry failed" as void*);
             while (true) {
                 __asm__("hlt");
@@ -417,7 +417,7 @@ ulong efi_main(void* image_handle, void* system_table) {
     // ExitBootServices成功 — ここからはBoot Services使用不可
     // ============================================================
 
-    serial.println("[Cosmos] ExitBootServices OK" as void*);
+    serial.println("[CosmOS] ExitBootServices OK" as void*);
     debug.println("[BOOT] ExitBootServices OK" as void*);
 
     // カーネルメインに制御を移す

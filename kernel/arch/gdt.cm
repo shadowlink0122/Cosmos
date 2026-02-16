@@ -120,5 +120,5 @@ export void gdt_init() {
     debug.println("[BOOT] gdt_init: done" as void*);
     SerialPort serial;
     serial.port = 0x3F8;
-    serial.println("[Cosmos] GDT initialized" as void*);
+    serial.println("[CosmOS] GDT initialized" as void*);
 }

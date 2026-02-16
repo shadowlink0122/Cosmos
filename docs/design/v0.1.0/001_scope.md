@@ -72,7 +72,7 @@ UEFIベースプログラム（`kernel/boot/`）を土台に、UEFI Boot Service
 |-------|------|------|
 | FB直接描画 | BootInfoから取得したFBアドレスに直接ピクセル書込み | ✅ |
 | カーネルprintk相当 | フォントレンダリング + FB出力 | ✅ |
-| 起動メッセージ表示 | 「Cosmos OS v0.1.0 booted successfully」の表示 | ✅ |
+| 起動メッセージ表示 | 「CosmOS v0.1.0 booted successfully」の表示 | ✅ |
 
 **既存活用:**
 - `kernel/boot/util/graphics.cm` の描画プリミティブを再利用

@@ -1,5 +1,5 @@
 //! platform: uefi
-// Cosmos OS - テスト用エントリポイント
+// CosmOS - テスト用エントリポイント
 //
 // make test で使用されるテスト専用ビルド。
 // 通常のカーネル初期化を行った後、テストスイートを実行し結果を出力。
@@ -89,7 +89,7 @@ void collect_fb_info(void* system_table, BootInfo* info) {
     ulong status = gop_init(system_table, &fb_base, &width, &height, &stride);
     long signed_status = status as long;
     if (signed_status < 0) {
-        serial.println("[Cosmos] WARNING: GOP init failed" as void*);
+        serial.println("[CosmOS] WARNING: GOP init failed" as void*);
         return;
     }
 
@@ -154,7 +154,7 @@ void kernel_main_test(BootInfo* info) {
     DebugPort debug(0xE9);
 
     debug.println("[BOOT] kernel_main_test entered" as void*);
-    serial.println("[Cosmos] === Kernel Test Mode ===" as void*);
+    serial.println("[CosmOS] === Kernel Test Mode ===" as void*);
 
     // GDT設定
     gdt_init();
@@ -219,9 +219,9 @@ void kernel_main_test(BootInfo* info) {
     // ============================================================
     // カーネル統合テスト
     // ============================================================
-    serial.println("[Cosmos] ==============================" as void*);
-    serial.println("[Cosmos] Running kernel tests..." as void*);
-    serial.println("[Cosmos] ==============================" as void*);
+    serial.println("[CosmOS] ==============================" as void*);
+    serial.println("[CosmOS] Running kernel tests..." as void*);
+    serial.println("[CosmOS] ==============================" as void*);
 
     TestRunner runner();
     test_boot(&runner, info, &pmm, &heap);
@@ -235,7 +235,7 @@ void kernel_main_test(BootInfo* info) {
 
     // テスト完了 — halt
     debug.println("[BOOT] all tests done, halting" as void*);
-    serial.println("[Cosmos] Tests complete, system halted" as void*);
+    serial.println("[CosmOS] Tests complete, system halted" as void*);
     while (true) {
         __asm__("hlt");
     }
@@ -250,12 +250,12 @@ ulong efi_main(void* image_handle, void* system_table) {
     debug.println("[BOOT] efi_main (TEST) entered" as void*);
 
     SerialPort serial(0x3F8);
-    serial.println("[Cosmos] Test mode boot started" as void*);
+    serial.println("[CosmOS] Test mode boot started" as void*);
 
     efi_clear_screen(system_table);
 
     efi_println(system_table, "========================================" as void*);
-    efi_println(system_table, "  Cosmos OS - Test Mode" as void*);
+    efi_println(system_table, "  CosmOS - Test Mode" as void*);
     efi_println(system_table, "========================================" as void*);
     efi_println(system_table, "" as void*);
 
@@ -302,7 +302,7 @@ ulong efi_main(void* image_handle, void* system_table) {
     long signed_exit = exit_status as long;
 
     if (signed_exit < 0) {
-        serial.println("[Cosmos] ExitBootServices failed, retrying..." as void*);
+        serial.println("[CosmOS] ExitBootServices failed, retrying..." as void*);
 
         ulong retry_map_size = boot_info.mmap.map_size + 4096;
         ulong retry_map_key = 0;
@@ -317,14 +317,14 @@ ulong efi_main(void* image_handle, void* system_table) {
         signed_exit = exit_status as long;
 
         if (signed_exit < 0) {
-            serial.println("[Cosmos] FATAL: ExitBootServices retry failed!" as void*);
+            serial.println("[CosmOS] FATAL: ExitBootServices retry failed!" as void*);
             while (true) {
                 __asm__("hlt");
             }
         }
     }
 
-    serial.println("[Cosmos] ExitBootServices OK" as void*);
+    serial.println("[CosmOS] ExitBootServices OK" as void*);
     debug.println("[BOOT] ExitBootServices OK" as void*);
 
     kernel_main_test(&boot_info);

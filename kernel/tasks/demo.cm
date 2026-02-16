@@ -153,13 +153,13 @@ export void demo_spawn_tasks() {
 
     ulong addr1 = fn_addr(demo_task1_fn as void*);
     ulong id1 = sched_spawn(addr1);
-    serial.puts("[Cosmos] Task-1 spawned (id=" as void*);
+    serial.puts("[CosmOS] Task-1 spawned (id=" as void*);
     serial.print_hex(id1);
     serial.println(")" as void*);
 
     ulong addr2 = fn_addr(demo_task2_fn as void*);
     ulong id2 = sched_spawn(addr2);
-    serial.puts("[Cosmos] Task-2 spawned (id=" as void*);
+    serial.puts("[CosmOS] Task-2 spawned (id=" as void*);
     serial.print_hex(id2);
     serial.println(")" as void*);
 

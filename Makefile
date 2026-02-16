@@ -1,4 +1,4 @@
-# Cosmos OS - 統合Makefile
+# CosmOS - 統合Makefile
 #
 # 使い方:
 #   make              - カーネルをコンパイル＆リンク（EFI生成）
@@ -63,7 +63,7 @@ TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || ec
 all: $(EFI)
 
 help:
-	@echo "Cosmos OS - 統合Makefile"
+	@echo "CosmOS - 統合Makefile"
 	@echo ""
 	@echo "カーネル操作:"
 	@echo "  make              - カーネルをコンパイル＆リンク"
@@ -126,7 +126,7 @@ download-ovmf:
 
 # QEMUでUEFIアプリケーションを実行（GUI）
 run: setup-esp download-ovmf
-	@echo "=== Cosmos OS QEMU 起動 ==="
+	@echo "=== CosmOS QEMU 起動 ==="
 	@echo "OVMF: $(OVMF_FW)"
 	@echo "EFI:  $(EFI)"
 	@echo "=========================="
