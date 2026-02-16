@@ -170,7 +170,7 @@ impl PMM {
 
         // --- 全ビットを1（使用中）で初期化 ---
         ulong i = 0;
-        ulong fill_val = 0xFFFFFFFFFFFFFFFF as ulong;
+        ulong fill_val = 0xFFFFFFFFFFFFFFFF;
         while (i < bmp_ulongs) {
             ulong* ptr = (bmp_addr + i * 8) as ulong*;
             *ptr = fill_val;
@@ -253,10 +253,8 @@ impl PMM {
     /// 指定ページのビットをセット（使用中にする）
     void set_bit(ulong page_idx) {
         ulong qword_idx = page_idx / BITS_PER_ULONG;
-        ulong sixty_three = 63 as ulong;
-        ulong bit_offset = page_idx & sixty_three;
-        ulong one = 1 as ulong;
-        ulong mask = one << bit_offset;
+        ulong bit_offset = page_idx & 63;
+        ulong mask = 1 << bit_offset;
 
         ulong bmp_addr = self.bitmap as ulong;
         ulong* ptr = (bmp_addr + qword_idx * 8) as ulong*;
@@ -266,11 +264,9 @@ impl PMM {
     /// 指定ページのビットをクリア（空きにする）
     void clear_bit(ulong page_idx) {
         ulong qword_idx = page_idx / BITS_PER_ULONG;
-        ulong sixty_three = 63 as ulong;
-        ulong bit_offset = page_idx & sixty_three;
-        ulong one = 1 as ulong;
-        ulong mask = one << bit_offset;
-        ulong all_ones = 0xFFFFFFFFFFFFFFFF as ulong;
+        ulong bit_offset = page_idx & 63;
+        ulong mask = 1 << bit_offset;
+        ulong all_ones = 0xFFFFFFFFFFFFFFFF;
         ulong inv_mask = mask ^ all_ones;
 
         ulong bmp_addr = self.bitmap as ulong;
@@ -281,10 +277,8 @@ impl PMM {
     /// 指定ページのビットをテスト（1=使用中, 0=空き）
     ulong test_bit(ulong page_idx) {
         ulong qword_idx = page_idx / BITS_PER_ULONG;
-        ulong sixty_three = 63 as ulong;
-        ulong bit_offset = page_idx & sixty_three;
-        ulong one = 1 as ulong;
-        ulong mask = one << bit_offset;
+        ulong bit_offset = page_idx & 63;
+        ulong mask = 1 << bit_offset;
 
         ulong bmp_addr = self.bitmap as ulong;
         ulong* ptr = (bmp_addr + qword_idx * 8) as ulong*;
@@ -310,7 +304,7 @@ impl PMM {
         ulong bmp_ulongs = self.bitmap_size / 8;
         ulong bmp_addr = self.bitmap as ulong;
         ulong qi = 0;
-        ulong all_used = 0xFFFFFFFFFFFFFFFF as ulong;
+        ulong all_used = 0xFFFFFFFFFFFFFFFF;
 
         while (qi < bmp_ulongs) {
             ulong* ptr = (bmp_addr + qi * 8) as ulong*;
@@ -320,9 +314,8 @@ impl PMM {
             if (val != all_used) {
                 // 空きビットを検索
                 ulong bi = 0;
-                ulong one = 1 as ulong;
                 while (bi < BITS_PER_ULONG) {
-                    ulong mask = one << bi;
+                    ulong mask = 1 << bi;
                     ulong test = val & mask;
                     if (test == 0) {
                         // 空きビット発見 → セットして返す

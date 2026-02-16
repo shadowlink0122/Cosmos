@@ -54,8 +54,7 @@ impl Font {
             sub_row = row - 8;
         }
         ulong shift = (7 - sub_row) * 8;
-        ulong mask_ff = 0xFF as ulong;
-        ulong byte_val = (packed >> shift) & mask_ff;
+        ulong byte_val = (packed >> shift) & 0xFF;
         return byte_val;
     }
 }

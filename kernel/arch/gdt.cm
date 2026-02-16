@@ -67,7 +67,7 @@ export void gdt_init() {
     ulong gdt_data = GDT_KERNEL_DATA;
     ulong cs_sel = KERNEL_CS;
     ulong ds_sel = KERNEL_DS;
-    ulong gdt_limit = 39 as ulong;  // 5 * 8 - 1（TSS用スロットを予約）
+    ulong gdt_limit = 39;  // 5 * 8 - 1（TSS用スロットを予約）
     ulong gdt_addr = GDT_PERMANENT_ADDR;
     ulong gdtr_offset = GDT_GDTR_OFFSET;
 

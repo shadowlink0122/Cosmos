@@ -58,39 +58,30 @@ impl IDT {
     /// IDTテーブルの指定ベクタにゲートディスクリプタを設定する
     void set_gate(ulong vector, ulong handler, ulong type_attr) {
         // 各エントリは4つのuint（16バイト）
-        ulong four = 4 as ulong;
-        ulong idx = vector * four;
-
-        // ビットマスク定数
-        ulong mask_16 = 0xFFFF as ulong;
-        ulong sixteen = 16 as ulong;
-        ulong thirtytwo = 32 as ulong;
-        ulong eight = 8 as ulong;
+        ulong idx = vector * 4;
 
         // ハンドラアドレスの分割
-        ulong offset_low  = handler & mask_16;
-        ulong offset_mid  = (handler >> sixteen) & mask_16;
-        ulong offset_high = handler >> thirtytwo;
+        ulong offset_low  = handler & 0xFFFF;
+        ulong offset_mid  = (handler >> 16) & 0xFFFF;
+        ulong offset_high = handler >> 32;
 
         // selector = KERNEL_CS(0x08)
         ulong selector = IDT_CS;
 
         // [0] offset_low(16) | selector(16)
-        ulong entry0 = (selector << sixteen) | offset_low;
+        ulong entry0 = (selector << 16) | offset_low;
 
         // [1] IST(0) | reserved(0) | type_attr(8) | offset_mid(16)
-        ulong entry1 = (offset_mid << sixteen) | (type_attr << eight);
+        ulong entry1 = (offset_mid << 16) | (type_attr << 8);
 
         // ポインタ演算でエントリの各uintにアクセス
         ulong base_addr = self.table as ulong;
-        ulong entry_size = 4 as ulong;  // sizeof(uint) = 4
-        ulong byte_offset = idx * entry_size;
+        ulong byte_offset = idx * 4;  // sizeof(uint) = 4
 
         uint* p0 = (base_addr + byte_offset) as uint*;
-        ulong es = entry_size;
-        uint* p1 = (base_addr + byte_offset + es) as uint*;
-        uint* p2 = (base_addr + byte_offset + es + es) as uint*;
-        uint* p3 = (base_addr + byte_offset + es + es + es) as uint*;
+        uint* p1 = (base_addr + byte_offset + 4) as uint*;
+        uint* p2 = (base_addr + byte_offset + 8) as uint*;
+        uint* p3 = (base_addr + byte_offset + 12) as uint*;
 
         *p0 = entry0 as uint;
         *p1 = entry1 as uint;
@@ -101,7 +92,7 @@ impl IDT {
     /// IDTRを構築し、lidt命令でIDTをCPUにロードする
     void load() {
         ulong idt_addr = self.table as ulong;
-        ulong idt_limit = 4095 as ulong;  // 256 * 16 - 1
+        ulong idt_limit = 4095;  // 256 * 16 - 1
 
         __asm__(`
             subq $$16, %rsp;
@@ -122,10 +113,9 @@ impl IDT {
 
         // 全256エントリをデフォルトハンドラで初期化
         ulong i = 0;
-        ulong one = 1 as ulong;
         while (i < IDT_ENTRIES) {
             self.set_gate(i, default_addr, IDT_INTERRUPT_GATE);
-            i = i + one;
+            i = i + 1;
         }
 
         // IDTをCPUにロード

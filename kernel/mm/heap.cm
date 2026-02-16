@@ -81,7 +81,7 @@ impl Heap {
 
         // 8バイトアラインメントに切り上げ
         ulong align_mask = HEAP_ALIGN - 1;  // 7
-        ulong all_ones = 0xFFFFFFFFFFFFFFFF as ulong;
+        ulong all_ones = 0xFFFFFFFFFFFFFFFF;
         ulong inv_mask = align_mask ^ all_ones;  // ~7 in ulong
         ulong aligned_size = (size + align_mask) & inv_mask;
 

@@ -195,8 +195,7 @@ export void efi_print_hex(void* system_table, ulong value) {
     ulong i = 0;
     while (i < 16) {
         ulong shift = (15 - i) * 4;
-        ulong mask = 15 as ulong;
-        ulong nibble = (value >> shift) & mask;
+        ulong nibble = (value >> shift) & 0xF;
         efi_put_char(system_table, nibble_to_hex_char(nibble));
         i += 1;
     }

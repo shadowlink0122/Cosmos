@@ -139,8 +139,7 @@ export void draw_char(FBConsole* con, ulong px, ulong py, ulong ch) {
 
                     // ビットパターンのMSBが左端: bit7=col0, bit6=col1, ...
                     ulong bit_pos = 7 - col;
-                    ulong one = 1 as ulong;
-                    ulong mask = one << bit_pos;
+                    ulong mask = 1 << bit_pos;
                     if ((bits & mask) != 0) {
                         *pixel = fg as uint;
                     } else {
@@ -178,11 +177,11 @@ export void fb_scroll_up(FBConsole* con) {
     if (fb == 0) { return; }
 
     // FONT_HEIGHT行分のピクセルを上にコピー
-    ulong y = 0 as ulong;
+    ulong y = 0;
     ulong copy_height = height - FONT_HEIGHT;
     while (y < copy_height) {
         ulong src_y = y + FONT_HEIGHT;
-        ulong x = 0 as ulong;
+        ulong x = 0;
         while (x < stride) {
             ulong dst_offset = (y * stride + x) * 4;
             ulong src_offset = (src_y * stride + x) * 4;
@@ -197,7 +196,7 @@ export void fb_scroll_up(FBConsole* con) {
     // 最下行を背景色でクリア
     ulong clear_y = copy_height;
     while (clear_y < height) {
-        ulong x = 0 as ulong;
+        ulong x = 0;
         while (x < stride) {
             ulong offset = (clear_y * stride + x) * 4;
             uint* pixel = (fb + offset) as uint*;
@@ -287,12 +286,11 @@ export void fb_println(FBConsole* con, void* data) {
 /// 16進数値をFBConsoleに出力（0xプレフィックス + 16桁）
 export void fb_print_hex(FBConsole* con, ulong value) {
     fb_puts(con, "0x" as void*);
-    ulong i = 0 as ulong;
-    ulong mask_nibble = 0xF as ulong;
+    ulong i = 0;
     while (i < 16) {
         ulong shift = (15 - i) * 4;
-        ulong nibble = (value >> shift) & mask_nibble;
-        ulong ch = 0 as ulong;
+        ulong nibble = (value >> shift) & 0xF;
+        ulong ch = 0;
         if (nibble < 10) {
             ch = nibble + 0x30;  // '0'-'9'
         } else {
