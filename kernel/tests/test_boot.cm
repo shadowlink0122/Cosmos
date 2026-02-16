@@ -11,7 +11,7 @@
 
 import ../drivers/serial;
 import ../drivers/debug_port;
-import ../boot_info;
+import ../arch/boot_info;
 import ../mm/pmm;
 import ../mm/vmm;
 import ../mm/heap;

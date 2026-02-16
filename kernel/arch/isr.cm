@@ -9,8 +9,8 @@
 //   isr.init();
 
 import ./idt;
-import ./drivers/serial;
-import ./drivers/debug_port;
+import ../drivers/serial;
+import ../drivers/debug_port;
 
 // ============================================================
 // 例外名テーブル（フリー関数）

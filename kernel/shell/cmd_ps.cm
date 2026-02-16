@@ -1,0 +1,65 @@
+//! platform: uefi
+// kernel::shell::cmd_ps - psコマンド（タスク一覧表示）
+
+import ../drivers/serial;
+import ../lib/print;
+import ../sched/task;
+import ../sched/scheduler;
+
+// グローバルFBConsoleアドレス
+const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
+const ulong SHELL_COLOR_HEADER = 0x00FFAA00;
+const ulong SHELL_COLOR_OUTPUT = 0x0000FF00;
+
+/// psコマンド: タスク一覧を表示
+export void cmd_ps() {
+    SerialPort serial(0x3F8);
+    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+
+    serial.println("  ID  STATE       TIMESLICE" as void*);
+    serial.println("  --  ----------  ---------" as void*);
+
+    fb_set_color(con, SHELL_COLOR_HEADER);
+    fb_println(con, "  ID  STATE       TIMESLICE" as void*);
+    fb_set_color(con, SHELL_COLOR_OUTPUT);
+    fb_println(con, "  --  ----------  ---------" as void*);
+
+    ulong count = sched_task_count();
+    ulong i = 0 as ulong;
+    while (i < count) {
+        serial.puts("  " as void*);
+        serial.print_hex(i);
+        fb_puts(con, "  " as void*);
+        fb_print_hex(con, i);
+
+        ulong state = tcb_read(i, TCB_OFF_STATE);
+        if (state == TASK_READY) {
+            serial.puts("  READY       " as void*);
+            fb_puts(con, "  READY       " as void*);
+        }
+        if (state == TASK_RUNNING) {
+            serial.puts("  RUNNING     " as void*);
+            fb_puts(con, "  RUNNING     " as void*);
+        }
+        if (state == TASK_TERMINATED) {
+            serial.puts("  TERMINATED  " as void*);
+            fb_puts(con, "  TERMINATED  " as void*);
+        }
+
+        ulong ts = tcb_read(i, TCB_OFF_TIMESLICE);
+        serial.print_hex(ts);
+        serial.println("" as void*);
+        fb_print_hex(con, ts);
+        fb_newline(con);
+
+        i = i + 1;
+    }
+
+    serial.puts("Total: " as void*);
+    serial.print_hex(count);
+    serial.println(" tasks" as void*);
+
+    fb_puts(con, "Total: " as void*);
+    fb_print_hex(con, count);
+    fb_println(con, " tasks" as void*);
+}

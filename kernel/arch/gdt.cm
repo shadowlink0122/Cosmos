@@ -8,6 +8,8 @@
 //   [0] Null Descriptor       (必須)
 //   [1] Kernel Code Segment   (CS: 64-bit, Ring 0)
 //   [2] Kernel Data Segment   (DS: Ring 0)
+//   [3-4] TSS Descriptor      (16バイト、tss.cmで設定)
+//   [offset 40] GDTR構造体  (10バイト)
 //
 // 注意: x86_64 Long Modeでは、ベース/リミットはほとんど無視される。
 //       Code Segmentの L(Long) ビットとDB=0 が重要。
@@ -17,8 +19,8 @@
 //       （関数のスタックフレーム等）に配置すると、
 //       割り込み発生時にCPUがGDTを読み直した際に#GPが起きる。
 
-import ./drivers/serial;
-import ./drivers/debug_port;
+import ../drivers/serial;
+import ../drivers/debug_port;
 
 // ============================================================
 // GDTエントリ定数（8バイト = ulong 1個）
@@ -41,8 +43,10 @@ const ulong KERNEL_DS = 0x10;  // GDT[2]
 
 // GDTデータの永続配置アドレス
 // UEFIアイデンティティマッピング下で安全に使用可能な低メモリ領域
-// 0x800は従来のBDA/IVT領域の上で、UEFIでは通常未使用
 const ulong GDT_PERMANENT_ADDR = 0x800;
+// GDTRオフセット（5スロット * 8バイト = 40）
+// TSSディスクリプタ用のGDT[3],[4]を予約
+const ulong GDT_GDTR_OFFSET = 40;
 
 // ============================================================
 // GDT読み込み
@@ -63,8 +67,9 @@ export void gdt_init() {
     ulong gdt_data = GDT_KERNEL_DATA;
     ulong cs_sel = KERNEL_CS;
     ulong ds_sel = KERNEL_DS;
-    ulong gdt_limit = 23 as ulong;  // 3 * 8 - 1
+    ulong gdt_limit = 39 as ulong;  // 5 * 8 - 1（TSS用スロットを予約）
     ulong gdt_addr = GDT_PERMANENT_ADDR;
+    ulong gdtr_offset = GDT_GDTR_OFFSET;
 
     // GDTエントリを固定アドレスに書き込み、lgdtでロード
     // far returnでCSを再設定し、DS/ES/SS/FS/GSを設定
@@ -79,15 +84,21 @@ export void gdt_init() {
         movq %rax, 8(%rdi);         // [1] Kernel Code
         movq ${r:gdt_data}, %rax;
         movq %rax, 16(%rdi);        // [2] Kernel Data
+        // [3-4] TSS用スロット（ゼロで初期化、tss.cmが後で設定）
+        xorq %rax, %rax;
+        movq %rax, 24(%rdi);        // [3] TSS lo (placeholder)
+        movq %rax, 32(%rdi);        // [4] TSS hi (placeholder)
 
-        // GDTR構造体を構築（offset 24に配置）
+        // GDTR構造体をoffset 40に構築
+        movq ${r:gdtr_offset}, %rcx;
+        addq %rdi, %rcx;            // rcx = GDT + 40
         movq ${r:gdt_limit}, %rax;
-        movw %ax, 24(%rdi);         // limit = 23
+        movw %ax, (%rcx);           // limit = 39
         movq %rdi, %rax;
-        movq %rax, 26(%rdi);        // base = GDT先頭アドレス
+        movq %rax, 2(%rcx);         // base = GDT先頭アドレス
 
         // lgdt: GDTをCPUにロード
-        lgdt 24(%rdi);
+        lgdt (%rcx);
 
         // セグメントレジスタを再設定
         movq ${r:ds_sel}, %rax;

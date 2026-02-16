@@ -26,6 +26,9 @@ const ulong TCB_SIZE        = 64;       // 1 TCB = 64バイト（8フィール�
 const ulong MAX_TASKS       = 8;        // 最大タスク数
 const ulong TASK_STACK_PAGES = 1;       // タスクスタック = 1ページ(4KB)
 
+// デフォルトタイムスライス（tick数 = 100ms at 100Hz）
+const ulong DEFAULT_TIMESLICE = 10;
+
 // TCB内フィールドオフセット（各8バイト）
 const ulong TCB_OFF_ID         = 0;     // task_id
 const ulong TCB_OFF_STATE      = 8;     // state
@@ -34,7 +37,7 @@ const ulong TCB_OFF_STACK_BASE = 24;    // stack_base
 const ulong TCB_OFF_STACK_SIZE = 32;    // stack_size
 const ulong TCB_OFF_ENTRY      = 40;    // entry（エントリポイント関数アドレス）
 const ulong TCB_OFF_NEXT       = 48;    // next（次のTCB番号、循環リスト用）
-const ulong TCB_OFF_RESERVED   = 56;    // 予約
+const ulong TCB_OFF_TIMESLICE  = 56;    // タイムスライス残り（tick数）
 
 // ============================================================
 // TCBフィールドアクセス（ポインタ直接操作）
@@ -79,15 +82,18 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
         return 0;
     }
 
-    // PMMからスタック割当（1ページ = 4KB）
-    ulong stack_base = pmm->alloc_page();
+    // PMMからスタック割当（4ページ = 16KB）
+    // FBConsole呼出しチェーン(fb_puts→draw_char→font_get_row→font_data)の
+    // 深い呼出し深度に対応するため、1ページでは不足
+    ulong stack_pages = 4 as ulong;
+    ulong stack_base = pmm->alloc_pages(stack_pages);
     if (stack_base == 0) {
         debug.println("[TASK] ERROR: cannot alloc stack" as void*);
         return 0;
     }
 
     // スタックサイズ
-    ulong stack_size = 4096 as ulong;
+    ulong stack_size = 4096 * stack_pages;
 
     // スタックトップ（x86_64はスタックが下方に伸びる）
     ulong stack_top = stack_base + stack_size;
@@ -155,7 +161,7 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
     tcb_write(task_id, TCB_OFF_STACK_SIZE, stack_size);
     tcb_write(task_id, TCB_OFF_ENTRY, entry_fn);
     tcb_write(task_id, TCB_OFF_NEXT, zero);  // スケジューラが後で設定
-    tcb_write(task_id, TCB_OFF_RESERVED, zero);
+    tcb_write(task_id, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
 
     debug.puts("[TASK] created id=" as void*);
     debug.print_hex(task_id);
@@ -181,7 +187,7 @@ export void task_create_idle() {
     tcb_write(zero, TCB_OFF_STACK_SIZE, zero);
     tcb_write(zero, TCB_OFF_ENTRY, zero);
     tcb_write(zero, TCB_OFF_NEXT, zero);
-    tcb_write(zero, TCB_OFF_RESERVED, zero);
+    tcb_write(zero, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
 
     debug.println("[TASK] idle task (id=0) created" as void*);
 }

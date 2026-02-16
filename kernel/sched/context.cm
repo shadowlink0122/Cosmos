@@ -35,6 +35,9 @@ export void switch_to(ulong old_rsp_ptr, ulong new_rsp) {
         movq ${r:old_rsp_ptr}, %r10;
         movq ${r:new_rsp}, %r11;
 
+        // 割り込み無効化（RSP操作中の保護）
+        cli;
+
         // 復帰アドレスをpush（retで戻ってくるポイント）
         leaq 1f(%rip), %rax;
         pushq %rax;
@@ -60,6 +63,9 @@ export void switch_to(ulong old_rsp_ptr, ulong new_rsp) {
         popq %r12;
         popq %rbp;
         popq %rbx;
+
+        // 割り込み再有効化
+        sti;
 
         // ret: 新タスクの場合はentry_fn、既存タスクの場合は1:に飛ぶ
         ret;

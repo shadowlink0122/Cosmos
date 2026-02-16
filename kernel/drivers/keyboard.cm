@@ -1,0 +1,290 @@
+//! platform: uefi
+// kernel::drivers::keyboard - PS/2 キーボードドライバ
+//
+// PS/2キーボードからのスキャンコードをIRQ1経由で受信し、
+// リングバッファに格納する。ASCII変換機能を提供。
+//
+// IRQ1ハンドラ:
+//   1. ポート0x60からスキャンコードを読取り
+//   2. リングバッファに格納
+//   3. PIC EOIを送信
+//   4. iretqで復帰
+//
+// 固定アドレスマップ:
+//   0xC00: キーバッファ（リングバッファ、64バイト）
+//   0xC40: write_idx（書込み位置）
+//   0xC48: read_idx（読取り位置）
+//   0xC50: count（バッファ内の要素数）
+//   0xC58: last_scancode（最後に受信したスキャンコード）
+
+import ./serial;
+import ./debug_port;
+import ./pic;
+import ../arch/idt;
+import ../arch/isr;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// キーバッファの固定アドレスとサイズ
+const ulong KB_BUF_ADDR      = 0xC00;  // リングバッファ開始
+const ulong KB_BUF_SIZE      = 64;     // バッファサイズ（バイト）
+const ulong KB_WRITE_IDX     = 0xC40;  // 書込みインデックス
+const ulong KB_READ_IDX      = 0xC48;  // 読取りインデックス
+const ulong KB_COUNT         = 0xC50;  // バッファ内要素数
+const ulong KB_LAST_SCANCODE = 0xC58;  // 最後のスキャンコード
+
+// PS/2 I/Oポート
+const ulong KB_DATA_PORT   = 0x60;  // キーボードデータポート
+const ulong KB_STATUS_PORT = 0x64;  // キーボードステータスポート
+
+// ============================================================
+// スキャンコード→ASCII変換テーブル（US配列、Set 1）
+// ============================================================
+
+/// メイクコード（キー押下）からASCIIへの変換
+/// 未定義キーは0を返す
+export ulong scancode_to_ascii(ulong scancode) {
+    // 数字行
+    if (scancode == 0x02) { return 0x31; }  // 1
+    if (scancode == 0x03) { return 0x32; }  // 2
+    if (scancode == 0x04) { return 0x33; }  // 3
+    if (scancode == 0x05) { return 0x34; }  // 4
+    if (scancode == 0x06) { return 0x35; }  // 5
+    if (scancode == 0x07) { return 0x36; }  // 6
+    if (scancode == 0x08) { return 0x37; }  // 7
+    if (scancode == 0x09) { return 0x38; }  // 8
+    if (scancode == 0x0A) { return 0x39; }  // 9
+    if (scancode == 0x0B) { return 0x30; }  // 0
+    if (scancode == 0x0C) { return 0x2D; }  // -
+    if (scancode == 0x0D) { return 0x3D; }  // =
+    if (scancode == 0x0E) { return 0x08; }  // Backspace
+
+    // Tabとアルファベット上段
+    if (scancode == 0x0F) { return 0x09; }  // Tab
+    if (scancode == 0x10) { return 0x71; }  // q
+    if (scancode == 0x11) { return 0x77; }  // w
+    if (scancode == 0x12) { return 0x65; }  // e
+    if (scancode == 0x13) { return 0x72; }  // r
+    if (scancode == 0x14) { return 0x74; }  // t
+    if (scancode == 0x15) { return 0x79; }  // y
+    if (scancode == 0x16) { return 0x75; }  // u
+    if (scancode == 0x17) { return 0x69; }  // i
+    if (scancode == 0x18) { return 0x6F; }  // o
+    if (scancode == 0x19) { return 0x70; }  // p
+    if (scancode == 0x1A) { return 0x5B; }  // [
+    if (scancode == 0x1B) { return 0x5D; }  // ]
+    if (scancode == 0x1C) { return 0x0A; }  // Enter (LF)
+
+    // アルファベット中段
+    if (scancode == 0x1E) { return 0x61; }  // a
+    if (scancode == 0x1F) { return 0x73; }  // s
+    if (scancode == 0x20) { return 0x64; }  // d
+    if (scancode == 0x21) { return 0x66; }  // f
+    if (scancode == 0x22) { return 0x67; }  // g
+    if (scancode == 0x23) { return 0x68; }  // h
+    if (scancode == 0x24) { return 0x6A; }  // j
+    if (scancode == 0x25) { return 0x6B; }  // k
+    if (scancode == 0x26) { return 0x6C; }  // l
+    if (scancode == 0x27) { return 0x3B; }  // ;
+    if (scancode == 0x28) { return 0x27; }  // '
+    if (scancode == 0x29) { return 0x60; }  // `
+
+    // アルファベット下段
+    if (scancode == 0x2B) { return 0x5C; }  // backslash
+    if (scancode == 0x2C) { return 0x7A; }  // z
+    if (scancode == 0x2D) { return 0x78; }  // x
+    if (scancode == 0x2E) { return 0x63; }  // c
+    if (scancode == 0x2F) { return 0x76; }  // v
+    if (scancode == 0x30) { return 0x62; }  // b
+    if (scancode == 0x31) { return 0x6E; }  // n
+    if (scancode == 0x32) { return 0x6D; }  // m
+    if (scancode == 0x33) { return 0x2C; }  // ,
+    if (scancode == 0x34) { return 0x2E; }  // .
+    if (scancode == 0x35) { return 0x2F; }  // /
+
+    // スペースバー
+    if (scancode == 0x39) { return 0x20; }  // Space
+
+    // Escape
+    if (scancode == 0x01) { return 0x1B; }  // ESC
+
+    return 0;  // 未定義
+}
+
+// ============================================================
+// IRQ1ハンドラ（フリー関数）
+// ============================================================
+
+/// IRQ1ハンドラ: PS/2キーボード割り込み
+///   1. RAX, RCX, RDX を退避
+///   2. ポート0x60からスキャンコード読取り
+///   3. 固定アドレスのリングバッファに格納
+///   4. PIC EOI送信
+///   5. iretq
+export void irq1_handler() {
+    __asm__(`
+        pushq %rax;
+        pushq %rcx;
+        pushq %rdx;
+
+        // ポート0x60からスキャンコード読取り
+        xorq %rax, %rax;
+        inb $$0x60, %al;
+
+        // last_scancodeに保存
+        movq $$0xC58, %rcx;
+        movq %rax, (%rcx);
+
+        // ブレークコード（bit7 = 1）はスキップ
+        testb $$0x80, %al;
+        jnz .irq1_skip;
+
+        // リングバッファに格納
+        // count < 64 なら格納
+        movq $$0xC50, %rcx;
+        movq (%rcx), %rdx;
+        cmpq $$64, %rdx;
+        jge .irq1_skip;
+
+        // buf[write_idx] = scancode
+        movq $$0xC40, %rcx;
+        movq (%rcx), %rdx;      // rdx = write_idx
+        movq $$0xC00, %rcx;
+        addq %rdx, %rcx;        // rcx = &buf[write_idx]
+        movb %al, (%rcx);       // buf[write_idx] = scancode
+
+        // write_idx = (write_idx + 1) % 64
+        incq %rdx;
+        andq $$63, %rdx;        // 64要素のリングバッファ
+        movq $$0xC40, %rcx;
+        movq %rdx, (%rcx);
+
+        // count++
+        movq $$0xC50, %rcx;
+        movq (%rcx), %rdx;
+        incq %rdx;
+        movq %rdx, (%rcx);
+
+    .irq1_skip:
+        // PIC EOI
+        movb $$0x20, %al;
+        outb %al, $$0x20;
+
+        popq %rdx;
+        popq %rcx;
+        popq %rax;
+        iretq
+    `);
+}
+
+// ============================================================
+// キーバッファ操作
+// ============================================================
+
+/// キーバッファからスキャンコードを1つ取得する
+/// バッファが空の場合は0を返す
+export ulong kb_read_scancode() {
+    ulong* count_ptr = KB_COUNT as ulong*;
+    ulong count = *count_ptr;
+    if (count == 0) {
+        return 0;
+    }
+
+    // buf[read_idx] を読取り
+    ulong* read_ptr = KB_READ_IDX as ulong*;
+    ulong read_idx = *read_ptr;
+    ulong byte_addr = KB_BUF_ADDR + read_idx;
+
+    // ASMでバイト読取り
+    ulong scancode = 0;
+    __asm__(`
+        movq ${r:byte_addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:scancode}
+    `);
+
+    // read_idx = (read_idx + 1) % 64
+    ulong ring_mask = 63 as ulong;
+    ulong new_read = (read_idx + 1) & ring_mask;
+    *read_ptr = new_read;
+
+    // count--
+    ulong new_count = count - 1;
+    *count_ptr = new_count;
+
+    return scancode;
+}
+
+/// キーバッファにデータがあるかチェック
+export ulong kb_has_data() {
+    ulong* count_ptr = KB_COUNT as ulong*;
+    return *count_ptr;
+}
+
+/// 最後に受信したスキャンコードを取得
+export ulong kb_last_scancode() {
+    ulong* ptr = KB_LAST_SCANCODE as ulong*;
+    return *ptr;
+}
+
+/// キーバッファからASCII文字を1つ取得する
+/// バッファが空の場合や変換不能キーの場合は0を返す
+export ulong kb_read_char() {
+    ulong scancode = kb_read_scancode();
+    if (scancode == 0) {
+        return 0;
+    }
+    return scancode_to_ascii(scancode);
+}
+
+// ============================================================
+// キーボード初期化
+// ============================================================
+
+/// PS/2キーボードドライバを初期化する
+/// pic: PIC8259Aへのポインタ（IRQ1アンマスク用）
+/// idt_table: IDTテーブルへのポインタ（ベクタ33登録用）
+export void keyboard_init(PIC8259A* pic, uint* idt_table) {
+    DebugPort debug(0xE9);
+    SerialPort serial(0x3F8);
+
+    // バッファを初期化
+    ulong zero = 0 as ulong;
+    ulong* write_ptr = KB_WRITE_IDX as ulong*;
+    *write_ptr = zero;
+    ulong* read_ptr = KB_READ_IDX as ulong*;
+    *read_ptr = zero;
+    ulong* count_ptr = KB_COUNT as ulong*;
+    *count_ptr = zero;
+    ulong* last_ptr = KB_LAST_SCANCODE as ulong*;
+    *last_ptr = zero;
+
+    // バッファ領域をゼロクリア（64バイト / 8 = 8 qwords）
+    ulong i = 0 as ulong;
+    ulong buf_qwords = 8 as ulong;
+    while (i < buf_qwords) {
+        ulong addr = KB_BUF_ADDR + (i * 8);
+        ulong* ptr = addr as ulong*;
+        *ptr = zero;
+        i = i + 1;
+    }
+
+    // IDTにベクタ33（IRQ1）のハンドラを登録
+    IDT idt;
+    idt.table = idt_table;
+    ulong vec33 = 33 as ulong;
+    idt.set_gate(vec33, fn_addr(irq1_handler as void*), IDT_INTERRUPT_GATE);
+
+    // IDTを再ロード
+    idt.load();
+
+    // PICのIRQ1をアンマスク（有効化）
+    ulong irq1 = 1 as ulong;
+    pic->unmask(irq1);
+
+    debug.println("[KBD] PS/2 keyboard initialized" as void*);
+    serial.println("[Cosmos] Keyboard initialized" as void*);
+}

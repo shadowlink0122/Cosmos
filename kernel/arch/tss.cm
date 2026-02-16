@@ -1,0 +1,192 @@
+//! platform: uefi
+// kernel::tss - TSS（タスクステートセグメント）設定
+//
+// x86_64 Long Mode用TSS。
+// Ring 3→Ring 0遷移時にCPUがRSP0を読み取るために使用。
+// IST（Interrupt Stack Table）エントリも設定可能。
+//
+// TSS構造体（104バイト）:
+//   offset 0x00: reserved (4)
+//   offset 0x04: RSP0 (8) — Ring 0スタックポインタ
+//   offset 0x0C: RSP1 (8)
+//   offset 0x14: RSP2 (8)
+//   offset 0x1C: reserved (8)
+//   offset 0x24: IST1 (8)
+//   offset 0x2C: IST2 (8)
+//   offset 0x34: IST3 (8)
+//   offset 0x3C: IST4 (8)
+//   offset 0x44: IST5 (8)
+//   offset 0x4C: IST6 (8)
+//   offset 0x54: IST7 (8)
+//   offset 0x5C: reserved (10)
+//   offset 0x66: IOPB offset (2)
+//
+// 固定アドレスマップ:
+//   0xB20: TSS構造体（104バイト）
+
+import ../drivers/debug_port;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// TSS固定アドレス
+const ulong TSS_BASE_ADDR = 0xB20;
+const ulong TSS_SIZE = 104;
+
+// TSSフィールドオフセット
+const ulong TSS_OFF_RSP0 = 4;
+const ulong TSS_OFF_RSP1 = 12;
+const ulong TSS_OFF_RSP2 = 20;
+const ulong TSS_OFF_IST1 = 36;
+const ulong TSS_OFF_IOPB = 102;
+
+// GDTセレクタ
+const ulong TSS_SELECTOR = 0x18;  // GDT[3]
+
+// ============================================================
+// TSS操作
+// ============================================================
+
+/// TSS構造体を初期化する
+/// kernel_rsp0: カーネルスタックのトップアドレス
+export void tss_init(ulong kernel_rsp0) {
+    DebugPort debug(0xE9);
+
+    // TSS領域をゼロクリア（104バイト / 8 = 13 qwords）
+    ulong zero = 0 as ulong;
+    ulong i = 0 as ulong;
+    ulong tss_qwords = 13 as ulong;
+    while (i < tss_qwords) {
+        ulong addr = TSS_BASE_ADDR + (i * 8);
+        ulong* ptr = addr as ulong*;
+        *ptr = zero;
+        i = i + 1;
+    }
+
+    // RSP0を設定（Ring 0スタックポインタ）
+    ulong* rsp0_ptr = (TSS_BASE_ADDR + TSS_OFF_RSP0) as ulong*;
+    *rsp0_ptr = kernel_rsp0;
+
+    // IOPBオフセットをTSSサイズに設定（IOポートマップ無し）
+    // offset 102のulongを読み取り、下位16ビットにTSSサイズを設定
+    // 注: offset 102はアラインされていないので、バイト単位で書込み
+    ulong iopb_lo_addr = TSS_BASE_ADDR + TSS_OFF_IOPB;
+    ulong iopb_hi_addr = iopb_lo_addr + 1;
+    ulong ff_mask = 0xFF as ulong;
+    ulong iopb_lo_val = TSS_SIZE & ff_mask;
+    ulong iopb_hi_val = (TSS_SIZE >> 8) & ff_mask;
+    // ASM経由でバイト書込み
+    __asm__(`
+        movq ${r:iopb_lo_addr}, %rdi;
+        movq ${r:iopb_lo_val}, %rax;
+        movb %al, (%rdi);
+        movq ${r:iopb_hi_addr}, %rdi;
+        movq ${r:iopb_hi_val}, %rax;
+        movb %al, (%rdi)
+    `);
+
+    debug.puts("[TSS] initialized, RSP0=0x" as void*);
+    debug.print_hex(kernel_rsp0);
+    debug.println("" as void*);
+}
+
+/// RSP0を更新する（タスク切替時に呼ぶ）
+export void tss_set_rsp0(ulong new_rsp0) {
+    ulong* rsp0_ptr = (TSS_BASE_ADDR + TSS_OFF_RSP0) as ulong*;
+    *rsp0_ptr = new_rsp0;
+}
+
+/// TSS GDTディスクリプタを構築してGDTに書込み、ltrでロードする
+///
+/// GDT配列のインデックス3-4にTSSディスクリプタ（16バイト）を書込む。
+/// x86_64のTSSディスクリプタはLongModeでは16バイト（2スロット分）。
+///
+/// TSS Descriptor layout (16 bytes):
+///   bits 0-15:  limit[0:15]   = TSS_SIZE - 1
+///   bits 16-39: base[0:23]
+///   bits 40-43: type (0x9 = available 64-bit TSS)
+///   bit  44:    S = 0 (system segment)
+///   bits 45-46: DPL = 0
+///   bit  47:    P = 1 (present)
+///   bits 48-51: limit[16:19] = 0
+///   bits 52-55: AVL=0, reserved=0, G=0
+///   bits 56-63: base[24:31]
+///   bits 64-95: base[32:63]
+///   bits 96-127: reserved = 0
+export void tss_install_gdt() {
+    DebugPort debug(0xE9);
+
+    ulong tss_base = TSS_BASE_ADDR;
+    ulong tss_limit = TSS_SIZE - 1;
+
+    // GDTの[3]スロット（offset 0x18 = 24バイト目）
+    ulong gdt_base = 0x800 as ulong;
+    ulong tss_gdt_offset = 24 as ulong;  // 3 * 8
+
+    // 下位8バイト
+    // bits 0-15: limit[0:15]
+    ulong low8 = tss_limit;
+
+    // bits 16-39: base[0:23]
+    ulong ff_mask = 0xFF as ulong;
+    ulong ffff_mask = 0xFFFF as ulong;
+    ulong base_0_15 = tss_base & ffff_mask;
+    low8 = low8 | (base_0_15 << 16);
+
+    ulong shift16 = 16 as ulong;
+    ulong shift24 = 24 as ulong;
+    ulong shift32 = 32 as ulong;
+    ulong shift40 = 40 as ulong;
+    ulong shift48 = 48 as ulong;
+    ulong shift56 = 56 as ulong;
+
+    ulong base_16_23 = (tss_base >> shift16) & ff_mask;
+    low8 = low8 | (base_16_23 << shift32);
+
+    // bits 40-47: type=0x9, S=0, DPL=00, P=1 → 0x89
+    ulong type_byte = 0x89 as ulong;
+    low8 = low8 | (type_byte << shift40);
+
+    // bits 48-55: limit[16:19]=0, AVL=0, G=0 → 0x00
+    // （TSSサイズは104バイト < 65536なので上位limitは0）
+
+    // bits 56-63: base[24:31]
+    ulong base_24_31 = (tss_base >> shift24) & ff_mask;
+    low8 = low8 | (base_24_31 << shift56);
+
+    // 上位8バイト
+    // bits 64-95: base[32:63]
+    ulong high8 = (tss_base >> shift32);
+    // bits 96-127: reserved = 0（high8の上位32ビットは0）
+
+    // GDTスロット3に下位8バイト書込み
+    ulong* gdt_slot3_lo = (gdt_base + tss_gdt_offset) as ulong*;
+    *gdt_slot3_lo = low8;
+
+    // GDTスロット4に上位8バイト書込み
+    ulong* gdt_slot3_hi = (gdt_base + tss_gdt_offset + 8) as ulong*;
+    *gdt_slot3_hi = high8;
+
+    // GDTRの更新（GDT_GDTR_OFFSET = 40に配置）
+    ulong gdtr_addr = gdt_base + 40;
+    ulong new_gdt_limit = 39 as ulong;  // 5 slots * 8 bytes - 1
+    // ASMでGDTR limit更新 + lgdt再ロード
+    __asm__(`
+        movq ${r:gdtr_addr}, %rdi;
+        movq ${r:new_gdt_limit}, %rax;
+        movw %ax, (%rdi);
+        lgdt (%rdi)
+    `);
+
+    // ltrでTSSを有効化
+    ulong tss_sel = TSS_SELECTOR;
+    __asm__(`
+        movq ${r:tss_sel}, %rax;
+        ltr %ax
+    `);
+
+    debug.puts("[TSS] GDT descriptor installed, selector=0x" as void*);
+    debug.print_hex(TSS_SELECTOR);
+    debug.println("" as void*);
+}

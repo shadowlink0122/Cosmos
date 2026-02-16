@@ -1,12 +1,11 @@
 //! platform: uefi
 // kernel::tests::test_scheduler - スケジューラテスト
 //
-// TCB生成、スケジューラ初期化の基本動作を検証する。
-// コンテキストスイッチは協調スケジューリング方式で検証。
+// 協調スケジューリングとプリエンプティブスケジューリングの検証。
 
 import ../drivers/serial;
 import ../drivers/debug_port;
-import ../mm/pmm;
+import ../drivers/pit;
 import ../sched/task;
 import ../sched/scheduler;
 import ./test_runner;
@@ -19,13 +18,17 @@ import ./test_runner;
 const ulong TASK_A_DONE_ADDR = 0xB00;
 // タスクBの完了フラグ（固定アドレス0xB08）
 const ulong TASK_B_DONE_ADDR = 0xB08;
+// プリエンプティブタスクCのカウンタ（固定アドレス0xB90）
+const ulong TASK_C_COUNT_ADDR = 0xB90;
+// プリエンプティブタスクDのカウンタ（固定アドレス0xB98）
+const ulong TASK_D_COUNT_ADDR = 0xB98;
 
-/// テストタスクA: フラグ設定してyield
+/// テストタスクA: 協調スケジューリング
 export void task_a_fn() {
     DebugPort debug(0xE9);
     debug.println("[TASK-A] started running" as void*);
 
-    // 完了フラグを設定（固定アドレスに直接書込）
+    // 完了フラグを設定
     ulong one = 1 as ulong;
     ulong* flag = TASK_A_DONE_ADDR as ulong*;
     *flag = one;
@@ -45,7 +48,7 @@ export void task_a_fn() {
     }
 }
 
-/// テストタスクB: フラグ設定してyield
+/// テストタスクB: 協調スケジューリング
 export void task_b_fn() {
     DebugPort debug(0xE9);
     debug.println("[TASK-B] started running" as void*);
@@ -66,22 +69,118 @@ export void task_b_fn() {
     }
 }
 
+/// テストタスクC: プリエンプティブ動作確認
+/// 10回ループし、各反復でカウンタ増加とデバッグ出力を行う。
+/// タイマー割り込みによるプリエンプションでタスクDと交互実行される。
+export void task_c_fn() {
+    DebugPort debug(0xE9);
+    debug.println("[TASK-C] started (preemptive test)" as void*);
+
+    ulong* counter = TASK_C_COUNT_ADDR as ulong*;
+    ulong count = 0 as ulong;
+    ulong target = 10 as ulong;
+
+    // 10回ループ: 各ループでカウンタ更新+デバッグ出力
+    while (count < target) {
+        count = count + 1;
+        *counter = count;
+
+        // 現在のカウンタ値を出力
+        debug.puts("[TASK-C] iteration " as void*);
+        debug.print_hex(count);
+        debug.println("" as void*);
+
+        // タイマー割り込みを待つ（省電力）
+        __asm__("hlt");
+
+        // need_reschedフラグを確認
+        ulong resched = pit_check_resched();
+        if (resched != 0) {
+            ulong my_id = sched_current_id();
+            ulong remaining = tcb_read(my_id, TCB_OFF_TIMESLICE);
+            if (remaining == 0) {
+                schedule();
+            }
+        }
+    }
+
+    debug.puts("[TASK-C] completed " as void*);
+    debug.print_hex(count);
+    debug.println(" iterations" as void*);
+
+    ulong my_id = sched_current_id();
+    tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
+    schedule();
+
+    while (true) {
+        __asm__("hlt");
+    }
+}
+
+/// テストタスクD: プリエンプティブ動作確認
+/// 10回ループし、各反復でカウンタ増加とデバッグ出力を行う。
+export void task_d_fn() {
+    DebugPort debug(0xE9);
+    debug.println("[TASK-D] started (preemptive test)" as void*);
+
+    ulong* counter = TASK_D_COUNT_ADDR as ulong*;
+    ulong count = 0 as ulong;
+    ulong target = 10 as ulong;
+
+    while (count < target) {
+        count = count + 1;
+        *counter = count;
+
+        // 現在のカウンタ値を出力
+        debug.puts("[TASK-D] iteration " as void*);
+        debug.print_hex(count);
+        debug.println("" as void*);
+
+        __asm__("hlt");
+
+        ulong resched = pit_check_resched();
+        if (resched != 0) {
+            ulong my_id = sched_current_id();
+            ulong remaining = tcb_read(my_id, TCB_OFF_TIMESLICE);
+            if (remaining == 0) {
+                schedule();
+            }
+        }
+    }
+
+    debug.puts("[TASK-D] completed " as void*);
+    debug.print_hex(count);
+    debug.println(" iterations" as void*);
+
+    ulong my_id = sched_current_id();
+    tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
+    schedule();
+
+    while (true) {
+        __asm__("hlt");
+    }
+}
+
 // ============================================================
 // スケジューラ テスト
 // ============================================================
 
 /// スケジューラテストを実行する
-export void test_scheduler(TestRunner* runner, PMM* pmm) {
+export void test_scheduler(TestRunner* runner) {
     SerialPort serial(0x3F8);
     DebugPort debug(0xE9);
     serial.println("[TEST] === Scheduler Tests ===" as void*);
 
-    // 完了フラグを初期化
+    // 完了フラグ/カウンタを初期化
     ulong zero = 0 as ulong;
     ulong* flag_a = TASK_A_DONE_ADDR as ulong*;
     *flag_a = zero;
     ulong* flag_b = TASK_B_DONE_ADDR as ulong*;
     *flag_b = zero;
+    ulong* cnt_c = TASK_C_COUNT_ADDR as ulong*;
+    *cnt_c = zero;
+    ulong* cnt_d = TASK_D_COUNT_ADDR as ulong*;
+    *cnt_d = zero;
 
     // テスト1: sched_init済み（current_taskが0であること）
     ulong current = sched_current_id();
@@ -94,14 +193,14 @@ export void test_scheduler(TestRunner* runner, PMM* pmm) {
 
     // テスト3: タスクAを生成
     ulong task_a_addr = fn_addr(task_a_fn as void*);
-    ulong id_a = sched_spawn(task_a_addr, pmm);
+    ulong id_a = sched_spawn(task_a_addr);
     ulong two = 2 as ulong;
     ulong new_count = sched_task_count();
     assert_eq(runner, new_count, two, "Scheduler has 2 tasks after spawn" as void*);
 
     // テスト4: タスクBを生成
     ulong task_b_addr = fn_addr(task_b_fn as void*);
-    ulong id_b = sched_spawn(task_b_addr, pmm);
+    ulong id_b = sched_spawn(task_b_addr);
     ulong three = 3 as ulong;
     new_count = sched_task_count();
     assert_eq(runner, new_count, three, "Scheduler has 3 tasks after 2nd spawn" as void*);
@@ -115,19 +214,45 @@ export void test_scheduler(TestRunner* runner, PMM* pmm) {
     ulong enabled = sched_is_enabled();
     assert_eq(runner, enabled, one, "Scheduler is enabled" as void*);
 
-    // 協調的にschedule()を呼んでタスクAに切替。
-    // フロー: idle→A→(A terminates, calls schedule)→B→(B terminates, calls schedule)→idle
+    // === 協調スケジューリングテスト ===
+    // フロー: idle→A→(A terminates)→B→(B terminates)→idle
     debug.println("[SCHED] === begin cooperative scheduling ===" as void*);
     schedule();
     debug.println("[SCHED] === returned to idle task ===" as void*);
 
-    // テスト7: タスクAが実行された（完了フラグを確認）
+    // テスト7: タスクAが実行された
     ulong done_a = *flag_a;
     assert_true(runner, done_a, "Task A executed (done flag set)" as void*);
 
     // テスト8: タスクBが実行された
     ulong done_b = *flag_b;
     assert_true(runner, done_b, "Task B executed (done flag set)" as void*);
+
+    // === プリエンプティブスケジューリングテスト ===
+    // タスクC/Dを生成（10回ループでhlt+yield）
+    ulong task_c_addr = fn_addr(task_c_fn as void*);
+    ulong id_c = sched_spawn(task_c_addr);
+
+    ulong task_d_addr = fn_addr(task_d_fn as void*);
+    ulong id_d = sched_spawn(task_d_addr);
+
+    ulong five = 5 as ulong;
+    new_count = sched_task_count();
+    assert_eq(runner, new_count, five, "5 tasks registered (idle+A+B+C+D)" as void*);
+
+    // タスクC/Dを実行（各10回ループ、交互にプリエンプト）
+    debug.println("[SCHED] === begin preemptive scheduling (10 iterations each) ===" as void*);
+    schedule();
+    debug.println("[SCHED] === returned to idle (preemptive done) ===" as void*);
+
+    // テスト10: タスクCが10回実行された
+    ulong c_count = *cnt_c;
+    ulong ten = 10 as ulong;
+    assert_eq(runner, c_count, ten, "Task C completed 10 iterations" as void*);
+
+    // テスト11: タスクDが10回実行された
+    ulong d_count = *cnt_d;
+    assert_eq(runner, d_count, ten, "Task D completed 10 iterations" as void*);
 
     // スケジューラを無効化
     sched_set_enabled(zero);

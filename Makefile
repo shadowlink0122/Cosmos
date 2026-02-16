@@ -43,6 +43,9 @@ ESP_BOOT = $(ESP_DIR)/EFI/BOOT
 
 # テスト
 TEST_DIR = tests
+TEST_KERNEL_SRC = $(KERNEL_DIR)/efi_main_test.cm
+TEST_KERNEL_OBJ = .tmp/build/kernel_test.o
+TEST_KERNEL_EFI = .tmp/build/BOOTX64_TEST.EFI
 TEST_SERIAL_SRC = $(TEST_DIR)/test_serial.cm
 TEST_SERIAL_OBJ = .tmp/build/test_serial.o
 TEST_SERIAL_EFI = .tmp/build/TEST_SERIAL.EFI
@@ -176,9 +179,14 @@ test-serial: download-ovmf
 		echo "✗ 一部テスト失敗"; \
 	fi
 
-# メインカーネルテスト
-test: setup-esp download-ovmf
+# メインカーネルテスト（テスト専用バイナリを使用）
+test: download-ovmf
 	@echo "=== メインカーネルテスト ==="
+	@mkdir -p .tmp/build
+	$(CM) compile --target=uefi -o $(TEST_KERNEL_OBJ) $(TEST_KERNEL_SRC)
+	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(TEST_KERNEL_EFI) $(TEST_KERNEL_OBJ)
+	@mkdir -p $(ESP_BOOT)
+	@cp $(TEST_KERNEL_EFI) $(ESP_BOOT)/BOOTX64.EFI
 	@rm -f $(DEBUG_LOG)
 	@echo "QEMU起動中（$(QEMU_TIMEOUT)秒タイムアウト）..."
 	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) $(QEMU_TEST_OPTS) 2>/dev/null || true

@@ -1,8 +1,8 @@
 //! platform: uefi
-// kernel::sched::scheduler - ラウンドロビンスケジューラ
+// kernel::sched::scheduler - プリエンプティブ・ラウンドロビンスケジューラ
 //
 // 固定アドレスにスケジューラ状態を配置し、
-// タイマー割り込みからschedule()を呼出してタスクを切り替える。
+// タイマー割り込みのneed_reschedフラグに基づいてタスクを切り替える。
 //
 // 固定アドレスマップ:
 //   0xA00: current_task_id（現在実行中のタスクID）
@@ -11,6 +11,7 @@
 
 import ../drivers/serial;
 import ../drivers/debug_port;
+import ../drivers/pit;
 import ../mm/pmm;
 import ./task;
 import ./context;
@@ -23,6 +24,7 @@ import ./context;
 const ulong SCHED_CURRENT_ADDR  = 0xA00;  // 現在のタスクID
 const ulong SCHED_COUNT_ADDR    = 0xA08;  // タスク数
 const ulong SCHED_ENABLED_ADDR  = 0xA10;  // スケジューラ有効フラグ
+const ulong SCHED_PMM_ADDR      = 0xA18;  // PMMポインタ（スタック割当用）
 
 // ============================================================
 // スケジューラ状態アクセス
@@ -68,9 +70,22 @@ export void sched_set_enabled(ulong enabled) {
 // スケジューラ操作
 // ============================================================
 
+/// PMMポインタを固定アドレスに保存する
+export void sched_set_pmm(PMM* pmm) {
+    ulong* ptr = SCHED_PMM_ADDR as ulong*;
+    *ptr = pmm as ulong;
+}
+
+/// PMMポインタを固定アドレスから取得する
+export PMM* sched_get_pmm() {
+    ulong* ptr = SCHED_PMM_ADDR as ulong*;
+    ulong val = *ptr;
+    return val as PMM*;
+}
+
 /// スケジューラを初期化する
 /// idleタスク（ID=0）を作成し、スケジューラを無効状態で起動
-export void sched_init() {
+export void sched_init(PMM* pmm) {
     DebugPort debug(0xE9);
 
     // スケジューラ状態を初期化
@@ -78,6 +93,9 @@ export void sched_init() {
     sched_set_current(zero);
     sched_set_count(1);       // idleタスク1つ
     sched_set_enabled(zero);  // まだ無効
+
+    // PMM*を固定アドレスに保存
+    sched_set_pmm(pmm);
 
     // idleタスクを作成
     task_create_idle();
@@ -88,10 +106,9 @@ export void sched_init() {
 /// 新しいタスクを登録する
 ///
 /// entry_fn: タスクのエントリポイント関数アドレス
-/// pmm:      PMMへのポインタ（スタック割当用）
 ///
 /// 戻り値: 割り当てられたタスクID（失敗時は0xFFFFFFFFFFFFFFFF）
-export ulong sched_spawn(ulong entry_fn, PMM* pmm) {
+export ulong sched_spawn(ulong entry_fn) {
     DebugPort debug(0xE9);
 
     ulong count = sched_task_count();
@@ -100,6 +117,9 @@ export ulong sched_spawn(ulong entry_fn, PMM* pmm) {
         ulong err = 0xFFFFFFFF as ulong;
         return err;
     }
+
+    // 固定アドレスからPMMポインタを取得
+    PMM* pmm = sched_get_pmm();
 
     // タスクを生成
     ulong result = task_create(count, entry_fn, pmm);
@@ -135,7 +155,52 @@ export void sched_enable() {
     debug.println("[SCHED] scheduler enabled" as void*);
 }
 
-/// タイマー割り込みから呼ばれるスケジューラのメインルーチン
+/// タイマーtickの処理
+/// IRQ0ハンドラから（間接的に）呼ばれる。
+/// 現在のタスクのタイムスライスをデクリメントし、
+/// 0になったらneed_reschedフラグを設定する。
+export void sched_timer_tick() {
+    if (sched_is_enabled() == 0) {
+        return;
+    }
+
+    ulong current_id = sched_current_id();
+    ulong remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
+
+    if (remaining > 0) {
+        ulong new_remaining = remaining - 1;
+        tcb_write(current_id, TCB_OFF_TIMESLICE, new_remaining);
+    }
+}
+
+/// TERMINATED以外の次のREADYタスクを循環リストから探す
+/// 全タスクがTERMINATEDの場合はcurrent_idを返す
+export ulong find_next_ready(ulong current_id) {
+    ulong count = sched_task_count();
+    ulong next_id = tcb_read(current_id, TCB_OFF_NEXT);
+    ulong checked = 0 as ulong;
+
+    // 循環リストを最大count回巡回して探す
+    while (checked < count) {
+        if (next_id == current_id) {
+            // 一周した — 他に実行可能なタスクなし
+            return current_id;
+        }
+
+        ulong state = tcb_read(next_id, TCB_OFF_STATE);
+        if (state != TASK_TERMINATED) {
+            return next_id;
+        }
+
+        // TERMINATED — 次を見る
+        next_id = tcb_read(next_id, TCB_OFF_NEXT);
+        checked = checked + 1;
+    }
+
+    return current_id;
+}
+
+/// スケジューラのメインルーチン
 ///
 /// ラウンドロビンで次のREADYタスクを選択し、コンテキストスイッチする。
 /// 割り込みコンテキスト内ではなく、安全なコンテキストから呼ばれる前提。
@@ -155,22 +220,12 @@ export void schedule() {
     // 現在のタスクID
     ulong current_id = sched_current_id();
 
-    // 次のタスクを探す（ラウンドロビン）
-    ulong next_id = tcb_read(current_id, TCB_OFF_NEXT);
+    // 次のREADYタスクを探す（TERMINATEDをスキップ）
+    ulong next_id = find_next_ready(current_id);
 
     // 同じタスクなら切替不要
     if (next_id == current_id) {
         return;
-    }
-
-    // 次のタスクがTERMINATEDならスキップ（簡易版: 次の次を探す）
-    ulong next_state = tcb_read(next_id, TCB_OFF_STATE);
-    if (next_state == TASK_TERMINATED) {
-        // 簡易版: 次の次を試す
-        next_id = tcb_read(next_id, TCB_OFF_NEXT);
-        if (next_id == current_id) {
-            return;
-        }
     }
 
     // 現タスクをRUNNING→READYに変更
@@ -179,14 +234,13 @@ export void schedule() {
         tcb_write(current_id, TCB_OFF_STATE, TASK_READY);
     }
 
-    // 次タスクをRUNNINGに設定
+    // 次タスクをRUNNINGに設定、タイムスライスをリセット
     tcb_write(next_id, TCB_OFF_STATE, TASK_RUNNING);
+    tcb_write(next_id, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
     sched_set_current(next_id);
 
     // コンテキストスイッチ
-    // 現タスクのRSP保存先アドレス
     ulong old_rsp_addr = tcb_addr(current_id) + TCB_OFF_RSP;
-    // 新タスクのRSP値
     ulong new_rsp = tcb_read(next_id, TCB_OFF_RSP);
 
     // スイッチログ出力
@@ -200,3 +254,25 @@ export void schedule() {
     switch_to(old_rsp_addr, new_rsp);
 }
 
+/// idleタスクのメインループ
+/// HLTで省電力待機し、タイマー割り込みで起床、need_reschedフラグを確認
+export void idle_loop() {
+    DebugPort debug(0xE9);
+    debug.println("[IDLE] entering idle loop" as void*);
+
+    while (true) {
+        // 省電力待機（次のIRQで起床）
+        __asm__("hlt");
+
+        // need_reschedフラグを確認（取得してクリア）
+        ulong resched = pit_check_resched();
+        if (resched != 0) {
+            // タイムスライスチェック
+            ulong current_id = sched_current_id();
+            ulong remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
+            if (remaining == 0) {
+                schedule();
+            }
+        }
+    }
+}

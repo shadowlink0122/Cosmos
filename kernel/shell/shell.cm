@@ -1,0 +1,263 @@
+//! platform: uefi
+// kernel::shell - カーネルシェル（メインループ）
+//
+// PS/2キーボードからの入力を受け取り、コマンドを解釈・実行する。
+// serial + FBConsole のデュアル出力対応。
+//
+// コマンド実装は個別ファイルに分割:
+//   cmd_help.cm, cmd_ps.cm, cmd_mem.cm, cmd_uptime.cm
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../drivers/keyboard;
+import ../lib/print;
+import ./cmd_help;
+import ./cmd_ps;
+import ./cmd_mem;
+import ./cmd_uptime;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// コマンドバッファ
+const ulong SHELL_BUF_ADDR = 0xD00;  // コマンドバッファ（128バイト）
+const ulong SHELL_BUF_SIZE = 128;
+const ulong SHELL_POS_ADDR = 0xD80;  // バッファ位置
+
+// グローバルFBConsoleアドレス
+const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
+
+// シェル用の色定数
+const ulong SHELL_COLOR_PROMPT = 0x0000FFFF;  // シアン
+const ulong SHELL_COLOR_INPUT  = 0x00FFFFFF;  // 白
+const ulong SHELL_COLOR_ERROR  = 0x00FF4444;  // 赤
+
+// ============================================================
+// 文字列比較ヘルパー
+// ============================================================
+
+/// 2つの文字列を比較する（固定アドレスの文字列 vs リテラル）
+/// 一致すれば1、不一致なら0を返す
+export ulong shell_streq(ulong buf_addr, ulong buf_len, void* target) {
+    ulong target_addr = target as ulong;
+
+    // ターゲット文字列の長さを計算
+    ulong target_len = 0;
+    ulong zero_byte = 0;
+    while (true) {
+        ulong ch = 0;
+        ulong check_addr = target_addr + target_len;
+        __asm__(`
+            movq ${r:check_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        if (ch == zero_byte) {
+            break;
+        }
+        target_len = target_len + 1;
+    }
+
+    if (buf_len != target_len) {
+        return 0;
+    }
+
+    ulong i = 0 as ulong;
+    while (i < buf_len) {
+        ulong ch_buf = 0;
+        ulong buf_byte_addr = buf_addr + i;
+        __asm__(`
+            movq ${r:buf_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_buf}
+        `);
+
+        ulong ch_target = 0;
+        ulong target_byte_addr = target_addr + i;
+        __asm__(`
+            movq ${r:target_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_target}
+        `);
+
+        if (ch_buf != ch_target) {
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    return 1;
+}
+
+// ============================================================
+// コマンド実行
+// ============================================================
+
+/// コマンドバッファにバイトを書込む
+export void shell_buf_write(ulong pos, ulong byte_val) {
+    ulong addr = SHELL_BUF_ADDR + pos;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        movq ${r:byte_val}, %rax;
+        movb %al, (%rdi)
+    `);
+}
+
+/// コマンドを実行する
+export void shell_exec(ulong buf_addr, ulong buf_len) {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+
+    if (buf_len == 0) {
+        return;
+    }
+
+    debug.puts("[SHELL] cmd len=" as void*);
+    debug.print_hex(buf_len);
+    debug.println("" as void*);
+
+    ulong matched = 0 as ulong;
+
+    if (shell_streq(buf_addr, buf_len, "help" as void*) != 0) {
+        cmd_help();
+        matched = 1;
+    }
+    if (shell_streq(buf_addr, buf_len, "ps" as void*) != 0) {
+        cmd_ps();
+        matched = 1;
+    }
+    if (shell_streq(buf_addr, buf_len, "mem" as void*) != 0) {
+        cmd_mem();
+        matched = 1;
+    }
+    if (shell_streq(buf_addr, buf_len, "uptime" as void*) != 0) {
+        cmd_uptime();
+        matched = 1;
+    }
+    if (shell_streq(buf_addr, buf_len, "clear" as void*) != 0) {
+        serial.puts("\x1B[2J\x1B[H" as void*);
+        fb_clear(con);
+        fb_set_color(con, 0x00FFFFFF);
+        fb_println(con, "  Cosmos OS v0.5.0" as void*);
+        fb_newline(con);
+        matched = 1;
+    }
+
+    if (matched == 0) {
+        serial.puts("Unknown command. Type 'help'" as void*);
+        serial.println("" as void*);
+
+        fb_set_color(con, SHELL_COLOR_ERROR);
+        fb_println(con, "Unknown command. Type 'help'" as void*);
+        fb_set_color(con, SHELL_COLOR_INPUT);
+    }
+}
+
+// ============================================================
+// 入力処理
+// ============================================================
+
+/// シェルのメインループ（idle_loopから呼ばれる）
+export void shell_process_input() {
+    SerialPort serial(0x3F8);
+    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+
+    ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
+    ulong pos = *pos_ptr;
+
+    ulong ch = kb_read_char();
+    if (ch == 0) {
+        return;
+    }
+
+    // Enter (0x0A)
+    ulong enter = 0x0A as ulong;
+    if (ch == enter) {
+        serial.println("" as void*);
+        fb_newline(con);
+        shell_exec(SHELL_BUF_ADDR, pos);
+        ulong zero = 0 as ulong;
+        *pos_ptr = zero;
+        // プロンプト再表示
+        serial.puts("cosmos> " as void*);
+        fb_set_color(con, SHELL_COLOR_PROMPT);
+        fb_puts(con, "cosmos> " as void*);
+        fb_set_color(con, SHELL_COLOR_INPUT);
+        return;
+    }
+
+    // Backspace (0x08)
+    ulong backspace = 0x08 as ulong;
+    if (ch == backspace) {
+        if (pos > 0) {
+            pos = pos - 1;
+            *pos_ptr = pos;
+            serial.putc(0x08);
+            serial.putc(0x20);
+            serial.putc(0x08);
+            fb_backspace(con);
+        }
+        return;
+    }
+
+    // 通常文字
+    ulong max_pos = SHELL_BUF_SIZE - 1;
+    if (pos < max_pos) {
+        shell_buf_write(pos, ch);
+        pos = pos + 1;
+        *pos_ptr = pos;
+        serial.putc(ch);
+        fb_set_color(con, SHELL_COLOR_INPUT);
+        fb_putc(con, ch);
+    }
+}
+
+// ============================================================
+// 初期化
+// ============================================================
+
+/// シェルを初期化する
+export void shell_init() {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+
+    // バッファをクリア
+    ulong zero = 0 as ulong;
+    ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
+    *pos_ptr = zero;
+
+    ulong i = 0 as ulong;
+    ulong buf_qwords = 16 as ulong;
+    while (i < buf_qwords) {
+        ulong addr = SHELL_BUF_ADDR + (i * 8);
+        ulong* ptr = addr as ulong*;
+        *ptr = zero;
+        i = i + 1;
+    }
+
+    // serial バナー
+    serial.println("" as void*);
+    serial.println("================================" as void*);
+    serial.println("  Cosmos OS v0.5.0 Kernel Shell" as void*);
+    serial.println("  Type 'help' for commands" as void*);
+    serial.println("================================" as void*);
+    serial.puts("cosmos> " as void*);
+
+    // FBConsole バナー + プロンプト
+    fb_set_color(con, 0x00FFFFFF);
+    fb_println(con, "================================" as void*);
+    fb_println(con, "  Cosmos OS v0.5.0 Kernel Shell" as void*);
+    fb_println(con, "  Type 'help' for commands" as void*);
+    fb_println(con, "================================" as void*);
+    fb_set_color(con, SHELL_COLOR_PROMPT);
+    fb_puts(con, "cosmos> " as void*);
+    fb_set_color(con, SHELL_COLOR_INPUT);
+
+    debug.println("[SHELL] shell initialized" as void*);
+}

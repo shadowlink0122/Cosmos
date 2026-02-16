@@ -1,0 +1,68 @@
+//! platform: uefi
+// kernel::tests::test_tss - TSS（タスクステートセグメント）テスト
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../arch/tss;
+import ./test_runner;
+
+// ============================================================
+// TSS テスト
+// ============================================================
+
+/// TSSテストを実行する
+export void test_tss(TestRunner* runner) {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === TSS Tests ===" as void*);
+
+    // テスト1: TSS構造体がゼロ以外のRSP0を持っている
+    ulong* rsp0_ptr = (TSS_BASE_ADDR + TSS_OFF_RSP0) as ulong*;
+    ulong rsp0 = *rsp0_ptr;
+    assert_nonzero(runner, rsp0, "TSS RSP0 is nonzero" as void*);
+
+    // テスト2: IOPBオフセットがTSSサイズに設定されている
+    // ASMでバイト読取り（ushort*デリファレンス非対応回避）
+    ulong iopb_read = 0;
+    ulong iopb_addr = TSS_BASE_ADDR + TSS_OFF_IOPB;
+    __asm__(`
+        movq ${r:iopb_addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movb 1(%rdi), %ah;
+        movq %rax, ${=r:iopb_read}
+    `);
+    ulong expected_iopb = TSS_SIZE;
+    assert_eq(runner, iopb_read, expected_iopb, "TSS IOPB offset equals TSS_SIZE" as void*);
+
+    // テスト3: TSSディスクリプタがGDTに書き込まれている
+    // GDT[3]のtypeフィールド（bit 40-43）が0x9（available TSS）
+    ulong* gdt_slot3 = (0x800 + 24) as ulong*;  // GDT base + 3*8
+    ulong gdt_val = *gdt_slot3;
+    // type+P bitを抽出: byte 5 (bits 40-47) should be 0x89
+    ulong shift40 = 40 as ulong;
+    ulong ff_mask = 0xFF as ulong;
+    ulong type_byte = (gdt_val >> shift40) & ff_mask;
+    // ltr実行後はbusy bit (0x8B)になっている可能性がある
+    ulong is_valid = 0 as ulong;
+    ulong type_available = 0x89 as ulong;
+    ulong type_busy = 0x8B as ulong;
+    if (type_byte == type_available) {
+        is_valid = 1 as ulong;
+    }
+    if (type_byte == type_busy) {
+        is_valid = 1 as ulong;
+    }
+    assert_true(runner, is_valid, "TSS GDT descriptor type is valid (0x89 or 0x8B)" as void*);
+
+    // テスト4: RSP0の更新が正しく反映される
+    ulong original_rsp0 = rsp0;
+    ulong test_rsp0 = 0xDEADBEEF as ulong;
+    tss_set_rsp0(test_rsp0);
+    ulong new_rsp0 = *rsp0_ptr;
+    assert_eq(runner, new_rsp0, test_rsp0, "TSS RSP0 update works" as void*);
+    // 元に戻す
+    tss_set_rsp0(original_rsp0);
+
+    serial.println("[TEST] TSS tests complete" as void*);
+}

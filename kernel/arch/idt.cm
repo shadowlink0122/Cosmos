@@ -9,7 +9,7 @@
 //   idt.set_gate(0, handler_addr, IDT_INTERRUPT_GATE);
 //   idt.load();
 
-import ./drivers/serial;
+import ../drivers/serial;
 
 // ============================================================
 // 定数

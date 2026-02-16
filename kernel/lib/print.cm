@@ -69,40 +69,8 @@ export void fb_init(FBConsole* con, ulong fb_addr, ulong width, ulong height, ul
 }
 
 // ============================================================
-// Console インターフェース実装
+// 前景色設定
 // ============================================================
-
-impl FBConsole for Console {
-    /// 1文字を出力（テキストカーソル自動進行）
-    void putc(ulong ch) {
-        fb_putc(&self, ch);
-    }
-
-    /// NUL終端文字列を出力
-    void puts(void* data) {
-        fb_puts(&self, data);
-    }
-
-    /// 文字列を改行付きで出力
-    void println(void* data) {
-        fb_println(&self, data);
-    }
-
-    /// 画面を背景色でクリアする
-    void clear() {
-        fb_clear(&self);
-    }
-
-    /// 前景色を設定する
-    void set_color(ulong fg) {
-        self.fg_color = fg;
-    }
-
-    /// 改行処理
-    void newline() {
-        fb_newline(&self);
-    }
-}
 
 /// 前景色を設定する
 export void fb_set_color(FBConsole* con, ulong fg) {
@@ -200,14 +168,54 @@ export ulong max_rows(FBConsole* con) {
     return con->height / FONT_HEIGHT;
 }
 
-/// 改行処理
+/// 画面を1行分上にスクロールする
+export void fb_scroll_up(FBConsole* con) {
+    ulong fb = con->fb_addr;
+    ulong stride = con->stride;
+    ulong height = con->height;
+    ulong bg = con->bg_color;
+
+    if (fb == 0) { return; }
+
+    // FONT_HEIGHT行分のピクセルを上にコピー
+    ulong y = 0 as ulong;
+    ulong copy_height = height - FONT_HEIGHT;
+    while (y < copy_height) {
+        ulong src_y = y + FONT_HEIGHT;
+        ulong x = 0 as ulong;
+        while (x < stride) {
+            ulong dst_offset = (y * stride + x) * 4;
+            ulong src_offset = (src_y * stride + x) * 4;
+            uint* dst = (fb + dst_offset) as uint*;
+            uint* src = (fb + src_offset) as uint*;
+            *dst = *src;
+            x += 1;
+        }
+        y += 1;
+    }
+
+    // 最下行を背景色でクリア
+    ulong clear_y = copy_height;
+    while (clear_y < height) {
+        ulong x = 0 as ulong;
+        while (x < stride) {
+            ulong offset = (clear_y * stride + x) * 4;
+            uint* pixel = (fb + offset) as uint*;
+            *pixel = bg as uint;
+            x += 1;
+        }
+        clear_y += 1;
+    }
+}
+
+/// 改行処理（画面下端でスクロール）
 export void fb_newline(FBConsole* con) {
     con->cursor_x = 0;
     ulong rows = max_rows(con);
     ulong next_y = con->cursor_y + 1;
     if (next_y >= rows) {
-        // 画面下端に達した場合、最下行にとどまる
-        // （スクロール機能は将来実装）
+        // 画面下端に達した場合、スクロール
+        fb_scroll_up(con);
         con->cursor_y = rows - 1;
     } else {
         con->cursor_y = next_y;
@@ -271,3 +279,48 @@ export void fb_println(FBConsole* con, void* data) {
     fb_puts(con, data);
     fb_newline(con);
 }
+
+// ============================================================
+// 16進数出力
+// ============================================================
+
+/// 16進数値をFBConsoleに出力（0xプレフィックス + 16桁）
+export void fb_print_hex(FBConsole* con, ulong value) {
+    fb_puts(con, "0x" as void*);
+    ulong i = 0 as ulong;
+    ulong mask_nibble = 0xF as ulong;
+    while (i < 16) {
+        ulong shift = (15 - i) * 4;
+        ulong nibble = (value >> shift) & mask_nibble;
+        ulong ch = 0 as ulong;
+        if (nibble < 10) {
+            ch = nibble + 0x30;  // '0'-'9'
+        } else {
+            ch = nibble - 10 + 0x41;  // 'A'-'F'
+        }
+        fb_putc(con, ch);
+        i += 1;
+    }
+}
+
+// ============================================================
+// バックスペース処理
+// ============================================================
+
+/// カーソルを1つ戻して空白で上書き（Backspace用）
+export void fb_backspace(FBConsole* con) {
+    if (con->cursor_x > 0) {
+        con->cursor_x = con->cursor_x - 1;
+        // カーソル位置に空白を描画
+        ulong px = con->cursor_x * FONT_WIDTH;
+        ulong py = con->cursor_y * FONT_HEIGHT;
+        draw_char(con, px, py, 0x20);
+    }
+}
+
+// ============================================================
+// 注: impl FBConsole for Console ブロックは削除
+// Cmコンパイラのバグ（implブロック内の関数呼出しがLLVMで
+// 空引数の前方宣言を生成）を回避するため、
+// fb_putc/fb_puts/fb_println等の直接呼出しを使用する。
+// ============================================================
