@@ -5,13 +5,12 @@ import ../drivers/serial;
 import ../lib/print;
 
 // グローバルFBConsoleアドレス
-const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
 const ulong SHELL_COLOR_OUTPUT = 0x0000FF00;
 
 /// uptimeコマンド: システム稼働時間表示
 export void cmd_uptime() {
     SerialPort serial(0x3F8);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     ulong* tick_ptr = 0x900 as ulong*;
     ulong ticks = *tick_ptr;

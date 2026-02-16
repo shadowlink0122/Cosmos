@@ -12,20 +12,9 @@
 import ./font;
 import ../drivers/serial;
 
-// ============================================================
-// Console インターフェース（テキスト出力抽象化）
-// ============================================================
+import ../config;
 
-/// テキストコンソールの共通インターフェース
-/// FBConsole以外の実装（シリアルコンソール等）も将来追加可能
-export interface Console {
-    void putc(ulong ch);
-    void puts(void* data);
-    void println(void* data);
-    void clear();
-    void set_color(ulong fg);
-    void newline();
-}
+// (Consoleインターフェース削除済)
 
 // ============================================================
 // テキストカーソル管理用構造体
@@ -70,6 +59,17 @@ export void fb_init(FBConsole* con, ulong fb_addr, ulong width, ulong height, ul
     con->cursor_y = 0;
     con->fg_color = FB_COLOR_GREEN;   // デフォルト: 緑文字
     con->bg_color = FB_COLOR_DARK_BG; // デフォルト: 暗い背景
+}
+
+/// グローバルFBConsoleを初期化する
+export void fb_init_global(ulong fb_addr, ulong width, ulong height, ulong stride) {
+    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    fb_init(con, fb_addr, width, height, stride);
+}
+
+/// グローバルFBConsoleポインタを取得する
+export FBConsole* fb_get_global_console() {
+    return GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
 }
 
 /// 前景色を設定する

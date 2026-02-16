@@ -7,14 +7,13 @@ import ../sched/task;
 import ../sched/scheduler;
 
 // グローバルFBConsoleアドレス
-const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
 const ulong SHELL_COLOR_HEADER = 0x00FFAA00;
 const ulong SHELL_COLOR_OUTPUT = 0x0000FF00;
 
 /// psコマンド: タスク一覧を表示
 export void cmd_ps() {
     SerialPort serial(0x3F8);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     serial.println("  ID  STATE       TIMESLICE" as void*);
     serial.println("  --  ----------  ---------" as void*);

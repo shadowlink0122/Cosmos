@@ -11,22 +11,7 @@ import ../sched/task;
 import ../sched/scheduler;
 import ../lib/print;
 
-// ============================================================
-// グローバルFBConsole固定アドレス
-// ============================================================
-
-const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
-
-/// グローバルFBConsoleを固定アドレスに設定する
-export void global_fb_init(ulong fb_addr, ulong width, ulong height, ulong stride) {
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
-    fb_init(con, fb_addr, width, height, stride);
-}
-
-/// グローバルFBConsoleポインタを取得
-export ulong global_fb_ptr() {
-    return GLOBAL_FB_CONSOLE_ADDR;
-}
+// (GLOBAL_FB_CONSOLE_ADDR, global_fb_init, global_fb_ptr 削除済)
 
 // ============================================================
 // 共通: hlt + リスケジュール確認
@@ -52,7 +37,7 @@ export void demo_yield() {
 /// デモタスク1: シアン色出力
 export void demo_task1_fn() {
     SerialPort serial(0x3F8);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     serial.println("[Task-1] Started" as void*);
     fb_set_color(con, 0x0000FFFF);  // シアン
@@ -101,7 +86,7 @@ export void demo_task1_fn() {
 /// デモタスク2: 黄色出力
 export void demo_task2_fn() {
     SerialPort serial(0x3F8);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     serial.println("[Task-2] Started" as void*);
     fb_set_color(con, 0x00FFFF00);  // 黄色

@@ -220,10 +220,10 @@ void kernel_main(BootInfo* info) {
         serial.println("[CosmOS] Initializing framebuffer console..." as void*);
 
         // グローバルFBConsoleを固定アドレスに初期化
-        global_fb_init(fb, fb_w, fb_h, fb_stride);
+        fb_init_global(fb, fb_w, fb_h, fb_stride);
 
         // グローバルFBConsoleポインタを取得
-        FBConsole* gcon = global_fb_ptr() as FBConsole*;
+        FBConsole* gcon = fb_get_global_console();
         fb_clear(gcon);
 
         // ブートバナー表示（QEMU画面）

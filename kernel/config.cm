@@ -1,0 +1,5 @@
+//! platform: uefi
+// kernel::config - カーネル全体設定
+
+/// グローバルFBConsoleの固定メモリアドレス
+export const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;

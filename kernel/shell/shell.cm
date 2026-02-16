@@ -26,7 +26,6 @@ const ulong SHELL_BUF_SIZE = 128;
 const ulong SHELL_POS_ADDR = 0xD80;  // バッファ位置
 
 // グローバルFBConsoleアドレス
-const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
 
 // シェル用の色定数
 const ulong SHELL_COLOR_PROMPT = 0x0000FFFF;  // シアン
@@ -111,7 +110,7 @@ export void shell_buf_write(ulong pos, ulong byte_val) {
 export void shell_exec(ulong buf_addr, ulong buf_len) {
     SerialPort serial(0x3F8);
     DebugPort debug(0xE9);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     if (buf_len == 0) {
         return;
@@ -165,7 +164,7 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
 /// シェルのメインループ（idle_loopから呼ばれる）
 export void shell_process_input() {
     SerialPort serial(0x3F8);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
     ulong pos = *pos_ptr;
@@ -225,7 +224,7 @@ export void shell_process_input() {
 export void shell_init() {
     SerialPort serial(0x3F8);
     DebugPort debug(0xE9);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     // バッファをクリア
     ulong zero = 0;

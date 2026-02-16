@@ -7,14 +7,13 @@ import ../sched/scheduler;
 import ../mm/pmm;
 
 // グローバルFBConsoleアドレス
-const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
 const ulong SHELL_COLOR_HEADER = 0x00FFAA00;
 const ulong SHELL_COLOR_OUTPUT = 0x0000FF00;
 
 /// memコマンド: メモリ使用状況表示
 export void cmd_mem() {
     SerialPort serial(0x3F8);
-    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    FBConsole* con = fb_get_global_console();
 
     PMM* pmm = sched_get_pmm();
 
