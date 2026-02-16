@@ -1,13 +1,30 @@
-# Cosmos OS Makefile
+# Cosmos OS - 統合Makefile
+#
 # 使い方:
-#   make          - コンパイル＆リンク
-#   make compile  - コンパイルのみ
-#   make run      - QEMUで実行（OVMFを自動ダウンロード）
-#   make clean    - 生成ファイル削除
+#   make              - カーネルをコンパイル＆リンク（EFI生成）
+#   make compile      - カーネルのコンパイルのみ
+#   make all          - カーネルをコンパイル＆リンク
+#   make run          - QEMUで実行（OVMFを自動ダウンロード）
+#   make test         - カーネルテスト（QEMUブートフロー検証）
+#   make clean        - カーネル生成ファイル削除
+#
+# Cmコンパイラ操作:
+#   make cm-build     - Cmコンパイラをビルド
+#   make cm-test      - Cmユニットテスト
+#   make cm-test-all  - Cm全テスト
+#   make cm-clean     - Cmビルドディレクトリをクリーン
+#   make cm CMD="..."   - Cm Makefileの任意ターゲットを実行
+#
+# 統合操作:
+#   make build-all    - Cmコンパイラ + カーネルを全ビルド
+#   make clean-all    - 全ビルド成果物を削除
 
 CM ?= cm
 LLD ?= lld-link
 QEMU ?= qemu-system-x86_64
+
+# Cmコンパイラのサブディレクトリ
+CM_DIR = Cm
 
 # OVMFファームウェアの配置先
 OVMF_DIR ?= .tmp/ovmf
@@ -33,9 +50,41 @@ TEST_LOG = .tmp/serial.log
 QEMU_TIMEOUT ?= 15
 TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || echo "")
 
-.PHONY: all compile link run clean setup-esp download-ovmf test test-serial
+.PHONY: all compile link run clean setup-esp download-ovmf test test-serial \
+        cm-build cm-test cm-test-all cm-clean cm build-all clean-all help
+
+# ============================================================
+# デフォルト + ヘルプ
+# ============================================================
 
 all: $(EFI)
+
+help:
+	@echo "Cosmos OS - 統合Makefile"
+	@echo ""
+	@echo "カーネル操作:"
+	@echo "  make              - カーネルをコンパイル＆リンク"
+	@echo "  make compile      - カーネルのコンパイルのみ"
+	@echo "  make all          - カーネルをコンパイル＆リンク"
+	@echo "  make run          - QEMUで実行"
+	@echo "  make test         - カーネルテスト（ブートフロー検証）"
+	@echo "  make test-serial  - シリアル単体テスト"
+	@echo "  make clean        - カーネル生成ファイル削除"
+	@echo ""
+	@echo "Cmコンパイラ操作:"
+	@echo "  make cm-build     - Cmコンパイラをビルド"
+	@echo "  make cm-test      - Cmユニットテスト"
+	@echo "  make cm-test-all  - Cm全テスト"
+	@echo "  make cm-clean     - Cmビルドをクリーン"
+	@echo "  make cm CMD=<target> - Cm Makefileの任意ターゲットを実行"
+	@echo ""
+	@echo "統合操作:"
+	@echo "  make build-all    - Cmコンパイラ + カーネルを全ビルド"
+	@echo "  make clean-all    - 全ビルド成果物を削除"
+
+# ============================================================
+# カーネルビルド
+# ============================================================
 
 # Cmソースをコンパイル（uefiターゲット）
 compile: $(KERNEL_OBJ)
@@ -84,10 +133,8 @@ run: setup-esp download-ovmf
 		-serial mon:stdio
 
 # ============================================================
-# テストターゲット
+# カーネルテスト
 # ============================================================
-# テスト出力はQEMUデバッグポート(0xE9)経由でdebug.logに出力。
-# OVMFのシリアル出力とは独立したクリーンなチャネル。
 
 DEBUG_LOG = .tmp/debug.log
 
@@ -100,7 +147,7 @@ QEMU_TEST_OPTS = \
 	-debugcon file:$(DEBUG_LOG) \
 	-global isa-debugcon.iobase=0xE9
 
-# シリアル単体テスト: UART COM1 + デバッグポート出力を検証
+# シリアル単体テスト
 test-serial: download-ovmf
 	@echo "=== シリアル単体テスト ==="
 	@mkdir -p .tmp/build
@@ -126,7 +173,7 @@ test-serial: download-ovmf
 		echo "✗ 一部テスト失敗"; \
 	fi
 
-# メインカーネルテスト: デバッグポートでブートフローを検証
+# メインカーネルテスト
 test: setup-esp download-ovmf
 	@echo "=== メインカーネルテスト ==="
 	@rm -f $(DEBUG_LOG)
@@ -180,5 +227,58 @@ test: setup-esp download-ovmf
 		echo "結果: $$PASS passed, $$FAIL failed"; \
 	fi
 
+# ============================================================
+# Cmコンパイラ操作（Cm/Makefileへの委譲）
+# ============================================================
+
+# Cmコンパイラをビルド
+cm-build:
+	@echo "=== Cmコンパイラビルド ==="
+	@$(MAKE) -C $(CM_DIR) build
+
+# Cmユニットテスト
+cm-test:
+	@echo "=== Cmユニットテスト ==="
+	@$(MAKE) -C $(CM_DIR) test
+
+# Cm全テスト
+cm-test-all:
+	@echo "=== Cm全テスト ==="
+	@$(MAKE) -C $(CM_DIR) test-all
+
+# Cmビルドをクリーン
+cm-clean:
+	@$(MAKE) -C $(CM_DIR) clean
+
+# Cm Makefileの任意ターゲットを実行
+# 使い方: make cm CMD="test-llvm"
+CMD ?=
+cm:
+	@if [ -z "$(CMD)" ]; then \
+		echo "使い方: make cm CMD=<target>"; \
+		echo "例: make cm CMD=test-llvm"; \
+		echo ""; \
+		$(MAKE) -C $(CM_DIR) help; \
+	else \
+		$(MAKE) -C $(CM_DIR) $(CMD); \
+	fi
+
+# ============================================================
+# 統合操作
+# ============================================================
+
+# Cmコンパイラ + カーネルを全ビルド
+build-all: cm-build all
+	@echo ""
+	@echo "=========================================="
+	@echo "✅ 全ビルド完了（Cmコンパイラ + カーネル）"
+	@echo "=========================================="
+
+# 全ビルド成果物を削除
+clean-all: clean cm-clean
+	@echo ""
+	@echo "✅ 全クリーン完了"
+
+# カーネル生成ファイル削除
 clean:
 	rm -rf .tmp/build .tmp/esp .tmp/serial.log
