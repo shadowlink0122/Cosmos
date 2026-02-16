@@ -224,20 +224,20 @@ void kernel_main(BootInfo* info) {
 
         // グローバルFBConsoleポインタを取得
         FBConsole* gcon = global_fb_ptr() as FBConsole*;
-        gcon->clear();
+        fb_clear(gcon);
 
         // ブートバナー表示（QEMU画面）
-        gcon->set_color(0x00FFFFFF);
-        gcon->puts("  CosmOS v0.5.0" as void*);
-        gcon->newline();
-        gcon->newline();
-        gcon->set_color(0x0000FF00);
-        gcon->puts("  [OK] Boot completed" as void*);
-        gcon->newline();
-        gcon->set_color(0x0000FFFF);
-        gcon->puts("  Written in Cm" as void*);
-        gcon->newline();
-        gcon->newline();
+        fb_set_color(gcon, 0x00FFFFFF);
+        fb_puts(gcon, "  CosmOS v0.5.0" as void*);
+        fb_newline(gcon);
+        fb_newline(gcon);
+        fb_set_color(gcon, 0x0000FF00);
+        fb_puts(gcon, "  [OK] Boot completed" as void*);
+        fb_newline(gcon);
+        fb_set_color(gcon, 0x0000FFFF);
+        fb_puts(gcon, "  Written in Cm" as void*);
+        fb_newline(gcon);
+        fb_newline(gcon);
 
         serial.println("[CosmOS] Framebuffer initialized" as void*);
     } else {
@@ -277,10 +277,10 @@ void kernel_main(BootInfo* info) {
     // ============================================================
     // デモタスク生成（マルチタスク動作確認用）
     // ============================================================
-    serial.println("[CosmOS] Spawning demo tasks..." as void*);
-    demo_spawn_tasks();
+    serial.println("[CosmOS] Spawning demo tasks... (DISABLED for rendering check)" as void*);
+    // demo_spawn_tasks();
     sched_enable();
-    serial.println("[CosmOS] Scheduler enabled, demo tasks running" as void*);
+    serial.println("[CosmOS] Scheduler enabled" as void*);
 
     // デモタスクを開始（schedule呼出しで最初のタスクに切替）
     schedule();

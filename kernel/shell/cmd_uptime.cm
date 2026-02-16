@@ -23,10 +23,10 @@ export void cmd_uptime() {
     serial.print_hex(ticks);
     serial.println(" ticks)" as void*);
 
-    con->set_color(SHELL_COLOR_OUTPUT);
-    con->puts("Uptime: " as void*);
-    con->print_hex(seconds);
-    con->puts(" seconds (" as void*);
-    con->print_hex(ticks);
-    con->println(" ticks)" as void*);
+    fb_set_color(con, SHELL_COLOR_OUTPUT);
+    fb_puts(con, "Uptime: " as void*);
+    fb_print_hex(con, seconds);
+    fb_puts(con, " seconds (" as void*);
+    fb_print_hex(con, ticks);
+    fb_println(con, " ticks)" as void*);
 }
