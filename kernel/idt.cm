@@ -48,6 +48,13 @@ export void idt_default_handler() {
 // ============================================================
 
 impl IDT {
+    /// 引数付きコンストラクタ: テーブルポインタ設定 + 全エントリ初期化 + ロード
+    /// 使用例: IDT idt(table_ptr);
+    overload self(uint* table_ptr) {
+        self.table = table_ptr;
+        self.init();
+    }
+
     /// IDTテーブルの指定ベクタにゲートディスクリプタを設定する
     void set_gate(ulong vector, ulong handler, ulong type_attr) {
         // 各エントリは4つのuint（16バイト）

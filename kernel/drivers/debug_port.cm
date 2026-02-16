@@ -23,6 +23,12 @@ export struct DebugPort {
 // ============================================================
 
 impl DebugPort {
+    /// 引数付きコンストラクタ: ポートアドレス設定
+    /// 使用例: DebugPort debug(0xE9);
+    overload self(ulong port_addr) {
+        self.port = port_addr;
+    }
+
     /// デバッグポートに1バイト出力
     void putc(ulong ch) {
         outb(self.port, ch);

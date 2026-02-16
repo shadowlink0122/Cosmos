@@ -65,9 +65,8 @@ ulong efi_exit_boot_services(void* system_table, void* image_handle, ulong map_k
 
 /// GOP情報をBootInfoに収集する
 void collect_fb_info(void* system_table, BootInfo* info) {
-    // シリアルポートをローカル生成
-    SerialPort serial;
-    serial.port = 0x3F8;
+    // シリアルポートをローカル生成（コンストラクタで初期化済み）
+    SerialPort serial(0x3F8);
 
     ulong fb_base = 0;
     ulong width = 0;
@@ -98,8 +97,9 @@ void collect_fb_info(void* system_table, BootInfo* info) {
 
 /// メモリマップを取得してBootInfoに格納する
 ulong collect_memory_map(void* system_table, BootInfo* info) {
-    DebugPort debug;
-    debug.port = 0xE9;
+    // デバッグ・シリアルポート初期化
+    DebugPort debug(0xE9);
+    SerialPort serial(0x3F8);
     debug.println("[BOOT] collect_memory_map: start" as void*);
 
     ulong map_size = 0;
@@ -146,11 +146,9 @@ ulong collect_memory_map(void* system_table, BootInfo* info) {
 
 /// ExitBootServices後のカーネルエントリポイント
 void kernel_main(BootInfo* info) {
-    // シリアル・デバッグポートをローカル生成
-    SerialPort serial;
-    serial.port = 0x3F8;
-    DebugPort debug;
-    debug.port = 0xE9;
+    // シリアル・デバッグポート初期化
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
 
     debug.println("[BOOT] kernel_main entered" as void*);
     serial.println("[Cosmos] === Kernel Main ===" as void*);
@@ -160,27 +158,19 @@ void kernel_main(BootInfo* info) {
     gdt_init();
 
     // PIC 8259A初期化（IRQリマップ 32-47、全マスク）
-    PIC8259A pic;
-    pic.master_cmd = 0x20;
-    pic.master_data = 0x21;
-    pic.slave_cmd = 0xA0;
-    pic.slave_data = 0xA1;
+    PIC8259A pic();
     pic.init();
     serial.println("[Cosmos] PIC initialized (IRQ remapped to vectors 32-47)" as void*);
     debug.println("[BOOT] PIC initialized" as void*);
 
     // IDT初期化（256エントリ + lidt）
     uint* idt_table = info->mmap.map_buffer as uint*;
-    IDT idt;
-    idt.table = idt_table;
-    idt.init();
+    IDT idt(idt_table);
     serial.println("[Cosmos] IDT initialized (256 entries)" as void*);
     debug.println("[BOOT] IDT initialized" as void*);
 
     // ISRスタブ登録（例外0-31）
-    ISRManager isr;
-    isr.idt_table = idt_table;
-    isr.init();
+    ISRManager isr(idt_table);
     serial.println("[Cosmos] ISR stubs registered (vectors 0-31)" as void*);
     debug.println("[BOOT] ISR registered" as void*);
 
@@ -261,13 +251,10 @@ void kernel_main(BootInfo* info) {
 
 ulong efi_main(void* image_handle, void* system_table) {
     // デバッグ・シリアルポート初期化
-    DebugPort debug;
-    debug.port = 0xE9;
+    DebugPort debug(0xE9);
     debug.println("[BOOT] efi_main entered" as void*);
 
-    SerialPort serial;
-    serial.port = 0x3F8;
-    serial.init();
+    SerialPort serial(0x3F8);
     serial.println("[Cosmos] Serial console initialized" as void*);
     serial.println("[Cosmos] UEFI boot started" as void*);
     debug.println("[BOOT] serial_init completed" as void*);

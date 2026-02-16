@@ -48,6 +48,15 @@ export void io_wait() {
 // ============================================================
 
 impl PIC8259A {
+    /// デフォルトコンストラクタ: 標準ポートアドレス設定
+    /// 使用例: PIC8259A pic();
+    self() {
+        self.master_cmd = 0x20;
+        self.master_data = 0x21;
+        self.slave_cmd = 0xA0;
+        self.slave_data = 0xA1;
+    }
+
     /// PIC 8259Aを初期化し、IRQをベクタ32-47にリマップする
     void init() {
         // ICW1: 初期化開始

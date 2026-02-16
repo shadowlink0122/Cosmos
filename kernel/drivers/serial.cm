@@ -48,6 +48,32 @@ export struct SerialPort {
 // ============================================================
 
 impl SerialPort {
+    /// 引数付きコンストラクタ: ポートアドレス設定 + ハードウェア初期化
+    /// 使用例: SerialPort serial(0x3F8);
+    overload self(ulong port_addr) {
+        self.port = port_addr;
+
+        // 割り込みを無効化
+        outb(port_addr + 1, 0x00);
+        // DLABをセットしてボーレート設定モードに入る
+        outb(port_addr + 3, 0x80);
+        // ボーレート除数 = 1 (115200 baud)
+        outb(port_addr, 0x01);
+        outb(port_addr + 1, 0x00);
+        // 8N1: 8データビット, パリティなし, 1ストップビット
+        outb(port_addr + 3, 0x03);
+        // FIFO有効化
+        outb(port_addr + 2, 0xC7);
+        // DTR + RTS + OUT2
+        outb(port_addr + 4, 0x0B);
+        // ループバックテスト
+        outb(port_addr + 4, 0x1E);
+        outb(port_addr, 0xAE);
+        ulong test_result = inb(port_addr);
+        // 通常モードに戻す
+        outb(port_addr + 4, 0x0F);
+    }
+
     /// シリアルポートを初期化（ボーレート115200, 8N1, FIFO有効）
     void init() {
         ulong p = self.port;

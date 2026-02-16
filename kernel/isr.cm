@@ -141,6 +141,13 @@ export struct ISRManager {
 // ============================================================
 
 impl ISRManager {
+    /// 引数付きコンストラクタ: IDTテーブル設定 + 全ISRスタブ登録
+    /// 使用例: ISRManager isr(idt_table);
+    overload self(uint* table_ptr) {
+        self.idt_table = table_ptr;
+        self.init();
+    }
+
     /// 全例外ISR（0-31）をIDTに登録する
     void init() {
         // IDTインスタンスを作成してset_gateを呼ぶ
