@@ -5,8 +5,9 @@
 // IRQ0経由で定期的な割り込みを生成する。
 //
 // tickカウンタは固定メモリアドレス(0x900)に配置。
-// Cmではグローバル変数の書き込みが制限されるため、
-// IRQ0ハンドラ内でASM命令により直接インクリメントする。
+// need_rescheduleフラグは0x908に配置。
+// IRQ0ハンドラ内でtickインクリメントとフラグ設定を行う。
+// 実際のコンテキストスイッチは非割り込みコンテキストで実行する。
 
 import ./serial;
 import ./debug_port;
@@ -18,9 +19,9 @@ import ../idt;
 // ============================================================
 
 // tickカウンタのメモリアドレス（固定位置）
-// GDTは0x800-0x83F（48バイト）に配置
-// tickカウンタは0x900に配置（8バイト = ulong）
 const ulong PIT_TICK_ADDR = 0x900;
+// リスケジュールフラグの固定位置
+const ulong PIT_RESCHED_ADDR = 0x908;
 
 // ============================================================
 // PIT 構造体
@@ -36,30 +37,49 @@ export struct PIT {
 // IRQ0ハンドラ（フリー関数）
 // ============================================================
 
-// IRQ0ハンドラはCm関数として定義。
-// objdumpで確認: Cmはこの関数にプロローグ(push rbp / mov rbp, rsp)を
-// 生成しない。そのためleaveも不要。
-//
-// 動作:
-//   1. RAX, RCX を退避（汎用レジスタ保護）
+// IRQ0ハンドラ:
+//   1. RAX, RCX を退避
 //   2. 固定アドレス0x900のtickカウンタをインクリメント
-//   3. PIC EOI (0x20 → port 0x20) を送信
-//   4. RAX, RCX を復元
-//   5. iretq で割り込みから復帰
+//   3. 固定アドレス0x908のneed_rescheduleフラグを1に設定
+//   4. PIC EOI (0x20 → port 0x20) を送信
+//   5. RAX, RCX を復元
+//   6. iretq で割り込みから復帰
 export void irq0_handler() {
     __asm__(`
         pushq %rax;
         pushq %rcx;
+
+        // tickカウンタをインクリメント
         movq $$0x900, %rcx;
         movq (%rcx), %rax;
         incq %rax;
         movq %rax, (%rcx);
+
+        // need_rescheduleフラグを1に設定
+        movq $$0x908, %rcx;
+        movq $$1, (%rcx);
+
+        // PIC EOIを送信
         movb $$0x20, %al;
         outb %al, $$0x20;
+
         popq %rcx;
         popq %rax;
         iretq
     `);
+}
+
+// ============================================================
+// リスケジュールフラグ操作
+// ============================================================
+
+/// need_rescheduleフラグを取得してクリアする
+export ulong pit_check_resched() {
+    ulong* ptr = PIT_RESCHED_ADDR as ulong*;
+    ulong val = *ptr;
+    ulong zero = 0 as ulong;
+    *ptr = zero;
+    return val;
 }
 
 // ============================================================
@@ -90,6 +110,10 @@ impl PIT {
         ulong* tick_ptr = PIT_TICK_ADDR as ulong*;
         ulong zero = 0 as ulong;
         *tick_ptr = zero;
+
+        // リスケジュールフラグを0に初期化
+        ulong* resched_ptr = PIT_RESCHED_ADDR as ulong*;
+        *resched_ptr = zero;
 
         // PITコマンド送信: Channel 0, Access LSB/MSB, Mode 2 (Rate Generator)
         ulong cmd_port = 0x43 as ulong;

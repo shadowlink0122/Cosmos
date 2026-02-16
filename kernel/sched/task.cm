@@ -1,0 +1,187 @@
+//! platform: uefi
+// kernel::sched::task - タスク制御ブロック（TCB）
+//
+// カーネルタスクの状態を管理する構造体と操作関数。
+// TCBは固定アドレス0x1000に配列として配置（最大8タスク）。
+//
+// Cmのselfコピー問題を回避するため、全操作はフリー関数+ポインタ経由。
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../mm/pmm;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// タスク状態
+const ulong TASK_READY      = 0;
+const ulong TASK_RUNNING    = 1;
+const ulong TASK_BLOCKED    = 2;
+const ulong TASK_TERMINATED = 3;
+
+// TCB配列の固定アドレスと制限
+const ulong TCB_BASE_ADDR   = 0x1000;   // TCB配列の先頭アドレス
+const ulong TCB_SIZE        = 64;       // 1 TCB = 64バイト（8フィールド × 8バイト）
+const ulong MAX_TASKS       = 8;        // 最大タスク数
+const ulong TASK_STACK_PAGES = 1;       // タスクスタック = 1ページ(4KB)
+
+// TCB内フィールドオフセット（各8バイト）
+const ulong TCB_OFF_ID         = 0;     // task_id
+const ulong TCB_OFF_STATE      = 8;     // state
+const ulong TCB_OFF_RSP        = 16;    // rsp（保存されたスタックポインタ）
+const ulong TCB_OFF_STACK_BASE = 24;    // stack_base
+const ulong TCB_OFF_STACK_SIZE = 32;    // stack_size
+const ulong TCB_OFF_ENTRY      = 40;    // entry（エントリポイント関数アドレス）
+const ulong TCB_OFF_NEXT       = 48;    // next（次のTCB番号、循環リスト用）
+const ulong TCB_OFF_RESERVED   = 56;    // 予約
+
+// ============================================================
+// TCBフィールドアクセス（ポインタ直接操作）
+// ============================================================
+
+/// 指定タスクIDのTCBベースアドレスを取得
+export ulong tcb_addr(ulong task_id) {
+    return TCB_BASE_ADDR + (task_id * TCB_SIZE);
+}
+
+/// TCBフィールドを読取
+export ulong tcb_read(ulong task_id, ulong offset) {
+    ulong addr = tcb_addr(task_id) + offset;
+    ulong* ptr = addr as ulong*;
+    return *ptr;
+}
+
+/// TCBフィールドを書込
+export void tcb_write(ulong task_id, ulong offset, ulong value) {
+    ulong addr = tcb_addr(task_id) + offset;
+    ulong* ptr = addr as ulong*;
+    *ptr = value;
+}
+
+// ============================================================
+// タスク操作関数
+// ============================================================
+
+/// タスクを生成する
+///
+/// task_id:   タスク番号（0〜MAX_TASKS-1）
+/// entry_fn:  タスクのエントリポイント関数アドレス
+/// pmm:       PMMへのポインタ（スタック割当用）
+///
+/// 戻り値: 成功=1, 失敗=0
+export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
+    DebugPort debug(0xE9);
+
+    // IDチェック
+    if (task_id >= MAX_TASKS) {
+        debug.println("[TASK] ERROR: task_id out of range" as void*);
+        return 0;
+    }
+
+    // PMMからスタック割当（1ページ = 4KB）
+    ulong stack_base = pmm->alloc_page();
+    if (stack_base == 0) {
+        debug.println("[TASK] ERROR: cannot alloc stack" as void*);
+        return 0;
+    }
+
+    // スタックサイズ
+    ulong stack_size = 4096 as ulong;
+
+    // スタックトップ（x86_64はスタックが下方に伸びる）
+    ulong stack_top = stack_base + stack_size;
+
+    // 初期コンテキストをスタック上に構築
+    // switch_to()のpop順序に合わせる:
+    //   pop r15, pop r14, pop r13, pop r12, pop rbp, pop rbx, ret
+    //
+    // x86_64 ABI: 関数エントリ時のRSP = 16n + 8
+    //   (callがreturn addressをpushした直後の状態)
+    // そのため、entry_fnの上にダミーのreturn addressを配置する:
+    //
+    // スタック上（下方向に成長）:
+    //   [stack_top - 8]  = 0 (アラインメントパッド: 疑似return addr)
+    //   [stack_top - 16] = entry_fn (retで飛ぶアドレス)
+    //   [stack_top - 24] = 0 (rbx)
+    //   [stack_top - 32] = 0 (rbp)
+    //   [stack_top - 40] = 0 (r12)
+    //   [stack_top - 48] = 0 (r13)
+    //   [stack_top - 56] = 0 (r14)
+    //   [stack_top - 64] = 0 (r15)
+    ulong zero = 0 as ulong;
+
+    // アラインメントパッド（疑似return address）
+    ulong addr_pad = stack_top - 8;
+    ulong* ptr_pad = addr_pad as ulong*;
+    *ptr_pad = zero;
+
+    ulong addr_ret = stack_top - 16;
+    ulong* ptr_ret = addr_ret as ulong*;
+    *ptr_ret = entry_fn;
+
+    ulong addr_rbx = stack_top - 24;
+    ulong* ptr_rbx = addr_rbx as ulong*;
+    *ptr_rbx = zero;
+
+    ulong addr_rbp = stack_top - 32;
+    ulong* ptr_rbp = addr_rbp as ulong*;
+    *ptr_rbp = zero;
+
+    ulong addr_r12 = stack_top - 40;
+    ulong* ptr_r12 = addr_r12 as ulong*;
+    *ptr_r12 = zero;
+
+    ulong addr_r13 = stack_top - 48;
+    ulong* ptr_r13 = addr_r13 as ulong*;
+    *ptr_r13 = zero;
+
+    ulong addr_r14 = stack_top - 56;
+    ulong* ptr_r14 = addr_r14 as ulong*;
+    *ptr_r14 = zero;
+
+    ulong addr_r15 = stack_top - 64;
+    ulong* ptr_r15 = addr_r15 as ulong*;
+    *ptr_r15 = zero;
+
+    // 初期RSP = 8つのエントリをpushした位置
+    ulong initial_rsp = stack_top - 64;
+
+    // TCBフィールドを書込
+    tcb_write(task_id, TCB_OFF_ID, task_id);
+    tcb_write(task_id, TCB_OFF_STATE, TASK_READY);
+    tcb_write(task_id, TCB_OFF_RSP, initial_rsp);
+    tcb_write(task_id, TCB_OFF_STACK_BASE, stack_base);
+    tcb_write(task_id, TCB_OFF_STACK_SIZE, stack_size);
+    tcb_write(task_id, TCB_OFF_ENTRY, entry_fn);
+    tcb_write(task_id, TCB_OFF_NEXT, zero);  // スケジューラが後で設定
+    tcb_write(task_id, TCB_OFF_RESERVED, zero);
+
+    debug.puts("[TASK] created id=" as void*);
+    debug.print_hex(task_id);
+    debug.puts(", stack=0x" as void*);
+    debug.print_hex(stack_base);
+    debug.puts(", entry=0x" as void*);
+    debug.print_hex(entry_fn);
+    debug.println("" as void*);
+
+    return 1;
+}
+
+/// idleタスク（タスクID=0）を初期化する
+/// idleタスクはスタック割当不要（現在のカーネルスタックを使用）
+export void task_create_idle() {
+    DebugPort debug(0xE9);
+    ulong zero = 0 as ulong;
+
+    tcb_write(zero, TCB_OFF_ID, zero);
+    tcb_write(zero, TCB_OFF_STATE, TASK_RUNNING);
+    tcb_write(zero, TCB_OFF_RSP, zero);      // 実行中なのでRSP保存不要
+    tcb_write(zero, TCB_OFF_STACK_BASE, zero);
+    tcb_write(zero, TCB_OFF_STACK_SIZE, zero);
+    tcb_write(zero, TCB_OFF_ENTRY, zero);
+    tcb_write(zero, TCB_OFF_NEXT, zero);
+    tcb_write(zero, TCB_OFF_RESERVED, zero);
+
+    debug.println("[TASK] idle task (id=0) created" as void*);
+}

@@ -1,0 +1,136 @@
+//! platform: uefi
+// kernel::tests::test_scheduler - スケジューラテスト
+//
+// TCB生成、スケジューラ初期化の基本動作を検証する。
+// コンテキストスイッチは協調スケジューリング方式で検証。
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../mm/pmm;
+import ../sched/task;
+import ../sched/scheduler;
+import ./test_runner;
+
+// ============================================================
+// テストタスク関数
+// ============================================================
+
+// タスクAの完了フラグ（固定アドレス0xB00）
+const ulong TASK_A_DONE_ADDR = 0xB00;
+// タスクBの完了フラグ（固定アドレス0xB08）
+const ulong TASK_B_DONE_ADDR = 0xB08;
+
+/// テストタスクA: フラグ設定してyield
+export void task_a_fn() {
+    DebugPort debug(0xE9);
+    debug.println("[TASK-A] started running" as void*);
+
+    // 完了フラグを設定（固定アドレスに直接書込）
+    ulong one = 1 as ulong;
+    ulong* flag = TASK_A_DONE_ADDR as ulong*;
+    *flag = one;
+
+    debug.println("[TASK-A] work done, yielding" as void*);
+
+    // 自身をTERMINATEDに設定
+    ulong my_id = sched_current_id();
+    tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
+
+    // yieldしてスケジューラに制御を返す
+    schedule();
+
+    // ここには到達しない
+    while (true) {
+        __asm__("hlt");
+    }
+}
+
+/// テストタスクB: フラグ設定してyield
+export void task_b_fn() {
+    DebugPort debug(0xE9);
+    debug.println("[TASK-B] started running" as void*);
+
+    ulong one = 1 as ulong;
+    ulong* flag = TASK_B_DONE_ADDR as ulong*;
+    *flag = one;
+
+    debug.println("[TASK-B] work done, yielding" as void*);
+
+    ulong my_id = sched_current_id();
+    tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
+
+    schedule();
+
+    while (true) {
+        __asm__("hlt");
+    }
+}
+
+// ============================================================
+// スケジューラ テスト
+// ============================================================
+
+/// スケジューラテストを実行する
+export void test_scheduler(TestRunner* runner, PMM* pmm) {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === Scheduler Tests ===" as void*);
+
+    // 完了フラグを初期化
+    ulong zero = 0 as ulong;
+    ulong* flag_a = TASK_A_DONE_ADDR as ulong*;
+    *flag_a = zero;
+    ulong* flag_b = TASK_B_DONE_ADDR as ulong*;
+    *flag_b = zero;
+
+    // テスト1: sched_init済み（current_taskが0であること）
+    ulong current = sched_current_id();
+    assert_eq(runner, current, zero, "Scheduler current task is 0 (idle)" as void*);
+
+    // テスト2: タスク数が1（idleのみ）
+    ulong count = sched_task_count();
+    ulong one = 1 as ulong;
+    assert_eq(runner, count, one, "Scheduler has 1 task (idle)" as void*);
+
+    // テスト3: タスクAを生成
+    ulong task_a_addr = fn_addr(task_a_fn as void*);
+    ulong id_a = sched_spawn(task_a_addr, pmm);
+    ulong two = 2 as ulong;
+    ulong new_count = sched_task_count();
+    assert_eq(runner, new_count, two, "Scheduler has 2 tasks after spawn" as void*);
+
+    // テスト4: タスクBを生成
+    ulong task_b_addr = fn_addr(task_b_fn as void*);
+    ulong id_b = sched_spawn(task_b_addr, pmm);
+    ulong three = 3 as ulong;
+    new_count = sched_task_count();
+    assert_eq(runner, new_count, three, "Scheduler has 3 tasks after 2nd spawn" as void*);
+
+    // テスト5: タスクAの状態がREADY
+    ulong state_a = tcb_read(id_a, TCB_OFF_STATE);
+    assert_eq(runner, state_a, TASK_READY, "Task A state is READY" as void*);
+
+    // テスト6: スケジューラを有効化
+    sched_enable();
+    ulong enabled = sched_is_enabled();
+    assert_eq(runner, enabled, one, "Scheduler is enabled" as void*);
+
+    // 協調的にschedule()を呼んでタスクAに切替。
+    // フロー: idle→A→(A terminates, calls schedule)→B→(B terminates, calls schedule)→idle
+    debug.println("[SCHED] === begin cooperative scheduling ===" as void*);
+    schedule();
+    debug.println("[SCHED] === returned to idle task ===" as void*);
+
+    // テスト7: タスクAが実行された（完了フラグを確認）
+    ulong done_a = *flag_a;
+    assert_true(runner, done_a, "Task A executed (done flag set)" as void*);
+
+    // テスト8: タスクBが実行された
+    ulong done_b = *flag_b;
+    assert_true(runner, done_b, "Task B executed (done flag set)" as void*);
+
+    // スケジューラを無効化
+    sched_set_enabled(zero);
+
+    serial.println("[TEST] Scheduler tests complete" as void*);
+}

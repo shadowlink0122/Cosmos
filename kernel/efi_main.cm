@@ -31,11 +31,14 @@ import ./mm/pmm;
 import ./mm/vmm;
 import ./mm/heap;
 import ./drivers/pit;
+import ./sched/task;
+import ./sched/scheduler;
 import ./tests/test_runner;
 import ./tests/test_pmm;
 import ./tests/test_heap;
 import ./tests/test_pit;
 import ./tests/test_boot;
+import ./tests/test_scheduler;
 
 // ============================================================
 // ExitBootServices
@@ -240,6 +243,11 @@ void kernel_main(BootInfo* info) {
     serial.println("[Cosmos] PIT timer initialized (100Hz)" as void*);
     debug.println("[BOOT] PIT initialized" as void*);
 
+    // スケジューラ初期化
+    sched_init();
+    serial.println("[Cosmos] Scheduler initialized" as void*);
+    debug.println("[BOOT] scheduler initialized" as void*);
+
     // 割り込み有効化（sti）
     __asm__(`sti`);
     serial.println("[Cosmos] Interrupts enabled" as void*);
@@ -257,6 +265,7 @@ void kernel_main(BootInfo* info) {
     test_pmm(&runner, &pmm);
     test_heap(&runner, &heap);
     test_pit(&runner, &pit);
+    test_scheduler(&runner, &pmm);
     print_test_results(&runner);
 
     // HLTループ（カーネル待機）

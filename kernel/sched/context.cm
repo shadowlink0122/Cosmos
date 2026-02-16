@@ -1,0 +1,70 @@
+//! platform: uefi
+// kernel::sched::context - コンテキストスイッチ
+//
+// 純ASMによるタスク間のCPUコンテキスト切り替え。
+// callee-saved レジスタ（RBX, RBP, R12-R15）を保存/復元し、
+// RSP切替で新タスクに制御を移す。
+//
+// 注意: Cmコンパイラはインライン展開する可能性があるため、
+// ${r:varname} 構文で入力変数をASMに渡す。
+// %rdi/%rsiの直接使用は禁止。
+//
+// インライン展開時はcall命令がないため、retではなく
+// jmpラベルで復帰ポイントに戻る設計。
+
+import ../drivers/debug_port;
+
+// ============================================================
+// コンテキストスイッチ
+// ============================================================
+
+/// 現タスクから新タスクへコンテキストスイッチする
+///
+/// old_rsp_ptr: 現タスクのRSP保存先アドレス（ulong*として渡す）
+/// new_rsp:     新タスクの復元するRSP値
+///
+/// この関数はcallee-savedレジスタを現タスクスタックにpushし、
+/// RSPを保存した後、新タスクのRSPに切替えてpop+retで復帰する。
+///
+/// 復帰時: 既存タスクはpop後にjmp .Lresume_pointで復帰。
+///        新規タスクはpop後にret（初期スタックにentry_fnがある）で開始。
+///        区別: 復帰ラベルアドレスをpushしておき、retで統一的に処理。
+export void switch_to(ulong old_rsp_ptr, ulong new_rsp) {
+    __asm__(`
+        // パラメータをr10, r11に退避
+        movq ${r:old_rsp_ptr}, %r10;
+        movq ${r:new_rsp}, %r11;
+
+        // 復帰アドレスをpush（retで戻ってくるポイント）
+        leaq 1f(%rip), %rax;
+        pushq %rax;
+
+        // callee-savedレジスタを現タスクスタックに保存
+        pushq %rbx;
+        pushq %rbp;
+        pushq %r12;
+        pushq %r13;
+        pushq %r14;
+        pushq %r15;
+
+        // 現タスクのRSPを保存（r10 = old_rsp_ptr）
+        movq %rsp, (%r10);
+
+        // 新タスクのRSPに切替（r11 = new_rsp）
+        movq %r11, %rsp;
+
+        // 新タスクのcallee-savedレジスタを復元
+        popq %r15;
+        popq %r14;
+        popq %r13;
+        popq %r12;
+        popq %rbp;
+        popq %rbx;
+
+        // ret: 新タスクの場合はentry_fn、既存タスクの場合は1:に飛ぶ
+        ret;
+
+    1:
+        nop
+    `);
+}

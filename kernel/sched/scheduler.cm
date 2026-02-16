@@ -1,0 +1,202 @@
+//! platform: uefi
+// kernel::sched::scheduler - ラウンドロビンスケジューラ
+//
+// 固定アドレスにスケジューラ状態を配置し、
+// タイマー割り込みからschedule()を呼出してタスクを切り替える。
+//
+// 固定アドレスマップ:
+//   0xA00: current_task_id（現在実行中のタスクID）
+//   0xA08: task_count（登録済みタスク数）
+//   0xA10: scheduler_enabled（スケジューラ有効フラグ）
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../mm/pmm;
+import ./task;
+import ./context;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// スケジューラ状態の固定アドレス
+const ulong SCHED_CURRENT_ADDR  = 0xA00;  // 現在のタスクID
+const ulong SCHED_COUNT_ADDR    = 0xA08;  // タスク数
+const ulong SCHED_ENABLED_ADDR  = 0xA10;  // スケジューラ有効フラグ
+
+// ============================================================
+// スケジューラ状態アクセス
+// ============================================================
+
+/// 現在のタスクIDを取得
+export ulong sched_current_id() {
+    ulong* ptr = SCHED_CURRENT_ADDR as ulong*;
+    return *ptr;
+}
+
+/// 現在のタスクIDを設定
+export void sched_set_current(ulong task_id) {
+    ulong* ptr = SCHED_CURRENT_ADDR as ulong*;
+    *ptr = task_id;
+}
+
+/// タスク数を取得
+export ulong sched_task_count() {
+    ulong* ptr = SCHED_COUNT_ADDR as ulong*;
+    return *ptr;
+}
+
+/// タスク数を設定
+export void sched_set_count(ulong count) {
+    ulong* ptr = SCHED_COUNT_ADDR as ulong*;
+    *ptr = count;
+}
+
+/// スケジューラ有効フラグを取得
+export ulong sched_is_enabled() {
+    ulong* ptr = SCHED_ENABLED_ADDR as ulong*;
+    return *ptr;
+}
+
+/// スケジューラ有効フラグを設定
+export void sched_set_enabled(ulong enabled) {
+    ulong* ptr = SCHED_ENABLED_ADDR as ulong*;
+    *ptr = enabled;
+}
+
+// ============================================================
+// スケジューラ操作
+// ============================================================
+
+/// スケジューラを初期化する
+/// idleタスク（ID=0）を作成し、スケジューラを無効状態で起動
+export void sched_init() {
+    DebugPort debug(0xE9);
+
+    // スケジューラ状態を初期化
+    ulong zero = 0 as ulong;
+    sched_set_current(zero);
+    sched_set_count(1);       // idleタスク1つ
+    sched_set_enabled(zero);  // まだ無効
+
+    // idleタスクを作成
+    task_create_idle();
+
+    debug.println("[SCHED] scheduler initialized" as void*);
+}
+
+/// 新しいタスクを登録する
+///
+/// entry_fn: タスクのエントリポイント関数アドレス
+/// pmm:      PMMへのポインタ（スタック割当用）
+///
+/// 戻り値: 割り当てられたタスクID（失敗時は0xFFFFFFFFFFFFFFFF）
+export ulong sched_spawn(ulong entry_fn, PMM* pmm) {
+    DebugPort debug(0xE9);
+
+    ulong count = sched_task_count();
+    if (count >= MAX_TASKS) {
+        debug.println("[SCHED] ERROR: max tasks reached" as void*);
+        ulong err = 0xFFFFFFFF as ulong;
+        return err;
+    }
+
+    // タスクを生成
+    ulong result = task_create(count, entry_fn, pmm);
+    if (result == 0) {
+        ulong err = 0xFFFFFFFF as ulong;
+        return err;
+    }
+
+    // 循環リストを構築: 新タスクのnext = 0（idleに戻る）
+    ulong zero = 0 as ulong;
+    tcb_write(count, TCB_OFF_NEXT, zero);
+
+    // 前のタスクのnextを新タスクに設定（循環リスト）
+    ulong prev = count - 1;
+    tcb_write(prev, TCB_OFF_NEXT, count);
+
+    // タスク数を更新
+    ulong new_count = count + 1;
+    sched_set_count(new_count);
+
+    debug.puts("[SCHED] spawned task " as void*);
+    debug.print_hex(count);
+    debug.println("" as void*);
+
+    return count;
+}
+
+/// スケジューラを有効化する
+export void sched_enable() {
+    DebugPort debug(0xE9);
+    ulong one = 1 as ulong;
+    sched_set_enabled(one);
+    debug.println("[SCHED] scheduler enabled" as void*);
+}
+
+/// タイマー割り込みから呼ばれるスケジューラのメインルーチン
+///
+/// ラウンドロビンで次のREADYタスクを選択し、コンテキストスイッチする。
+/// 割り込みコンテキスト内ではなく、安全なコンテキストから呼ばれる前提。
+export void schedule() {
+    // スケジューラが無効なら何もしない
+    if (sched_is_enabled() == 0) {
+        return;
+    }
+
+    ulong count = sched_task_count();
+    // タスクが1つ以下なら切替不要
+    ulong one = 1 as ulong;
+    if (count <= one) {
+        return;
+    }
+
+    // 現在のタスクID
+    ulong current_id = sched_current_id();
+
+    // 次のタスクを探す（ラウンドロビン）
+    ulong next_id = tcb_read(current_id, TCB_OFF_NEXT);
+
+    // 同じタスクなら切替不要
+    if (next_id == current_id) {
+        return;
+    }
+
+    // 次のタスクがTERMINATEDならスキップ（簡易版: 次の次を探す）
+    ulong next_state = tcb_read(next_id, TCB_OFF_STATE);
+    if (next_state == TASK_TERMINATED) {
+        // 簡易版: 次の次を試す
+        next_id = tcb_read(next_id, TCB_OFF_NEXT);
+        if (next_id == current_id) {
+            return;
+        }
+    }
+
+    // 現タスクをRUNNING→READYに変更
+    ulong current_state = tcb_read(current_id, TCB_OFF_STATE);
+    if (current_state == TASK_RUNNING) {
+        tcb_write(current_id, TCB_OFF_STATE, TASK_READY);
+    }
+
+    // 次タスクをRUNNINGに設定
+    tcb_write(next_id, TCB_OFF_STATE, TASK_RUNNING);
+    sched_set_current(next_id);
+
+    // コンテキストスイッチ
+    // 現タスクのRSP保存先アドレス
+    ulong old_rsp_addr = tcb_addr(current_id) + TCB_OFF_RSP;
+    // 新タスクのRSP値
+    ulong new_rsp = tcb_read(next_id, TCB_OFF_RSP);
+
+    // スイッチログ出力
+    DebugPort debug(0xE9);
+    debug.puts("[SCHED] switch: task " as void*);
+    debug.print_hex(current_id);
+    debug.puts(" -> task " as void*);
+    debug.print_hex(next_id);
+    debug.println("" as void*);
+
+    switch_to(old_rsp_addr, new_rsp);
+}
+
