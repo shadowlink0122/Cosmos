@@ -21,12 +21,12 @@ export void cmd_help() {
     serial.println("  uptime  - Show system uptime" as void*);
     serial.println("  clear   - Clear screen" as void*);
 
-    fb_set_color(con, SHELL_COLOR_HEADER);
-    fb_println(con, "Available commands:" as void*);
-    fb_set_color(con, SHELL_COLOR_OUTPUT);
-    fb_println(con, "  help    - Show this help" as void*);
-    fb_println(con, "  ps      - List tasks" as void*);
-    fb_println(con, "  mem     - Show memory usage" as void*);
-    fb_println(con, "  uptime  - Show system uptime" as void*);
-    fb_println(con, "  clear   - Clear screen" as void*);
+    con->set_color(SHELL_COLOR_HEADER);
+    con->println("Available commands:" as void*);
+    con->set_color(SHELL_COLOR_OUTPUT);
+    con->println("  help    - Show this help" as void*);
+    con->println("  ps      - List tasks" as void*);
+    con->println("  mem     - Show memory usage" as void*);
+    con->println("  uptime  - Show system uptime" as void*);
+    con->println("  clear   - Clear screen" as void*);
 }

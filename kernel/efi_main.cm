@@ -224,20 +224,20 @@ void kernel_main(BootInfo* info) {
 
         // グローバルFBConsoleポインタを取得
         FBConsole* gcon = global_fb_ptr() as FBConsole*;
-        fb_clear(gcon);
+        gcon->clear();
 
         // ブートバナー表示（QEMU画面）
-        fb_set_color(gcon, 0x00FFFFFF);
-        fb_puts(gcon, "  Cosmos OS v0.5.0" as void*);
-        fb_newline(gcon);
-        fb_newline(gcon);
-        fb_set_color(gcon, 0x0000FF00);
-        fb_puts(gcon, "  [OK] Boot completed" as void*);
-        fb_newline(gcon);
-        fb_set_color(gcon, 0x0000FFFF);
-        fb_puts(gcon, "  Written in Cm" as void*);
-        fb_newline(gcon);
-        fb_newline(gcon);
+        gcon->set_color(0x00FFFFFF);
+        gcon->puts("  Cosmos OS v0.5.0" as void*);
+        gcon->newline();
+        gcon->newline();
+        gcon->set_color(0x0000FF00);
+        gcon->puts("  [OK] Boot completed" as void*);
+        gcon->newline();
+        gcon->set_color(0x0000FFFF);
+        gcon->puts("  Written in Cm" as void*);
+        gcon->newline();
+        gcon->newline();
 
         serial.println("[Cosmos] Framebuffer initialized" as void*);
     } else {

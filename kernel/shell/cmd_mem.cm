@@ -34,19 +34,19 @@ export void cmd_mem() {
     serial.print_hex(free_kb);
     serial.println(" KB" as void*);
 
-    fb_set_color(con, SHELL_COLOR_HEADER);
-    fb_println(con, "Physical Memory (PMM):" as void*);
-    fb_set_color(con, SHELL_COLOR_OUTPUT);
-    fb_puts(con, "  Total pages: " as void*);
-    fb_print_hex(con, pmm->total_pages);
-    fb_newline(con);
-    fb_puts(con, "  Free pages:  " as void*);
-    fb_print_hex(con, pmm->free_pages);
-    fb_newline(con);
-    fb_puts(con, "  Total: " as void*);
-    fb_print_hex(con, total_kb);
-    fb_println(con, " KB" as void*);
-    fb_puts(con, "  Free:  " as void*);
-    fb_print_hex(con, free_kb);
-    fb_println(con, " KB" as void*);
+    con->set_color(SHELL_COLOR_HEADER);
+    con->println("Physical Memory (PMM):" as void*);
+    con->set_color(SHELL_COLOR_OUTPUT);
+    con->puts("  Total pages: " as void*);
+    con->print_hex(pmm->total_pages);
+    con->newline();
+    con->puts("  Free pages:  " as void*);
+    con->print_hex(pmm->free_pages);
+    con->newline();
+    con->puts("  Total: " as void*);
+    con->print_hex(total_kb);
+    con->println(" KB" as void*);
+    con->puts("  Free:  " as void*);
+    con->print_hex(free_kb);
+    con->println(" KB" as void*);
 }

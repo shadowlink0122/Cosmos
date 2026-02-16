@@ -19,38 +19,38 @@ export void cmd_ps() {
     serial.println("  ID  STATE       TIMESLICE" as void*);
     serial.println("  --  ----------  ---------" as void*);
 
-    fb_set_color(con, SHELL_COLOR_HEADER);
-    fb_println(con, "  ID  STATE       TIMESLICE" as void*);
-    fb_set_color(con, SHELL_COLOR_OUTPUT);
-    fb_println(con, "  --  ----------  ---------" as void*);
+    con->set_color(SHELL_COLOR_HEADER);
+    con->println("  ID  STATE       TIMESLICE" as void*);
+    con->set_color(SHELL_COLOR_OUTPUT);
+    con->println("  --  ----------  ---------" as void*);
 
     ulong count = sched_task_count();
     ulong i = 0;
     while (i < count) {
         serial.puts("  " as void*);
         serial.print_hex(i);
-        fb_puts(con, "  " as void*);
-        fb_print_hex(con, i);
+        con->puts("  " as void*);
+        con->print_hex(i);
 
         ulong state = tcb_read(i, TCB_OFF_STATE);
         if (state == TASK_READY) {
             serial.puts("  READY       " as void*);
-            fb_puts(con, "  READY       " as void*);
+            con->puts("  READY       " as void*);
         }
         if (state == TASK_RUNNING) {
             serial.puts("  RUNNING     " as void*);
-            fb_puts(con, "  RUNNING     " as void*);
+            con->puts("  RUNNING     " as void*);
         }
         if (state == TASK_TERMINATED) {
             serial.puts("  TERMINATED  " as void*);
-            fb_puts(con, "  TERMINATED  " as void*);
+            con->puts("  TERMINATED  " as void*);
         }
 
         ulong ts = tcb_read(i, TCB_OFF_TIMESLICE);
         serial.print_hex(ts);
         serial.println("" as void*);
-        fb_print_hex(con, ts);
-        fb_newline(con);
+        con->print_hex(ts);
+        con->newline();
 
         i = i + 1;
     }
@@ -59,7 +59,7 @@ export void cmd_ps() {
     serial.print_hex(count);
     serial.println(" tasks" as void*);
 
-    fb_puts(con, "Total: " as void*);
-    fb_print_hex(con, count);
-    fb_println(con, " tasks" as void*);
+    con->puts("Total: " as void*);
+    con->print_hex(count);
+    con->println(" tasks" as void*);
 }

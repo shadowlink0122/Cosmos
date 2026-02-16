@@ -4,10 +4,10 @@
 // ExitBootServices後のフレームバッファへの文字列描画を提供する。
 // 8x16ビットマップフォントを使用してピクセル単位で文字を描画。
 //
-// interface/implパターンでConsole抽象化を提供:
-//   console.clear();
-//   console.set_color(0x0000FF00);
-//   console.println("Hello" as void*);
+// impl FBConsole for Console パターンで抽象化:
+//   con->clear();
+//   con->set_color(0x0000FF00);
+//   con->println("Hello" as void*);
 
 import ./font;
 import ../drivers/serial;
@@ -53,272 +53,276 @@ const ulong FB_COLOR_GREEN = 0x0000FF00;
 const ulong FB_COLOR_DARK_BG = 0x00101020;
 
 // ============================================================
-// 初期化
+// FBConsole メソッド実装
 // ============================================================
 
-/// FBConsoleを初期化する
-export void fb_init(FBConsole* con, ulong fb_addr, ulong width, ulong height, ulong stride) {
-    con->fb_addr = fb_addr;
-    con->width = width;
-    con->height = height;
-    con->stride = stride;
-    con->cursor_x = 0;
-    con->cursor_y = 0;
-    con->fg_color = FB_COLOR_GREEN;   // デフォルト: 緑文字
-    con->bg_color = FB_COLOR_DARK_BG; // デフォルト: 暗い背景
-}
+impl FBConsole for Console {
 
-// ============================================================
-// 前景色設定
-// ============================================================
+    // --------------------------------------------------------
+    // 初期化
+    // --------------------------------------------------------
 
-/// 前景色を設定する
-export void fb_set_color(FBConsole* con, ulong fg) {
-    con->fg_color = fg;
-}
-
-// ============================================================
-// 画面操作
-// ============================================================
-
-/// 画面を背景色でクリアする
-export void fb_clear(FBConsole* con) {
-    ulong fb = con->fb_addr;
-    ulong stride = con->stride;
-    ulong height = con->height;
-    ulong bg = con->bg_color;
-
-    if (fb == 0) { return; }
-
-    // 1行ずつ塗りつぶし
-    ulong y = 0;
-    while (y < height) {
-        ulong x = 0;
-        while (x < stride) {
-            ulong offset = (y * stride + x) * 4;
-            uint* pixel = (fb + offset) as uint*;
-            *pixel = bg as uint;
-            x += 1;
-        }
-        y += 1;
+    /// FBConsoleを初期化する
+    void init(ulong fb_addr, ulong width, ulong height, ulong stride) {
+        self.fb_addr = fb_addr;
+        self.width = width;
+        self.height = height;
+        self.stride = stride;
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.fg_color = FB_COLOR_GREEN;   // デフォルト: 緑文字
+        self.bg_color = FB_COLOR_DARK_BG; // デフォルト: 暗い背景
     }
 
-    // カーソルをリセット
-    con->cursor_x = 0;
-    con->cursor_y = 0;
-}
+    // --------------------------------------------------------
+    // 前景色設定（Console IF）
+    // --------------------------------------------------------
 
-// ============================================================
-// 文字描画
-// ============================================================
+    /// 前景色を設定する
+    void set_color(ulong fg) {
+        self.fg_color = fg;
+    }
 
-/// 指定位置に1文字を描画する（ピクセル座標で指定、内部用）
-export void draw_char(FBConsole* con, ulong px, ulong py, ulong ch) {
-    ulong fb = con->fb_addr;
-    ulong screen_w = con->width;
-    ulong screen_h = con->height;
-    ulong stride = con->stride;
-    ulong fg = con->fg_color;
-    ulong bg = con->bg_color;
+    // --------------------------------------------------------
+    // 補助計算
+    // --------------------------------------------------------
 
-    if (fb == 0) { return; }
+    /// テキストカーソルで管理される列数の最大値
+    ulong max_cols() {
+        return self.width / FONT_WIDTH;
+    }
 
-    ulong row = 0;
-    while (row < FONT_HEIGHT) {
-        ulong bits = font_get_row(ch, row);
-        ulong col = 0;
-        while (col < FONT_WIDTH) {
-            ulong sx = px + col;
-            ulong sy = py + row;
+    /// テキストカーソルで管理される行数の最大値
+    ulong max_rows() {
+        return self.height / FONT_HEIGHT;
+    }
 
-            // 画面外チェック
-            if (sx < screen_w) {
-                if (sy < screen_h) {
-                    ulong offset = (sy * stride + sx) * 4;
-                    uint* pixel = (fb + offset) as uint*;
+    // --------------------------------------------------------
+    // 文字描画（内部用）
+    // --------------------------------------------------------
 
-                    // ビットパターンのMSBが左端: bit7=col0, bit6=col1, ...
-                    ulong bit_pos = 7 - col;
-                    ulong mask = 1 << bit_pos;
-                    if ((bits & mask) != 0) {
-                        *pixel = fg as uint;
-                    } else {
-                        *pixel = bg as uint;
+    /// 指定位置に1文字を描画する（ピクセル座標で指定）
+    void draw_char(ulong px, ulong py, ulong ch) {
+        ulong fb = self.fb_addr;
+        ulong screen_w = self.width;
+        ulong screen_h = self.height;
+        ulong stride = self.stride;
+        ulong fg = self.fg_color;
+        ulong bg = self.bg_color;
+
+        if (fb == 0) { return; }
+
+        ulong row = 0;
+        while (row < FONT_HEIGHT) {
+            ulong bits = font_get_row(ch, row);
+            ulong col = 0;
+            while (col < FONT_WIDTH) {
+                ulong sx = px + col;
+                ulong sy = py + row;
+
+                // 画面外チェック
+                if (sx < screen_w) {
+                    if (sy < screen_h) {
+                        ulong offset = (sy * stride + sx) * 4;
+                        uint* pixel = (fb + offset) as uint*;
+
+                        // ビットパターンのMSBが左端: bit7=col0, bit6=col1, ...
+                        ulong bit_pos = 7 - col;
+                        ulong mask = 1 << bit_pos;
+                        if ((bits & mask) != 0) {
+                            *pixel = fg as uint;
+                        } else {
+                            *pixel = bg as uint;
+                        }
                     }
                 }
+                col += 1;
             }
-            col += 1;
+            row += 1;
         }
-        row += 1;
     }
-}
 
-// ============================================================
-// テキスト出力
-// ============================================================
+    // --------------------------------------------------------
+    // 画面操作
+    // --------------------------------------------------------
 
-/// テキストカーソルで管理される列数の最大値を計算
-export ulong max_cols(FBConsole* con) {
-    return con->width / FONT_WIDTH;
-}
+    /// 画面を背景色でクリアする（Console IF）
+    void clear() {
+        ulong fb = self.fb_addr;
+        ulong stride = self.stride;
+        ulong height = self.height;
+        ulong bg = self.bg_color;
 
-/// テキストカーソルで管理される行数の最大値を計算
-export ulong max_rows(FBConsole* con) {
-    return con->height / FONT_HEIGHT;
-}
+        if (fb == 0) { return; }
 
-/// 画面を1行分上にスクロールする
-export void fb_scroll_up(FBConsole* con) {
-    ulong fb = con->fb_addr;
-    ulong stride = con->stride;
-    ulong height = con->height;
-    ulong bg = con->bg_color;
-
-    if (fb == 0) { return; }
-
-    // FONT_HEIGHT行分のピクセルを上にコピー
-    ulong y = 0;
-    ulong copy_height = height - FONT_HEIGHT;
-    while (y < copy_height) {
-        ulong src_y = y + FONT_HEIGHT;
-        ulong x = 0;
-        while (x < stride) {
-            ulong dst_offset = (y * stride + x) * 4;
-            ulong src_offset = (src_y * stride + x) * 4;
-            uint* dst = (fb + dst_offset) as uint*;
-            uint* src = (fb + src_offset) as uint*;
-            *dst = *src;
-            x += 1;
+        // 1行ずつ塗りつぶし
+        ulong y = 0;
+        while (y < height) {
+            ulong x = 0;
+            while (x < stride) {
+                ulong offset = (y * stride + x) * 4;
+                uint* pixel = (fb + offset) as uint*;
+                *pixel = bg as uint;
+                x += 1;
+            }
+            y += 1;
         }
-        y += 1;
+
+        // カーソルをリセット
+        self.cursor_x = 0;
+        self.cursor_y = 0;
     }
 
-    // 最下行を背景色でクリア
-    ulong clear_y = copy_height;
-    while (clear_y < height) {
-        ulong x = 0;
-        while (x < stride) {
-            ulong offset = (clear_y * stride + x) * 4;
-            uint* pixel = (fb + offset) as uint*;
-            *pixel = bg as uint;
-            x += 1;
+    /// 画面を1行分上にスクロールする
+    void scroll_up() {
+        ulong fb = self.fb_addr;
+        ulong stride = self.stride;
+        ulong height = self.height;
+        ulong bg = self.bg_color;
+
+        if (fb == 0) { return; }
+
+        // FONT_HEIGHT行分のピクセルを上にコピー
+        ulong y = 0;
+        ulong copy_height = height - FONT_HEIGHT;
+        while (y < copy_height) {
+            ulong src_y = y + FONT_HEIGHT;
+            ulong x = 0;
+            while (x < stride) {
+                ulong dst_offset = (y * stride + x) * 4;
+                ulong src_offset = (src_y * stride + x) * 4;
+                uint* dst = (fb + dst_offset) as uint*;
+                uint* src = (fb + src_offset) as uint*;
+                *dst = *src;
+                x += 1;
+            }
+            y += 1;
         }
-        clear_y += 1;
-    }
-}
 
-/// 改行処理（画面下端でスクロール）
-export void fb_newline(FBConsole* con) {
-    con->cursor_x = 0;
-    ulong rows = max_rows(con);
-    ulong next_y = con->cursor_y + 1;
-    if (next_y >= rows) {
-        // 画面下端に達した場合、スクロール
-        fb_scroll_up(con);
-        con->cursor_y = rows - 1;
-    } else {
-        con->cursor_y = next_y;
-    }
-}
-
-/// 1文字を出力（テキストカーソル自動進行）
-export void fb_putc(FBConsole* con, ulong ch) {
-    // 改行文字
-    if (ch == 10) {
-        fb_newline(con);
-        return;
-    }
-    // キャリッジリターン
-    if (ch == 13) {
-        con->cursor_x = 0;
-        return;
-    }
-
-    // テキスト座標 → ピクセル座標
-    ulong px = con->cursor_x * FONT_WIDTH;
-    ulong py = con->cursor_y * FONT_HEIGHT;
-
-    // 文字を描画
-    draw_char(con, px, py, ch);
-
-    // カーソル前進
-    ulong cols = max_cols(con);
-    ulong next_x = con->cursor_x + 1;
-    if (next_x >= cols) {
-        fb_newline(con);
-    } else {
-        con->cursor_x = next_x;
-    }
-}
-
-/// NUL終端文字列を出力
-export void fb_puts(FBConsole* con, void* data) {
-    ulong data_val = data as ulong;
-    ulong i = 0;
-
-    while (true) {
-        ulong byte_val = 0;
-        ulong addr = data_val + i;
-        __asm__(`
-            movq ${r:addr}, %r10;
-            xorq %rax, %rax;
-            movzbl (%r10), %eax;
-            movq %rax, ${=r:byte_val}
-        `);
-        if (byte_val == 0) {
-            break;
+        // 最下行を背景色でクリア
+        ulong clear_y = copy_height;
+        while (clear_y < height) {
+            ulong x = 0;
+            while (x < stride) {
+                ulong offset = (clear_y * stride + x) * 4;
+                uint* pixel = (fb + offset) as uint*;
+                *pixel = bg as uint;
+                x += 1;
+            }
+            clear_y += 1;
         }
-        fb_putc(con, byte_val);
-        i += 1;
     }
-}
 
-/// 文字列を改行付きで出力
-export void fb_println(FBConsole* con, void* data) {
-    fb_puts(con, data);
-    fb_newline(con);
-}
+    // --------------------------------------------------------
+    // テキスト出力
+    // --------------------------------------------------------
 
-// ============================================================
-// 16進数出力
-// ============================================================
-
-/// 16進数値をFBConsoleに出力（0xプレフィックス + 16桁）
-export void fb_print_hex(FBConsole* con, ulong value) {
-    fb_puts(con, "0x" as void*);
-    ulong i = 0;
-    while (i < 16) {
-        ulong shift = (15 - i) * 4;
-        ulong nibble = (value >> shift) & 0xF;
-        ulong ch = 0;
-        if (nibble < 10) {
-            ch = nibble + 0x30;  // '0'-'9'
+    /// 改行処理（画面下端でスクロール）（Console IF）
+    void newline() {
+        self.cursor_x = 0;
+        ulong rows = self.max_rows();
+        ulong next_y = self.cursor_y + 1;
+        if (next_y >= rows) {
+            // 画面下端に達した場合、スクロール
+            self.scroll_up();
+            self.cursor_y = rows - 1;
         } else {
-            ch = nibble - 10 + 0x41;  // 'A'-'F'
+            self.cursor_y = next_y;
         }
-        fb_putc(con, ch);
-        i += 1;
+    }
+
+    /// 1文字を出力（テキストカーソル自動進行）（Console IF）
+    void putc(ulong ch) {
+        // 改行文字
+        if (ch == 10) {
+            self.newline();
+            return;
+        }
+        // キャリッジリターン
+        if (ch == 13) {
+            self.cursor_x = 0;
+            return;
+        }
+
+        // テキスト座標 → ピクセル座標
+        ulong px = self.cursor_x * FONT_WIDTH;
+        ulong py = self.cursor_y * FONT_HEIGHT;
+
+        // 文字を描画
+        self.draw_char(px, py, ch);
+
+        // カーソル前進
+        ulong cols = self.max_cols();
+        ulong next_x = self.cursor_x + 1;
+        if (next_x >= cols) {
+            self.newline();
+        } else {
+            self.cursor_x = next_x;
+        }
+    }
+
+    /// NUL終端文字列を出力（Console IF）
+    void puts(void* data) {
+        ulong data_val = data as ulong;
+        ulong i = 0;
+
+        while (true) {
+            ulong byte_val = 0;
+            ulong addr = data_val + i;
+            __asm__(`
+                movq ${r:addr}, %r10;
+                xorq %rax, %rax;
+                movzbl (%r10), %eax;
+                movq %rax, ${=r:byte_val}
+            `);
+            if (byte_val == 0) {
+                break;
+            }
+            self.putc(byte_val);
+            i += 1;
+        }
+    }
+
+    /// 文字列を改行付きで出力（Console IF）
+    void println(void* data) {
+        self.puts(data);
+        self.newline();
+    }
+
+    // --------------------------------------------------------
+    // 16進数出力
+    // --------------------------------------------------------
+
+    /// 16進数値をFBConsoleに出力（0xプレフィックス + 16桁）
+    void print_hex(ulong value) {
+        self.puts("0x" as void*);
+        ulong i = 0;
+        while (i < 16) {
+            ulong shift = (15 - i) * 4;
+            ulong nibble = (value >> shift) & 0xF;
+            ulong ch = 0;
+            if (nibble < 10) {
+                ch = nibble + 0x30;  // '0'-'9'
+            } else {
+                ch = nibble - 10 + 0x41;  // 'A'-'F'
+            }
+            self.putc(ch);
+            i += 1;
+        }
+    }
+
+    // --------------------------------------------------------
+    // バックスペース処理
+    // --------------------------------------------------------
+
+    /// カーソルを1つ戻して空白で上書き（Backspace用）
+    void backspace() {
+        if (self.cursor_x > 0) {
+            self.cursor_x = self.cursor_x - 1;
+            // カーソル位置に空白を描画
+            ulong px = self.cursor_x * FONT_WIDTH;
+            ulong py = self.cursor_y * FONT_HEIGHT;
+            self.draw_char(px, py, 0x20);
+        }
     }
 }
-
-// ============================================================
-// バックスペース処理
-// ============================================================
-
-/// カーソルを1つ戻して空白で上書き（Backspace用）
-export void fb_backspace(FBConsole* con) {
-    if (con->cursor_x > 0) {
-        con->cursor_x = con->cursor_x - 1;
-        // カーソル位置に空白を描画
-        ulong px = con->cursor_x * FONT_WIDTH;
-        ulong py = con->cursor_y * FONT_HEIGHT;
-        draw_char(con, px, py, 0x20);
-    }
-}
-
-// ============================================================
-// 注: impl FBConsole for Console ブロックは削除
-// Cm v0.14.1でselfコピー問題等は修正されたが、
-// FBConsole*を引数として渡すフリー関数方式が安定しているため維持。
-// 将来的にimpl方式への移行を検討。
-// ============================================================

@@ -19,23 +19,8 @@ const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
 
 /// グローバルFBConsoleを固定アドレスに設定する
 export void global_fb_init(ulong fb_addr, ulong width, ulong height, ulong stride) {
-    ulong base = GLOBAL_FB_CONSOLE_ADDR;
-    ulong* p0 = base as ulong*;
-    *p0 = fb_addr;
-    ulong* p1 = (base + 8) as ulong*;
-    *p1 = width;
-    ulong* p2 = (base + 16) as ulong*;
-    *p2 = height;
-    ulong* p3 = (base + 24) as ulong*;
-    *p3 = stride;
-    ulong* p4 = (base + 32) as ulong*;
-    *p4 = 0;
-    ulong* p5 = (base + 40) as ulong*;
-    *p5 = 0;
-    ulong* p6 = (base + 48) as ulong*;
-    *p6 = 0x0000FF00;
-    ulong* p7 = (base + 56) as ulong*;
-    *p7 = 0x00101020;
+    FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
+    con->init(fb_addr, width, height, stride);
 }
 
 /// グローバルFBConsoleポインタを取得
@@ -70,12 +55,12 @@ export void demo_task1_fn() {
     FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
 
     serial.println("[Task-1] Started" as void*);
-    fb_set_color(con, 0x0000FFFF);  // シアン
-    fb_puts(con, "[Task-1] Started" as void*);
-    fb_newline(con);
+    con->set_color(0x0000FFFF);  // シアン
+    con->puts("[Task-1] Started" as void*);
+    con->newline();
 
-    ulong count = 0 as ulong;
-    ulong target = 10 as ulong;
+    ulong count = 0;
+    ulong target = 10;
 
     while (count < target) {
         count = count + 1;
@@ -86,12 +71,12 @@ export void demo_task1_fn() {
         serial.println("" as void*);
 
         // フレームバッファ出力
-        fb_set_color(con, 0x0000FFFF);
-        fb_puts(con, "  [1] iter " as void*);
+        con->set_color(0x0000FFFF);
+        con->puts("  [1] iter " as void*);
         ulong digit = count + 0x30;
         if (count > 9) { digit = 0x3F; }
-        fb_putc(con, digit);
-        fb_newline(con);
+        con->putc(digit);
+        con->newline();
 
         // yield（プリエンプション用）
         demo_yield();
@@ -99,9 +84,9 @@ export void demo_task1_fn() {
     }
 
     serial.println("[Task-1] Done" as void*);
-    fb_set_color(con, 0x0000FFFF);
-    fb_puts(con, "[Task-1] Done" as void*);
-    fb_newline(con);
+    con->set_color(0x0000FFFF);
+    con->puts("[Task-1] Done" as void*);
+    con->newline();
 
     // 自身をTERMINATED → schedule
     ulong my_id = sched_current_id();
@@ -119,12 +104,12 @@ export void demo_task2_fn() {
     FBConsole* con = GLOBAL_FB_CONSOLE_ADDR as FBConsole*;
 
     serial.println("[Task-2] Started" as void*);
-    fb_set_color(con, 0x00FFFF00);  // 黄色
-    fb_puts(con, "[Task-2] Started" as void*);
-    fb_newline(con);
+    con->set_color(0x00FFFF00);  // 黄色
+    con->puts("[Task-2] Started" as void*);
+    con->newline();
 
-    ulong count = 0 as ulong;
-    ulong target = 10 as ulong;
+    ulong count = 0;
+    ulong target = 10;
 
     while (count < target) {
         count = count + 1;
@@ -133,21 +118,21 @@ export void demo_task2_fn() {
         serial.print_hex(count);
         serial.println("" as void*);
 
-        fb_set_color(con, 0x00FFFF00);
-        fb_puts(con, "  [2] iter " as void*);
+        con->set_color(0x00FFFF00);
+        con->puts("  [2] iter " as void*);
         ulong digit = count + 0x30;
         if (count > 9) { digit = 0x3F; }
-        fb_putc(con, digit);
-        fb_newline(con);
+        con->putc(digit);
+        con->newline();
 
         demo_yield();
         demo_yield();
     }
 
     serial.println("[Task-2] Done" as void*);
-    fb_set_color(con, 0x00FFFF00);
-    fb_puts(con, "[Task-2] Done" as void*);
-    fb_newline(con);
+    con->set_color(0x00FFFF00);
+    con->puts("[Task-2] Done" as void*);
+    con->newline();
 
     ulong my_id = sched_current_id();
     tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
