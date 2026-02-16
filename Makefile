@@ -236,6 +236,11 @@ test: setup-esp download-ovmf
 		else \
 			echo "✗ FAIL: PMM alloc/free"; FAIL=$$((FAIL+1)); \
 		fi; \
+		if grep -q "\[BOOT\] paging enabled" $(DEBUG_LOG); then \
+			echo "✓ PASS: ページング有効"; PASS=$$((PASS+1)); \
+		else \
+			echo "✗ FAIL: ページング有効"; FAIL=$$((FAIL+1)); \
+		fi; \
 		echo ""; \
 		echo "結果: $$PASS passed, $$FAIL failed"; \
 	fi

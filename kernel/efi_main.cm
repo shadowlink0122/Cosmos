@@ -28,6 +28,7 @@ import ./drivers/pic;
 import ./lib/font;
 import ./lib/print;
 import ./mm/pmm;
+import ./mm/vmm;
 
 // ============================================================
 // ExitBootServices
@@ -202,6 +203,12 @@ void kernel_main(BootInfo* info) {
     pmm.free_page(page2);
     pmm.free_page(page3);
     debug.println("[BOOT] PMM alloc/free test OK" as void*);
+
+    // ページテーブル管理（UEFIのアイデンティティマッピングを継承）
+    VMM vmm();
+    vmm.print_stats();
+    serial.println("[Cosmos] Paging enabled (identity mapped)" as void*);
+    debug.println("[BOOT] paging enabled" as void*);
 
     // フレームバッファテキストコンソール初期化
     ulong fb = info->fb.base_addr;

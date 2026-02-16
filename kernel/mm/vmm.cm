@@ -1,0 +1,99 @@
+//! platform: uefi
+// kernel::mm::vmm - 仮想メモリマネージャ (VMM)
+//
+// x86_64 4レベルページテーブルのインフラストラクチャ。
+// 初期段階ではUEFIが構築したアイデンティティマッピングを利用し、
+// 将来のカーネル独自ページテーブル構築のためのAPIを提供する。
+//
+// 現在の実装:
+//   - CR3の現在値を読み取り保存
+//   - ページテーブル管理用のAPIフレームワーク
+//
+// 使用例:
+//   VMM vmm();
+//   vmm.print_stats();
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// ページサイズ
+const ulong VMM_PAGE_SIZE = 4096;
+
+// ページテーブルエントリのフラグ
+const ulong PTE_PRESENT    = 1;        // ビット0: Present
+const ulong PTE_WRITABLE   = 2;        // ビット1: Read/Write
+const ulong PTE_USER       = 4;        // ビット2: User/Supervisor
+
+// カーネル用デフォルトフラグ: Present + Writable
+const ulong PTE_KERNEL_RW = 3;  // PTE_PRESENT | PTE_WRITABLE
+
+// ページテーブルのエントリ数
+const ulong PT_ENTRIES = 512;
+
+// 各レベルのインデックス抽出用シフト量
+const ulong PML4_SHIFT = 39;
+const ulong PDPT_SHIFT = 30;
+const ulong PD_SHIFT   = 21;
+const ulong PT_SHIFT   = 12;
+
+// インデックスマスク（9ビット = 0x1FF）
+const ulong INDEX_MASK = 511;
+
+// ============================================================
+// VMM 構造体
+// ============================================================
+
+/// 仮想メモリマネージャ
+/// 現段階ではUEFIのページテーブルを継承して使用
+export struct VMM {
+    ulong cr3_value;    // 現在のCR3レジスタ値（PML4物理アドレス）
+    ulong is_active;    // ページング有効フラグ
+}
+
+// ============================================================
+// VMM メソッド実装
+// ============================================================
+
+impl VMM {
+    /// コンストラクタ: 現在のCR3値を読み取りUEFIページテーブルを継承
+    overload self() {
+        DebugPort debug(0xE9);
+
+        // 現在のCR3レジスタを読み取り
+        // selfのcr3_valueフィールドに直接書き込み
+        self.cr3_value = 0;
+        ulong* cr3_ptr = &self.cr3_value;
+        __asm__(`
+            movq %cr3, %rax;
+            movq %rax, (${r:cr3_ptr})
+        `);
+
+        self.is_active = 1;
+
+        debug.puts("[VMM] inherited UEFI CR3=0x" as void*);
+        debug.print_hex(self.cr3_value);
+        debug.println("" as void*);
+    }
+
+    /// 統計情報出力
+    void print_stats() {
+        SerialPort serial(0x3F8);
+        DebugPort debug(0xE9);
+
+        serial.puts("[VMM] CR3=0x" as void*);
+        serial.print_hex(self.cr3_value);
+        serial.puts(", paging=" as void*);
+        if (self.is_active == 1) {
+            serial.puts("active" as void*);
+        }
+        serial.putc(10);
+
+        debug.puts("[VMM] CR3=0x" as void*);
+        debug.print_hex(self.cr3_value);
+        debug.println("" as void*);
+    }
+}
