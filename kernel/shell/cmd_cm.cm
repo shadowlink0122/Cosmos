@@ -3,7 +3,10 @@
 //
 // cm <file> : .cmソースファイルを読み込み、簡易バイトコードにコンパイルして
 //             a.out をCosmFSに作成する。
+// cm help   : cmコマンドのヘルプを表示する。
 // a.out     : バイトコードを読み込んで簡易VMで実行する。
+//
+// ※ バイトコードインタプリタ方式（ネイティブバイナリ実行ではない）
 //
 // サポートする構文:
 //   print(数値);     → 数値を出力
@@ -14,6 +17,12 @@
 //   OP_HALT      = 0 : プログラム終了
 //   OP_PRINT_NUM = 1 : operandを10進数で出力
 //   OP_PRINT_STR = 2 : operandバイト位置から文字列を出力（次命令に長さ）
+//
+// エラーコード定数:
+//   CM_OK            = 0  成功
+//   CM_ERR_ALLOC     = 2  メモリ割当失敗
+//   CM_ERR_NOT_FOUND = 3  ファイル未発見
+//   CM_ERR_EMPTY     = 4  ファイルが空
 
 import ../drivers/serial;
 import ../drivers/debug_port;
@@ -42,17 +51,39 @@ const ulong OP_PRINT_STR = 2;
 // バイトコード1命令のサイズ（バイト）
 const ulong INSTR_SIZE = 16;
 
-// コンパイラ用一時領域（0xCE0-0xCEF）
-const ulong CM_INSTR_COUNT = 0xCE0;  // 現在の命令カウンタ
+// コンパイラ用一時領域
+const ulong CM_INSTR_COUNT = 0xCE0;
+
+// エラーコード定数
+const ulong CM_OK            = 0;
+const ulong CM_ERR_ALLOC     = 2;
+const ulong CM_ERR_NOT_FOUND = 3;
+const ulong CM_ERR_EMPTY     = 4;
+
+/// cmコマンドのヘルプを表示
+export void cm_help() {
+    shell_set_color(0x0000AAFF);
+    shell_println("Cm Bytecode Compiler" as void*);
+    shell_set_color(0x00CCCCCC);
+    shell_println("" as void*);
+    shell_println("Usage:" as void*);
+    shell_println("  cm <file.cm>  - Compile to a.out" as void*);
+    shell_println("  cm help       - Show this help" as void*);
+    shell_println("  a.out         - Run compiled program" as void*);
+    shell_println("" as void*);
+    shell_println("Supported syntax:" as void*);
+    shell_println("  print(N);      -> numeric output" as void*);
+    shell_println("  print(\"...\");   -> string output" as void*);
+    shell_println("" as void*);
+    shell_println("Note: bytecode VM (not native binary)" as void*);
+}
 
 /// バイトコードに命令を書き込む
 export void cm_emit(ulong code_buf, ulong idx, ulong opcode, ulong operand) {
     ulong offset = idx * INSTR_SIZE;
-    ulong op_addr = code_buf + offset;
-    ulong* op_ptr = op_addr as ulong*;
+    ulong* op_ptr = (code_buf + offset) as ulong*;
     *op_ptr = opcode;
-    ulong arg_addr = code_buf + offset + 8;
-    ulong* arg_ptr = arg_addr as ulong*;
+    ulong* arg_ptr = (code_buf + offset + 8) as ulong*;
     *arg_ptr = operand;
 }
 
@@ -70,25 +101,20 @@ export ulong cm_parse_number(ulong src, ulong pos, ulong len) {
 }
 
 /// print()パターンを1つ処理してバイトコード生成
-/// 戻り値: 処理後のソース位置
 export ulong cm_compile_print(ulong src, ulong print_pos, ulong src_len, ulong code_buf) {
     ulong* cnt_ptr = CM_INSTR_COUNT as ulong*;
     ulong idx = *cnt_ptr;
-
     ulong first_ch = cmd_read_byte(src + print_pos);
 
     if (first_ch == 0x22) {
-        // '"' → 文字列リテラル print("...")
         ulong str_start = print_pos + 1;
         ulong str_pos = str_start;
         while (str_pos < src_len) {
             ulong sc = cmd_read_byte(src + str_pos);
             if (sc == 0x22) {
                 ulong str_len = str_pos - str_start;
-                // OP_PRINT_STR: 文字列の絶対アドレス
                 cm_emit(code_buf, idx, OP_PRINT_STR, src + str_start);
                 idx = idx + 1;
-                // 次の命令に文字列長を格納
                 cm_emit(code_buf, idx, str_len, 0);
                 idx = idx + 1;
                 *cnt_ptr = idx;
@@ -100,7 +126,6 @@ export ulong cm_compile_print(ulong src, ulong print_pos, ulong src_len, ulong c
         return src_len;
     }
 
-    // 数値リテラル print(42)
     ulong num = cm_parse_number(src, print_pos, src_len);
     cm_emit(code_buf, idx, OP_PRINT_NUM, num);
     idx = idx + 1;
@@ -113,24 +138,21 @@ export ulong cm_compile_source(ulong src, ulong src_len, ulong code_buf) {
     ulong* cnt_ptr = CM_INSTR_COUNT as ulong*;
     ulong zero = 0;
     *cnt_ptr = zero;
-
     ulong pos = 0;
-    ulong max_instrs = 14;  // HALTの分を残す
+    ulong max_instrs = 14;
 
     while (pos + 5 < src_len) {
         ulong idx = *cnt_ptr;
         if (idx >= max_instrs) {
-            pos = src_len;  // 命令数上限
+            pos = src_len;
         } else {
-            // "print(" パターン検索
             ulong c0 = cmd_read_byte(src + pos);
-            if (c0 == 0x70) {  // 'p'
+            if (c0 == 0x70) {
                 ulong c1 = cmd_read_byte(src + pos + 1);
                 ulong c2 = cmd_read_byte(src + pos + 2);
                 ulong c3 = cmd_read_byte(src + pos + 3);
                 ulong c4 = cmd_read_byte(src + pos + 4);
                 ulong c5 = cmd_read_byte(src + pos + 5);
-                // r=0x72, i=0x69, n=0x6E, t=0x74, (=0x28
                 if (c1 == 0x72) {
                     if (c2 == 0x69) {
                         if (c3 == 0x6E) {
@@ -148,32 +170,73 @@ export ulong cm_compile_source(ulong src, ulong src_len, ulong code_buf) {
         }
     }
 
-    // HALT命令を追加
     ulong final_idx = *cnt_ptr;
     cm_emit(code_buf, final_idx, OP_HALT, 0);
     final_idx = final_idx + 1;
     *cnt_ptr = final_idx;
-
     return final_idx * INSTR_SIZE;
+}
+
+/// a.outファイルを作成してバイトコードを書き込む
+/// 戻り値: エラーコード（0=成功）
+export ulong cm_create_aout(ulong code_buf, ulong code_size, Heap* heap) {
+    ulong aout_name = heap->alloc(6);
+    if (aout_name == 0) { return CM_ERR_ALLOC; }
+    cosmfs_op(CM_FS_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
+
+    ulong existing = cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0);
+    if (existing != CM_NOT_FOUND) {
+        cosmfs_op(CM_FS_DELETE, aout_name, 0, 0, 0);
+    }
+
+    ulong aout_data = heap->alloc(4096);
+    if (aout_data == 0) { return CM_ERR_ALLOC; }
+
+    cosmfs_op(CM_FS_CREATE, aout_name, aout_data, 4096, 0);
+    cosmfs_op(CM_FS_WRITE, aout_name, code_buf, code_size, 0);
+    return CM_OK;
 }
 
 /// cmコマンド: .cmファイルをコンパイルしてa.outを生成
 export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
-    // 引数解析: "cm <filename>"
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     ulong arg_len = cmd_arg_len(buf_addr, arg_start, buf_len);
 
+    // 引数なし → Usage表示
     if (arg_len == 0) {
         shell_set_color(0x00FFAA00);
         shell_println("Usage: cm <file.cm>" as void*);
+        shell_println("  cm help  - Show help" as void*);
         return;
+    }
+
+    // "help" チェック（h=0x68, e=0x65, l=0x6C, p=0x70）
+    if (arg_len == 4) {
+        ulong h0 = cmd_read_byte(buf_addr + arg_start);
+        ulong h1 = cmd_read_byte(buf_addr + arg_start + 1);
+        ulong h2 = cmd_read_byte(buf_addr + arg_start + 2);
+        ulong h3 = cmd_read_byte(buf_addr + arg_start + 3);
+        if (h0 == 0x68) {
+            if (h1 == 0x65) {
+                if (h2 == 0x6C) {
+                    if (h3 == 0x70) {
+                        cm_help();
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     // ファイル名をバッファにコピー
     ulong name_buf = heap->alloc(arg_len + 1);
-    if (name_buf == 0) { return; }
+    if (name_buf == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: memory allocation failed" as void*);
+        return;
+    }
     cosmfs_op(CM_FS_MEMCPY, name_buf, buf_addr + arg_start, arg_len, 0);
-    cmd_write_byte(name_buf + arg_len, 0);  // NUL終端
+    cmd_write_byte(name_buf + arg_len, 0);
 
     // ソースファイルの検索
     ulong idx = cosmfs_op(CM_FS_FIND, name_buf, 0, 0, 0);
@@ -183,40 +246,40 @@ export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
         return;
     }
 
-    // ソースファイルのサイズ取得と読み込み
+    // ソースファイル読み込み
     ulong src_size = cosmfs_op(CM_FS_SIZE, name_buf, 0, 0, 0);
     if (src_size == 0) {
         shell_set_color(0x00FF4444);
         shell_println("Error: empty source file" as void*);
         return;
     }
+
     ulong src_buf = heap->alloc(src_size + 1);
-    if (src_buf == 0) { return; }
+    if (src_buf == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: memory allocation failed" as void*);
+        return;
+    }
     cosmfs_op(CM_FS_READ, name_buf, src_buf, src_size, 0);
 
-    // バイトコードバッファ（最大16命令 = 256バイト）
+    // バイトコードバッファ
     ulong code_buf = heap->alloc(256);
-    if (code_buf == 0) { return; }
+    if (code_buf == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: memory allocation failed" as void*);
+        return;
+    }
 
     // コンパイル実行
     ulong code_size = cm_compile_source(src_buf, src_size, code_buf);
 
-    // a.out をCosmFSに作成
-    ulong aout_name = heap->alloc(6);
-    if (aout_name == 0) { return; }
-    cosmfs_op(CM_FS_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
-
-    // 既存のa.outがあれば削除
-    ulong existing = cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0);
-    if (existing != CM_NOT_FOUND) {
-        cosmfs_op(CM_FS_DELETE, aout_name, 0, 0, 0);
+    // a.out作成
+    ulong write_err = cm_create_aout(code_buf, code_size, heap);
+    if (write_err != CM_OK) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: failed to create a.out" as void*);
+        return;
     }
-
-    // a.out作成+書き込み
-    ulong aout_data = heap->alloc(4096);
-    if (aout_data == 0) { return; }
-    cosmfs_op(CM_FS_CREATE, aout_name, aout_data, 4096, 0);
-    cosmfs_op(CM_FS_WRITE, aout_name, code_buf, code_size, 0);
 
     shell_set_color(0x0000FF88);
     shell_println("Compiled successfully -> a.out" as void*);
@@ -224,26 +287,37 @@ export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
 
 /// a.outコマンド: バイトコードVMで実行
 export void cmd_run_aout(Heap* heap) {
-    // a.outの検索
     ulong aout_name = heap->alloc(6);
-    if (aout_name == 0) { return; }
+    if (aout_name == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: memory allocation failed" as void*);
+        return;
+    }
     cosmfs_op(CM_FS_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
 
     ulong idx = cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0);
     if (idx == CM_NOT_FOUND) {
         shell_set_color(0x00FF4444);
         shell_println("Error: a.out not found" as void*);
+        shell_println("  Compile first: cm <file.cm>" as void*);
         return;
     }
 
-    // バイトコード読み込み
     ulong code_size = cosmfs_op(CM_FS_SIZE, aout_name, 0, 0, 0);
-    if (code_size == 0) { return; }
+    if (code_size == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: a.out is empty" as void*);
+        return;
+    }
+
     ulong code_buf = heap->alloc(code_size);
-    if (code_buf == 0) { return; }
+    if (code_buf == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: memory allocation failed" as void*);
+        return;
+    }
     cosmfs_op(CM_FS_READ, aout_name, code_buf, code_size, 0);
 
-    // VM実行
     shell_set_color(0x00FFFFFF);
     cm_vm_exec(code_buf, code_size);
 }
@@ -256,18 +330,14 @@ export void cm_vm_exec(ulong code_buf, ulong code_size) {
 
     while (steps < max_steps) {
         ulong offset = pc * INSTR_SIZE;
-        if (offset >= code_size) {
-            return;
-        }
+        if (offset >= code_size) { return; }
 
         ulong* op_ptr = (code_buf + offset) as ulong*;
         ulong opcode = *op_ptr;
         ulong* arg_ptr = (code_buf + offset + 8) as ulong*;
         ulong operand = *arg_ptr;
 
-        if (opcode == OP_HALT) {
-            return;
-        }
+        if (opcode == OP_HALT) { return; }
 
         if (opcode == OP_PRINT_NUM) {
             shell_print_num(operand);
@@ -276,11 +346,9 @@ export void cm_vm_exec(ulong code_buf, ulong code_size) {
         }
 
         if (opcode == OP_PRINT_STR) {
-            // 次の命令から文字列長を取得
             ulong len_off = (pc + 1) * INSTR_SIZE;
             ulong* len_ptr = (code_buf + len_off) as ulong*;
             ulong str_len = *len_ptr;
-            // 1文字ずつ出力
             ulong si = 0;
             while (si < str_len) {
                 ulong ch = cmd_read_byte(operand + si);
@@ -288,10 +356,9 @@ export void cm_vm_exec(ulong code_buf, ulong code_size) {
                 si = si + 1;
             }
             shell_newline();
-            pc = pc + 2;  // 文字列命令は2命令消費
+            pc = pc + 2;
         }
 
-        // 不明な命令はスキップ
         if (opcode != OP_HALT) {
             if (opcode != OP_PRINT_NUM) {
                 if (opcode != OP_PRINT_STR) {
