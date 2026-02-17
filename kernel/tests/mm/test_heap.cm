@@ -2,9 +2,9 @@
 // kernel::tests::test_heap - ヒープアロケータテスト
 //
 // 注意: Cmのメソッド呼出しではselfがコピーされるため、
-// ポインタ経由のalloc()は内部offsetが更新されない。
+// ポインタ経由のalloc()は内部offsetが更新されない（Bug #13/Bug #9）。
 // このテストではfree_bytes()による空き容量確認のみ行う。
-// alloc()の連続割当テストはefi_main.cm内で直接実行すべき。
+// alloc()/free()の検証はefi_main_test.cm内で直接Heap変数から実行すべき。
 
 import ../../drivers/serial;
 import ../../mm/heap;

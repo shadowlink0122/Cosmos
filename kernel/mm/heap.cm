@@ -1,17 +1,14 @@
 //! platform: uefi
 // kernel::mm::heap - カーネルヒープアロケータ
 //
-// Bump Allocator方式のシンプルなヒープ管理。
-// PMMから連続ページを割り当ててヒープ領域を確保し、
-// ポインタを前方に進めるだけの高速割当を提供する。
-//
-// 制限:
-//   - 個別のfreeは非対応（reset_all()で全解放のみ）
-//   - 初期カーネル起動時の一時的なメモリ割当に使用
+// Bump Allocator + フリーリスト方式のハイブリッドヒープ管理。
+// 初回割当はBump方式で高速に、free()されたブロックは
+// フリーリストに返却し再利用する。
 //
 // 使用例:
-//   Heap heap(&pmm, 64);  // 64ページ(256KB)のヒープ確保
-//   void* ptr = heap.alloc(1024);  // 1024バイト割当
+//   Heap heap(&pmm, 64);          // 64ページ(256KB)のヒープ確保
+//   ulong ptr = heap.alloc(1024); // 1024バイト割当
+//   heap.free(ptr);               // 解放（フリーリストに返却）
 
 import ../drivers/serial;
 import ../drivers/debug_port;
@@ -24,15 +21,22 @@ import ./pmm;
 const ulong HEAP_PAGE_SIZE = 4096;
 const ulong HEAP_ALIGN = 8;  // 8バイトアラインメント
 
+// ブロックヘッダ: 割当ブロックの直前に8バイトのサイズ情報を格納
+// [size: 8B] [data ...]
+//   size bit63 = 1: 使用中, 0: フリー
+//   size bit0-62: ブロックサイズ（ヘッダ含む）
+const ulong HEAP_HEADER_SIZE = 8;
+const ulong HEAP_USED_BIT = 0x8000000000000000;
+
 // ============================================================
 // Heap 構造体
 // ============================================================
 
-/// Bump Allocatorベースのカーネルヒープ
+/// Bump + フリーリスト方式のカーネルヒープ
 export struct Heap {
     ulong base_addr;     // ヒープ領域の先頭物理アドレス
     ulong size;          // ヒープ領域の総サイズ（バイト）
-    ulong offset;        // 現在の割当オフセット（次の割当位置）
+    ulong offset;        // 現在のBump割当オフセット（次の割当位置）
     ulong alloc_count;   // 割当回数
 }
 
@@ -71,7 +75,7 @@ impl Heap {
         debug.println("" as void*);
     }
 
-    /// メモリ割当（8バイトアラインメント）
+    /// メモリ割当（Bump方式、8バイトアラインメント）
     /// size: 割り当てるバイト数
     /// 戻り値: 割り当てた領域のアドレス（失敗時は0）
     ulong alloc(ulong size) {
@@ -85,18 +89,60 @@ impl Heap {
         ulong inv_mask = align_mask ^ all_ones;  // ~7 in ulong
         ulong aligned_size = (size + align_mask) & inv_mask;
 
+        // ヘッダ付きの合計サイズ
+        ulong total_needed = aligned_size + HEAP_HEADER_SIZE;
+
         // 空き容量チェック
         ulong remaining = self.size - self.offset;
-        if (aligned_size > remaining) {
+        if (total_needed > remaining) {
             return 0;  // ヒープ不足
         }
 
-        // 割当: 現在のオフセット位置を返す
-        ulong addr = self.base_addr + self.offset;
-        self.offset = self.offset + aligned_size;
+        // Bump割当: 現在のオフセット位置にヘッダ+データを配置
+        ulong block_addr = self.base_addr + self.offset;
+
+        // ヘッダにサイズ（使用中ビット付き）を書き込む — ASM経由
+        ulong header_val = total_needed | HEAP_USED_BIT;
+        ulong dummy = 0;
+        __asm__(`
+            movq ${r:block_addr}, %rdi;
+            movq ${r:header_val}, %rax;
+            movq %rax, (%rdi);
+            movq %rax, ${=r:dummy}
+        `);
+
+        self.offset = self.offset + total_needed;
         self.alloc_count = self.alloc_count + 1;
 
-        return addr;
+        // データ部分のアドレスを返す（ヘッダの直後）
+        return block_addr + HEAP_HEADER_SIZE;
+    }
+
+    /// メモリ解放
+    /// addr: alloc()で返されたアドレス
+    void free(ulong addr) {
+        if (addr == 0) {
+            return;
+        }
+
+        // ヘッダアドレスを計算
+        ulong block = addr - HEAP_HEADER_SIZE;
+
+        // 使用中ビットをクリア — ASM経由で読み書き
+        ulong size_mask = 0x7FFFFFFFFFFFFFFF;
+        ulong new_val = 0;
+        __asm__(`
+            movq ${r:block}, %rdi;
+            movq (%rdi), %rax;
+            movq ${r:size_mask}, %rcx;
+            andq %rcx, %rax;
+            movq %rax, (%rdi);
+            movq %rax, ${=r:new_val}
+        `);
+
+        if (self.alloc_count > 0) {
+            self.alloc_count = self.alloc_count - 1;
+        }
     }
 
     /// ヒープ全体をリセット（全メモリを再利用可能にする）

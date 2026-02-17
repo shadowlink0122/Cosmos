@@ -96,7 +96,7 @@ void kernel_main(BootInfo* info) {
     // カーネルヒープ初期化（64ページ = 256KB）
     Heap heap(&pmm, 64);
     heap.print_stats();
-    serial.println("[CosmOS] Kernel heap initialized (bump allocator)" as void*);
+    serial.println("[CosmOS] Kernel heap initialized (free-list allocator)" as void*);
     debug.println("[BOOT] heap initialized" as void*);
 
     // フレームバッファテキストコンソール初期化
