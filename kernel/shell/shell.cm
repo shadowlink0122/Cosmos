@@ -18,6 +18,7 @@ import ./cmd_mem;
 import ./cmd_uptime;
 import ./cmd_fs;
 import ../mm/heap;
+import ../apps/aria/aria;
 
 // ============================================================
 // 定数
@@ -225,6 +226,21 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
         matched = 1;
     }
 
+    // --- Aria エディタ ---
+    ulong is_aria = shell_starts_with(buf_addr, buf_len, "aria " as void*, 5);
+    if (is_aria != 0) {
+        // ファイル名取得
+        ulong fname_start = 5;  // "aria " の後
+        ulong fname_len = buf_len - fname_start;
+        ulong fname_addr = buf_addr + fname_start;
+        // Aria初期化+ファイルオープン
+        aria_init();
+        aria_op(1, fname_addr, fname_len, 0, 0);  // OPEN
+        // 初回描画
+        aria_op(3, 0, 0, 0, 0);  // RENDER
+        matched = 1;
+    }
+
     if (matched == 0) {
         serial.puts("Unknown command. Type 'help'" as void*);
         serial.println("" as void*);
@@ -243,6 +259,32 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
 export void shell_process_input() {
     SerialPort serial(0x3F8);
     FBConsole con();
+
+    // Ariaモードチェック
+    ulong aria_running = aria_op(4, 0, 0, 0, 0);  // IS_RUNNING
+    if (aria_running != 0) {
+        ulong ch = kb_read_char();
+        if (ch == 0) {
+            return;
+        }
+        // キー入力をAriaに転送
+        aria_op(2, ch, 0, 0, 0);  // KEY_INPUT
+        // まだ実行中か確認
+        ulong still_running = aria_op(4, 0, 0, 0, 0);
+        if (still_running != 0) {
+            // 再描画
+            aria_op(3, 0, 0, 0, 0);  // RENDER
+        } else {
+            // Aria終了 — シェルに復帰
+            shell_set_color(SHELL_COLOR_OUTPUT);
+            shell_println("[Aria closed]" as void*);
+            serial.puts("CosmOS > " as void*);
+            con.set_color(SHELL_COLOR_PROMPT);
+            con.puts("CosmOS > " as void*);
+            con.set_color(SHELL_COLOR_INPUT);
+        }
+        return;
+    }
 
     ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
     ulong pos = *pos_ptr;

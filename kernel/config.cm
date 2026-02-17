@@ -67,6 +67,13 @@ export const ulong ADDR_FS_INITIALIZED   = 0x1A08;  // 初期化フラグ
 // --- シェル用グローバル参照 ---
 export const ulong ADDR_GLOBAL_HEAP      = 0x1A10;  // Heap構造体アドレス
 
+// --- Aria エディタ ---
+export const ulong ADDR_ARIA_STATE       = 0x2000;  // エディタ状態 (128B)
+export const ulong ADDR_ARIA_BUFFER      = 0x2100;  // テキストバッファ (4KB)
+export const ulong ADDR_ARIA_FILENAME    = 0x3100;  // ファイル名バッファ (64B)
+export const ulong ADDR_ARIA_CMDLINE     = 0x3140;  // コマンドラインバッファ (64B)
+export const ulong ARIA_BUF_SIZE         = 4096;    // テキストバッファサイズ
+
 // ============================================================
 // シェル色定数
 // ============================================================
