@@ -104,7 +104,7 @@ export void shell_buf_write(ulong pos, ulong byte_val) {
 export void shell_exec(ulong buf_addr, ulong buf_len) {
     SerialPort serial(0x3F8);
     DebugPort debug(0xE9);
-    FBConsole* con = fb_get_global_console();
+    FBConsole con();
 
     if (buf_len == 0) {
         return;
@@ -134,10 +134,10 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
     }
     if (shell_streq(buf_addr, buf_len, "clear" as void*) != 0) {
         serial.puts("\x1B[2J\x1B[H" as void*);
-        fb_clear(con);
-        fb_set_color(con, 0x00FFFFFF);
-        fb_println(con, "  CosmOS v0.6.0" as void*);
-        fb_newline(con);
+        con.clear();
+        con.set_color(0x00FFFFFF);
+        con.println("  CosmOS v0.6.0" as void*);
+        con.newline();
         matched = 1;
     }
 
@@ -145,9 +145,9 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
         serial.puts("Unknown command. Type 'help'" as void*);
         serial.println("" as void*);
 
-        fb_set_color(con, SHELL_COLOR_ERROR);
-        fb_println(con, "Unknown command. Type 'help'" as void*);
-        fb_set_color(con, SHELL_COLOR_INPUT);
+        con.set_color(SHELL_COLOR_ERROR);
+        con.println("Unknown command. Type 'help'" as void*);
+        con.set_color(SHELL_COLOR_INPUT);
     }
 }
 
@@ -158,7 +158,7 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
 /// シェルのメインループ（idle_loopから呼ばれる）
 export void shell_process_input() {
     SerialPort serial(0x3F8);
-    FBConsole* con = fb_get_global_console();
+    FBConsole con();
 
     ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
     ulong pos = *pos_ptr;
@@ -172,15 +172,15 @@ export void shell_process_input() {
     ulong enter = 0x0A;
     if (ch == enter) {
         serial.println("" as void*);
-        fb_newline(con);
+        con.newline();
         shell_exec(SHELL_BUF_ADDR, pos);
         ulong zero = 0;
         *pos_ptr = zero;
         // プロンプト再表示
         serial.puts("CosmOS > " as void*);
-        fb_set_color(con, SHELL_COLOR_PROMPT);
-        fb_puts(con, "CosmOS > " as void*);
-        fb_set_color(con, SHELL_COLOR_INPUT);
+        con.set_color(SHELL_COLOR_PROMPT);
+        con.puts("CosmOS > " as void*);
+        con.set_color(SHELL_COLOR_INPUT);
         return;
     }
 
@@ -193,7 +193,7 @@ export void shell_process_input() {
             serial.putc(0x08);
             serial.putc(0x20);
             serial.putc(0x08);
-            fb_backspace(con);
+            con.backspace();
         }
         return;
     }
@@ -205,8 +205,8 @@ export void shell_process_input() {
         pos = pos + 1;
         *pos_ptr = pos;
         serial.putc(ch);
-        fb_set_color(con, SHELL_COLOR_INPUT);
-        fb_putc(con, ch);
+        con.set_color(SHELL_COLOR_INPUT);
+        con.putc(ch);
     }
 }
 
@@ -218,7 +218,7 @@ export void shell_process_input() {
 export void shell_init() {
     SerialPort serial(0x3F8);
     DebugPort debug(0xE9);
-    FBConsole* con = fb_get_global_console();
+    FBConsole con();
 
     // バッファをクリア
     ulong zero = 0;
@@ -243,14 +243,14 @@ export void shell_init() {
     serial.puts("CosmOS> " as void*);
 
     // FBConsole バナー + プロンプト
-    fb_set_color(con, 0x00FFFFFF);
-    fb_println(con, "================================" as void*);
-    fb_println(con, "  CosmOS v0.6.0 Kernel Shell" as void*);
-    fb_println(con, "  Type 'help' for commands" as void*);
-    fb_println(con, "================================" as void*);
-    fb_set_color(con, SHELL_COLOR_PROMPT);
-    fb_puts(con, "CosmOS > " as void*);
-    fb_set_color(con, SHELL_COLOR_INPUT);
+    con.set_color(0x00FFFFFF);
+    con.println("================================" as void*);
+    con.println("  CosmOS v0.6.0 Kernel Shell" as void*);
+    con.println("  Type 'help' for commands" as void*);
+    con.println("================================" as void*);
+    con.set_color(SHELL_COLOR_PROMPT);
+    con.puts("CosmOS > " as void*);
+    con.set_color(SHELL_COLOR_INPUT);
 
     debug.println("[SHELL] shell initialized" as void*);
 }

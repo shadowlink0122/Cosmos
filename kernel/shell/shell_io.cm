@@ -2,7 +2,7 @@
 // kernel::shell::shell_io - シェル出力ヘルパー
 //
 // serial + FBConsole への重複出力を統合するユーティリティ。
-// 各シェルコマンドは serial.puts() + fb_puts() の2行を
+// 各シェルコマンドは serial.puts() + con.puts() の2行を
 // shell_puts() の1行に置換できる。
 //
 // 使用例:
@@ -22,37 +22,37 @@ import ../config;
 /// serial + FBConsole にメッセージを同時出力（改行付き）
 export void shell_println(void* msg) {
     SerialPort serial(0x3F8);
-    FBConsole* con = fb_get_global_console();
+    FBConsole con();
     serial.println(msg);
-    fb_println(con, msg);
+    con.println(msg);
 }
 
 /// serial + FBConsole にメッセージを同時出力（改行なし）
 export void shell_puts(void* msg) {
     SerialPort serial(0x3F8);
-    FBConsole* con = fb_get_global_console();
+    FBConsole con();
     serial.puts(msg);
-    fb_puts(con, msg);
+    con.puts(msg);
 }
 
 /// serial + FBConsole に16進数値を同時出力
 export void shell_print_hex(ulong value) {
     SerialPort serial(0x3F8);
-    FBConsole* con = fb_get_global_console();
+    FBConsole con();
     serial.print_hex(value);
-    fb_print_hex(con, value);
+    con.print_hex(value);
 }
 
 /// serial + FBConsole に改行を出力
 export void shell_newline() {
     SerialPort serial(0x3F8);
-    FBConsole* con = fb_get_global_console();
+    FBConsole con();
     serial.println("" as void*);
-    fb_newline(con);
+    con.newline();
 }
 
 /// FBConsole の色を設定
 export void shell_set_color(ulong color) {
-    FBConsole* con = fb_get_global_console();
-    fb_set_color(con, color);
+    FBConsole con();
+    con.set_color(color);
 }
