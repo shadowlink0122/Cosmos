@@ -20,6 +20,7 @@
 #   make clean-all    - 全ビルド成果物を削除
 
 CM ?= cm
+CLANG ?= /opt/homebrew/opt/llvm@17/bin/clang
 LLD ?= lld-link
 QEMU ?= qemu-system-x86_64
 
@@ -37,6 +38,8 @@ OVMF_URL ?= https://retrage.github.io/edk2-nightly/bin/RELEASEX64_OVMF.fd
 KERNEL_DIR = kernel
 KERNEL_SRC = $(KERNEL_DIR)/efi_main.cm
 KERNEL_OBJ = .tmp/build/kernel.o
+CHKSTK_SRC = $(KERNEL_DIR)/lib/chkstk.c
+CHKSTK_OBJ = .tmp/build/chkstk.o
 EFI = .tmp/build/BOOTX64.EFI
 ESP_DIR = .tmp/esp
 ESP_BOOT = $(ESP_DIR)/EFI/BOOT
@@ -93,15 +96,20 @@ help:
 KERNEL_SOURCES := $(shell find $(KERNEL_DIR) -name '*.cm' 2>/dev/null)
 
 # Cmソースをコンパイル（uefiターゲット）
-compile: $(KERNEL_OBJ)
+compile: $(KERNEL_OBJ) $(CHKSTK_OBJ)
 $(KERNEL_OBJ): $(KERNEL_SOURCES)
 	@mkdir -p .tmp/build
 	$(CM) compile --target=uefi -o $(KERNEL_OBJ) $(KERNEL_SRC)
 
+# スタックプローブスタブ（___chkstk_ms）
+$(CHKSTK_OBJ): $(CHKSTK_SRC)
+	@mkdir -p .tmp/build
+	$(CLANG) -target x86_64-unknown-windows-msvc -c -o $(CHKSTK_OBJ) $(CHKSTK_SRC)
+
 # PE/COFF EFIアプリケーションにリンク
 link: $(EFI)
-$(EFI): $(KERNEL_OBJ)
-	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(EFI) $(KERNEL_OBJ)
+$(EFI): $(KERNEL_OBJ) $(CHKSTK_OBJ)
+	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(EFI) $(KERNEL_OBJ) $(CHKSTK_OBJ)
 
 # ESP (EFI System Partition) ディレクトリ構造を作成
 setup-esp: $(EFI)
@@ -184,7 +192,8 @@ test: download-ovmf
 	@echo "=== メインカーネルテスト ==="
 	@mkdir -p .tmp/build
 	$(CM) compile --target=uefi -o $(TEST_KERNEL_OBJ) $(TEST_KERNEL_SRC)
-	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(TEST_KERNEL_EFI) $(TEST_KERNEL_OBJ)
+	$(CLANG) -target x86_64-unknown-windows-msvc -c -o $(CHKSTK_OBJ) $(CHKSTK_SRC)
+	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(TEST_KERNEL_EFI) $(TEST_KERNEL_OBJ) $(CHKSTK_OBJ)
 	@mkdir -p $(ESP_BOOT)
 	@cp $(TEST_KERNEL_EFI) $(ESP_BOOT)/BOOTX64.EFI
 	@rm -f $(DEBUG_LOG)
