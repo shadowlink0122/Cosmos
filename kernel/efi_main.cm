@@ -37,6 +37,7 @@ import ./sched/task;
 import ./sched/scheduler;
 import ./shell/shell;
 import ./fs/cosmfs;
+import ./fs/initramfs;
 import ./tasks/demo;
 import ./libs/boot_services;
 
@@ -185,6 +186,10 @@ void kernel_main(BootInfo* info) {
     ulong heap_addr_val = heap_ref as ulong;
     ulong* global_heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
     *global_heap_ptr = heap_addr_val;
+
+    // initramfs: サンプルファイルをCosmFSにロード
+    initramfs_load(&heap);
+    debug.println("[BOOT] initramfs loaded" as void*);
 
     // シェル初期化（デモタスク完了後にプロンプト表示）
     shell_init();
