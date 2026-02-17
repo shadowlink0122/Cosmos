@@ -24,4 +24,6 @@ export void cmd_help() {
     shell_println("  cp <src> <dst> - Copy file" as void*);
     shell_println("  mv <src> <dst> - Move/rename file" as void*);
     shell_println("  aria <file>    - Text editor" as void*);
+    shell_println("  cm <file>      - Compile .cm file" as void*);
+    shell_println("  a.out          - Run compiled program" as void*);
 }

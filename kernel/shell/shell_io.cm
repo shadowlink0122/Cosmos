@@ -91,3 +91,45 @@ export ulong shell_get_cols() {
     FBConsole con();
     return con.max_cols();
 }
+
+/// serial + FBConsole に10進数値を出力
+/// 一時バッファとして0xCF0-0xCFF（16バイト）を使用
+export void shell_print_num(ulong value) {
+    if (value == 0) {
+        shell_putc(0x30);  // '0'
+        return;
+    }
+    // 0xCF0を一時バッファとして使用（最大20桁だが10桁で十分）
+    ulong tmp_buf = 0xCF0;
+    ulong cnt = 0;
+    ulong n = value;
+
+    // 桁を逆順でバッファに格納
+    while (n > 0) {
+        ulong rem = n - ((n / 10) * 10);  // n % 10
+        ulong addr = tmp_buf + cnt;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:rem}, %rax;
+            addb $$0x30, %al;
+            movb %al, (%rdi)
+        `);
+        n = n / 10;
+        cnt = cnt + 1;
+    }
+
+    // 逆順で出力
+    ulong i = cnt;
+    while (i > 0) {
+        i = i - 1;
+        ulong raddr = tmp_buf + i;
+        ulong ch = 0;
+        __asm__(`
+            movq ${r:raddr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        shell_putc(ch);
+    }
+}

@@ -19,6 +19,7 @@ import ./cmd_uptime;
 import ./cmd_fs;
 import ../mm/heap;
 import ../apps/aria/aria;
+import ./cmd_cm;
 
 // ============================================================
 // 定数
@@ -250,6 +251,25 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
         ulong heap_addr6 = *heap_ptr6;
         Heap* heap6 = heap_addr6 as Heap*;
         cmd_mv(buf_addr, buf_len, heap6);
+        matched = 1;
+    }
+
+    // --- cm コンパイラ ---
+    ulong is_cm = shell_starts_with(buf_addr, buf_len, "cm " as void*, 3);
+    if (is_cm != 0) {
+        ulong* heap_ptr7 = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr7 = *heap_ptr7;
+        Heap* heap7 = heap_addr7 as Heap*;
+        cmd_cm(buf_addr, buf_len, heap7);
+        matched = 1;
+    }
+
+    // --- a.out 実行 ---
+    if (shell_streq(buf_addr, buf_len, "a.out" as void*) != 0) {
+        ulong* heap_ptr8 = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr8 = *heap_ptr8;
+        Heap* heap8 = heap_addr8 as Heap*;
+        cmd_run_aout(heap8);
         matched = 1;
     }
 
