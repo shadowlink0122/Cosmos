@@ -23,6 +23,7 @@
 //     op=9:  STRLEN    arg1=addr → return len
 //     op=10: MEMCPY    arg1=dst, arg2=src, arg3=len
 //     op=11: APPEND    arg1=name_addr, arg2=data, arg3=len（追記）
+//     op=12: READ      arg1=name_addr, arg2=dst_buf, arg3=max_len → return bytes_read
 
 import ../config;
 
@@ -46,6 +47,7 @@ const ulong FS_OP_ENTRY_RD  = 8;
 const ulong FS_OP_STRLEN    = 9;
 const ulong FS_OP_MEMCPY    = 10;
 const ulong FS_OP_APPEND    = 11;
+const ulong FS_OP_READ      = 12;
 
 // ============================================================
 // 初期化
@@ -351,6 +353,30 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
         ulong new_size = cur_size + alen;
         *cur_size_ptr = new_size;
         return alen;
+    }
+
+    // op=12: READ (name=arg1, dst_buf=arg2, max_len=arg3)
+    // ファイル内容を呼び出し元バッファにコピー
+    if (op == FS_OP_READ) {
+        ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
+        if (idx == 0xFFFFFFFFFFFFFFFF) {
+            return 0;
+        }
+        ulong sz_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 16;
+        ulong* sz_ptr = sz_addr as ulong*;
+        ulong fsize = *sz_ptr;
+        ulong rlen = fsize;
+        if (rlen > arg3) {
+            rlen = arg3;
+        }
+        if (rlen == 0) {
+            return 0;
+        }
+        ulong da_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 8;
+        ulong* da_ptr = da_addr as ulong*;
+        ulong data_src = *da_ptr;
+        cosmfs_op(FS_OP_MEMCPY, arg2, data_src, rlen, 0);
+        return rlen;
     }
 
     return 0;
