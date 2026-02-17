@@ -16,6 +16,8 @@
 //   0xC48: read_idx（読取り位置）
 //   0xC50: count（バッファ内の要素数）
 //   0xC58: last_scancode（最後に受信したスキャンコード）
+//   0xC60: shift_state（Shiftキーの状態: 0=未押下, 1=押下中）
+//   0xC68: extended_flag（0xE0プレフィックス受信フラグ）
 
 import ./serial;
 import ./debug_port;
@@ -34,6 +36,14 @@ const ulong KB_WRITE_IDX     = 0xC40;  // 書込みインデックス
 const ulong KB_READ_IDX      = 0xC48;  // 読取りインデックス
 const ulong KB_COUNT         = 0xC50;  // バッファ内要素数
 const ulong KB_LAST_SCANCODE = 0xC58;  // 最後のスキャンコード
+const ulong KB_SHIFT_STATE   = 0xC60;  // Shiftキー状態
+const ulong KB_EXTENDED_FLAG = 0xC68;  // 0xE0拡張フラグ
+
+// 矢印キーの仮想キーコード
+const ulong VKEY_UP    = 0x80;
+const ulong VKEY_DOWN  = 0x81;
+const ulong VKEY_LEFT  = 0x82;
+const ulong VKEY_RIGHT = 0x83;
 
 // PS/2 I/Oポート
 const ulong KB_DATA_PORT   = 0x60;  // キーボードデータポート
@@ -113,6 +123,75 @@ export ulong scancode_to_ascii(ulong scancode) {
     return 0;  // 未定義
 }
 
+/// Shift押下時のスキャンコード→ASCII変換
+export ulong scancode_to_ascii_shifted(ulong scancode) {
+    // 数字行（Shift付き）
+    if (scancode == 0x02) { return 0x21; }  // !
+    if (scancode == 0x03) { return 0x40; }  // @
+    if (scancode == 0x04) { return 0x23; }  // #
+    if (scancode == 0x05) { return 0x24; }  // $
+    if (scancode == 0x06) { return 0x25; }  // %
+    if (scancode == 0x07) { return 0x5E; }  // ^
+    if (scancode == 0x08) { return 0x26; }  // &
+    if (scancode == 0x09) { return 0x2A; }  // *
+    if (scancode == 0x0A) { return 0x28; }  // (
+    if (scancode == 0x0B) { return 0x29; }  // )
+    if (scancode == 0x0C) { return 0x5F; }  // _
+    if (scancode == 0x0D) { return 0x2B; }  // +
+    if (scancode == 0x0E) { return 0x08; }  // Backspace
+
+    // Tabとアルファベット上段（大文字）
+    if (scancode == 0x0F) { return 0x09; }  // Tab
+    if (scancode == 0x10) { return 0x51; }  // Q
+    if (scancode == 0x11) { return 0x57; }  // W
+    if (scancode == 0x12) { return 0x45; }  // E
+    if (scancode == 0x13) { return 0x52; }  // R
+    if (scancode == 0x14) { return 0x54; }  // T
+    if (scancode == 0x15) { return 0x59; }  // Y
+    if (scancode == 0x16) { return 0x55; }  // U
+    if (scancode == 0x17) { return 0x49; }  // I
+    if (scancode == 0x18) { return 0x4F; }  // O
+    if (scancode == 0x19) { return 0x50; }  // P
+    if (scancode == 0x1A) { return 0x7B; }  // {
+    if (scancode == 0x1B) { return 0x7D; }  // }
+    if (scancode == 0x1C) { return 0x0A; }  // Enter
+
+    // アルファベット中段（大文字）
+    if (scancode == 0x1E) { return 0x41; }  // A
+    if (scancode == 0x1F) { return 0x53; }  // S
+    if (scancode == 0x20) { return 0x44; }  // D
+    if (scancode == 0x21) { return 0x46; }  // F
+    if (scancode == 0x22) { return 0x47; }  // G
+    if (scancode == 0x23) { return 0x48; }  // H
+    if (scancode == 0x24) { return 0x4A; }  // J
+    if (scancode == 0x25) { return 0x4B; }  // K
+    if (scancode == 0x26) { return 0x4C; }  // L
+    if (scancode == 0x27) { return 0x3A; }  // :
+    if (scancode == 0x28) { return 0x22; }  // "
+    if (scancode == 0x29) { return 0x7E; }  // ~
+
+    // アルファベット下段（大文字）
+    if (scancode == 0x2B) { return 0x7C; }  // |
+    if (scancode == 0x2C) { return 0x5A; }  // Z
+    if (scancode == 0x2D) { return 0x58; }  // X
+    if (scancode == 0x2E) { return 0x43; }  // C
+    if (scancode == 0x2F) { return 0x56; }  // V
+    if (scancode == 0x30) { return 0x42; }  // B
+    if (scancode == 0x31) { return 0x4E; }  // N
+    if (scancode == 0x32) { return 0x4D; }  // M
+    if (scancode == 0x33) { return 0x3C; }  // <
+    if (scancode == 0x34) { return 0x3E; }  // >
+    if (scancode == 0x35) { return 0x3F; }  // ?
+
+    // スペースバー
+    if (scancode == 0x39) { return 0x20; }  // Space
+
+    // Escape
+    if (scancode == 0x01) { return 0x1B; }  // ESC
+
+    return 0;  // 未定義
+}
+
 // ============================================================
 // IRQ1ハンドラ（フリー関数）
 // ============================================================
@@ -137,6 +216,44 @@ export void irq1_handler() {
         movq $$0xC58, %rcx;
         movq %rax, (%rcx);
 
+        // --- Shiftキートラッキング ---
+        // Left Shift押下 (0x2A)
+        cmpb $$0x2A, %al;
+        jne .not_lshift_press;
+        movq $$0xC60, %rcx;
+        movq $$1, (%rcx);
+        jmp .irq1_skip;
+    .not_lshift_press:
+        // Right Shift押下 (0x36)
+        cmpb $$0x36, %al;
+        jne .not_rshift_press;
+        movq $$0xC60, %rcx;
+        movq $$1, (%rcx);
+        jmp .irq1_skip;
+    .not_rshift_press:
+        // Left Shiftリリース (0xAA)
+        cmpb $$0xAA, %al;
+        jne .not_lshift_release;
+        movq $$0xC60, %rcx;
+        movq $$0, (%rcx);
+        jmp .irq1_skip;
+    .not_lshift_release:
+        // Right Shiftリリース (0xB6)
+        cmpb $$0xB6, %al;
+        jne .not_rshift_release;
+        movq $$0xC60, %rcx;
+        movq $$0, (%rcx);
+        jmp .irq1_skip;
+    .not_rshift_release:
+
+        // --- 0xE0拡張プレフィックス ---
+        cmpb $$0xE0, %al;
+        jne .not_e0;
+        movq $$0xC68, %rcx;
+        movq $$1, (%rcx);
+        jmp .irq1_skip;
+    .not_e0:
+
         // ブレークコード（bit7 = 1）はスキップ
         testb $$0x80, %al;
         jnz .irq1_skip;
@@ -148,7 +265,19 @@ export void irq1_handler() {
         cmpq $$64, %rdx;
         jge .irq1_skip;
 
-        // buf[write_idx] = scancode
+        // --- 拡張スキャンコードの変換 ---
+        // extended_flagをチェック
+        movq $$0xC68, %rcx;
+        movq (%rcx), %rdx;
+        cmpq $$0, %rdx;
+        je .not_extended;
+        // 拡張フラグクリア
+        movq $$0, (%rcx);
+        // 矢印キーを仮想コードに変換（スキャンコードに0x80を加算）
+        addb $$0x80, %al;
+    .not_extended:
+
+        // buf[write_idx] = scancode (または変換済み拡張コード)
         movq $$0xC40, %rcx;
         movq (%rcx), %rdx;      // rdx = write_idx
         movq $$0xC00, %rcx;
@@ -231,11 +360,28 @@ export ulong kb_last_scancode() {
 }
 
 /// キーバッファからASCII文字を1つ取得する
+/// Shift状態を考慮して変換する
+/// 矢印キーは仮想キーコード(VKEY_UP等)を返す
 /// バッファが空の場合や変換不能キーの場合は0を返す
 export ulong kb_read_char() {
     ulong scancode = kb_read_scancode();
     if (scancode == 0) {
         return 0;
+    }
+    // 拡張スキャンコード（矢印キー等）は仮想キーコードを返す
+    // IRQ1ハンドラが0xE0プレフィックス後のコードに0x80を加算済み
+    // 0xC8 = 0x48+0x80 = Up, 0xD0 = 0x50+0x80 = Down
+    // 0xCB = 0x4B+0x80 = Left, 0xCD = 0x4D+0x80 = Right
+    if (scancode == 0xC8) { return VKEY_UP; }     // 上矢印
+    if (scancode == 0xD0) { return VKEY_DOWN; }   // 下矢印
+    if (scancode == 0xCB) { return VKEY_LEFT; }   // 左矢印
+    if (scancode == 0xCD) { return VKEY_RIGHT; }  // 右矢印
+
+    // Shift状態チェック
+    ulong* shift_ptr = KB_SHIFT_STATE as ulong*;
+    ulong shift = *shift_ptr;
+    if (shift != 0) {
+        return scancode_to_ascii_shifted(scancode);
     }
     return scancode_to_ascii(scancode);
 }
@@ -271,6 +417,12 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
         *ptr = zero;
         i = i + 1;
     }
+
+    // Shift状態と拡張フラグを初期化
+    ulong* shift_ptr = KB_SHIFT_STATE as ulong*;
+    *shift_ptr = zero;
+    ulong* ext_ptr = KB_EXTENDED_FLAG as ulong*;
+    *ext_ptr = zero;
 
     // IDTにベクタ33（IRQ1）のハンドラを登録
     IDT idt;

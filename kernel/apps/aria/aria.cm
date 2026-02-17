@@ -99,6 +99,13 @@ const ulong KEY_o = 0x6F;
 const ulong KEY_x = 0x78;
 const ulong KEY_q = 0x71;
 const ulong KEY_w = 0x77;
+const ulong KEY_EXCL = 0x21;  // '!'
+
+// 矢印キー仮想キーコード（keyboard.cmと一致）
+const ulong VKEY_UP    = 0x80;
+const ulong VKEY_DOWN  = 0x81;
+const ulong VKEY_LEFT  = 0x82;
+const ulong VKEY_RIGHT = 0x83;
 
 // ============================================================
 // 初期化
@@ -469,6 +476,23 @@ export ulong aria_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
                 aria_op(ARIA_OP_CURSOR_MOVE, 3, 0, 0, 0);  // 右
                 return 0;
             }
+            // 矢印キー対応
+            if (arg1 == VKEY_UP) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 0, 0, 0, 0);  // 上
+                return 0;
+            }
+            if (arg1 == VKEY_DOWN) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 1, 0, 0, 0);  // 下
+                return 0;
+            }
+            if (arg1 == VKEY_LEFT) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 2, 0, 0, 0);  // 左
+                return 0;
+            }
+            if (arg1 == VKEY_RIGHT) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 3, 0, 0, 0);  // 右
+                return 0;
+            }
             return 0;
         }
 
@@ -488,6 +512,23 @@ export ulong aria_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
             // Enter
             if (arg1 == KEY_ENTER) {
                 aria_op(ARIA_OP_NEWLINE, 0, 0, 0, 0);
+                return 0;
+            }
+            // 矢印キー対応（Insertモード）
+            if (arg1 == VKEY_UP) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 0, 0, 0, 0);
+                return 0;
+            }
+            if (arg1 == VKEY_DOWN) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 1, 0, 0, 0);
+                return 0;
+            }
+            if (arg1 == VKEY_LEFT) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 2, 0, 0, 0);
+                return 0;
+            }
+            if (arg1 == VKEY_RIGHT) {
+                aria_op(ARIA_OP_CURSOR_MOVE, 3, 0, 0, 0);
                 return 0;
             }
             // 通常文字
@@ -560,6 +601,53 @@ export ulong aria_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
                             ulong zero = 0;
                             *rp = zero;
                             return 0;
+                        }
+                    }
+                    // :q! → 保存せず強制終了
+                    if (c0 == KEY_q) {
+                        if (c1 == KEY_EXCL) {
+                            ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
+                            ulong zero = 0;
+                            *rp = zero;
+                            return 0;
+                        }
+                    }
+                }
+                // 3文字コマンド
+                if (clen == 3) {
+                    ulong c0 = 0;
+                    __asm__(`
+                        movq ${r:ADDR_ARIA_CMDLINE}, %rdi;
+                        xorq %rax, %rax;
+                        movb (%rdi), %al;
+                        movq %rax, ${=r:c0}
+                    `);
+                    ulong c1_addr = ADDR_ARIA_CMDLINE + 1;
+                    ulong c1 = 0;
+                    __asm__(`
+                        movq ${r:c1_addr}, %rdi;
+                        xorq %rax, %rax;
+                        movb (%rdi), %al;
+                        movq %rax, ${=r:c1}
+                    `);
+                    ulong c2_addr = ADDR_ARIA_CMDLINE + 2;
+                    ulong c2 = 0;
+                    __asm__(`
+                        movq ${r:c2_addr}, %rdi;
+                        xorq %rax, %rax;
+                        movb (%rdi), %al;
+                        movq %rax, ${=r:c2}
+                    `);
+                    // :wq! → 保存して強制終了
+                    if (c0 == KEY_w) {
+                        if (c1 == KEY_q) {
+                            if (c2 == KEY_EXCL) {
+                                aria_op(ARIA_OP_SAVE, 0, 0, 0, 0);
+                                ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
+                                ulong zero = 0;
+                                *rp = zero;
+                                return 0;
+                            }
                         }
                     }
                 }

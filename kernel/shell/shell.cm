@@ -351,15 +351,19 @@ export void shell_process_input() {
         return;
     }
 
-    // 通常文字
-    ulong max_pos = SHELL_BUF_SIZE - 1;
-    if (pos < max_pos) {
-        shell_buf_write(pos, ch);
-        pos = pos + 1;
-        *pos_ptr = pos;
-        serial.putc(ch);
-        con.set_color(SHELL_COLOR_INPUT);
-        con.putc(ch);
+    // 通常文字（0x20-0x7E のみ）— 矢印キー等は無視
+    if (ch >= 0x20) {
+        if (ch < 0x7F) {
+            ulong max_pos = SHELL_BUF_SIZE - 1;
+            if (pos < max_pos) {
+                shell_buf_write(pos, ch);
+                pos = pos + 1;
+                *pos_ptr = pos;
+                serial.putc(ch);
+                con.set_color(SHELL_COLOR_INPUT);
+                con.putc(ch);
+            }
+        }
     }
 }
 
