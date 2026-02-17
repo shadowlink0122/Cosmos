@@ -216,6 +216,15 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
         matched = 1;
     }
 
+    ulong is_append = shell_starts_with(buf_addr, buf_len, "append " as void*, 7);
+    if (is_append != 0) {
+        ulong* heap_ptr3 = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr3 = *heap_ptr3;
+        Heap* heap3 = heap_addr3 as Heap*;
+        cmd_append(buf_addr, buf_len, heap3);
+        matched = 1;
+    }
+
     if (matched == 0) {
         serial.puts("Unknown command. Type 'help'" as void*);
         serial.println("" as void*);

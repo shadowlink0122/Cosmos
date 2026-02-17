@@ -19,4 +19,5 @@ export void cmd_help() {
     shell_println("  cat <name>     - Show file" as void*);
     shell_println("  rm <name>      - Delete file" as void*);
     shell_println("  write <n> <d>  - Write to file" as void*);
+    shell_println("  append <n> <d> - Append to file" as void*);
 }

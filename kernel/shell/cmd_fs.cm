@@ -9,7 +9,8 @@
 //   touch <name>    — 空ファイル作成
 //   cat <name>      — ファイル内容表示
 //   rm <name>       — ファイル削除
-//   write <name> <data> — ファイルに文字列書き込み
+//   write <name> <data> — ファイルに文字列書き込み（上書き）
+//   append <name> <data> — ファイル末尾に追記
 
 import ./shell_io;
 import ../config;
@@ -30,6 +31,7 @@ const ulong FS_OP_COUNT     = 7;
 const ulong FS_OP_ENTRY_RD  = 8;
 const ulong FS_OP_STRLEN    = 9;
 const ulong FS_OP_MEMCPY    = 10;
+const ulong FS_OP_APPEND    = 11;
 
 // ============================================================
 // 引数解析ヘルパー
@@ -145,15 +147,15 @@ export void cmd_touch(ulong buf_addr, ulong buf_len, Heap* heap) {
     cosmfs_op(FS_OP_MEMCPY, name_buf, name_src, arg_len, 0);
     cmd_write_byte(name_buf + arg_len, 0);  // NUL終端
 
-    // データバッファ確保（256バイト）
-    ulong data_buf = heap->alloc(256);
+    // データバッファ確保（4096バイト = 4KB）
+    ulong data_buf = heap->alloc(4096);
     if (data_buf == 0) {
         shell_set_color(SHELL_COLOR_ERROR);
         shell_println("Out of memory" as void*);
         return;
     }
 
-    ulong result = cosmfs_op(FS_OP_CREATE, name_buf, data_buf, 256, 0);
+    ulong result = cosmfs_op(FS_OP_CREATE, name_buf, data_buf, 4096, 0);
     if (result == 0) {
         shell_set_color(SHELL_COLOR_OUTPUT);
         shell_puts("Created: " as void*);
@@ -284,9 +286,9 @@ export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
         if (nb != 0) {
             cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
             cmd_write_byte(nb + name_len, 0);
-            ulong db = heap->alloc(256);
+            ulong db = heap->alloc(4096);
             if (db != 0) {
-                cosmfs_op(FS_OP_CREATE, nb, db, 256, 0);
+                cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
             }
         }
     }
@@ -305,5 +307,68 @@ export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
     } else {
         shell_set_color(SHELL_COLOR_ERROR);
         shell_println("Write failed" as void*);
+    }
+}
+
+// ============================================================
+// append コマンド
+// ============================================================
+
+export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
+    ulong arg_start = cmd_find_arg(buf_addr, buf_len);
+    if (arg_start >= buf_len) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Usage: append <filename> <data>" as void*);
+        return;
+    }
+
+    ulong name_len = cmd_arg_len(buf_addr, arg_start, buf_len);
+    ulong name_addr = buf_addr + arg_start;
+    ulong data_start = arg_start + name_len;
+
+    if (data_start < buf_len) {
+        ulong ch = cmd_read_byte(buf_addr + data_start);
+        if (ch == 0x20) {
+            data_start = data_start + 1;
+        }
+    }
+
+    if (data_start >= buf_len) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Usage: append <filename> <data>" as void*);
+        return;
+    }
+
+    cmd_write_byte(name_addr + name_len, 0);  // NUL終端
+
+    // ファイルが存在しなければ作成
+    ulong fsize = cosmfs_op(FS_OP_SIZE, name_addr, 0, 0, 0);
+    if (fsize == 0xFFFFFFFFFFFFFFFF) {
+        ulong ns = name_len + 1;
+        ulong nb = heap->alloc(ns);
+        if (nb != 0) {
+            cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
+            cmd_write_byte(nb + name_len, 0);
+            ulong db = heap->alloc(4096);
+            if (db != 0) {
+                cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+            }
+        }
+    }
+
+    ulong data_addr = buf_addr + data_start;
+    ulong data_len = buf_len - data_start;
+    ulong appended = cosmfs_op(FS_OP_APPEND, name_addr, data_addr, data_len, 0);
+
+    if (appended > 0) {
+        shell_set_color(SHELL_COLOR_OUTPUT);
+        shell_puts("Appended " as void*);
+        shell_print_hex(appended);
+        shell_puts(" bytes to " as void*);
+        shell_puts(name_addr as void*);
+        shell_newline();
+    } else {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Append failed (file full or not found)" as void*);
     }
 }

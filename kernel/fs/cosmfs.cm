@@ -2,26 +2,27 @@
 // kernel::fs::cosmfs - CosmFS インメモリファイルシステム
 //
 // RAM上にファイルを格納するシンプルなファイルシステム。
-// 固定アドレスファイルテーブル（32エントリ×32B）を使用。
+// 固定アドレスファイルテーブル（64エントリ×32B）を使用。
+// ファイルデータは4KBバッファ（PMMページサイズと一致）。
 //
-// コンパイラ制約:
-//   - 全関数にexportが必要（UEFIターゲット）
-//   - export関数数を最小限に抑える（コンパイラハング回避）
+// コンパイラ制約（Bug #14/#15）:
+//   - export関数数を最小限に抑える（2関数のみ）
 //   - while(true)は使わず上限付きループを使用
 //
 // API:
 //   cosmfs_init()                          - 初期化
 //   cosmfs_op(op, arg1, arg2, arg3, arg4)  - 統合操作関数
-//     op=1: CREATE  arg1=name_buf, arg2=data_buf, arg3=capacity
-//     op=2: WRITE   arg1=name_addr, arg2=data, arg3=len
-//     op=3: SIZE    arg1=name_addr → return file_size
-//     op=4: DELETE  arg1=name_addr
-//     op=5: FIND    arg1=name_addr → return index
-//     op=6: GET_DATA arg1=name_addr → return data_addr
-//     op=7: COUNT   → return file_count
-//     op=8: ENTRY_READ  arg1=index, arg2=field_offset → return value
-//     op=9: STRLEN  arg1=addr → return len
-//     op=10: MEMCPY arg1=dst, arg2=src, arg3=len
+//     op=1:  CREATE    arg1=name_buf, arg2=data_buf, arg3=capacity
+//     op=2:  WRITE     arg1=name_addr, arg2=data, arg3=len（上書き）
+//     op=3:  SIZE      arg1=name_addr → return file_size
+//     op=4:  DELETE    arg1=name_addr
+//     op=5:  FIND      arg1=name_addr → return index
+//     op=6:  GET_DATA  arg1=name_addr → return data_addr
+//     op=7:  COUNT     → return file_count
+//     op=8:  ENTRY_READ  arg1=index, arg2=field_offset → return value
+//     op=9:  STRLEN    arg1=addr → return len
+//     op=10: MEMCPY    arg1=dst, arg2=src, arg3=len
+//     op=11: APPEND    arg1=name_addr, arg2=data, arg3=len（追記）
 
 import ../config;
 
@@ -30,8 +31,8 @@ import ../config;
 // ============================================================
 
 const ulong FS_ENTRY_SIZE  = 32;
-const ulong FS_MAX_FILES   = 32;
-const ulong FS_INIT_CAP    = 256;
+const ulong FS_MAX_FILES   = 64;
+const ulong FS_INIT_CAP    = 4096;
 
 // 操作コード
 const ulong FS_OP_CREATE    = 1;
@@ -44,6 +45,7 @@ const ulong FS_OP_COUNT     = 7;
 const ulong FS_OP_ENTRY_RD  = 8;
 const ulong FS_OP_STRLEN    = 9;
 const ulong FS_OP_MEMCPY    = 10;
+const ulong FS_OP_APPEND    = 11;
 
 // ============================================================
 // 初期化
@@ -316,6 +318,39 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
         ulong da_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 8;
         ulong* da_ptr = da_addr as ulong*;
         return *da_ptr;
+    }
+
+    // op=11: APPEND (name=arg1, data=arg2, len=arg3)
+    if (op == FS_OP_APPEND) {
+        ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
+        if (idx == 0xFFFFFFFFFFFFFFFF) {
+            return 0;
+        }
+        ulong cur_size_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 16;
+        ulong* cur_size_ptr = cur_size_addr as ulong*;
+        ulong cur_size = *cur_size_ptr;
+        ulong cap_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 24;
+        ulong* cap_ptr = cap_addr as ulong*;
+        ulong cap = *cap_ptr;
+        // 追記可能サイズを計算
+        ulong remaining = cap - cur_size;
+        ulong alen = arg3;
+        if (alen > remaining) {
+            alen = remaining;
+        }
+        if (alen == 0) {
+            return 0;
+        }
+        // データの末尾にコピー
+        ulong da_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 8;
+        ulong* da_ptr = da_addr as ulong*;
+        ulong data_base = *da_ptr;
+        ulong append_dst = data_base + cur_size;
+        cosmfs_op(FS_OP_MEMCPY, append_dst, arg2, alen, 0);
+        // サイズ更新
+        ulong new_size = cur_size + alen;
+        *cur_size_ptr = new_size;
+        return alen;
     }
 
     return 0;
