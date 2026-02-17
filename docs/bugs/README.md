@@ -3,7 +3,7 @@
 > CosmOS開発中に発見されたCmコンパイラのバグ・制約をまとめたドキュメント。
 >
 > 対象: Cm v0.14.1、`--target=uefi` (x86_64)、macOS環境
-> 最終更新: 2026-02-17
+> 最終更新: 2026-02-18
 
 ## サマリー
 
@@ -11,7 +11,7 @@
 |---------|------|------|
 | [open/](./open/) | 5件 | 未修正バグ（回避策あり） |
 | [resolved/](./resolved/) | 6件 | コンパイラ更新で修正済 |
-| [workaround/](./workaround/) | 2件 | コンパイラ未修正だがCosmOS側で回避済 |
+| [workaround/](./workaround/) | 5件 | コンパイラ未修正だがCosmOS側で回避済 |
 
 ---
 
@@ -31,6 +31,9 @@
 |---|------|--------|---------|------|
 | 10 | ポインタ経由implでself変更消失 | 重大 | ポインタ内包型impl設計 | [bug10](./workaround/bug10_impl_self.md) |
 | 13 | インライン展開時のレジスタ上書き | 致命的 | efi_main引数退避 | [bug13](./workaround/bug13_register_clobber.md) |
+| 14 | export関数数超過でコンパイラハング | 重大 | ディスパッチパターン | [bug14](./workaround/bug14_export_limit.md) |
+| 15 | 非export関数がexport関数から呼出し不可 | 中 | 全関数export化 | [bug15](./workaround/bug15_private_func.md) |
+| 16 | `&local as ulong` キャスト型エラー | 低 | 型付きポインタ経由 | [bug16](./workaround/bug16_addr_cast.md) |
 
 ## 修正済バグ（resolved）
 
