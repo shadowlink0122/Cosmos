@@ -64,3 +64,30 @@ export void shell_set_color(ulong color) {
     FBConsole con();
     con.set_color(color);
 }
+
+/// FBConsole の画面をクリアしカーソルをリセット
+export void shell_clear() {
+    FBConsole con();
+    con.clear();
+}
+
+/// FBConsole のカーソル位置を設定（文字単位）
+export void shell_set_cursor(ulong x, ulong y) {
+    FBConsole con();
+    ulong* px = (con.addr + 0x20) as ulong*;  // FB_OFF_CURSOR_X
+    *px = x;
+    ulong* py = (con.addr + 0x28) as ulong*;  // FB_OFF_CURSOR_Y
+    *py = y;
+}
+
+/// FBConsole の最大行数を返す
+export ulong shell_get_rows() {
+    FBConsole con();
+    return con.max_rows();
+}
+
+/// FBConsole の最大列数を返す
+export ulong shell_get_cols() {
+    FBConsole con();
+    return con.max_cols();
+}

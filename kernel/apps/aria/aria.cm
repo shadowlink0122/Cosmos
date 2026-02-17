@@ -225,72 +225,164 @@ export ulong aria_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
         return 0;
     }
 
-    // op=3: RENDER — 画面描画
+    // op=3: RENDER — 画面描画（インプレース更新）
     if (op == ARIA_OP_RENDER) {
-        // ヘッダー
+        // 画面サイズ取得
+        ulong screen_rows = shell_get_rows();
+        ulong screen_cols = shell_get_cols();
+        // テキスト表示行数 = 画面行数 - 2（ヘッダー1行 + ステータス1行）
+        ulong text_rows = screen_rows - 2;
+        if (text_rows > screen_rows) {
+            text_rows = 1;  // アンダーフロー防止
+        }
+
+        // カーソル位置読み込み
+        ulong* cy_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+        ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+        ulong cur_y = *cy_ptr;
+        ulong cur_x = *cx_ptr;
+
+        // スクロールオフセット自動調整
+        ulong* st_ptr = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
+        ulong scroll_top = *st_ptr;
+        // カーソルが画面上方に出た場合
+        if (cur_y < scroll_top) {
+            scroll_top = cur_y;
+            *st_ptr = scroll_top;
+        }
+        // カーソルが画面下方に出た場合
+        ulong scroll_bottom = scroll_top + text_rows;
+        if (cur_y >= scroll_bottom) {
+            scroll_top = cur_y - text_rows + 1;
+            *st_ptr = scroll_top;
+        }
+
+        // 画面クリア + カーソルリセット
+        shell_clear();
+
+        // === ヘッダー行 ===
         shell_set_color(SHELL_COLOR_HEADER);
-        shell_puts("--- Aria: " as void*);
+        shell_puts(" Aria: " as void*);
         shell_puts(ADDR_ARIA_FILENAME as void*);
-        shell_puts(" ---" as void*);
+        // 変更フラグ表示
+        ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+        ulong modified = *mod_ptr;
+        if (modified != 0) {
+            shell_puts(" [+]" as void*);
+        }
         shell_newline();
 
-        // テキスト内容を表示
+        // === テキスト領域 ===
         ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
         ulong buf_size = *bs;
 
-        if (buf_size == 0) {
-            shell_set_color(SHELL_COLOR_OUTPUT);
-            shell_println("(empty file)" as void*);
-        }
+        // テキスト行を描画
+        ulong screen_line = 0;
+        while (screen_line < text_rows) {
+            ulong file_line = scroll_top + screen_line;
+            ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+            ulong num_lines = *nlp;
 
-        if (buf_size > 0) {
-            shell_set_color(SHELL_COLOR_OUTPUT);
-            ulong ri = 0;
-            ulong line_num = 1;
-
-            // 行番号表示
-            shell_set_color(SHELL_COLOR_HEADER);
-            shell_print_hex(line_num);
-            shell_puts(" " as void*);
-            shell_set_color(SHELL_COLOR_OUTPUT);
-
-            while (ri < buf_size) {
-                ulong ch = 0;
-                ulong ra = ADDR_ARIA_BUFFER + ri;
-                __asm__(`
-                    movq ${r:ra}, %rdi;
-                    xorq %rax, %rax;
-                    movb (%rdi), %al;
-                    movq %rax, ${=r:ch}
-                `);
-                if (ch == 0x0A) {
-                    shell_newline();
-                    line_num = line_num + 1;
-                    shell_set_color(SHELL_COLOR_HEADER);
-                    shell_print_hex(line_num);
-                    shell_puts(" " as void*);
-                    shell_set_color(SHELL_COLOR_OUTPUT);
-                } else {
-                    shell_putc(ch);
+            if (file_line < num_lines) {
+                // この行の先頭バッファ位置を計算
+                ulong line_start = 0;
+                ulong cur_line = 0;
+                ulong fi = 0;
+                while (cur_line < file_line) {
+                    if (fi >= buf_size) {
+                        cur_line = file_line;  // break
+                    } else {
+                        ulong ch = 0;
+                        ulong fa = ADDR_ARIA_BUFFER + fi;
+                        __asm__(`
+                            movq ${r:fa}, %rdi;
+                            xorq %rax, %rax;
+                            movb (%rdi), %al;
+                            movq %rax, ${=r:ch}
+                        `);
+                        fi = fi + 1;
+                        if (ch == 0x0A) {
+                            cur_line = cur_line + 1;
+                            line_start = fi;
+                        }
+                    }
                 }
-                ri = ri + 1;
+
+                // 行番号（3桁）
+                shell_set_color(SHELL_COLOR_HEADER);
+                ulong display_num = file_line + 1;
+                shell_print_hex(display_num);
+                shell_puts(" " as void*);
+
+                // 行内容を描画
+                shell_set_color(SHELL_COLOR_OUTPUT);
+                ulong col = 0;
+                ulong bi = line_start;
+                ulong line_done = 0;
+                while (line_done == 0) {
+                    if (bi >= buf_size) {
+                        line_done = 1;
+                    } else {
+                        ulong ch = 0;
+                        ulong ba = ADDR_ARIA_BUFFER + bi;
+                        __asm__(`
+                            movq ${r:ba}, %rdi;
+                            xorq %rax, %rax;
+                            movb (%rdi), %al;
+                            movq %rax, ${=r:ch}
+                        `);
+                        if (ch == 0x0A) {
+                            line_done = 1;
+                        } else {
+                            // カーソル位置ハイライト
+                            if (file_line == cur_y) {
+                                if (col == cur_x) {
+                                    shell_set_color(0x00000000);  // 黒文字
+                                    // 背景色で反転表示（疑似的にハイライト）
+                                    shell_putc(ch);
+                                    shell_set_color(SHELL_COLOR_OUTPUT);
+                                } else {
+                                    shell_putc(ch);
+                                }
+                            } else {
+                                shell_putc(ch);
+                            }
+                            col = col + 1;
+                            bi = bi + 1;
+                        }
+                    }
+                }
+
+                // カーソルが行末にある場合のハイライト（空白表示）
+                if (file_line == cur_y) {
+                    if (cur_x >= col) {
+                        shell_set_color(0x00FFFF00);  // 黄色
+                        shell_puts("_" as void*);
+                        shell_set_color(SHELL_COLOR_OUTPUT);
+                    }
+                }
+            } else {
+                // ファイル末尾以降の空行
+                shell_set_color(SHELL_COLOR_HEADER);
+                shell_puts("~" as void*);
             }
+
             shell_newline();
+            screen_line = screen_line + 1;
         }
 
-        // ステータスバー
+        // === ステータスバー（最下行） ===
         shell_set_color(SHELL_COLOR_PROMPT);
         ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
         ulong mode = *mp;
         if (mode == MODE_NORMAL) {
-            shell_puts("-- NORMAL -- " as void*);
+            shell_puts(" NORMAL " as void*);
         }
         if (mode == MODE_INSERT) {
-            shell_puts("-- INSERT -- " as void*);
+            shell_puts(" INSERT " as void*);
         }
         if (mode == MODE_COMMAND) {
-            shell_puts(":" as void*);
-            // コマンドライン表示
+            shell_puts(" :" as void*);
             ulong* clp = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
             ulong clen = *clp;
             ulong ci = 0;
@@ -306,8 +398,16 @@ export ulong aria_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
                 shell_putc(cc);
                 ci = ci + 1;
             }
+            shell_puts(" " as void*);
         }
-        shell_newline();
+        // カーソル位置表示
+        shell_set_color(SHELL_COLOR_OUTPUT);
+        shell_puts(" L" as void*);
+        ulong disp_y = cur_y + 1;
+        shell_print_hex(disp_y);
+        shell_puts(",C" as void*);
+        ulong disp_x = cur_x + 1;
+        shell_print_hex(disp_x);
 
         return 0;
     }
