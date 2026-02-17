@@ -202,7 +202,14 @@ export void cmd_cat(ulong buf_addr, ulong buf_len) {
     }
 
     ulong data_addr = cosmfs_op(FS_OP_GET_DATA, name_addr, 0, 0, 0);
+    if (data_addr == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: failed to read file data" as void*);
+        return;
+    }
     if (data_addr == 0) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: file data is null" as void*);
         return;
     }
 
@@ -283,13 +290,24 @@ export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
         // 新規作成: ファイル名コピー
         ulong ns = name_len + 1;
         ulong nb = heap->alloc(ns);
-        if (nb != 0) {
-            cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
-            cmd_write_byte(nb + name_len, 0);
-            ulong db = heap->alloc(4096);
-            if (db != 0) {
-                cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
-            }
+        if (nb == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: memory allocation failed" as void*);
+            return;
+        }
+        cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
+        cmd_write_byte(nb + name_len, 0);
+        ulong db = heap->alloc(4096);
+        if (db == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: memory allocation failed" as void*);
+            return;
+        }
+        ulong cr = cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+        if (cr != 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: failed to create file" as void*);
+            return;
         }
     }
 
@@ -297,7 +315,10 @@ export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
     ulong data_len = buf_len - data_start;
     ulong written = cosmfs_op(FS_OP_WRITE, name_addr, data_addr, data_len, 0);
 
-    if (written > 0) {
+    if (written == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: file not found" as void*);
+    } else if (written > 0) {
         shell_set_color(SHELL_COLOR_OUTPUT);
         shell_puts("Wrote " as void*);
         shell_print_hex(written);
@@ -306,7 +327,7 @@ export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
         shell_newline();
     } else {
         shell_set_color(SHELL_COLOR_ERROR);
-        shell_println("Write failed" as void*);
+        shell_println("Error: write failed (0 bytes)" as void*);
     }
 }
 
@@ -346,13 +367,24 @@ export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
     if (fsize == 0xFFFFFFFFFFFFFFFF) {
         ulong ns = name_len + 1;
         ulong nb = heap->alloc(ns);
-        if (nb != 0) {
-            cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
-            cmd_write_byte(nb + name_len, 0);
-            ulong db = heap->alloc(4096);
-            if (db != 0) {
-                cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
-            }
+        if (nb == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: memory allocation failed" as void*);
+            return;
+        }
+        cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
+        cmd_write_byte(nb + name_len, 0);
+        ulong db = heap->alloc(4096);
+        if (db == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: memory allocation failed" as void*);
+            return;
+        }
+        ulong cr = cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+        if (cr != 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: failed to create file" as void*);
+            return;
         }
     }
 
@@ -360,7 +392,10 @@ export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
     ulong data_len = buf_len - data_start;
     ulong appended = cosmfs_op(FS_OP_APPEND, name_addr, data_addr, data_len, 0);
 
-    if (appended > 0) {
+    if (appended == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: file not found" as void*);
+    } else if (appended > 0) {
         shell_set_color(SHELL_COLOR_OUTPUT);
         shell_puts("Appended " as void*);
         shell_print_hex(appended);
@@ -369,7 +404,7 @@ export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
         shell_newline();
     } else {
         shell_set_color(SHELL_COLOR_ERROR);
-        shell_println("Append failed (file full or not found)" as void*);
+        shell_println("Error: append failed (file full)" as void*);
     }
 }
 
@@ -495,27 +530,44 @@ export void cmd_cp(ulong buf_addr, ulong buf_len, Heap* heap) {
             return;
         }
         cosmfs_op(FS_OP_MEMCPY, nb, dst_addr, arg2_len + 1, 0);
-        cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+        ulong cr = cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+        if (cr != 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: failed to create destination file" as void*);
+            return;
+        }
     }
 
     // ソースデータ取得+コピー先に書き込み
     ulong src_data = cosmfs_op(FS_OP_GET_DATA, src_addr, 0, 0, 0);
-    if (src_data != 0) {
-        ulong written = cosmfs_op(FS_OP_WRITE, dst_addr, src_data, src_size, 0);
-        if (written > 0) {
-            shell_set_color(SHELL_COLOR_OUTPUT);
-            shell_puts("Copied " as void*);
-            shell_puts(src_addr as void*);
-            shell_puts(" -> " as void*);
-            shell_puts(dst_addr as void*);
-            shell_puts(" (" as void*);
-            shell_print_hex(written);
-            shell_puts(" bytes)" as void*);
-            shell_newline();
-        } else {
-            shell_set_color(SHELL_COLOR_ERROR);
-            shell_println("Copy failed" as void*);
-        }
+    if (src_data == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: failed to read source data" as void*);
+        return;
+    }
+    if (src_data == 0) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: source data is null" as void*);
+        return;
+    }
+
+    ulong written = cosmfs_op(FS_OP_WRITE, dst_addr, src_data, src_size, 0);
+    if (written == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: destination file not found" as void*);
+    } else if (written > 0) {
+        shell_set_color(SHELL_COLOR_OUTPUT);
+        shell_puts("Copied " as void*);
+        shell_puts(src_addr as void*);
+        shell_puts(" -> " as void*);
+        shell_puts(dst_addr as void*);
+        shell_puts(" (" as void*);
+        shell_print_hex(written);
+        shell_puts(" bytes)" as void*);
+        shell_newline();
+    } else {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: copy failed (0 bytes written)" as void*);
     }
 }
 
@@ -584,25 +636,41 @@ export void cmd_mv(ulong buf_addr, ulong buf_len, Heap* heap) {
             return;
         }
         cosmfs_op(FS_OP_MEMCPY, nb, dst_addr, arg2_len + 1, 0);
-        cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+        ulong cr = cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+        if (cr != 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Error: failed to create destination file" as void*);
+            return;
+        }
     }
 
     // ソースデータ取得+コピー先に書き込み
     ulong src_data = cosmfs_op(FS_OP_GET_DATA, src_addr, 0, 0, 0);
-    if (src_data != 0) {
-        ulong written = cosmfs_op(FS_OP_WRITE, dst_addr, src_data, src_size, 0);
-        if (written > 0) {
-            // ソース削除
-            cosmfs_op(FS_OP_DELETE, src_addr, 0, 0, 0);
-            shell_set_color(SHELL_COLOR_OUTPUT);
-            shell_puts("Moved " as void*);
-            shell_puts(src_addr as void*);
-            shell_puts(" -> " as void*);
-            shell_puts(dst_addr as void*);
-            shell_newline();
-        } else {
-            shell_set_color(SHELL_COLOR_ERROR);
-            shell_println("Move failed" as void*);
-        }
+    if (src_data == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: failed to read source data" as void*);
+        return;
+    }
+    if (src_data == 0) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: source data is null" as void*);
+        return;
+    }
+
+    ulong written = cosmfs_op(FS_OP_WRITE, dst_addr, src_data, src_size, 0);
+    if (written == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: destination file not found" as void*);
+    } else if (written > 0) {
+        cosmfs_op(FS_OP_DELETE, src_addr, 0, 0, 0);
+        shell_set_color(SHELL_COLOR_OUTPUT);
+        shell_puts("Moved " as void*);
+        shell_puts(src_addr as void*);
+        shell_puts(" -> " as void*);
+        shell_puts(dst_addr as void*);
+        shell_newline();
+    } else {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Error: move failed (0 bytes written)" as void*);
     }
 }

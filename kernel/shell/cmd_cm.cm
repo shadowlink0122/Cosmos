@@ -192,8 +192,12 @@ export ulong cm_create_aout(ulong code_buf, ulong code_size, Heap* heap) {
     ulong aout_data = heap->alloc(4096);
     if (aout_data == 0) { return CM_ERR_ALLOC; }
 
-    cosmfs_op(CM_FS_CREATE, aout_name, aout_data, 4096, 0);
-    cosmfs_op(CM_FS_WRITE, aout_name, code_buf, code_size, 0);
+    ulong cr = cosmfs_op(CM_FS_CREATE, aout_name, aout_data, 4096, 0);
+    if (cr != 0) { return CM_ERR_ALLOC; }  // CREATE失敗
+
+    ulong wr = cosmfs_op(CM_FS_WRITE, aout_name, code_buf, code_size, 0);
+    if (wr == 0xFFFFFFFFFFFFFFFF) { return CM_ERR_NOT_FOUND; }  // WRITE失敗
+
     return CM_OK;
 }
 
@@ -248,6 +252,11 @@ export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // ソースファイル読み込み
     ulong src_size = cosmfs_op(CM_FS_SIZE, name_buf, 0, 0, 0);
+    if (src_size == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: file not found" as void*);
+        return;
+    }
     if (src_size == 0) {
         shell_set_color(0x00FF4444);
         shell_println("Error: empty source file" as void*);
@@ -260,7 +269,17 @@ export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
         shell_println("Error: memory allocation failed" as void*);
         return;
     }
-    cosmfs_op(CM_FS_READ, name_buf, src_buf, src_size, 0);
+    ulong read_result = cosmfs_op(CM_FS_READ, name_buf, src_buf, src_size, 0);
+    if (read_result == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: failed to read source file" as void*);
+        return;
+    }
+    if (read_result == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: read returned 0 bytes" as void*);
+        return;
+    }
 
     // バイトコードバッファ
     ulong code_buf = heap->alloc(256);
@@ -304,6 +323,11 @@ export void cmd_run_aout(Heap* heap) {
     }
 
     ulong code_size = cosmfs_op(CM_FS_SIZE, aout_name, 0, 0, 0);
+    if (code_size == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: a.out not found" as void*);
+        return;
+    }
     if (code_size == 0) {
         shell_set_color(0x00FF4444);
         shell_println("Error: a.out is empty" as void*);
@@ -316,7 +340,17 @@ export void cmd_run_aout(Heap* heap) {
         shell_println("Error: memory allocation failed" as void*);
         return;
     }
-    cosmfs_op(CM_FS_READ, aout_name, code_buf, code_size, 0);
+    ulong rd = cosmfs_op(CM_FS_READ, aout_name, code_buf, code_size, 0);
+    if (rd == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: failed to read a.out" as void*);
+        return;
+    }
+    if (rd == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: a.out read returned 0 bytes" as void*);
+        return;
+    }
 
     shell_set_color(0x00FFFFFF);
     cm_vm_exec(code_buf, code_size);

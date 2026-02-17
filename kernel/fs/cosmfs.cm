@@ -231,7 +231,7 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
     if (op == FS_OP_WRITE) {
         ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
         if (idx == 0xFFFFFFFFFFFFFFFF) {
-            return 0;
+            return 0xFFFFFFFFFFFFFFFF;  // エラー: ファイル未発見
         }
         ulong cap_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 24;
         ulong* cap_ptr = cap_addr as ulong*;
@@ -315,7 +315,7 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
     if (op == FS_OP_GET_DATA) {
         ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
         if (idx == 0xFFFFFFFFFFFFFFFF) {
-            return 0;
+            return 0xFFFFFFFFFFFFFFFF;  // エラー: ファイル未発見
         }
         ulong da_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 8;
         ulong* da_ptr = da_addr as ulong*;
@@ -326,7 +326,7 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
     if (op == FS_OP_APPEND) {
         ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
         if (idx == 0xFFFFFFFFFFFFFFFF) {
-            return 0;
+            return 0xFFFFFFFFFFFFFFFF;  // エラー: ファイル未発見
         }
         ulong cur_size_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 16;
         ulong* cur_size_ptr = cur_size_addr as ulong*;
@@ -360,7 +360,7 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
     if (op == FS_OP_READ) {
         ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
         if (idx == 0xFFFFFFFFFFFFFFFF) {
-            return 0;
+            return 0xFFFFFFFFFFFFFFFF;  // エラー: ファイル未発見
         }
         ulong sz_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 16;
         ulong* sz_ptr = sz_addr as ulong*;
