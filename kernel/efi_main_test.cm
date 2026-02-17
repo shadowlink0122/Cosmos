@@ -41,6 +41,10 @@ import ./tests/boot/test_boot;
 import ./tests/sched/test_scheduler;
 import ./tests/arch/test_tss;
 import ./tests/drivers/test_keyboard;
+import ./tests/fs/test_cosmfs;
+import ./tests/apps/test_aria;
+import ./fs/cosmfs;
+import ./apps/aria/aria;
 import ./libs/boot_services;
 
 // ============================================================
@@ -129,6 +133,8 @@ void kernel_main_test(BootInfo* info) {
     test_tss(&runner);
     test_keyboard(&runner);
     test_scheduler(&runner);
+    test_cosmfs(&runner);
+    test_aria(&runner);
     runner.print_results();
 
     // テスト完了 — halt
