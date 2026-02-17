@@ -372,3 +372,237 @@ export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
         shell_println("Append failed (file full or not found)" as void*);
     }
 }
+
+// ============================================================
+// mkdir コマンド（ディレクトリマーカー作成）
+// ============================================================
+
+export void cmd_mkdir(ulong buf_addr, ulong buf_len, Heap* heap) {
+    ulong arg_start = cmd_find_arg(buf_addr, buf_len);
+    if (arg_start >= buf_len) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Usage: mkdir <dirname>" as void*);
+        return;
+    }
+
+    ulong arg_len = cmd_arg_len(buf_addr, arg_start, buf_len);
+    ulong name_addr = buf_addr + arg_start;
+    cmd_write_byte(name_addr + arg_len, 0);  // NUL終端
+
+    // 既存チェック
+    ulong idx = cosmfs_op(FS_OP_FIND, name_addr, 0, 0, 0);
+    if (idx != 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_puts("Already exists: " as void*);
+        shell_puts(name_addr as void*);
+        shell_newline();
+        return;
+    }
+
+    // 空ファイルとして作成（ディレクトリマーカー）
+    ulong db = heap->alloc(64);
+    if (db == 0) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Out of memory" as void*);
+        return;
+    }
+
+    // NUL終端のバッファ名をコピー
+    ulong nb = heap->alloc(64);
+    if (nb == 0) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Out of memory" as void*);
+        return;
+    }
+    cosmfs_op(FS_OP_MEMCPY, nb, name_addr, arg_len + 1, 0);
+
+    ulong result = cosmfs_op(FS_OP_CREATE, nb, db, 64, 0);
+    if (result == 0) {
+        shell_set_color(SHELL_COLOR_OUTPUT);
+        shell_puts("Created: " as void*);
+        shell_puts(name_addr as void*);
+        shell_newline();
+    } else {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Failed to create directory" as void*);
+    }
+}
+
+// ============================================================
+// cp コマンド（ファイルコピー）
+// ============================================================
+
+export void cmd_cp(ulong buf_addr, ulong buf_len, Heap* heap) {
+    // "cp src dst" — 引数を2つ解析
+    ulong arg1_start = cmd_find_arg(buf_addr, buf_len);
+    if (arg1_start >= buf_len) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Usage: cp <src> <dst>" as void*);
+        return;
+    }
+    ulong arg1_len = cmd_arg_len(buf_addr, arg1_start, buf_len);
+    ulong src_addr = buf_addr + arg1_start;
+
+    // 2番目の引数
+    ulong arg2_start = arg1_start + arg1_len;
+    // スペースをスキップ
+    ulong sk = arg2_start;
+    while (sk < buf_len) {
+        ulong sch = cmd_read_byte(buf_addr + sk);
+        if (sch != 0x20) {
+            arg2_start = sk;
+            sk = buf_len;  // break
+        } else {
+            sk = sk + 1;
+        }
+    }
+    if (arg2_start >= buf_len) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Usage: cp <src> <dst>" as void*);
+        return;
+    }
+    ulong arg2_len = cmd_arg_len(buf_addr, arg2_start, buf_len);
+    ulong dst_addr = buf_addr + arg2_start;
+
+    // NUL終端
+    cmd_write_byte(src_addr + arg1_len, 0);
+    cmd_write_byte(dst_addr + arg2_len, 0);
+
+    // ソースファイル確認
+    ulong src_size = cosmfs_op(FS_OP_SIZE, src_addr, 0, 0, 0);
+    if (src_size == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_puts("File not found: " as void*);
+        shell_puts(src_addr as void*);
+        shell_newline();
+        return;
+    }
+
+    // コピー先に新ファイル作成
+    ulong dst_idx = cosmfs_op(FS_OP_FIND, dst_addr, 0, 0, 0);
+    if (dst_idx == 0xFFFFFFFFFFFFFFFF) {
+        // 新規作成
+        ulong db = heap->alloc(4096);
+        if (db == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Out of memory" as void*);
+            return;
+        }
+        ulong nb = heap->alloc(64);
+        if (nb == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Out of memory" as void*);
+            return;
+        }
+        cosmfs_op(FS_OP_MEMCPY, nb, dst_addr, arg2_len + 1, 0);
+        cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+    }
+
+    // ソースデータ取得+コピー先に書き込み
+    ulong src_data = cosmfs_op(FS_OP_GET_DATA, src_addr, 0, 0, 0);
+    if (src_data != 0) {
+        ulong written = cosmfs_op(FS_OP_WRITE, dst_addr, src_data, src_size, 0);
+        if (written > 0) {
+            shell_set_color(SHELL_COLOR_OUTPUT);
+            shell_puts("Copied " as void*);
+            shell_puts(src_addr as void*);
+            shell_puts(" -> " as void*);
+            shell_puts(dst_addr as void*);
+            shell_puts(" (" as void*);
+            shell_print_hex(written);
+            shell_puts(" bytes)" as void*);
+            shell_newline();
+        } else {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Copy failed" as void*);
+        }
+    }
+}
+
+// ============================================================
+// mv コマンド（ファイル移動）
+// ============================================================
+
+export void cmd_mv(ulong buf_addr, ulong buf_len, Heap* heap) {
+    // "mv src dst" — 引数を2つ解析
+    ulong arg1_start = cmd_find_arg(buf_addr, buf_len);
+    if (arg1_start >= buf_len) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Usage: mv <src> <dst>" as void*);
+        return;
+    }
+    ulong arg1_len = cmd_arg_len(buf_addr, arg1_start, buf_len);
+    ulong src_addr = buf_addr + arg1_start;
+
+    // 2番目の引数
+    ulong arg2_start = arg1_start + arg1_len;
+    ulong sk = arg2_start;
+    while (sk < buf_len) {
+        ulong sch = cmd_read_byte(buf_addr + sk);
+        if (sch != 0x20) {
+            arg2_start = sk;
+            sk = buf_len;  // break
+        } else {
+            sk = sk + 1;
+        }
+    }
+    if (arg2_start >= buf_len) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_println("Usage: mv <src> <dst>" as void*);
+        return;
+    }
+    ulong arg2_len = cmd_arg_len(buf_addr, arg2_start, buf_len);
+    ulong dst_addr = buf_addr + arg2_start;
+
+    // NUL終端
+    cmd_write_byte(src_addr + arg1_len, 0);
+    cmd_write_byte(dst_addr + arg2_len, 0);
+
+    // ソースファイル確認
+    ulong src_size = cosmfs_op(FS_OP_SIZE, src_addr, 0, 0, 0);
+    if (src_size == 0xFFFFFFFFFFFFFFFF) {
+        shell_set_color(SHELL_COLOR_ERROR);
+        shell_puts("File not found: " as void*);
+        shell_puts(src_addr as void*);
+        shell_newline();
+        return;
+    }
+
+    // コピー先に新ファイル作成
+    ulong dst_idx = cosmfs_op(FS_OP_FIND, dst_addr, 0, 0, 0);
+    if (dst_idx == 0xFFFFFFFFFFFFFFFF) {
+        ulong db = heap->alloc(4096);
+        if (db == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Out of memory" as void*);
+            return;
+        }
+        ulong nb = heap->alloc(64);
+        if (nb == 0) {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Out of memory" as void*);
+            return;
+        }
+        cosmfs_op(FS_OP_MEMCPY, nb, dst_addr, arg2_len + 1, 0);
+        cosmfs_op(FS_OP_CREATE, nb, db, 4096, 0);
+    }
+
+    // ソースデータ取得+コピー先に書き込み
+    ulong src_data = cosmfs_op(FS_OP_GET_DATA, src_addr, 0, 0, 0);
+    if (src_data != 0) {
+        ulong written = cosmfs_op(FS_OP_WRITE, dst_addr, src_data, src_size, 0);
+        if (written > 0) {
+            // ソース削除
+            cosmfs_op(FS_OP_DELETE, src_addr, 0, 0, 0);
+            shell_set_color(SHELL_COLOR_OUTPUT);
+            shell_puts("Moved " as void*);
+            shell_puts(src_addr as void*);
+            shell_puts(" -> " as void*);
+            shell_puts(dst_addr as void*);
+            shell_newline();
+        } else {
+            shell_set_color(SHELL_COLOR_ERROR);
+            shell_println("Move failed" as void*);
+        }
+    }
+}

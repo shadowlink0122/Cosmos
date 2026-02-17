@@ -226,6 +226,33 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
         matched = 1;
     }
 
+    ulong is_mkdir = shell_starts_with(buf_addr, buf_len, "mkdir " as void*, 6);
+    if (is_mkdir != 0) {
+        ulong* heap_ptr4 = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr4 = *heap_ptr4;
+        Heap* heap4 = heap_addr4 as Heap*;
+        cmd_mkdir(buf_addr, buf_len, heap4);
+        matched = 1;
+    }
+
+    ulong is_cp = shell_starts_with(buf_addr, buf_len, "cp " as void*, 3);
+    if (is_cp != 0) {
+        ulong* heap_ptr5 = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr5 = *heap_ptr5;
+        Heap* heap5 = heap_addr5 as Heap*;
+        cmd_cp(buf_addr, buf_len, heap5);
+        matched = 1;
+    }
+
+    ulong is_mv = shell_starts_with(buf_addr, buf_len, "mv " as void*, 3);
+    if (is_mv != 0) {
+        ulong* heap_ptr6 = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr6 = *heap_ptr6;
+        Heap* heap6 = heap_addr6 as Heap*;
+        cmd_mv(buf_addr, buf_len, heap6);
+        matched = 1;
+    }
+
     // --- Aria エディタ ---
     ulong is_aria = shell_starts_with(buf_addr, buf_len, "aria " as void*, 5);
     if (is_aria != 0) {
