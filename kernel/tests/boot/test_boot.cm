@@ -9,14 +9,14 @@
 //
 // 各サブシステムの状態を直接確認してパスを判定する。
 
-import ../drivers/serial;
-import ../drivers/debug_port;
-import ../arch/boot_info;
-import ../mm/pmm;
-import ../mm/vmm;
-import ../mm/heap;
-import ../drivers/pit;
-import ./test_runner;
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../arch/boot_info;
+import ../../mm/pmm;
+import ../../mm/vmm;
+import ../../mm/heap;
+import ../../drivers/pit;
+import ../test_runner;
 
 // ============================================================
 // ブート初期化テスト
@@ -30,13 +30,13 @@ export void test_boot(TestRunner* runner, BootInfo* info,
     serial.println("[TEST] === Boot Tests ===" as void*);
 
     // テスト1: シリアルポート初期化（このテスト自体がシリアル経由で出力できている）
-    assert_true(runner, 1, "Serial port initialized" as void*);
+    runner->assert_true(1, "Serial port initialized" as void*);
 
     // テスト2: ExitBootServices成功（kernel_mainに到達 = 成功）
-    assert_true(runner, 1, "ExitBootServices OK" as void*);
+    runner->assert_true(1, "ExitBootServices OK" as void*);
 
     // テスト3: カーネルエントリ到達
-    assert_true(runner, 1, "Kernel main entered" as void*);
+    runner->assert_true(1, "Kernel main entered" as void*);
 
     // テスト4: GDT初期化（CSセレクタが0x08であること）
     ulong cs_val = 0;
@@ -45,31 +45,31 @@ export void test_boot(TestRunner* runner, BootInfo* info,
     if (cs_val == 0x08) {
         cs_ok = 1;
     }
-    assert_true(runner, cs_ok, "GDT initialized (CS=0x08)" as void*);
+    runner->assert_true(cs_ok, "GDT initialized (CS=0x08)" as void*);
 
     // テスト5: PIC初期化（PICの設定はinit完了で保証）
-    assert_true(runner, 1, "PIC initialized" as void*);
+    runner->assert_true(1, "PIC initialized" as void*);
 
     // テスト6: IDT初期化（IDTテーブルポインタが非ゼロ）
     ulong idt_ptr = info->mmap.map_buffer as ulong;
     // IDTはメモリマップバッファを再利用（非ゼロなら初期化済み）
-    assert_true(runner, 1, "IDT initialized" as void*);
+    runner->assert_true(1, "IDT initialized" as void*);
 
     // テスト7: ISR登録
-    assert_true(runner, 1, "ISR stubs registered" as void*);
+    runner->assert_true(1, "ISR stubs registered" as void*);
 
     // テスト8: PMM初期化（totalページ数が非ゼロ）
     ulong pmm_total = pmm->total_pages;
-    assert_nonzero(runner, pmm_total, "PMM initialized" as void*);
+    runner->assert_nonzero(pmm_total, "PMM initialized" as void*);
 
     // テスト9: ページング有効（CR3が非ゼロ）
     ulong cr3_val = 0;
     __asm__(`movq %cr3, ${=r:cr3_val}`);
-    assert_nonzero(runner, cr3_val, "Paging enabled (CR3 nonzero)" as void*);
+    runner->assert_nonzero(cr3_val, "Paging enabled (CR3 nonzero)" as void*);
 
     // テスト10: ヒープ初期化（ベースアドレスが非ゼロ）
     ulong heap_base = heap->base_addr;
-    assert_nonzero(runner, heap_base, "Heap initialized" as void*);
+    runner->assert_nonzero(heap_base, "Heap initialized" as void*);
 
     serial.println("[TEST] Boot tests complete" as void*);
 }

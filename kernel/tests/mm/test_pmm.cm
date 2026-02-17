@@ -1,9 +1,9 @@
 //! platform: uefi
 // kernel::tests::test_pmm - PMM（物理メモリマネージャ）テスト
 
-import ../drivers/serial;
-import ../mm/pmm;
-import ./test_runner;
+import ../../drivers/serial;
+import ../../mm/pmm;
+import ../test_runner;
 
 // ============================================================
 // PMM テスト
@@ -16,7 +16,7 @@ export void test_pmm(TestRunner* runner, PMM* pmm) {
 
     // テスト1: alloc_pageが非ゼロアドレスを返す
     ulong page1 = pmm->alloc_page();
-    assert_nonzero(runner, page1, "PMM alloc_page returns nonzero" as void*);
+    runner->assert_nonzero(page1, "PMM alloc_page returns nonzero" as void*);
 
     // テスト2: 2回目のallocが異なるアドレスを返す
     ulong page2 = pmm->alloc_page();
@@ -24,12 +24,12 @@ export void test_pmm(TestRunner* runner, PMM* pmm) {
     if (page1 != page2) {
         different = 1;
     }
-    assert_true(runner, different, "PMM alloc returns different pages" as void*);
+    runner->assert_true(different, "PMM alloc returns different pages" as void*);
 
     // テスト3: free後のre-allocでページが再利用される
     pmm->free_page(page1);
     ulong page3 = pmm->alloc_page();
-    assert_eq(runner, page3, page1, "PMM free/realloc reuses page" as void*);
+    runner->assert_eq(page3, page1, "PMM free/realloc reuses page" as void*);
 
     // クリーンアップ
     pmm->free_page(page2);

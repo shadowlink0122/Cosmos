@@ -1,9 +1,9 @@
 //! platform: uefi
 // kernel::tests::test_pit - PIT タイマー割り込みテスト
 
-import ../drivers/serial;
-import ../drivers/pit;
-import ./test_runner;
+import ../../drivers/serial;
+import ../../drivers/pit;
+import ../test_runner;
 
 // ============================================================
 // PIT テスト
@@ -34,12 +34,12 @@ export void test_pit(TestRunner* runner, PIT* pit) {
     serial.print_hex(tick_after);
     serial.putc(10);
 
-    assert_gt(runner, tick_after, tick_before, "PIT tick counter increments" as void*);
+    runner->assert_gt(tick_after, tick_before, "PIT tick counter increments" as void*);
 
     // テスト2: tickカウンタが少なくとも5進んでいる
     ulong diff = tick_after - tick_before;
     ulong min_ticks = 5 as ulong;
-    assert_gt(runner, diff, min_ticks, "PIT tick count >= 5 after 10 HLTs" as void*);
+    runner->assert_gt(diff, min_ticks, "PIT tick count >= 5 after 10 HLTs" as void*);
 
     serial.println("[TEST] PIT tests complete" as void*);
 }

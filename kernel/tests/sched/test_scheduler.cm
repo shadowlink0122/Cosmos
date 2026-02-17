@@ -3,12 +3,12 @@
 //
 // 協調スケジューリングとプリエンプティブスケジューリングの検証。
 
-import ../drivers/serial;
-import ../drivers/debug_port;
-import ../drivers/pit;
-import ../sched/task;
-import ../sched/scheduler;
-import ./test_runner;
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../drivers/pit;
+import ../../sched/task;
+import ../../sched/scheduler;
+import ../test_runner;
 
 // ============================================================
 // テストタスク関数
@@ -184,35 +184,35 @@ export void test_scheduler(TestRunner* runner) {
 
     // テスト1: sched_init済み（current_taskが0であること）
     ulong current = sched_current_id();
-    assert_eq(runner, current, zero, "Scheduler current task is 0 (idle)" as void*);
+    runner->assert_eq(current, zero, "Scheduler current task is 0 (idle)" as void*);
 
     // テスト2: タスク数が1（idleのみ）
     ulong count = sched_task_count();
     ulong one = 1 as ulong;
-    assert_eq(runner, count, one, "Scheduler has 1 task (idle)" as void*);
+    runner->assert_eq(count, one, "Scheduler has 1 task (idle)" as void*);
 
     // テスト3: タスクAを生成
     ulong task_a_addr = fn_addr(task_a_fn as void*);
     ulong id_a = sched_spawn(task_a_addr);
     ulong two = 2 as ulong;
     ulong new_count = sched_task_count();
-    assert_eq(runner, new_count, two, "Scheduler has 2 tasks after spawn" as void*);
+    runner->assert_eq(new_count, two, "Scheduler has 2 tasks after spawn" as void*);
 
     // テスト4: タスクBを生成
     ulong task_b_addr = fn_addr(task_b_fn as void*);
     ulong id_b = sched_spawn(task_b_addr);
     ulong three = 3 as ulong;
     new_count = sched_task_count();
-    assert_eq(runner, new_count, three, "Scheduler has 3 tasks after 2nd spawn" as void*);
+    runner->assert_eq(new_count, three, "Scheduler has 3 tasks after 2nd spawn" as void*);
 
     // テスト5: タスクAの状態がREADY
     ulong state_a = tcb_read(id_a, TCB_OFF_STATE);
-    assert_eq(runner, state_a, TASK_READY, "Task A state is READY" as void*);
+    runner->assert_eq(state_a, TASK_READY, "Task A state is READY" as void*);
 
     // テスト6: スケジューラを有効化
     sched_enable();
     ulong enabled = sched_is_enabled();
-    assert_eq(runner, enabled, one, "Scheduler is enabled" as void*);
+    runner->assert_eq(enabled, one, "Scheduler is enabled" as void*);
 
     // === 協調スケジューリングテスト ===
     // フロー: idle→A→(A terminates)→B→(B terminates)→idle
@@ -222,11 +222,11 @@ export void test_scheduler(TestRunner* runner) {
 
     // テスト7: タスクAが実行された
     ulong done_a = *flag_a;
-    assert_true(runner, done_a, "Task A executed (done flag set)" as void*);
+    runner->assert_true(done_a, "Task A executed (done flag set)" as void*);
 
     // テスト8: タスクBが実行された
     ulong done_b = *flag_b;
-    assert_true(runner, done_b, "Task B executed (done flag set)" as void*);
+    runner->assert_true(done_b, "Task B executed (done flag set)" as void*);
 
     // === プリエンプティブスケジューリングテスト ===
     // タスクC/Dを生成（10回ループでhlt+yield）
@@ -238,7 +238,7 @@ export void test_scheduler(TestRunner* runner) {
 
     ulong five = 5 as ulong;
     new_count = sched_task_count();
-    assert_eq(runner, new_count, five, "5 tasks registered (idle+A+B+C+D)" as void*);
+    runner->assert_eq(new_count, five, "5 tasks registered (idle+A+B+C+D)" as void*);
 
     // タスクC/Dを実行（各10回ループ、交互にプリエンプト）
     debug.println("[SCHED] === begin preemptive scheduling (10 iterations each) ===" as void*);
@@ -248,11 +248,11 @@ export void test_scheduler(TestRunner* runner) {
     // テスト10: タスクCが10回実行された
     ulong c_count = *cnt_c;
     ulong ten = 10 as ulong;
-    assert_eq(runner, c_count, ten, "Task C completed 10 iterations" as void*);
+    runner->assert_eq(c_count, ten, "Task C completed 10 iterations" as void*);
 
     // テスト11: タスクDが10回実行された
     ulong d_count = *cnt_d;
-    assert_eq(runner, d_count, ten, "Task D completed 10 iterations" as void*);
+    runner->assert_eq(d_count, ten, "Task D completed 10 iterations" as void*);
 
     // スケジューラを無効化
     sched_set_enabled(zero);
