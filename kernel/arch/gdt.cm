@@ -57,8 +57,7 @@ const ulong GDT_GDTR_OFFSET = 40;
 /// GDTデータは固定アドレス(0x800)に配置する。
 /// この領域はUEFI環境ではカーネルが自由に使用できる。
 export void gdt_init() {
-    DebugPort debug;
-    debug.port = 0xE9;
+    DebugPort debug(0xE9);
     debug.println("[BOOT] gdt_init: start" as void*);
 
     // GDT定数をローカル変数にコピー（ASMから参照するため）
@@ -118,7 +117,6 @@ export void gdt_init() {
     `);
 
     debug.println("[BOOT] gdt_init: done" as void*);
-    SerialPort serial;
-    serial.port = 0x3F8;
+    SerialPort serial(0x3F8);
     serial.println("[CosmOS] GDT initialized" as void*);
 }

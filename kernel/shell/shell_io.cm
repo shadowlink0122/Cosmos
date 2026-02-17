@@ -1,0 +1,58 @@
+//! platform: uefi
+// kernel::shell::shell_io - シェル出力ヘルパー
+//
+// serial + FBConsole への重複出力を統合するユーティリティ。
+// 各シェルコマンドは serial.puts() + fb_puts() の2行を
+// shell_puts() の1行に置換できる。
+//
+// 使用例:
+//   shell_println("Available commands:" as void*);
+//   shell_puts("  Total: " as void*);
+//   shell_print_hex(value);
+//   shell_newline();
+
+import ../drivers/serial;
+import ../lib/print;
+import ../config;
+
+// ============================================================
+// 統合出力関数
+// ============================================================
+
+/// serial + FBConsole にメッセージを同時出力（改行付き）
+export void shell_println(void* msg) {
+    SerialPort serial(0x3F8);
+    FBConsole* con = fb_get_global_console();
+    serial.println(msg);
+    fb_println(con, msg);
+}
+
+/// serial + FBConsole にメッセージを同時出力（改行なし）
+export void shell_puts(void* msg) {
+    SerialPort serial(0x3F8);
+    FBConsole* con = fb_get_global_console();
+    serial.puts(msg);
+    fb_puts(con, msg);
+}
+
+/// serial + FBConsole に16進数値を同時出力
+export void shell_print_hex(ulong value) {
+    SerialPort serial(0x3F8);
+    FBConsole* con = fb_get_global_console();
+    serial.print_hex(value);
+    fb_print_hex(con, value);
+}
+
+/// serial + FBConsole に改行を出力
+export void shell_newline() {
+    SerialPort serial(0x3F8);
+    FBConsole* con = fb_get_global_console();
+    serial.println("" as void*);
+    fb_newline(con);
+}
+
+/// FBConsole の色を設定
+export void shell_set_color(ulong color) {
+    FBConsole* con = fb_get_global_console();
+    fb_set_color(con, color);
+}

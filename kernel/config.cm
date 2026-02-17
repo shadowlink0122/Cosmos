@@ -1,5 +1,70 @@
 //! platform: uefi
 // kernel::config - カーネル全体設定
+//
+// 固定メモリアドレスマップ、バージョン定数、色定数を一元管理する。
+// 各モジュールはこのファイルをimportして参照する。
 
-/// グローバルFBConsoleの固定メモリアドレス
+// ============================================================
+// カーネルバージョン
+// ============================================================
+
+export const ulong KERNEL_VERSION_MAJOR = 0;
+export const ulong KERNEL_VERSION_MINOR = 6;
+export const ulong KERNEL_VERSION_PATCH = 0;
+
+// ============================================================
+// 固定メモリアドレスマップ
+// ============================================================
+//
+// カーネルが使用する低メモリ領域のレイアウト:
+//   0x800 - 0x8FF : GDT (永続配置、5スロット + GDTR)
+//   0x900 - 0x9FF : PIT タイマー状態
+//   0xA00 - 0xAFF : スケジューラ状態
+//   0xB00 - 0xBFF : TSS (0xB20から104バイト)
+//   0xC00 - 0xCFF : キーボードバッファ
+//   0xD00 - 0xDFF : シェルバッファ
+//   0xE00 - 0xEFF : FBConsole
+//   0x1000-0x11FF : TCB配列 (最大8タスク × 64バイト)
+
+// --- GDT ---
+export const ulong ADDR_GDT_BASE         = 0x800;
+
+// --- PIT タイマー ---
+export const ulong ADDR_PIT_TICK_COUNT   = 0x900;
+export const ulong ADDR_PIT_RESCHED_FLAG = 0x908;
+
+// --- スケジューラ ---
+export const ulong ADDR_SCHED_CURRENT    = 0xA00;
+export const ulong ADDR_SCHED_COUNT      = 0xA08;
+export const ulong ADDR_SCHED_ENABLED    = 0xA10;
+export const ulong ADDR_SCHED_PMM        = 0xA18;
+
+// --- TSS ---
+export const ulong ADDR_TSS_BASE         = 0xB20;
+
+// --- キーボードバッファ ---
+export const ulong ADDR_KB_BUF           = 0xC00;
+export const ulong ADDR_KB_WRITE_IDX     = 0xC40;
+export const ulong ADDR_KB_READ_IDX      = 0xC48;
+export const ulong ADDR_KB_COUNT         = 0xC50;
+export const ulong ADDR_KB_LAST_SCAN     = 0xC58;
+
+// --- シェルバッファ ---
+export const ulong ADDR_SHELL_BUF        = 0xD00;
+export const ulong ADDR_SHELL_POS        = 0xD80;
+
+// --- FBConsole ---
 export const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
+
+// --- TCB配列 ---
+export const ulong ADDR_TCB_BASE         = 0x1000;
+
+// ============================================================
+// シェル色定数
+// ============================================================
+
+export const ulong SHELL_COLOR_PROMPT = 0x0000FFFF;  // シアン
+export const ulong SHELL_COLOR_INPUT  = 0x00FFFFFF;  // 白
+export const ulong SHELL_COLOR_ERROR  = 0x00FF4444;  // 赤
+export const ulong SHELL_COLOR_HEADER = 0x00FFAA00;  // オレンジ
+export const ulong SHELL_COLOR_OUTPUT = 0x0000FF00;  // 緑

@@ -1,0 +1,50 @@
+//! platform: uefi
+// kernel::lib::klog - カーネルログユーティリティ
+//
+// SerialPort + DebugPort の統合ログ出力API。
+// 各モジュールでの初期化コードを不要にする。
+//
+// 使用例:
+//   klog("[BOOT] initialized" as void*);
+//   klog_puts("value=" as void*);
+//   klog_hex(some_value);
+//   klog_ln();
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+
+// ============================================================
+// ログ出力関数
+// ============================================================
+
+/// カーネルメッセージを serial + debug に同時出力（改行付き）
+export void klog(void* msg) {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    serial.println(msg);
+    debug.println(msg);
+}
+
+/// カーネルメッセージを serial + debug に同時出力（改行なし）
+export void klog_puts(void* msg) {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    serial.puts(msg);
+    debug.puts(msg);
+}
+
+/// 16進数値を serial + debug に同時出力
+export void klog_hex(ulong value) {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    serial.print_hex(value);
+    debug.print_hex(value);
+}
+
+/// 改行のみを出力
+export void klog_ln() {
+    SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
+    serial.println("" as void*);
+    debug.println("" as void*);
+}

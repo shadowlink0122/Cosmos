@@ -11,6 +11,7 @@ import ../drivers/serial;
 import ../drivers/debug_port;
 import ../drivers/keyboard;
 import ../lib/print;
+import ../config;
 import ./cmd_help;
 import ./cmd_ps;
 import ./cmd_mem;
@@ -24,13 +25,6 @@ import ./cmd_uptime;
 const ulong SHELL_BUF_ADDR = 0xD00;  // コマンドバッファ（128バイト）
 const ulong SHELL_BUF_SIZE = 128;
 const ulong SHELL_POS_ADDR = 0xD80;  // バッファ位置
-
-// グローバルFBConsoleアドレス
-
-// シェル用の色定数
-const ulong SHELL_COLOR_PROMPT = 0x0000FFFF;  // シアン
-const ulong SHELL_COLOR_INPUT  = 0x00FFFFFF;  // 白
-const ulong SHELL_COLOR_ERROR  = 0x00FF4444;  // 赤
 
 // ============================================================
 // 文字列比較ヘルパー
@@ -142,7 +136,7 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
         serial.puts("\x1B[2J\x1B[H" as void*);
         fb_clear(con);
         fb_set_color(con, 0x00FFFFFF);
-        fb_println(con, "  CosmOS v0.5.0" as void*);
+        fb_println(con, "  CosmOS v0.6.0" as void*);
         fb_newline(con);
         matched = 1;
     }
@@ -243,7 +237,7 @@ export void shell_init() {
     // serial バナー
     serial.println("" as void*);
     serial.println("================================" as void*);
-    serial.println("  CosmOS v0.5.0 Kernel Shell" as void*);
+    serial.println("  CosmOS v0.6.0 Kernel Shell" as void*);
     serial.println("  Type 'help' for commands" as void*);
     serial.println("================================" as void*);
     serial.puts("CosmOS> " as void*);
@@ -251,7 +245,7 @@ export void shell_init() {
     // FBConsole バナー + プロンプト
     fb_set_color(con, 0x00FFFFFF);
     fb_println(con, "================================" as void*);
-    fb_println(con, "  CosmOS v0.5.0 Kernel Shell" as void*);
+    fb_println(con, "  CosmOS v0.6.0 Kernel Shell" as void*);
     fb_println(con, "  Type 'help' for commands" as void*);
     fb_println(con, "================================" as void*);
     fb_set_color(con, SHELL_COLOR_PROMPT);
