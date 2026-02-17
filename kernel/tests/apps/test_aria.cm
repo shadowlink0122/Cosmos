@@ -3,7 +3,7 @@
 //
 // Ariaの初期化、ファイルオープン、キー入力処理、モード遷移を検証。
 // ヒープを使わず固定メモリアドレスにバッファを配置。
-// テスト実行前にcosmfs_init()が呼ばれていること。
+// 文字列リテラル + FS_OP_MEMCPY でデータを設定。
 
 import ../../drivers/serial;
 import ../../drivers/debug_port;
@@ -31,19 +31,13 @@ const ulong T_KEY_q     = 0x71;
 const ulong T_KEY_h     = 0x68;
 const ulong T_KEY_l     = 0x6C;
 
+// CosmFS操作コード
+const ulong T_FS_OP_MEMCPY = 10;
+
 // テスト用固定メモリ領域（0x6000以降）
 const ulong T_A_FNAME_BUF = 0x6000;  // ファイル名 64B
 const ulong T_A_DATA_BUF  = 0x6100;  // データバッファ 4KB
 const ulong T_A_WRITE_BUF = 0x7100;  // 書き込みバッファ 64B
-
-/// バイト書き込みヘルパー
-export void ta_write_byte(ulong addr, ulong val) {
-    __asm__(`
-        movq ${r:addr}, %rdi;
-        movq ${r:val}, %rax;
-        movb %al, (%rdi)
-    `);
-}
 
 /// Ariaテストを実行する
 export void test_aria(TestRunner* runner) {
@@ -51,20 +45,11 @@ export void test_aria(TestRunner* runner) {
     serial.println("[TEST] === Aria Tests ===" as void*);
 
     // --- テスト前準備: CosmFSにテストファイルを作成 ---
-    // ファイル名 "a.txt"
-    ta_write_byte(T_A_FNAME_BUF, 0x61);      // 'a'
-    ta_write_byte(T_A_FNAME_BUF + 1, 0x2E);  // '.'
-    ta_write_byte(T_A_FNAME_BUF + 2, 0x74);  // 't'
-    ta_write_byte(T_A_FNAME_BUF + 3, 0x78);  // 'x'
-    ta_write_byte(T_A_FNAME_BUF + 4, 0x74);  // 't'
-    ta_write_byte(T_A_FNAME_BUF + 5, 0);     // NUL
-
-    // CREATE
-    cosmfs_op(1, T_A_FNAME_BUF, T_A_DATA_BUF, 4096, 0);
-    // WRITE "AB"
-    ta_write_byte(T_A_WRITE_BUF, 0x41);      // 'A'
-    ta_write_byte(T_A_WRITE_BUF + 1, 0x42);  // 'B'
-    cosmfs_op(2, T_A_FNAME_BUF, T_A_WRITE_BUF, 2, 0);
+    // 文字列リテラルでファイル名とデータを設定
+    cosmfs_op(T_FS_OP_MEMCPY, T_A_FNAME_BUF, "a.txt" as ulong, 6, 0);
+    cosmfs_op(1, T_A_FNAME_BUF, T_A_DATA_BUF, 4096, 0);  // CREATE
+    cosmfs_op(T_FS_OP_MEMCPY, T_A_WRITE_BUF, "AB" as ulong, 2, 0);
+    cosmfs_op(2, T_A_FNAME_BUF, T_A_WRITE_BUF, 2, 0);    // WRITE
 
     // --- テスト1: aria_init ---
     aria_init();

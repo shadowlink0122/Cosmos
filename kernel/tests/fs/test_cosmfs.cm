@@ -3,6 +3,7 @@
 //
 // CosmFSのCRUD操作とデータ整合性を検証する。
 // ヒープを使わず固定メモリアドレスにバッファを配置。
+// 文字列リテラル + FS_OP_MEMCPY でデータを設定。
 
 import ../../drivers/serial;
 import ../../drivers/debug_port;
@@ -18,6 +19,7 @@ const ulong T_FS_OP_DELETE   = 4;
 const ulong T_FS_OP_FIND     = 5;
 const ulong T_FS_OP_GET_DATA = 6;
 const ulong T_FS_OP_COUNT    = 7;
+const ulong T_FS_OP_MEMCPY   = 10;
 const ulong T_FS_OP_APPEND   = 11;
 const ulong T_FS_OP_READ     = 12;
 
@@ -29,28 +31,6 @@ const ulong T_DATA_BUF   = 0x4100;   // データバッファ 4KB
 const ulong T_WRITE_BUF  = 0x5100;   // 書き込みバッファ 64B
 const ulong T_READ_BUF   = 0x5200;   // 読み込みバッファ 64B
 const ulong T_FNAME2_BUF = 0x5300;   // ファイル名2バッファ 64B
-
-/// バイト書き込みヘルパー
-export void t_write_byte(ulong addr, ulong val) {
-    __asm__(`
-        movq ${r:addr}, %rdi;
-        movq ${r:val}, %rax;
-        movb %al, (%rdi)
-    `);
-}
-
-/// "test.txt" をバッファに書き込む
-export void t_set_filename(ulong buf) {
-    t_write_byte(buf, 0x74);      // 't'
-    t_write_byte(buf + 1, 0x65);  // 'e'
-    t_write_byte(buf + 2, 0x73);  // 's'
-    t_write_byte(buf + 3, 0x74);  // 't'
-    t_write_byte(buf + 4, 0x2E);  // '.'
-    t_write_byte(buf + 5, 0x74);  // 't'
-    t_write_byte(buf + 6, 0x78);  // 'x'
-    t_write_byte(buf + 7, 0x74);  // 't'
-    t_write_byte(buf + 8, 0);     // NUL
-}
 
 /// CosmFSテストを実行する
 export void test_cosmfs(TestRunner* runner) {
@@ -65,7 +45,8 @@ export void test_cosmfs(TestRunner* runner) {
     runner->assert_eq(count0, 0, "CosmFS: initial file count is 0" as void*);
 
     // --- テスト2: ファイル作成（CREATE） ---
-    t_set_filename(T_FNAME_BUF);
+    // 文字列リテラルでファイル名を設定
+    cosmfs_op(T_FS_OP_MEMCPY, T_FNAME_BUF, "test.txt" as ulong, 9, 0);
     ulong cr = cosmfs_op(T_FS_OP_CREATE, T_FNAME_BUF, T_DATA_BUF, 4096, 0);
     runner->assert_eq(cr, 0, "CosmFS: CREATE returns 0" as void*);
 
@@ -86,12 +67,7 @@ export void test_cosmfs(TestRunner* runner) {
     runner->assert_eq(size0, 0, "CosmFS: initial size is 0" as void*);
 
     // --- テスト6: WRITE でデータを書き込み ---
-    // "Hello" = 5バイト
-    t_write_byte(T_WRITE_BUF, 0x48);      // 'H'
-    t_write_byte(T_WRITE_BUF + 1, 0x65);  // 'e'
-    t_write_byte(T_WRITE_BUF + 2, 0x6C);  // 'l'
-    t_write_byte(T_WRITE_BUF + 3, 0x6C);  // 'l'
-    t_write_byte(T_WRITE_BUF + 4, 0x6F);  // 'o'
+    cosmfs_op(T_FS_OP_MEMCPY, T_WRITE_BUF, "Hello" as ulong, 5, 0);
     ulong wr = cosmfs_op(T_FS_OP_WRITE, T_FNAME_BUF, T_WRITE_BUF, 5, 0);
     runner->assert_eq(wr, 5, "CosmFS: WRITE returns 5" as void*);
 
@@ -115,7 +91,7 @@ export void test_cosmfs(TestRunner* runner) {
     runner->assert_eq(rb0, 0x48, "CosmFS: READ data[0] == 'H'" as void*);
 
     // --- テスト10: APPEND でデータ追加 ---
-    t_write_byte(T_WRITE_BUF, 0x21);  // '!'
+    cosmfs_op(T_FS_OP_MEMCPY, T_WRITE_BUF, "!" as ulong, 1, 0);
     ulong ar = cosmfs_op(T_FS_OP_APPEND, T_FNAME_BUF, T_WRITE_BUF, 1, 0);
     runner->assert_eq(ar, 1, "CosmFS: APPEND returns 1" as void*);
 
@@ -124,9 +100,7 @@ export void test_cosmfs(TestRunner* runner) {
     runner->assert_eq(size6, 6, "CosmFS: size is 6 after APPEND" as void*);
 
     // --- テスト12: 存在しないファイルのFINDは NOT_FOUND ---
-    t_write_byte(T_FNAME2_BUF, 0x6E);     // 'n'
-    t_write_byte(T_FNAME2_BUF + 1, 0x6F); // 'o'
-    t_write_byte(T_FNAME2_BUF + 2, 0);    // NUL
+    cosmfs_op(T_FS_OP_MEMCPY, T_FNAME2_BUF, "no" as ulong, 3, 0);
     ulong nf = cosmfs_op(T_FS_OP_FIND, T_FNAME2_BUF, 0, 0, 0);
     runner->assert_eq(nf, T_NOT_FOUND, "CosmFS: FIND non-existent = NOT_FOUND" as void*);
 
