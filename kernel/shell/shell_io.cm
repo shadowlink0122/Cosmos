@@ -51,6 +51,14 @@ export void shell_newline() {
     con.newline();
 }
 
+/// serial + FBConsole に1文字出力
+export void shell_putc(ulong ch) {
+    SerialPort serial(0x3F8);
+    FBConsole con();
+    serial.putc(ch);
+    con.putc(ch);
+}
+
 /// FBConsole の色を設定
 export void shell_set_color(ulong color) {
     FBConsole con();

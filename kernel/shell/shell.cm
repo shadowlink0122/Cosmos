@@ -16,6 +16,8 @@ import ./cmd_help;
 import ./cmd_ps;
 import ./cmd_mem;
 import ./cmd_uptime;
+import ./cmd_fs;
+import ../mm/heap;
 
 // ============================================================
 // 定数
@@ -86,6 +88,42 @@ export ulong shell_streq(ulong buf_addr, ulong buf_len, void* target) {
     return 1;
 }
 
+/// コマンドバッファが指定プレフィックスで始まるか判定
+/// 一致すれば1、不一致なら0を返す
+export ulong shell_starts_with(ulong buf_addr, ulong buf_len, void* prefix, ulong prefix_len) {
+    if (buf_len < prefix_len) {
+        return 0;
+    }
+
+    ulong prefix_addr = prefix as ulong;
+    ulong i = 0;
+    while (i < prefix_len) {
+        ulong ch_buf = 0;
+        ulong buf_byte_addr = buf_addr + i;
+        __asm__(`
+            movq ${r:buf_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_buf}
+        `);
+
+        ulong ch_prefix = 0;
+        ulong prefix_byte_addr = prefix_addr + i;
+        __asm__(`
+            movq ${r:prefix_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_prefix}
+        `);
+
+        if (ch_buf != ch_prefix) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
 // ============================================================
 // コマンド実行
 // ============================================================
@@ -138,6 +176,43 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
         con.set_color(0x00FFFFFF);
         con.println("  CosmOS v0.6.0" as void*);
         con.newline();
+        matched = 1;
+    }
+
+    // --- ファイルシステムコマンド ---
+
+    if (shell_streq(buf_addr, buf_len, "ls" as void*) != 0) {
+        cmd_ls();
+        matched = 1;
+    }
+
+    ulong is_touch = shell_starts_with(buf_addr, buf_len, "touch " as void*, 6);
+    if (is_touch != 0) {
+        ulong* heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr = *heap_ptr;
+        Heap* heap = heap_addr as Heap*;
+        cmd_touch(buf_addr, buf_len, heap);
+        matched = 1;
+    }
+
+    ulong is_cat = shell_starts_with(buf_addr, buf_len, "cat " as void*, 4);
+    if (is_cat != 0) {
+        cmd_cat(buf_addr, buf_len);
+        matched = 1;
+    }
+
+    ulong is_rm = shell_starts_with(buf_addr, buf_len, "rm " as void*, 3);
+    if (is_rm != 0) {
+        cmd_rm(buf_addr, buf_len);
+        matched = 1;
+    }
+
+    ulong is_write = shell_starts_with(buf_addr, buf_len, "write " as void*, 6);
+    if (is_write != 0) {
+        ulong* heap_ptr2 = ADDR_GLOBAL_HEAP as ulong*;
+        ulong heap_addr2 = *heap_ptr2;
+        Heap* heap2 = heap_addr2 as Heap*;
+        cmd_write(buf_addr, buf_len, heap2);
         matched = 1;
     }
 

@@ -59,6 +59,14 @@ export const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
 // --- TCB配列 ---
 export const ulong ADDR_TCB_BASE         = 0x1000;
 
+// --- CosmFS 状態 ---
+export const ulong ADDR_FS_FILE_TABLE    = 0x1200;  // ファイルテーブル先頭
+export const ulong ADDR_FS_FILE_COUNT    = 0x1A00;  // 現在のファイル数
+export const ulong ADDR_FS_INITIALIZED   = 0x1A08;  // 初期化フラグ
+
+// --- シェル用グローバル参照 ---
+export const ulong ADDR_GLOBAL_HEAP      = 0x1A10;  // Heap構造体アドレス
+
 // ============================================================
 // シェル色定数
 // ============================================================

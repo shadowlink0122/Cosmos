@@ -1,0 +1,322 @@
+//! platform: uefi
+// kernel::fs::cosmfs - CosmFS インメモリファイルシステム
+//
+// RAM上にファイルを格納するシンプルなファイルシステム。
+// 固定アドレスファイルテーブル（32エントリ×32B）を使用。
+//
+// コンパイラ制約:
+//   - 全関数にexportが必要（UEFIターゲット）
+//   - export関数数を最小限に抑える（コンパイラハング回避）
+//   - while(true)は使わず上限付きループを使用
+//
+// API:
+//   cosmfs_init()                          - 初期化
+//   cosmfs_op(op, arg1, arg2, arg3, arg4)  - 統合操作関数
+//     op=1: CREATE  arg1=name_buf, arg2=data_buf, arg3=capacity
+//     op=2: WRITE   arg1=name_addr, arg2=data, arg3=len
+//     op=3: SIZE    arg1=name_addr → return file_size
+//     op=4: DELETE  arg1=name_addr
+//     op=5: FIND    arg1=name_addr → return index
+//     op=6: GET_DATA arg1=name_addr → return data_addr
+//     op=7: COUNT   → return file_count
+//     op=8: ENTRY_READ  arg1=index, arg2=field_offset → return value
+//     op=9: STRLEN  arg1=addr → return len
+//     op=10: MEMCPY arg1=dst, arg2=src, arg3=len
+
+import ../config;
+
+// ============================================================
+// 定数
+// ============================================================
+
+const ulong FS_ENTRY_SIZE  = 32;
+const ulong FS_MAX_FILES   = 32;
+const ulong FS_INIT_CAP    = 256;
+
+// 操作コード
+const ulong FS_OP_CREATE    = 1;
+const ulong FS_OP_WRITE     = 2;
+const ulong FS_OP_SIZE      = 3;
+const ulong FS_OP_DELETE    = 4;
+const ulong FS_OP_FIND      = 5;
+const ulong FS_OP_GET_DATA  = 6;
+const ulong FS_OP_COUNT     = 7;
+const ulong FS_OP_ENTRY_RD  = 8;
+const ulong FS_OP_STRLEN    = 9;
+const ulong FS_OP_MEMCPY    = 10;
+
+// ============================================================
+// 初期化
+// ============================================================
+
+export void cosmfs_init() {
+    // ファイルテーブルの全エントリをゼロクリア
+    ulong i = 0;
+    ulong total = FS_MAX_FILES * FS_ENTRY_SIZE;
+    while (i < total) {
+        ulong addr = ADDR_FS_FILE_TABLE + i;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movb %al, (%rdi)
+        `);
+        i = i + 1;
+    }
+    // ファイル数=0
+    ulong* count_ptr = ADDR_FS_FILE_COUNT as ulong*;
+    ulong zero = 0;
+    *count_ptr = zero;
+    // 初期化フラグ=1
+    ulong* init_ptr = ADDR_FS_INITIALIZED as ulong*;
+    ulong one = 1;
+    *init_ptr = one;
+}
+
+// ============================================================
+// 統合操作関数
+// ============================================================
+
+export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+    // ----- バイト操作(内部) -----
+
+    // op=9: STRLEN
+    if (op == FS_OP_STRLEN) {
+        ulong len = 0;
+        ulong max_len = 256;
+        while (len < max_len) {
+            ulong ch = 0;
+            ulong byte_addr = arg1 + len;
+            __asm__(`
+                movq ${r:byte_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            if (ch == 0) {
+                return len;
+            }
+            len = len + 1;
+        }
+        return len;
+    }
+
+    // op=10: MEMCPY (dst=arg1, src=arg2, len=arg3)
+    if (op == FS_OP_MEMCPY) {
+        ulong mi = 0;
+        while (mi < arg3) {
+            ulong ch = 0;
+            ulong src_addr = arg2 + mi;
+            __asm__(`
+                movq ${r:src_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            ulong dst_addr = arg1 + mi;
+            __asm__(`
+                movq ${r:dst_addr}, %rdi;
+                movq ${r:ch}, %rax;
+                movb %al, (%rdi)
+            `);
+            mi = mi + 1;
+        }
+        return arg3;
+    }
+
+    // ----- エントリ操作 -----
+
+    // op=7: COUNT
+    if (op == FS_OP_COUNT) {
+        ulong* cnt = ADDR_FS_FILE_COUNT as ulong*;
+        return *cnt;
+    }
+
+    // op=8: ENTRY_READ (index=arg1, field=arg2)
+    if (op == FS_OP_ENTRY_RD) {
+        ulong ea = ADDR_FS_FILE_TABLE + (arg1 * FS_ENTRY_SIZE) + arg2;
+        ulong* ep = ea as ulong*;
+        return *ep;
+    }
+
+    // ----- ファイル検索(内部ヘルパー) -----
+    // 内部: ファイル名でインデックスを検索
+    // fs_findの結果は各opで必要に応じて直接計算する
+
+    // op=5: FIND (name=arg1)
+    if (op == FS_OP_FIND) {
+        ulong* cnt = ADDR_FS_FILE_COUNT as ulong*;
+        ulong count = *cnt;
+        ulong fi = 0;
+        while (fi < count) {
+            ulong ea = ADDR_FS_FILE_TABLE + (fi * FS_ENTRY_SIZE);
+            ulong* np = ea as ulong*;
+            ulong ename = *np;
+            if (ename != 0) {
+                // strcmp
+                ulong si = 0;
+                ulong smatch = 1;  // 一致していると仮定
+                ulong smax = 256;
+                while (si < smax) {
+                    ulong ca = 0;
+                    ulong sa = ename + si;
+                    __asm__(`
+                        movq ${r:sa}, %rdi;
+                        xorq %rax, %rax;
+                        movb (%rdi), %al;
+                        movq %rax, ${=r:ca}
+                    `);
+                    ulong cb = 0;
+                    ulong sb = arg1 + si;
+                    __asm__(`
+                        movq ${r:sb}, %rdi;
+                        xorq %rax, %rax;
+                        movb (%rdi), %al;
+                        movq %rax, ${=r:cb}
+                    `);
+                    if (ca != cb) {
+                        smatch = 0;
+                        si = smax;  // breakの代わり
+                    }
+                    if (ca == 0) {
+                        si = smax;  // breakの代わり
+                    }
+                    si = si + 1;
+                }
+                if (smatch != 0) {
+                    return fi;
+                }
+            }
+            fi = fi + 1;
+        }
+        return 0xFFFFFFFFFFFFFFFF;
+    }
+
+    // op=1: CREATE (name_buf=arg1, data_buf=arg2, capacity=arg3)
+    if (op == FS_OP_CREATE) {
+        ulong* cnt = ADDR_FS_FILE_COUNT as ulong*;
+        ulong count = *cnt;
+        if (count >= FS_MAX_FILES) {
+            return 1;
+        }
+        // 既存チェック: find
+        ulong found = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
+        if (found != 0xFFFFFFFFFFFFFFFF) {
+            return 2;
+        }
+        // エントリ設定
+        ulong base = ADDR_FS_FILE_TABLE + (count * FS_ENTRY_SIZE);
+        ulong* f0 = base as ulong*;
+        *f0 = arg1;  // name_buf
+        ulong a1 = base + 8;
+        ulong* f1 = a1 as ulong*;
+        *f1 = arg2;  // data_buf
+        ulong a2 = base + 16;
+        ulong* f2 = a2 as ulong*;
+        ulong zero = 0;
+        *f2 = zero;  // file_size = 0
+        ulong a3 = base + 24;
+        ulong* f3 = a3 as ulong*;
+        *f3 = arg3;  // capacity
+        // ファイル数++
+        ulong nc = count + 1;
+        *cnt = nc;
+        return 0;
+    }
+
+    // op=2: WRITE (name=arg1, data=arg2, len=arg3)
+    if (op == FS_OP_WRITE) {
+        ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
+        if (idx == 0xFFFFFFFFFFFFFFFF) {
+            return 0;
+        }
+        ulong cap_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 24;
+        ulong* cap_ptr = cap_addr as ulong*;
+        ulong cap = *cap_ptr;
+        ulong wlen = arg3;
+        if (wlen > cap) {
+            wlen = cap;
+        }
+        ulong da_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 8;
+        ulong* da_ptr = da_addr as ulong*;
+        ulong data_dst = *da_ptr;
+        // memcpy
+        cosmfs_op(FS_OP_MEMCPY, data_dst, arg2, wlen, 0);
+        ulong sz_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 16;
+        ulong* sz_ptr = sz_addr as ulong*;
+        *sz_ptr = wlen;
+        return wlen;
+    }
+
+    // op=3: SIZE (name=arg1)
+    if (op == FS_OP_SIZE) {
+        ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
+        if (idx == 0xFFFFFFFFFFFFFFFF) {
+            return 0xFFFFFFFFFFFFFFFF;
+        }
+        ulong sz_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 16;
+        ulong* sz_ptr = sz_addr as ulong*;
+        return *sz_ptr;
+    }
+
+    // op=4: DELETE (name=arg1)
+    if (op == FS_OP_DELETE) {
+        ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
+        if (idx == 0xFFFFFFFFFFFFFFFF) {
+            return 1;
+        }
+        ulong* cnt = ADDR_FS_FILE_COUNT as ulong*;
+        ulong count = *cnt;
+        ulong last = count - 1;
+        if (idx != last) {
+            // 最後のエントリと入れ替え
+            ulong src_base = ADDR_FS_FILE_TABLE + (last * FS_ENTRY_SIZE);
+            ulong dst_base = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE);
+            ulong fi = 0;
+            while (fi < FS_ENTRY_SIZE) {
+                ulong sv = 0;
+                ulong saddr = src_base + fi;
+                __asm__(`
+                    movq ${r:saddr}, %rdi;
+                    xorq %rax, %rax;
+                    movb (%rdi), %al;
+                    movq %rax, ${=r:sv}
+                `);
+                ulong daddr = dst_base + fi;
+                __asm__(`
+                    movq ${r:daddr}, %rdi;
+                    movq ${r:sv}, %rax;
+                    movb %al, (%rdi)
+                `);
+                fi = fi + 1;
+            }
+        }
+        // 最後のエントリをクリア
+        ulong clr_base = ADDR_FS_FILE_TABLE + (last * FS_ENTRY_SIZE);
+        ulong ci = 0;
+        while (ci < FS_ENTRY_SIZE) {
+            ulong caddr = clr_base + ci;
+            __asm__(`
+                movq ${r:caddr}, %rdi;
+                xorq %rax, %rax;
+                movb %al, (%rdi)
+            `);
+            ci = ci + 1;
+        }
+        ulong nc = count - 1;
+        *cnt = nc;
+        return 0;
+    }
+
+    // op=6: GET_DATA (name=arg1)
+    if (op == FS_OP_GET_DATA) {
+        ulong idx = cosmfs_op(FS_OP_FIND, arg1, 0, 0, 0);
+        if (idx == 0xFFFFFFFFFFFFFFFF) {
+            return 0;
+        }
+        ulong da_addr = ADDR_FS_FILE_TABLE + (idx * FS_ENTRY_SIZE) + 8;
+        ulong* da_ptr = da_addr as ulong*;
+        return *da_ptr;
+    }
+
+    return 0;
+}

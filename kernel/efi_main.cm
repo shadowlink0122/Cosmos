@@ -36,6 +36,7 @@ import ./mm/heap;
 import ./sched/task;
 import ./sched/scheduler;
 import ./shell/shell;
+import ./fs/cosmfs;
 import ./tasks/demo;
 import ./libs/boot_services;
 
@@ -174,6 +175,16 @@ void kernel_main(BootInfo* info) {
 
     // デモタスクを開始（schedule呼出しで最初のタスクに切替）
     schedule();
+
+    // CosmFS初期化
+    cosmfs_init();
+    debug.println("[BOOT] CosmFS initialized" as void*);
+
+    // グローバルHeapポインタを保存（シェルコマンドからアクセス用）
+    Heap* heap_ref = &heap;
+    ulong heap_addr_val = heap_ref as ulong;
+    ulong* global_heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+    *global_heap_ptr = heap_addr_val;
 
     // シェル初期化（デモタスク完了後にプロンプト表示）
     shell_init();
