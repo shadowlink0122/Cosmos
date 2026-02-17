@@ -22,76 +22,40 @@ export void initramfs_load(Heap* heap) {
     DebugPort debug(0xE9);
 
     // --- readme.txt ---
-    ulong rn_len = 6;
-    ulong rn_buf = heap->alloc(rn_len + 1);
+    ulong rn_buf = heap->alloc(11);  // "readme.txt" + NUL
     if (rn_buf != 0) {
-        cosmfs_op(FS_OP_MEMCPY, rn_buf, "readme" as ulong, rn_len, 0);
-        // NUL終端
-        ulong rn_nul = rn_buf + rn_len;
-        __asm__(`
-            movq ${r:rn_nul}, %rdi;
-            xorq %rax, %rax;
-            movb %al, (%rdi)
-        `);
-        // .txt拡張子追加
-        ulong full_rn_len = 10;
-        ulong full_rn = heap->alloc(full_rn_len + 1);
-        if (full_rn != 0) {
-            cosmfs_op(FS_OP_MEMCPY, full_rn, "readme.txt" as ulong, full_rn_len, 0);
-            ulong fn_nul = full_rn + full_rn_len;
-            __asm__(`
-                movq ${r:fn_nul}, %rdi;
-                xorq %rax, %rax;
-                movb %al, (%rdi)
-            `);
-            ulong rd_buf = heap->alloc(4096);
-            if (rd_buf != 0) {
-                cosmfs_op(FS_OP_CREATE, full_rn, rd_buf, 4096, 0);
-                ulong rd_data_len = 93;
-                cosmfs_op(FS_OP_WRITE, full_rn,
-                    "CosmOS v0.7.0 - Cm言語で書かれた実験的OS\nCommands: help, ls, cat, touch, rm, write, append, aria" as ulong,
-                    rd_data_len, 0);
-                debug.println("[INITRAMFS] loaded: readme.txt" as void*);
-            }
+        cosmfs_op(FS_OP_MEMCPY, rn_buf, "readme.txt" as ulong, 11, 0);  // NUL含む
+        ulong rd_buf = heap->alloc(4096);
+        if (rd_buf != 0) {
+            cosmfs_op(FS_OP_CREATE, rn_buf, rd_buf, 4096, 0);
+            cosmfs_op(FS_OP_WRITE, rn_buf,
+                "CosmOS v0.7.0 - Cm言語で書かれた実験的OS\nCommands: help, ls, cat, touch, rm, write, append, aria" as ulong,
+                93, 0);
+            debug.println("[INITRAMFS] loaded: readme.txt" as void*);
         }
     }
 
     // --- hello.cm ---
-    ulong hn_len = 8;
-    ulong full_hn = heap->alloc(hn_len + 1);
-    if (full_hn != 0) {
-        cosmfs_op(FS_OP_MEMCPY, full_hn, "hello.cm" as ulong, hn_len, 0);
-        ulong hn_nul = full_hn + hn_len;
-        __asm__(`
-            movq ${r:hn_nul}, %rdi;
-            xorq %rax, %rax;
-            movb %al, (%rdi)
-        `);
+    ulong hn_buf = heap->alloc(9);  // "hello.cm" + NUL
+    if (hn_buf != 0) {
+        cosmfs_op(FS_OP_MEMCPY, hn_buf, "hello.cm" as ulong, 9, 0);  // NUL含む
         ulong hd_buf = heap->alloc(4096);
         if (hd_buf != 0) {
-            cosmfs_op(FS_OP_CREATE, full_hn, hd_buf, 4096, 0);
-            ulong hd_data_len = 76;
-            cosmfs_op(FS_OP_WRITE, full_hn,
+            cosmfs_op(FS_OP_CREATE, hn_buf, hd_buf, 4096, 0);
+            cosmfs_op(FS_OP_WRITE, hn_buf,
                 "// hello.cm - CosmOS sample program\nexport void main() {\n    print(42);\n}" as ulong,
-                hd_data_len, 0);
+                76, 0);
             debug.println("[INITRAMFS] loaded: hello.cm" as void*);
         }
     }
 
     // --- notes.txt ---
-    ulong nn_len = 9;
-    ulong full_nn = heap->alloc(nn_len + 1);
-    if (full_nn != 0) {
-        cosmfs_op(FS_OP_MEMCPY, full_nn, "notes.txt" as ulong, nn_len, 0);
-        ulong nn_nul = full_nn + nn_len;
-        __asm__(`
-            movq ${r:nn_nul}, %rdi;
-            xorq %rax, %rax;
-            movb %al, (%rdi)
-        `);
+    ulong nn_buf = heap->alloc(10);  // "notes.txt" + NUL
+    if (nn_buf != 0) {
+        cosmfs_op(FS_OP_MEMCPY, nn_buf, "notes.txt" as ulong, 10, 0);  // NUL含む
         ulong nd_buf = heap->alloc(4096);
         if (nd_buf != 0) {
-            cosmfs_op(FS_OP_CREATE, full_nn, nd_buf, 4096, 0);
+            cosmfs_op(FS_OP_CREATE, nn_buf, nd_buf, 4096, 0);
             // 空ファイル（データ書き込みなし）
             debug.println("[INITRAMFS] loaded: notes.txt" as void*);
         }
