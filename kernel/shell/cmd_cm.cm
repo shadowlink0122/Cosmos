@@ -31,6 +31,7 @@ import ../mm/heap;
 import ../config;
 import ./shell_io;
 import ./cmd_fs;
+import ./fs_result;
 
 // CosmFS操作コード
 const ulong CM_FS_CREATE  = 1;
@@ -178,10 +179,11 @@ export ulong cm_compile_source(ulong src, ulong src_len, ulong code_buf) {
 }
 
 /// a.outファイルを作成してバイトコードを書き込む
-/// 戻り値: エラーコード（0=成功）
-export ulong cm_create_aout(ulong code_buf, ulong code_size, Heap* heap) {
-    ulong aout_name = heap->alloc(6);
-    if (aout_name == 0) { return CM_ERR_ALLOC; }
+/// 戻り値: FsResult（成功時value=0、失敗時errorにコード）
+export FsResult cm_create_aout(ulong code_buf, ulong code_size, Heap* heap) {
+    FsResult r_name = fs_from_alloc(heap->alloc(6));
+    if (r_name.ok == 0) { return r_name; }
+    ulong aout_name = r_name.value;
     cosmfs_op(CM_FS_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
 
     ulong existing = cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0);
@@ -189,16 +191,17 @@ export ulong cm_create_aout(ulong code_buf, ulong code_size, Heap* heap) {
         cosmfs_op(CM_FS_DELETE, aout_name, 0, 0, 0);
     }
 
-    ulong aout_data = heap->alloc(4096);
-    if (aout_data == 0) { return CM_ERR_ALLOC; }
+    FsResult r_data = fs_from_alloc(heap->alloc(4096));
+    if (r_data.ok == 0) { return r_data; }
 
-    ulong cr = cosmfs_op(CM_FS_CREATE, aout_name, aout_data, 4096, 0);
-    if (cr != 0) { return CM_ERR_ALLOC; }  // CREATE失敗
+    FsResult r_create = fs_from_create(cosmfs_op(CM_FS_CREATE, aout_name, r_data.value, 4096, 0));
+    if (r_create.ok == 0) { return r_create; }
 
-    ulong wr = cosmfs_op(CM_FS_WRITE, aout_name, code_buf, code_size, 0);
-    if (wr == 0xFFFFFFFFFFFFFFFF) { return CM_ERR_NOT_FOUND; }  // WRITE失敗
+    FsResult r_write = fs_from_op(cosmfs_op(CM_FS_WRITE, aout_name, code_buf, code_size, 0));
+    if (r_write.ok == 0) { return r_write; }
 
-    return CM_OK;
+    FsResult ok(0);
+    return ok;
 }
 
 /// cmコマンド: .cmファイルをコンパイルしてa.outを生成
@@ -233,70 +236,38 @@ export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
     }
 
     // ファイル名をバッファにコピー
-    ulong name_buf = heap->alloc(arg_len + 1);
-    if (name_buf == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: memory allocation failed" as void*);
-        return;
-    }
+    FsResult r_name = fs_from_alloc(heap->alloc(arg_len + 1));
+    if (r_name.ok == 0) { fs_print_error(r_name.error); return; }
+    ulong name_buf = r_name.value;
     cosmfs_op(CM_FS_MEMCPY, name_buf, buf_addr + arg_start, arg_len, 0);
     cmd_write_byte(name_buf + arg_len, 0);
 
     // ソースファイルの検索
-    ulong idx = cosmfs_op(CM_FS_FIND, name_buf, 0, 0, 0);
-    if (idx == CM_NOT_FOUND) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: file not found" as void*);
-        return;
-    }
+    FsResult r_find = fs_from_op(cosmfs_op(CM_FS_FIND, name_buf, 0, 0, 0));
+    if (r_find.ok == 0) { fs_print_error(r_find.error); return; }
 
     // ソースファイル読み込み
-    ulong src_size = cosmfs_op(CM_FS_SIZE, name_buf, 0, 0, 0);
-    if (src_size == 0xFFFFFFFFFFFFFFFF) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: file not found" as void*);
-        return;
-    }
-    if (src_size == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: empty source file" as void*);
-        return;
-    }
+    FsResult r_size = fs_from_op_nz(cosmfs_op(CM_FS_SIZE, name_buf, 0, 0, 0));
+    if (r_size.ok == 0) { fs_print_error(r_size.error); return; }
+    ulong src_size = r_size.value;
 
-    ulong src_buf = heap->alloc(src_size + 1);
-    if (src_buf == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: memory allocation failed" as void*);
-        return;
-    }
-    ulong read_result = cosmfs_op(CM_FS_READ, name_buf, src_buf, src_size, 0);
-    if (read_result == 0xFFFFFFFFFFFFFFFF) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: failed to read source file" as void*);
-        return;
-    }
-    if (read_result == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: read returned 0 bytes" as void*);
-        return;
-    }
+    FsResult r_src = fs_from_alloc(heap->alloc(src_size + 1));
+    if (r_src.ok == 0) { fs_print_error(r_src.error); return; }
+
+    FsResult r_read = fs_from_op_nz(cosmfs_op(CM_FS_READ, name_buf, r_src.value, src_size, 0));
+    if (r_read.ok == 0) { fs_print_error(r_read.error); return; }
 
     // バイトコードバッファ
-    ulong code_buf = heap->alloc(256);
-    if (code_buf == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: memory allocation failed" as void*);
-        return;
-    }
+    FsResult r_code = fs_from_alloc(heap->alloc(256));
+    if (r_code.ok == 0) { fs_print_error(r_code.error); return; }
 
     // コンパイル実行
-    ulong code_size = cm_compile_source(src_buf, src_size, code_buf);
+    ulong code_size = cm_compile_source(r_src.value, src_size, r_code.value);
 
     // a.out作成
-    ulong write_err = cm_create_aout(code_buf, code_size, heap);
-    if (write_err != CM_OK) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: failed to create a.out" as void*);
+    FsResult r_aout = cm_create_aout(r_code.value, code_size, heap);
+    if (r_aout.ok == 0) {
+        fs_print_error(r_aout.error);
         return;
     }
 
@@ -306,54 +277,31 @@ export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
 
 /// a.outコマンド: バイトコードVMで実行
 export void cmd_run_aout(Heap* heap) {
-    ulong aout_name = heap->alloc(6);
-    if (aout_name == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: memory allocation failed" as void*);
-        return;
-    }
+    FsResult r_name = fs_from_alloc(heap->alloc(6));
+    if (r_name.ok == 0) { fs_print_error(r_name.error); return; }
+    ulong aout_name = r_name.value;
     cosmfs_op(CM_FS_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
 
-    ulong idx = cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0);
-    if (idx == CM_NOT_FOUND) {
+    FsResult r_find = fs_from_op(cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0));
+    if (r_find.ok == 0) {
         shell_set_color(0x00FF4444);
         shell_println("Error: a.out not found" as void*);
         shell_println("  Compile first: cm <file.cm>" as void*);
         return;
     }
 
-    ulong code_size = cosmfs_op(CM_FS_SIZE, aout_name, 0, 0, 0);
-    if (code_size == 0xFFFFFFFFFFFFFFFF) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: a.out not found" as void*);
-        return;
-    }
-    if (code_size == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: a.out is empty" as void*);
-        return;
-    }
+    FsResult r_size = fs_from_op_nz(cosmfs_op(CM_FS_SIZE, aout_name, 0, 0, 0));
+    if (r_size.ok == 0) { fs_print_error(r_size.error); return; }
+    ulong code_size = r_size.value;
 
-    ulong code_buf = heap->alloc(code_size);
-    if (code_buf == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: memory allocation failed" as void*);
-        return;
-    }
-    ulong rd = cosmfs_op(CM_FS_READ, aout_name, code_buf, code_size, 0);
-    if (rd == 0xFFFFFFFFFFFFFFFF) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: failed to read a.out" as void*);
-        return;
-    }
-    if (rd == 0) {
-        shell_set_color(0x00FF4444);
-        shell_println("Error: a.out read returned 0 bytes" as void*);
-        return;
-    }
+    FsResult r_buf = fs_from_alloc(heap->alloc(code_size));
+    if (r_buf.ok == 0) { fs_print_error(r_buf.error); return; }
+
+    FsResult r_read = fs_from_op_nz(cosmfs_op(CM_FS_READ, aout_name, r_buf.value, code_size, 0));
+    if (r_read.ok == 0) { fs_print_error(r_read.error); return; }
 
     shell_set_color(0x00FFFFFF);
-    cm_vm_exec(code_buf, code_size);
+    cm_vm_exec(r_buf.value, code_size);
 }
 
 /// バイトコードVM実行エンジン

@@ -1,0 +1,149 @@
+//! platform: uefi
+// kernel::lib::fs_result - FsResult型（ファイル操作用Result）
+//
+// UEFIベアメタル環境でのエラーハンドリング用Result構造体。
+// ジェネリクスなしのulong固定型で、cosmfs_op()の結果を
+// 型安全にラップする。
+//
+// 使用例:
+//   FsResult res = fs_ok(42);
+//   if (res.ok != 0) {
+//       ulong val = res.value;
+//   } else {
+//       // res.error にエラーコード
+//   }
+
+import ../drivers/serial;
+import ../lib/print;
+import ../config;
+import ./shell_io;
+
+// ============================================================
+// FsResult 構造体
+// ============================================================
+
+/// ファイル操作のResult型
+/// ok=1: 成功（valueに値）, ok=0: 失敗（errorにコード）
+export struct FsResult {
+    ulong ok;      // 1=成功, 0=失敗
+    ulong value;   // 成功時の値（バイト数、アドレス等）
+    ulong error;   // 失敗時のエラーコード
+}
+
+// ============================================================
+// エラーコード定数
+// ============================================================
+
+const ulong FS_ERR_NONE      = 0;   // エラーなし
+const ulong FS_ERR_NOT_FOUND = 1;   // ファイル未発見
+const ulong FS_ERR_ALLOC     = 2;   // メモリ割当失敗
+const ulong FS_ERR_EMPTY     = 3;   // ファイルが空
+const ulong FS_ERR_FULL      = 4;   // 容量不足
+const ulong FS_ERR_EXISTS    = 5;   // 既に存在
+const ulong FS_ERR_WRITE     = 6;   // 書込み失敗
+const ulong FS_ERR_READ      = 7;   // 読込み失敗
+const ulong FS_ERR_CREATE    = 8;   // ファイル作成失敗
+const ulong FS_ERR_NULL      = 9;   // NULLデータ
+
+// CosmFSのエラーセンチネル値
+const ulong FS_SENTINEL = 0xFFFFFFFFFFFFFFFF;
+
+// ============================================================
+// FsResult 生成ヘルパー
+// ============================================================
+
+impl FsResult {
+    /// 成功Result生成
+    overload self(ulong val) {
+        self.ok = 1;
+        self.value = val;
+        self.error = FS_ERR_NONE;
+    }
+}
+
+/// 失敗Result生成（コンストラクタではok=1になるため専用関数で生成）
+export FsResult fs_err(ulong err_code) {
+    FsResult r(0);
+    r.ok = 0;
+    r.value = 0;
+    r.error = err_code;
+    return r;
+}
+
+/// cosmfs_opの戻り値をFsResultに変換（0xFFF...をエラーとみなす）
+export FsResult fs_from_op(ulong result) {
+    if (result == FS_SENTINEL) {
+        return fs_err(FS_ERR_NOT_FOUND);
+    }
+    FsResult r(result);
+    return r;
+}
+
+/// cosmfs_opの戻り値をFsResultに変換（0もエラーとみなす版）
+export FsResult fs_from_op_nz(ulong result) {
+    if (result == FS_SENTINEL) {
+        return fs_err(FS_ERR_NOT_FOUND);
+    }
+    if (result == 0) {
+        return fs_err(FS_ERR_EMPTY);
+    }
+    FsResult r(result);
+    return r;
+}
+
+/// heap->alloc()の結果をFsResultに変換
+export FsResult fs_from_alloc(ulong addr) {
+    if (addr == 0) {
+        return fs_err(FS_ERR_ALLOC);
+    }
+    FsResult r(addr);
+    return r;
+}
+
+/// CREATE操作の結果をFsResultに変換（0=成功、非0=エラー）
+export FsResult fs_from_create(ulong result) {
+    if (result == 0) {
+        FsResult r(0);
+        return r;
+    }
+    if (result == 2) {
+        return fs_err(FS_ERR_EXISTS);
+    }
+    return fs_err(FS_ERR_CREATE);
+}
+
+// ============================================================
+// エラー表示
+// ============================================================
+
+/// FsResultのエラーメッセージを表示
+export void fs_print_error(ulong err_code) {
+    shell_set_color(0x00FF4444);
+    if (err_code == FS_ERR_NOT_FOUND) {
+        shell_println("Error: file not found" as void*);
+    }
+    if (err_code == FS_ERR_ALLOC) {
+        shell_println("Error: memory allocation failed" as void*);
+    }
+    if (err_code == FS_ERR_EMPTY) {
+        shell_println("Error: file is empty" as void*);
+    }
+    if (err_code == FS_ERR_FULL) {
+        shell_println("Error: file is full" as void*);
+    }
+    if (err_code == FS_ERR_EXISTS) {
+        shell_println("Error: file already exists" as void*);
+    }
+    if (err_code == FS_ERR_WRITE) {
+        shell_println("Error: write failed" as void*);
+    }
+    if (err_code == FS_ERR_READ) {
+        shell_println("Error: read failed" as void*);
+    }
+    if (err_code == FS_ERR_CREATE) {
+        shell_println("Error: failed to create file" as void*);
+    }
+    if (err_code == FS_ERR_NULL) {
+        shell_println("Error: null data" as void*);
+    }
+}
