@@ -1,134 +1,149 @@
-# v0.1.0 スコープ定義 — Phase 1: カーネルブートストラップ
+# CosmOS v0.1.0 (Foundation) — 設計と実装記録
 
-> `docs/design/001_os_design.md` の Phase 1 を v0.1.0 として実装する。
+> v0.1.0は当初Phase 1（ブートストラップ）のみの計画だったが、
+> Phase 3（タスク管理）+ファイルシステム+アプリ基盤まで一気に実装した。
 
-## ゴール
+## 実装フェーズ一覧
 
-**UEFI → ExitBootServices → カーネル起動 → 画面出力**
-
-UEFIベースプログラム（`kernel/boot/`）を土台に、UEFI Boot Servicesを終了してOS側が完全に制御を取得するまでを実現する。
-
----
-
-## 実装タスク
-
-### 1. ブートローダ改修
-
-**目的:** ExitBootServices呼び出し前に必要な情報をすべて取得・保存する
-
-| タスク | 詳細 | 状態 |
-|-------|------|------|
-| BootInfo構造体定義 | メモリマップ、フレームバッファ情報、ACPIポインタ等をまとめる構造体 | ✅ |
-| メモリマップ保存 | GetMemoryMap → BootInfo に格納 | ✅ |
-| GOP情報保存 | FBアドレス、解像度、ストライドを BootInfo に格納 | ✅ |
-
-**新規ファイル:**
-- `kernel/boot/boot_info.cm` — BootInfo構造体定義
-
-### 2. ExitBootServices
-
-**目的:** UEFI Boot Servicesを終了し、OS側に制御を完全移行
-
-| タスク | 詳細 | 状態 |
-|-------|------|------|
-| ExitBootServices呼び出し | Boot Services関数テーブルから呼び出し | ✅ |
-| メモリマップキー管理 | ExitBootServices に渡す MapKey の取得と整合性 | ✅ |
-| リトライ処理 | MapKeyが古い場合の再取得ループ | ✅ |
-
-> [!CAUTION]
-> `ExitBootServices()` 後は ConOut, AllocatePool, GetMemoryMap 等の Boot Services が**一切使用不可**になる。
-
-### 3. GDT設定
-
-**目的:** x86_64 Long Modeのフラットセグメントを設定
-
-| タスク | 詳細 | 状態 |
-|-------|------|------|
-| GDTテーブル定義 | Nullセグメント + カーネルCS/DS | ✅ |
-| GDTR構造体 | ベースアドレス + リミット | ✅ |
-| `lgdt` + セグメント再ロード | ASMによるGDT適用 | ✅ |
-
-**新規ファイル:**
-- `kernel/boot/gdt.cm` — GDT定義＋ロード
-
-### 4. シリアルコンソール
-
-**目的:** ExitBootServices後のデバッグ出力手段
-
-| タスク | 詳細 | 状態 |
-|-------|------|------|
-| UART 0x3F8 初期化 | ボーレート設定、FIFO有効化 | ✅ |
-| 文字出力 | 1バイト出力関数 | ✅ |
-| 文字列出力 | シリアル版 println 相当 | ✅ |
-
-**新規ファイル:**
-- `kernel/drivers/serial.cm` — UART ドライバ
-
-### 5. フレームバッファ出力
-
-**目的:** ExitBootServices後の画面出力
-
-| タスク | 詳細 | 状態 |
-|-------|------|------|
-| FB直接描画 | BootInfoから取得したFBアドレスに直接ピクセル書込み | ✅ |
-| カーネルprintk相当 | フォントレンダリング + FB出力 | ✅ |
-| 起動メッセージ表示 | 「CosmOS v0.1.0 booted successfully」の表示 | ✅ |
-
-**既存活用:**
-- `kernel/boot/util/graphics.cm` の描画プリミティブを再利用
+| # | 旧バージョン | 内容 | 状態 |
+|---|------------|------|------|
+| 1 | v0.1.0 | UEFIブート・GDT・シリアル・フレームバッファ | ✅ |
+| 2 | v0.2.0 | IDT・ISR・PIC | ✅ |
+| 3 | v0.3.0 | PMM・ページング・ヒープ | ✅ |
+| 4 | v0.4.0 | PIT・TCB・コンテキストスイッチ・スケジューラ | ✅ |
+| 5 | v0.5.0 | TSS・キーボード・プリエンプティブスケジューリング・シェル | ✅ |
+| 6 | v0.7.0 | CosmFS・Aria・CosmEXEローダー・Syscall | ✅ |
 
 ---
 
-## v0.1.0 に含めないもの（Phase 2以降）
+## Phase 1: カーネルブートストラップ
 
-- IDT設定 / 例外ハンドラ
-- PIC/APIC初期化
-- 物理/仮想メモリマネージャ
-- ページテーブル構築
-- ヒープアロケータ
-- タスク管理 / スケジューラ
-- ユーザモード
+**ゴール**: UEFI → ExitBootServices → カーネル起動 → 画面出力
+
+| コンポーネント | 詳細 | ファイル |
+|-------------|------|---------|
+| BootInfo構造体 | メモリマップ・GOP情報の引き渡し | `efi_main.cm` |
+| ExitBootServices | Boot Services終了、リトライ処理 | `efi_main.cm` |
+| GDT | フラットセグメント + `lgdt` + セグメントリロード | `arch/gdt.cm` |
+| シリアルコンソール | UART COM1 (0x3F8) 115200 8N1 | `drivers/serial.cm` |
+| フレームバッファ | GOP FBに8x16フォントで描画 | `lib/print.cm`, `lib/font.cm` |
 
 ---
 
-## ディレクトリ構成（v0.1.0 完成時）
+## Phase 2: 割り込み基盤
 
+**ゴール**: CPU例外の捕捉、ハードウェア割り込み処理
+
+| コンポーネント | 詳細 | ファイル |
+|-------------|------|---------|
+| IDT | 256エントリ、16B Gate Descriptor | `arch/idt.cm` |
+| ISR (0-31) | 例外ハンドラ、エラーコード対応、リカバリ機構 | `arch/isr.cm` |
+| PIC 8259A | ICW1-4初期化、IRQ→ベクタ32-47リマップ | `drivers/pic.cm` |
+
+**割り込みフレーム (Ring0→Ring0)**:
 ```
-kernel/
-├── boot/
-│   ├── efi_main.cm          # エントリポイント（ExitBootServices含む）
-│   ├── boot_info.cm         # [NEW] BootInfo構造体
-│   ├── gdt.cm               # [NEW] GDT設定
-│   ├── libs/                # UEFI ライブラリ（既存）
-│   └── util/                # ユーティリティ（既存）
-├── drivers/
-│   └── serial.cm            # [NEW] UART ドライバ
-└── lib/
-    └── print.cm             # [NEW] カーネル printk
+[RSP+16] RFLAGS
+[RSP+8]  CS
+[RSP]    RIP
+(エラーコードがある場合はさらにpush)
 ```
 
 ---
 
-## 完了条件
+## Phase 3: メモリ管理
 
-- [x] BootInfo構造体にメモリマップ・GOP情報を格納できる
-- [x] ExitBootServicesが正常に完了する
-- [x] GDTが設定され、セグメントレジスタが再ロードされる
-- [x] シリアルコンソール（UART 0x3F8）でデバッグ出力が確認できる
-- [x] ExitBootServices後にフレームバッファに文字列を表示できる
-- [x] QEMUの `-serial mon:stdio` で起動メッセージが出力される
-- [x] README.md が整備されている
+**ゴール**: 物理/仮想メモリ管理 + カーネルヒープ
+
+| コンポーネント | 方式 | ファイル |
+|-------------|------|---------|
+| PMM | ビットマップ方式 (1bit=4KBページ) | `mm/pmm.cm` |
+| VMM | UEFI CR3継承 (アイデンティティマップ) | `mm/vmm.cm` |
+| Heap | Bump Allocator (alloc/free対応) | `mm/heap.cm` |
+
+**UEFIメモリマップ**: Type 7 (`EfiConventionalMemory`) をOS利用可能領域として解析。
 
 ---
 
-## マイルストーン
+## Phase 4: タスク管理
 
-| # | 内容 | 依存 |
-|---|------|------|
-| M1 | ベースプログラム動作確認（`make run`で既存メニュー起動） | なし |
-| M2 | BootInfo構造体 + メモリマップ/GOP情報保存 | M1 |
-| M3 | ExitBootServices 実装 | M2 |
-| M4 | GDT設定（`lgdt` + セグメントリロード） | M3 |
-| M5 | シリアルコンソール（UART出力） | M3 |
-| M6 | フレームバッファ直接描画（ExitBootServices後） | M3 |
-| M7 | README.md整備、CI確認、v0.1.0 リリース | M4-M6 |
+**ゴール**: マルチタスク (カーネルスレッド)
+
+| コンポーネント | 詳細 | ファイル |
+|-------------|------|---------|
+| PIT | 8254 Channel 0, 100Hz Rate Generator | `drivers/pit.cm` |
+| TCB | タスクID、状態、RSP、スタック | `sched/task.cm` |
+| コンテキストスイッチ | ASM push/pop + RSP切替 | `sched/context.cm` |
+| スケジューラ | ラウンドロビン、タイムスライス10tick | `sched/scheduler.cm` |
+
+---
+
+## Phase 5: 入力とシェル
+
+**ゴール**: 対話的カーネルシェル
+
+| コンポーネント | 詳細 | ファイル |
+|-------------|------|---------|
+| PS/2キーボード | IRQ1、スキャンコード→ASCII、リングバッファ | `drivers/keyboard.cm` |
+| TSS | 104B構造体、RSP0設定、`ltr` | `arch/gdt.cm` |
+| シェル | コマンド入力ループ、履歴、カーソル編集 | `shell/shell.cm` |
+| 組込みコマンド | ps, mem, uptime, clear, env | `apps/` |
+
+---
+
+## Phase 6: ファイルシステム・アプリ基盤
+
+**ゴール**: ファイル操作 + テキストエディタ + 外部バイナリ実行
+
+### CosmFS (インメモリファイルシステム)
+
+| 項目 | 値 |
+|------|-----|
+| ブロックサイズ | 4KB |
+| 最大ファイル数 | 256 |
+| ファイル名最大長 | 56B |
+| API | create, read, write, delete, stat, mkdir |
+
+ファイル: `fs/cosmfs.cm`, `fs/initramfs.cm`, `fs/path.cm`
+
+### Aria テキストエディタ 🎵
+
+- **モーダル**: Normal / Insert / Command (vim準拠)
+- **操作**: h/j/k/l移動、i挿入、:w保存、:q終了
+- ファイル: `apps/aria/aria.cm`
+
+### CosmEXEローダー + Syscall
+
+- **CosmEXE形式**: 32Bヘッダ + VA配置フラットバイナリ
+- **Syscall**: `int 0x80` (RAX=番号, RDI/RSI/RDX=引数)
+- **ビルド**: `pe2cosmexe.py`でPEから直接生成
+- ファイル: `sys/loader.cm`, `sys/syscall.cm`
+
+### シェルコマンド (19コマンド)
+
+```
+help, ps, mem, uptime, clear, env,
+ls, touch, cat, rm, write, append, mkdir, cp, mv,
+aria, cm, a.out
+```
+
+---
+
+## 技術的知見
+
+### Cmコンパイラのバグ回避パターン
+
+| # | 問題 | 回避策 |
+|---|------|-------|
+| 1 | `__asm__`出力変数のwhile条件問題 | ポインタ経由書き込み |
+| 2 | 整数リテラル型推論 | `as ulong`キャスト |
+| 7 | ローカル配列+ポインタ変数 | ASM直接構築 |
+| 8 | インライン展開レジスタ割当変更 | `${r:varname}`入力変数構文 |
+| 9 | インライン展開ret先不在 | ラベルアドレス明示push |
+
+### iretqスタック問題
+
+Cm関数のプロローグ(`push rsi; push rdi; sub rsp,$0xa8`)が自動生成されるため、`iretq`前に固定メモリ(`0xDA0`)経由でRSPを巻き戻す必要がある。
+
+### PEセクションVA配置
+
+`objcopy -O binary`はPEのセクションをVAオフセットに配置しない。`.text`→`.rdata`のVAギャップ(0x1000)とファイルギャップ(0x600)の不一致でRIPリレーティブが壊れる。`pe2cosmexe.py`で正しくVA配置。
