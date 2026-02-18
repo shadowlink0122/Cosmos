@@ -40,6 +40,8 @@ import ./fs/cosmfs;
 import ./fs/initramfs;
 import ./tasks/demo;
 import ./libs/boot_services;
+import ./sys/syscall;
+import ./sys/env;
 
 // ============================================================
 // カーネルメイン（ExitBootServices後）
@@ -166,6 +168,10 @@ void kernel_main(BootInfo* info) {
     keyboard_init(&pic, idt_table);
     debug.println("[BOOT] keyboard initialized" as void*);
 
+    // syscallハンドラー初期化（int 0x80）
+    syscall_init(idt_table);
+    debug.println("[BOOT] syscall handler initialized" as void*);
+
     // ============================================================
     // デモタスク生成（マルチタスク動作確認用）
     // ============================================================
@@ -180,6 +186,10 @@ void kernel_main(BootInfo* info) {
     // CosmFS初期化
     cosmfs_init();
     debug.println("[BOOT] CosmFS initialized" as void*);
+
+    // 環境変数初期化
+    env_init();
+    debug.println("[BOOT] environment variables initialized" as void*);
 
     // グローバルHeapポインタを保存（シェルコマンドからアクセス用）
     Heap* heap_ref = &heap;
@@ -199,9 +209,42 @@ void kernel_main(BootInfo* info) {
     serial.println("[CosmOS] Entering idle loop with shell" as void*);
     debug.println("[BOOT] entering idle loop" as void*);
 
+    // リカバリーポイントを設定（例外発生時にここに復帰する）
+    // RSPを保存し、復帰先アドレス(1:ラベル)をRIPとして記録
+    // 初回: jmp 2f でスキップ → while loopへ
+    // 復帰時: 1:ラベルから実行 → shell_recover() → while loopへ
+    ulong recovery_rsp = 0;
+    ulong recovery_rip = 0;
+    ulong is_recovery = 0;
+    __asm__(`
+        movq %rsp, ${=r:recovery_rsp};
+        leaq 1f(%rip), %rax;
+        movq %rax, ${=r:recovery_rip};
+        xorq %rcx, %rcx;
+        movq %rcx, ${=r:is_recovery};
+        jmp 2f;
+    1:;
+        movq $$1, ${=r:is_recovery};
+    2:
+    `);
+    // リカバリーポイントを固定メモリに保存
+    ulong* rsp_save = 0xD88 as ulong*;
+    ulong* rip_save = 0xD90 as ulong*;
+    *rsp_save = recovery_rsp;
+    *rip_save = recovery_rip;
+
+    // 例外から復帰した場合、シェルを復旧
+    if (is_recovery != 0) {
+        shell_recover();
+    }
+
     while (true) {
         // 省電力待機（次のIRQで起床）
         __asm__("hlt");
+
+        // OS標準カーソル点滅更新
+        FBConsole con();
+        con.cursor_update();
 
         // シェル入力処理
         shell_process_input();
@@ -250,20 +293,24 @@ ulong efi_main(void* image_handle, void* system_table) {
     serial.println("[CosmOS] Phase 1: Collecting boot information" as void*);
 
     // BootInfo構造体をスタック上に確保
-    BootInfo boot_info;
-    boot_info.fb.base_addr = 0;
-    boot_info.fb.size = 0;
-    boot_info.fb.width = 0 as uint;
-    boot_info.fb.height = 0 as uint;
-    boot_info.fb.stride = 0 as uint;
-    boot_info.fb.pixel_format = 0 as uint;
-    boot_info.mmap.map_buffer = 0 as void*;
-    boot_info.mmap.map_size = 0;
-    boot_info.mmap.map_key = 0;
-    boot_info.mmap.desc_size = 0;
-    boot_info.mmap.desc_version = 0 as uint;
-    boot_info.mmap.entry_count = 0 as uint;
-    boot_info.acpi_rsdp = 0;
+    BootInfo boot_info = {
+        fb: {
+            base_addr: 0,
+            size: 0,
+            width: 0 as uint,
+            height: 0 as uint,
+            stride: 0 as uint,
+            pixel_format: 0 as uint
+        },
+        mmap: {
+            map_buffer: 0 as void*,
+            map_size: 0, map_key: 0,
+            desc_size: 0,
+            desc_version: 0 as uint,
+            entry_count: 0 as uint
+        },
+        acpi_rsdp: 0
+    };
 
     // GOP（フレームバッファ）情報の収集
     efi_println(system_table, "  Initializing GOP..." as void*);

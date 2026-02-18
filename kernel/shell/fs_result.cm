@@ -1,17 +1,13 @@
 //! platform: uefi
-// kernel::lib::fs_result - FsResult型（ファイル操作用Result）
+// kernel::shell::fs_result - FsResult型エラーハンドリング
 //
-// UEFIベアメタル環境でのエラーハンドリング用Result構造体。
-// ジェネリクスなしのulong固定型で、cosmfs_op()の結果を
-// 型安全にラップする。
+// UEFIベアメタル環境でのエラーハンドリング。
+// struct FsResult を使用。
 //
-// 使用例:
-//   FsResult res = fs_ok(42);
-//   if (res.ok != 0) {
-//       ulong val = res.value;
-//   } else {
-//       // res.error にエラーコード
-//   }
+// 使用パターン:
+//   FsResult r = fs_from_alloc(heap->alloc(64));
+//   if (r.is_err != 0) { fs_print_error(r.error); return; }
+//   ulong val = r.value;
 
 import ../drivers/serial;
 import ../lib/print;
@@ -19,15 +15,14 @@ import ../config;
 import ./shell_io;
 
 // ============================================================
-// FsResult 構造体
+// FsResult構造体
 // ============================================================
 
-/// ファイル操作のResult型
-/// ok=1: 成功（valueに値）, ok=0: 失敗（errorにコード）
+/// 成功または失敗を表す構造体
 export struct FsResult {
-    ulong ok;      // 1=成功, 0=失敗
-    ulong value;   // 成功時の値（バイト数、アドレス等）
-    ulong error;   // 失敗時のエラーコード
+    ulong is_err;   // 0=成功, 非0=エラー
+    ulong value;    // 成功時の値
+    ulong error;    // エラーコード
 }
 
 // ============================================================
@@ -49,34 +44,25 @@ const ulong FS_ERR_NULL      = 9;   // NULLデータ
 const ulong FS_SENTINEL = 0xFFFFFFFFFFFFFFFF;
 
 // ============================================================
-// FsResult 生成ヘルパー
+// FsResult生成ヘルパー
 // ============================================================
 
-impl FsResult {
-    /// 成功Result生成
-    overload self(ulong val) {
-        self.ok = 1;
-        self.value = val;
-        self.error = FS_ERR_NONE;
-    }
+/// 成功FsResultを生成
+export FsResult fs_ok(ulong value) {
+    return {is_err: 0, value: value, error: FS_ERR_NONE};
 }
 
-/// 失敗Result生成（コンストラクタではok=1になるため専用関数で生成）
-export FsResult fs_err(ulong err_code) {
-    FsResult r(0);
-    r.ok = 0;
-    r.value = 0;
-    r.error = err_code;
-    return r;
+/// エラーFsResultを生成
+export FsResult fs_err(ulong code) {
+    return {is_err: 1, value: 0, error: code};
 }
 
-/// cosmfs_opの戻り値をFsResultに変換（0xFFF...をエラーとみなす）
+/// cosmfs_opの戻り値をFsResultに変換（0xFFF...=エラー）
 export FsResult fs_from_op(ulong result) {
     if (result == FS_SENTINEL) {
         return fs_err(FS_ERR_NOT_FOUND);
     }
-    FsResult r(result);
-    return r;
+    return fs_ok(result);
 }
 
 /// cosmfs_opの戻り値をFsResultに変換（0もエラーとみなす版）
@@ -87,8 +73,7 @@ export FsResult fs_from_op_nz(ulong result) {
     if (result == 0) {
         return fs_err(FS_ERR_EMPTY);
     }
-    FsResult r(result);
-    return r;
+    return fs_ok(result);
 }
 
 /// heap->alloc()の結果をFsResultに変換
@@ -96,15 +81,13 @@ export FsResult fs_from_alloc(ulong addr) {
     if (addr == 0) {
         return fs_err(FS_ERR_ALLOC);
     }
-    FsResult r(addr);
-    return r;
+    return fs_ok(addr);
 }
 
 /// CREATE操作の結果をFsResultに変換（0=成功、非0=エラー）
 export FsResult fs_from_create(ulong result) {
     if (result == 0) {
-        FsResult r(0);
-        return r;
+        return fs_ok(0 as ulong);
     }
     if (result == 2) {
         return fs_err(FS_ERR_EXISTS);
@@ -116,7 +99,7 @@ export FsResult fs_from_create(ulong result) {
 // エラー表示
 // ============================================================
 
-/// FsResultのエラーメッセージを表示
+/// エラーコードに応じたメッセージを表示
 export void fs_print_error(ulong err_code) {
     shell_set_color(0x00FF4444);
     if (err_code == FS_ERR_NOT_FOUND) {

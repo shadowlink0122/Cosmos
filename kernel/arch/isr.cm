@@ -43,14 +43,11 @@ export void* exception_name(ulong vector) {
 // 共通例外ハンドラ（フリー関数）
 // ============================================================
 
-/// 例外発生時にシリアルにデバッグ情報を出力し、HLTループに入る
+/// 例外発生時にデバッグ情報を出力し、リカバリーポイントがあればシェルに復帰する
 export void exception_handler(ulong vector, ulong error_code) {
     // シリアルポート・デバッグポートを直接初期化して使用
-    SerialPort serial;
-    serial.port = 0x3F8;
-
-    DebugPort debug;
-    debug.port = 0xE9;
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug = {port: 0xE9};
 
     serial.println("" as void*);
     serial.println("========================================" as void*);
@@ -68,12 +65,35 @@ export void exception_handler(ulong vector, ulong error_code) {
     serial.println("" as void*);
 
     serial.println("========================================" as void*);
-    serial.println("[EXCEPTION] System halted." as void*);
 
     // デバッグポートにも出力（テスト検出用）
     debug.puts("[EXCEPTION] vector=" as void*);
     debug.print_hex(vector);
     debug.println("" as void*);
+
+    // リカバリーポイントが設定されているか確認
+    ulong* rsp_ptr = 0xD88 as ulong*;
+    ulong* rip_ptr = 0xD90 as ulong*;
+    ulong recovery_rsp = *rsp_ptr;
+    ulong recovery_rip = *rip_ptr;
+
+    if (recovery_rsp != 0) {
+        serial.println("[EXCEPTION] Recovering to shell..." as void*);
+        debug.println("[EXCEPTION] recovering" as void*);
+
+        // リカバリーポイントにジャンプ復帰
+        // RSPを復元し、RIPにジャンプする
+        // 例外ハンドラ中はIFがクリアされているため、stiで復元
+        __asm__(`
+            sti;
+            movq ${r:recovery_rsp}, %rsp;
+            movq ${r:recovery_rip}, %rax;
+            jmp *%rax
+        `);
+    }
+
+    // リカバリーポイントなし — システム停止
+    serial.println("[EXCEPTION] System halted." as void*);
 
     // HLTループ
     while (true) {
@@ -151,8 +171,7 @@ impl ISRManager {
     /// 全例外ISR（0-31）をIDTに登録する
     void init() {
         // IDTインスタンスを作成してset_gateを呼ぶ
-        IDT idt;
-        idt.table = self.idt_table;
+        IDT idt = {table: self.idt_table};
 
         // ベクタ3（ブレークポイント）以外はInterrupt Gate
         idt.set_gate(0,  fn_addr(isr_0  as void*), IDT_INTERRUPT_GATE);

@@ -52,6 +52,9 @@ export const ulong ADDR_KB_LAST_SCAN     = 0xC58;
 // --- シェルバッファ ---
 export const ulong ADDR_SHELL_BUF        = 0xD00;
 export const ulong ADDR_SHELL_POS        = 0xD80;
+export const ulong ADDR_RECOVERY_RSP     = 0xD88;  // 例外復帰用RSP
+export const ulong ADDR_RECOVERY_RIP     = 0xD90;  // 例外復帰用RIP
+export const ulong ADDR_SHELL_CURSOR     = 0xDA8;  // 編集カーソル位置（バッファ内）
 
 // --- FBConsole ---
 export const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
@@ -60,19 +63,35 @@ export const ulong GLOBAL_FB_CONSOLE_ADDR = 0xE00;
 export const ulong ADDR_TCB_BASE         = 0x1000;
 
 // --- CosmFS 状態 ---
+// ファイルテーブル: 64エントリ × 48B = 3072B (0x1200-0x1DFF)
 export const ulong ADDR_FS_FILE_TABLE    = 0x1200;  // ファイルテーブル先頭
-export const ulong ADDR_FS_FILE_COUNT    = 0x1A00;  // 現在のファイル数
-export const ulong ADDR_FS_INITIALIZED   = 0x1A08;  // 初期化フラグ
+export const ulong ADDR_FS_FILE_COUNT    = 0x1E00;  // 現在のファイル数
+export const ulong ADDR_FS_INITIALIZED   = 0x1E08;  // 初期化フラグ
+export const ulong ADDR_FS_CWD           = 0x1E10;  // カレントディレクトリ(インデックス, 0=ルート)
 
 // --- シェル用グローバル参照 ---
-export const ulong ADDR_GLOBAL_HEAP      = 0x1A10;  // Heap構造体アドレス
+export const ulong ADDR_GLOBAL_HEAP      = 0x1E18;  // Heap構造体アドレス
+
+// --- 環境変数テーブル ---
+// 16変数 × 64B = 1024B (0x1E20-0x221F)
+// 各エントリ: [key: 24B][NUL][value: 38B][NUL] = 64B
+export const ulong ADDR_ENV_TABLE        = 0x1E20;  // 環境変数テーブル先頭
+export const ulong ADDR_ENV_COUNT        = 0x2220;  // 変数数
 
 // --- Aria エディタ ---
-export const ulong ADDR_ARIA_STATE       = 0x2000;  // エディタ状態 (128B)
-export const ulong ADDR_ARIA_BUFFER      = 0x2100;  // テキストバッファ (4KB)
-export const ulong ADDR_ARIA_FILENAME    = 0x3100;  // ファイル名バッファ (64B)
-export const ulong ADDR_ARIA_CMDLINE     = 0x3140;  // コマンドラインバッファ (64B)
+// 環境変数テーブルの後方に配置 (0x2230〜)
+export const ulong ADDR_ARIA_STATE       = 0x2230;  // エディタ状態 (128B)
+export const ulong ADDR_ARIA_BUFFER      = 0x2330;  // テキストバッファ (4KB)
+export const ulong ADDR_ARIA_FILENAME    = 0x3330;  // ファイル名バッファ (64B)
+export const ulong ADDR_ARIA_CMDLINE     = 0x3370;  // コマンドラインバッファ (64B)
 export const ulong ARIA_BUF_SIZE         = 4096;    // テキストバッファサイズ
+
+// --- アプリケーションロード領域 ---
+// 独立アプリのCosmEXEバイナリをこのアドレスにロードして実行
+export const ulong ADDR_APP_LOAD         = 0x10000;  // アプリロード先 (64KB)
+export const ulong APP_MAX_SIZE          = 0xC000;   // 最大アプリサイズ (48KB)
+export const ulong COSMEXE_MAGIC         = 0x004558456D736F43;  // "CosmEXE\0"
+export const ulong COSMEXE_HEADER_SIZE   = 32;       // ヘッダサイズ
 
 // ============================================================
 // シェル色定数

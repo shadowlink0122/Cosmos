@@ -89,6 +89,31 @@ help:
 	@echo "  make clean-all    - 全ビルド成果物を削除"
 
 # ============================================================
+# 独立アプリケーションビルド
+# ============================================================
+
+OBJCOPY ?= /opt/homebrew/opt/llvm@17/bin/llvm-objcopy
+
+# アプリケーションパス
+APP_HELP_SRC  = $(KERNEL_DIR)/apps/help/help.cm
+APP_HELP_OBJ  = .tmp/build/apps/app_help.o
+APP_HELP_EFI  = .tmp/build/apps/app_help.efi
+APP_HELP_BIN  = .tmp/build/apps/help.bin
+APP_HELP_COSM = .tmp/build/apps/help.cosmexe
+APP_HELP_DATA = $(KERNEL_DIR)/apps/bin/help_data.cm
+
+# helpアプリの独立ビルド
+app-help: $(APP_HELP_DATA)
+$(APP_HELP_DATA): $(APP_HELP_SRC) $(shell find $(KERNEL_DIR)/apps/libcosm -name '*.cm' 2>/dev/null)
+	@echo "=== helpアプリ独立ビルド ==="
+	@mkdir -p .tmp/build/apps
+	$(CM) compile --target=uefi -o $(APP_HELP_OBJ) $(APP_HELP_SRC)
+	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(APP_HELP_EFI) $(APP_HELP_OBJ)
+	python3 ./scripts/pe2cosmexe.py $(APP_HELP_EFI) $(APP_HELP_COSM)
+	./scripts/bin2cm.sh $(APP_HELP_COSM) $(APP_HELP_DATA) embed_help
+	@echo "✓ helpアプリビルド完了"
+
+# ============================================================
 # カーネルビルド
 # ============================================================
 
@@ -153,13 +178,16 @@ run: setup-esp download-ovmf
 DEBUG_LOG = .tmp/debug.log
 
 # QEMU共通テストオプション
+# isa-debug-exit: ゲストがport 0xf4に書き込むとQEMUが即座に終了
+# 終了コード = (書き込み値 << 1) | 1
 QEMU_TEST_OPTS = \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_FW) \
 	-drive format=raw,file=fat:rw:$(ESP_DIR) \
 	-net none \
 	-display none \
 	-debugcon file:$(DEBUG_LOG) \
-	-global isa-debugcon.iobase=0xE9
+	-global isa-debugcon.iobase=0xE9 \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
 # シリアル単体テスト
 test-serial: download-ovmf
@@ -188,6 +216,8 @@ test-serial: download-ovmf
 	fi
 
 # メインカーネルテスト（テスト専用バイナリを使用）
+# isa-debug-exitでテスト完了時にQEMUが即座終了する
+# exit 1 = テスト成功(fail=0), exit >1 = テスト失敗
 test: download-ovmf
 	@echo "=== メインカーネルテスト ==="
 	@mkdir -p .tmp/build
@@ -197,31 +227,34 @@ test: download-ovmf
 	@mkdir -p $(ESP_BOOT)
 	@cp $(TEST_KERNEL_EFI) $(ESP_BOOT)/BOOTX64.EFI
 	@rm -f $(DEBUG_LOG)
-	@echo "QEMU起動中（$(QEMU_TIMEOUT)秒タイムアウト）..."
-	@$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) $(QEMU_TEST_OPTS) 2>/dev/null || true
-	@echo ""
-	@echo "--- デバッグログ ---"
-	@cat $(DEBUG_LOG) 2>/dev/null || echo "(ログなし)"
-	@echo ""
-	@echo "--- テスト結果 ---"
-	@if [ ! -f "$(DEBUG_LOG)" ]; then \
+	@QEMU_EXIT=0; \
+	$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) $(QEMU_TEST_OPTS) 2>/dev/null; \
+	QEMU_EXIT=$$?; \
+	echo ""; \
+	grep "\[TEST\] PASS:\|\[TEST\] FAIL:" $(DEBUG_LOG) 2>/dev/null | while read line; do \
+		echo "  $$line"; \
+	done; \
+	if [ ! -f "$(DEBUG_LOG)" ]; then \
 		echo "✗ FAIL: デバッグログが生成されなかった"; \
+		exit 1; \
+	fi; \
+	PASS=0; FAIL=0; \
+	if grep -q "\[TEST\] PASS:" $(DEBUG_LOG) 2>/dev/null; then \
+		PASS=$$(grep -c "\[TEST\] PASS:" $(DEBUG_LOG)); \
+	fi; \
+	if grep -q "\[TEST\] FAIL:" $(DEBUG_LOG) 2>/dev/null; then \
+		FAIL=$$(grep -c "\[TEST\] FAIL:" $(DEBUG_LOG)); \
+	fi; \
+	echo ""; \
+	echo "結果: $$PASS passed, $$FAIL failed"; \
+	if [ $$QEMU_EXIT -eq 1 ]; then \
+		echo "✓ テスト完了（QEMU正常終了）"; \
+	elif [ $$QEMU_EXIT -eq 0 ] || [ $$QEMU_EXIT -ge 124 ]; then \
+		echo "⚠ タイムアウトまたはQEMU異常終了 (exit=$$QEMU_EXIT)"; \
+		exit 1; \
 	else \
-		PASS=0; FAIL=0; \
-		grep "\[TEST\] PASS:\|\[TEST\] FAIL:" $(DEBUG_LOG) 2>/dev/null | while read line; do \
-			echo "  $$line"; \
-		done; \
-		if grep -q "\[TEST\] PASS:" $(DEBUG_LOG) 2>/dev/null; then \
-			PASS=$$(grep -c "\[TEST\] PASS:" $(DEBUG_LOG)); \
-		fi; \
-		if grep -q "\[TEST\] FAIL:" $(DEBUG_LOG) 2>/dev/null; then \
-			FAIL=$$(grep -c "\[TEST\] FAIL:" $(DEBUG_LOG)); \
-		fi; \
-		echo ""; \
-		echo "結果: $$PASS passed, $$FAIL failed"; \
-		if [ "$$FAIL" -gt 0 ]; then \
-			exit 1; \
-		fi; \
+		echo "✗ テスト失敗 (QEMU exit=$$QEMU_EXIT)"; \
+		exit 1; \
 	fi
 
 # ============================================================

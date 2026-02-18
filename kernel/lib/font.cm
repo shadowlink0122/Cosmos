@@ -61,9 +61,7 @@ impl Font {
 
 /// font_get_row互換ラッパー（他モジュールから呼び出し用）
 export ulong font_get_row(ulong ch, ulong row) {
-    Font f;
-    f.first_char = FONT_FIRST_CHAR;
-    f.last_char = FONT_LAST_CHAR;
+    Font f = {first_char: FONT_FIRST_CHAR, last_char: FONT_LAST_CHAR};
     return f.get_row(ch, row);
 }
 

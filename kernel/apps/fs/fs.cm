@@ -3,6 +3,7 @@
 //
 // シェルから使用するCosmFSファイル操作コマンド群。
 // cosmfs_op()のディスパッチパターンを使用。
+// エラーハンドリングは struct Result + is_err/value/error パターン。
 //
 // 対応コマンド:
 //   ls              — ファイル一覧表示
@@ -12,11 +13,11 @@
 //   write <name> <data> — ファイルに文字列書き込み（上書き）
 //   append <name> <data> — ファイル末尾に追記
 
-import ./shell_io;
-import ./fs_result;
-import ../config;
-import ../fs/cosmfs;
-import ../mm/heap;
+import ../../shell/shell_io;
+import ../../shell/fs_result;
+import ../../config;
+import ../../fs/cosmfs;
+import ../../mm/heap;
 
 // ============================================================
 // CosmFS操作コード（cosmfs.cmと一致させる）
@@ -136,30 +137,22 @@ export void cmd_touch(ulong buf_addr, ulong buf_len, Heap* heap) {
     ulong name_src = buf_addr + arg_start;
     cmd_write_byte(name_src + arg_len, 0);  // NUL終端
 
-    // ファイル名バッファ確保（ヒープ）
+    // ファイル名バッファ確保
     ulong name_size = arg_len + 1;
     FsResult r_name = fs_from_alloc(heap->alloc(name_size));
-    if (r_name.ok == 0) {
-        fs_print_error(r_name.error);
-        return;
-    }
+    if (r_name.is_err != 0) { fs_print_error(r_name.error); return; }
     ulong name_buf = r_name.value;
-    // ファイル名コピー
+
     cosmfs_op(FS_OP_MEMCPY, name_buf, name_src, arg_len, 0);
-    cmd_write_byte(name_buf + arg_len, 0);  // NUL終端
+    cmd_write_byte(name_buf + arg_len, 0);
 
-    // データバッファ確保（4096バイト = 4KB）
+    // データバッファ確保
     FsResult r_data = fs_from_alloc(heap->alloc(4096));
-    if (r_data.ok == 0) {
-        fs_print_error(r_data.error);
-        return;
-    }
+    if (r_data.is_err != 0) { fs_print_error(r_data.error); return; }
 
+    // ファイル作成
     FsResult r_create = fs_from_create(cosmfs_op(FS_OP_CREATE, name_buf, r_data.value, 4096, 0));
-    if (r_create.ok == 0) {
-        fs_print_error(r_create.error);
-        return;
-    }
+    if (r_create.is_err != 0) { fs_print_error(r_create.error); return; }
 
     shell_set_color(SHELL_COLOR_OUTPUT);
     shell_puts("Created: " as void*);
@@ -183,11 +176,9 @@ export void cmd_cat(ulong buf_addr, ulong buf_len) {
     ulong name_addr = buf_addr + arg_start;
     cmd_write_byte(name_addr + arg_len, 0);
 
+    // ファイルサイズ取得
     FsResult r_size = fs_from_op(cosmfs_op(FS_OP_SIZE, name_addr, 0, 0, 0));
-    if (r_size.ok == 0) {
-        fs_print_error(r_size.error);
-        return;
-    }
+    if (r_size.is_err != 0) { fs_print_error(r_size.error); return; }
     ulong fsize = r_size.value;
 
     if (fsize == 0) {
@@ -196,11 +187,9 @@ export void cmd_cat(ulong buf_addr, ulong buf_len) {
         return;
     }
 
+    // データ取得
     FsResult r_data = fs_from_op_nz(cosmfs_op(FS_OP_GET_DATA, name_addr, 0, 0, 0));
-    if (r_data.ok == 0) {
-        fs_print_error(r_data.error);
-        return;
-    }
+    if (r_data.is_err != 0) { fs_print_error(r_data.error); return; }
 
     shell_set_color(SHELL_COLOR_OUTPUT);
     ulong i = 0;
@@ -275,27 +264,26 @@ export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // ファイルが存在しなければ作成
     FsResult r_check = fs_from_op(cosmfs_op(FS_OP_SIZE, name_addr, 0, 0, 0));
-    if (r_check.ok == 0) {
-        // 新規作成: ファイル名コピー
+    if (r_check.is_err != 0) {
+        // 新規作成
         ulong ns = name_len + 1;
         FsResult r_nb = fs_from_alloc(heap->alloc(ns));
-        if (r_nb.ok == 0) { fs_print_error(r_nb.error); return; }
+        if (r_nb.is_err != 0) { fs_print_error(r_nb.error); return; }
         ulong nb = r_nb.value;
         cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
         cmd_write_byte(nb + name_len, 0);
         FsResult r_db = fs_from_alloc(heap->alloc(4096));
-        if (r_db.ok == 0) { fs_print_error(r_db.error); return; }
+        if (r_db.is_err != 0) { fs_print_error(r_db.error); return; }
         FsResult r_cr = fs_from_create(cosmfs_op(FS_OP_CREATE, nb, r_db.value, 4096, 0));
-        if (r_cr.ok == 0) { fs_print_error(r_cr.error); return; }
+        if (r_cr.is_err != 0) { fs_print_error(r_cr.error); return; }
     }
 
     ulong data_addr = buf_addr + data_start;
     ulong data_len = buf_len - data_start;
     FsResult r_write = fs_from_op(cosmfs_op(FS_OP_WRITE, name_addr, data_addr, data_len, 0));
+    if (r_write.is_err != 0) { fs_print_error(r_write.error); return; }
 
-    if (r_write.ok == 0) {
-        fs_print_error(r_write.error);
-    } else if (r_write.value > 0) {
+    if (r_write.value > 0) {
         shell_set_color(SHELL_COLOR_OUTPUT);
         shell_puts("Wrote " as void*);
         shell_print_hex(r_write.value);
@@ -341,26 +329,25 @@ export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // ファイルが存在しなければ作成
     FsResult r_check = fs_from_op(cosmfs_op(FS_OP_SIZE, name_addr, 0, 0, 0));
-    if (r_check.ok == 0) {
+    if (r_check.is_err != 0) {
         ulong ns = name_len + 1;
         FsResult r_nb = fs_from_alloc(heap->alloc(ns));
-        if (r_nb.ok == 0) { fs_print_error(r_nb.error); return; }
+        if (r_nb.is_err != 0) { fs_print_error(r_nb.error); return; }
         ulong nb = r_nb.value;
         cosmfs_op(FS_OP_MEMCPY, nb, name_addr, name_len, 0);
         cmd_write_byte(nb + name_len, 0);
         FsResult r_db = fs_from_alloc(heap->alloc(4096));
-        if (r_db.ok == 0) { fs_print_error(r_db.error); return; }
+        if (r_db.is_err != 0) { fs_print_error(r_db.error); return; }
         FsResult r_cr = fs_from_create(cosmfs_op(FS_OP_CREATE, nb, r_db.value, 4096, 0));
-        if (r_cr.ok == 0) { fs_print_error(r_cr.error); return; }
+        if (r_cr.is_err != 0) { fs_print_error(r_cr.error); return; }
     }
 
     ulong data_addr = buf_addr + data_start;
     ulong data_len = buf_len - data_start;
     FsResult r_append = fs_from_op(cosmfs_op(FS_OP_APPEND, name_addr, data_addr, data_len, 0));
+    if (r_append.is_err != 0) { fs_print_error(r_append.error); return; }
 
-    if (r_append.ok == 0) {
-        fs_print_error(r_append.error);
-    } else if (r_append.value > 0) {
+    if (r_append.value > 0) {
         shell_set_color(SHELL_COLOR_OUTPUT);
         shell_puts("Appended " as void*);
         shell_print_hex(r_append.value);
@@ -391,7 +378,7 @@ export void cmd_mkdir(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // 既存チェック
     FsResult r_find = fs_from_op(cosmfs_op(FS_OP_FIND, name_addr, 0, 0, 0));
-    if (r_find.ok != 0) {
+    if (r_find.is_err == 0) {
         shell_set_color(SHELL_COLOR_ERROR);
         shell_puts("Already exists: " as void*);
         shell_puts(name_addr as void*);
@@ -401,18 +388,15 @@ export void cmd_mkdir(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // 空ファイルとして作成（ディレクトリマーカー）
     FsResult r_db = fs_from_alloc(heap->alloc(64));
-    if (r_db.ok == 0) { fs_print_error(r_db.error); return; }
+    if (r_db.is_err != 0) { fs_print_error(r_db.error); return; }
 
     // NUL終端のバッファ名をコピー
     FsResult r_nb = fs_from_alloc(heap->alloc(64));
-    if (r_nb.ok == 0) { fs_print_error(r_nb.error); return; }
+    if (r_nb.is_err != 0) { fs_print_error(r_nb.error); return; }
     cosmfs_op(FS_OP_MEMCPY, r_nb.value, name_addr, arg_len + 1, 0);
 
     FsResult r_create = fs_from_create(cosmfs_op(FS_OP_CREATE, r_nb.value, r_db.value, 64, 0));
-    if (r_create.ok == 0) {
-        fs_print_error(r_create.error);
-        return;
-    }
+    if (r_create.is_err != 0) { fs_print_error(r_create.error); return; }
 
     shell_set_color(SHELL_COLOR_OUTPUT);
     shell_puts("Created: " as void*);
@@ -437,7 +421,6 @@ export void cmd_cp(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // 2番目の引数
     ulong arg2_start = arg1_start + arg1_len;
-    // スペースをスキップ
     ulong sk = arg2_start;
     while (sk < buf_len) {
         ulong sch = cmd_read_byte(buf_addr + sk);
@@ -462,33 +445,30 @@ export void cmd_cp(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // ソースファイル確認
     FsResult r_size = fs_from_op(cosmfs_op(FS_OP_SIZE, src_addr, 0, 0, 0));
-    if (r_size.ok == 0) {
-        fs_print_error(r_size.error);
-        return;
-    }
+    if (r_size.is_err != 0) { fs_print_error(r_size.error); return; }
     ulong src_size = r_size.value;
 
     // コピー先に新ファイル作成
     FsResult r_dst = fs_from_op(cosmfs_op(FS_OP_FIND, dst_addr, 0, 0, 0));
-    if (r_dst.ok == 0) {
+    if (r_dst.is_err != 0) {
         // 新規作成
         FsResult r_db = fs_from_alloc(heap->alloc(4096));
-        if (r_db.ok == 0) { fs_print_error(r_db.error); return; }
+        if (r_db.is_err != 0) { fs_print_error(r_db.error); return; }
         FsResult r_nb = fs_from_alloc(heap->alloc(64));
-        if (r_nb.ok == 0) { fs_print_error(r_nb.error); return; }
+        if (r_nb.is_err != 0) { fs_print_error(r_nb.error); return; }
         cosmfs_op(FS_OP_MEMCPY, r_nb.value, dst_addr, arg2_len + 1, 0);
         FsResult r_cr = fs_from_create(cosmfs_op(FS_OP_CREATE, r_nb.value, r_db.value, 4096, 0));
-        if (r_cr.ok == 0) { fs_print_error(r_cr.error); return; }
+        if (r_cr.is_err != 0) { fs_print_error(r_cr.error); return; }
     }
 
     // ソースデータ取得+コピー先に書き込み
     FsResult r_data = fs_from_op_nz(cosmfs_op(FS_OP_GET_DATA, src_addr, 0, 0, 0));
-    if (r_data.ok == 0) { fs_print_error(r_data.error); return; }
+    if (r_data.is_err != 0) { fs_print_error(r_data.error); return; }
 
     FsResult r_write = fs_from_op(cosmfs_op(FS_OP_WRITE, dst_addr, r_data.value, src_size, 0));
-    if (r_write.ok == 0) {
-        fs_print_error(r_write.error);
-    } else if (r_write.value > 0) {
+    if (r_write.is_err != 0) { fs_print_error(r_write.error); return; }
+
+    if (r_write.value > 0) {
         shell_set_color(SHELL_COLOR_OUTPUT);
         shell_puts("Copied " as void*);
         shell_puts(src_addr as void*);
@@ -545,32 +525,29 @@ export void cmd_mv(ulong buf_addr, ulong buf_len, Heap* heap) {
 
     // ソースファイル確認
     FsResult r_size = fs_from_op(cosmfs_op(FS_OP_SIZE, src_addr, 0, 0, 0));
-    if (r_size.ok == 0) {
-        fs_print_error(r_size.error);
-        return;
-    }
+    if (r_size.is_err != 0) { fs_print_error(r_size.error); return; }
     ulong src_size = r_size.value;
 
     // コピー先に新ファイル作成
     FsResult r_dst = fs_from_op(cosmfs_op(FS_OP_FIND, dst_addr, 0, 0, 0));
-    if (r_dst.ok == 0) {
+    if (r_dst.is_err != 0) {
         FsResult r_db = fs_from_alloc(heap->alloc(4096));
-        if (r_db.ok == 0) { fs_print_error(r_db.error); return; }
+        if (r_db.is_err != 0) { fs_print_error(r_db.error); return; }
         FsResult r_nb = fs_from_alloc(heap->alloc(64));
-        if (r_nb.ok == 0) { fs_print_error(r_nb.error); return; }
+        if (r_nb.is_err != 0) { fs_print_error(r_nb.error); return; }
         cosmfs_op(FS_OP_MEMCPY, r_nb.value, dst_addr, arg2_len + 1, 0);
         FsResult r_cr = fs_from_create(cosmfs_op(FS_OP_CREATE, r_nb.value, r_db.value, 4096, 0));
-        if (r_cr.ok == 0) { fs_print_error(r_cr.error); return; }
+        if (r_cr.is_err != 0) { fs_print_error(r_cr.error); return; }
     }
 
     // ソースデータ取得+コピー先に書き込み
     FsResult r_data = fs_from_op_nz(cosmfs_op(FS_OP_GET_DATA, src_addr, 0, 0, 0));
-    if (r_data.ok == 0) { fs_print_error(r_data.error); return; }
+    if (r_data.is_err != 0) { fs_print_error(r_data.error); return; }
 
     FsResult r_write = fs_from_op(cosmfs_op(FS_OP_WRITE, dst_addr, r_data.value, src_size, 0));
-    if (r_write.ok == 0) {
-        fs_print_error(r_write.error);
-    } else if (r_write.value > 0) {
+    if (r_write.is_err != 0) { fs_print_error(r_write.error); return; }
+
+    if (r_write.value > 0) {
         cosmfs_op(FS_OP_DELETE, src_addr, 0, 0, 0);
         shell_set_color(SHELL_COLOR_OUTPUT);
         shell_puts("Moved " as void*);

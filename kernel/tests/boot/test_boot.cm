@@ -2,12 +2,7 @@
 // kernel::tests::test_boot - ブート初期化テスト
 //
 // カーネルブートシーケンスの各段階が正常に完了したことを検証する。
-// kernel_mainが実行されている時点で、以下が保証される:
-//   - シリアルポート初期化済み
-//   - ExitBootServices成功
-//   - カーネルエントリ到達
-//
-// 各サブシステムの状態を直接確認してパスを判定する。
+// 暗黙的PASSではなく、各サブシステムの状態を実際に読み取って検証する。
 
 import ../../drivers/serial;
 import ../../drivers/debug_port;
@@ -16,6 +11,7 @@ import ../../mm/pmm;
 import ../../mm/vmm;
 import ../../mm/heap;
 import ../../drivers/pit;
+import ../../sched/scheduler;
 import ../test_runner;
 
 // ============================================================
@@ -23,53 +19,71 @@ import ../test_runner;
 // ============================================================
 
 /// ブートシーケンスのテストを実行する
-/// kernel_mainに到達している時点で暗黙的にPASSするテストも含む
 export void test_boot(TestRunner* runner, BootInfo* info,
                       PMM* pmm, Heap* heap) {
     SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
     serial.println("[TEST] === Boot Tests ===" as void*);
 
-    // テスト1: シリアルポート初期化（このテスト自体がシリアル経由で出力できている）
-    runner->assert_true(1, "Serial port initialized" as void*);
+    // テスト1: シリアルポート初期化（出力可能であること自体が証拠）
+    runner->assert_true(1, "Boot: serial port functional" as void*);
 
     // テスト2: ExitBootServices成功（kernel_mainに到達 = 成功）
-    runner->assert_true(1, "ExitBootServices OK" as void*);
+    runner->assert_true(1, "Boot: ExitBootServices OK" as void*);
 
-    // テスト3: カーネルエントリ到達
-    runner->assert_true(1, "Kernel main entered" as void*);
-
-    // テスト4: GDT初期化（CSセレクタが0x08であること）
+    // テスト3: GDT初期化（CSセレクタが0x08であること）
     ulong cs_val = 0;
     __asm__(`movw %cs, %ax; movzwq %ax, ${=r:cs_val}`);
-    ulong cs_ok = 0;
-    if (cs_val == 0x08) {
-        cs_ok = 1;
-    }
-    runner->assert_true(cs_ok, "GDT initialized (CS=0x08)" as void*);
+    runner->assert_eq(cs_val, 0x08, "Boot: GDT CS=0x08" as void*);
 
-    // テスト5: PIC初期化（PICの設定はinit完了で保証）
-    runner->assert_true(1, "PIC initialized" as void*);
+    // テスト4: DSセレクタが0x10であること
+    ulong ds_val = 0;
+    __asm__(`movw %ds, %ax; movzwq %ax, ${=r:ds_val}`);
+    runner->assert_eq(ds_val, 0x10, "Boot: GDT DS=0x10" as void*);
 
-    // テスト6: IDT初期化（IDTテーブルポインタが非ゼロ）
-    ulong idt_ptr = info->mmap.map_buffer as ulong;
-    // IDTはメモリマップバッファを再利用（非ゼロなら初期化済み）
-    runner->assert_true(1, "IDT initialized" as void*);
-
-    // テスト7: ISR登録
-    runner->assert_true(1, "ISR stubs registered" as void*);
-
-    // テスト8: PMM初期化（totalページ数が非ゼロ）
-    ulong pmm_total = pmm->total_pages;
-    runner->assert_nonzero(pmm_total, "PMM initialized" as void*);
-
-    // テスト9: ページング有効（CR3が非ゼロ）
+    // テスト5: ページング有効（CR3が非ゼロ）
     ulong cr3_val = 0;
     __asm__(`movq %cr3, ${=r:cr3_val}`);
-    runner->assert_nonzero(cr3_val, "Paging enabled (CR3 nonzero)" as void*);
+    runner->assert_nonzero(cr3_val, "Boot: CR3 nonzero (paging active)" as void*);
 
-    // テスト10: ヒープ初期化（ベースアドレスが非ゼロ）
+    // テスト6: PMM total_pagesが非ゼロ
+    ulong pmm_total = pmm->total_pages;
+    runner->assert_nonzero(pmm_total, "Boot: PMM initialized" as void*);
+
+    // テスト7: PMM free_pagesが妥当な範囲（0 < free <= total）
+    ulong pmm_free = pmm->free_pages;
+    ulong free_ok = 0;
+    if (pmm_free > 0) {
+        if (pmm_free <= pmm_total) {
+            free_ok = 1;
+        }
+    }
+    runner->assert_true(free_ok, "Boot: PMM free_pages in valid range" as void*);
+
+    // テスト8: ヒープ初期化（ベースアドレスが非ゼロ）
     ulong heap_base = heap->base_addr;
-    runner->assert_nonzero(heap_base, "Heap initialized" as void*);
+    runner->assert_nonzero(heap_base, "Boot: heap base nonzero" as void*);
+
+    // テスト9: ヒープbaseがPMM管理範囲内
+    ulong max_phys = pmm->max_phys_addr;
+    ulong heap_in_range = 0;
+    if (heap_base < max_phys) {
+        heap_in_range = 1;
+    }
+    runner->assert_true(heap_in_range, "Boot: heap base < max_phys_addr" as void*);
+
+    // テスト10: ヒープ領域に直接書込み可能（PF検出の最重要テスト）
+    runner->assert_mem_write(heap_base, 0xB007B007B007B007, "Boot: heap base addr writable" as void*);
+
+    // テスト11: スケジューラ初期タスク数が1（idle）
+    ulong task_count = sched_task_count();
+    runner->assert_eq(task_count, 1, "Boot: scheduler has 1 task (idle)" as void*);
+
+    // テスト12: 割り込みフラグが有効（EFLAGS.IFビット）
+    ulong eflags = 0;
+    __asm__(`pushfq; popq ${=r:eflags}`);
+    ulong if_bit = eflags & 0x200;
+    runner->assert_nonzero(if_bit, "Boot: interrupts enabled (IF=1)" as void*);
 
     serial.println("[TEST] Boot tests complete" as void*);
 }

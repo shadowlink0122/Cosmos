@@ -80,6 +80,35 @@ impl TestRunner {
         self.assert_true(condition, test_name);
     }
 
+    /// 2つの値が異なることをアサート
+    void assert_ne(ulong a, ulong b, void* test_name) {
+        ulong condition = 0;
+        if (a != b) {
+            condition = 1;
+        }
+        self.assert_true(condition, test_name);
+    }
+
+    /// メモリアドレスに書込み→読み戻しが一致することをアサート
+    /// addr: テスト対象アドレス（0の場合はスキップしてFAIL）
+    /// pattern: 書き込む値
+    void assert_mem_write(ulong addr, ulong pattern, void* test_name) {
+        if (addr == 0) {
+            self.assert_true(0, test_name);
+            return;
+        }
+        // パターンを書き込み
+        ulong* ptr = addr as ulong*;
+        *ptr = pattern;
+        // 読み戻し
+        ulong readback = *ptr;
+        ulong ok = 0;
+        if (readback == pattern) {
+            ok = 1;
+        }
+        self.assert_true(ok, test_name);
+    }
+
     /// テスト結果サマリーを出力
     void print_results() {
         DebugPort debug(0xE9);

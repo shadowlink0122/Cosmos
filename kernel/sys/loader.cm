@@ -1,0 +1,150 @@
+//! platform: uefi
+// kernel::sys::loader - CosmEXE アプリケーションローダー
+//
+// CosmFSからCosmEXEバイナリを読み込み、ヒープにロードして実行する。
+//
+// CosmEXEフォーマット:
+//   [0x00] magic:     8B  = 0x004558456D736F43 ("CosmEXE\0")
+//   [0x08] entry:     8B  = エントリポイントオフセット
+//   [0x10] code_size: 8B  = コードセクションサイズ
+//   [0x18] flags:     8B  = 予約（0）
+//   [0x20] code:      ... = 実行コード
+//
+// API:
+//   loader_exec(name_addr) → 0=成功, 非0=エラー
+
+import ../config;
+import ../drivers/debug_port;
+import ../fs/cosmfs;
+import ../mm/heap;
+
+// CosmFS操作コード
+const ulong LDR_FS_FIND    = 5;
+const ulong LDR_FS_SIZE    = 3;
+const ulong LDR_FS_READ    = 12;
+const ulong LDR_NOT_FOUND  = 0xFFFFFFFFFFFFFFFF;
+
+// ============================================================
+// ヘルパー
+// ============================================================
+
+/// 8バイト読み取り（リトルエンディアン）
+export ulong loader_read_u64(ulong addr) {
+    ulong val = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        movq (%rdi), %rax;
+        movq %rax, ${=r:val}
+    `);
+    return val;
+}
+
+// ============================================================
+// CosmEXEローダー
+// ============================================================
+
+/// CosmEXEバイナリを検証して実行する（バッファ指定版）
+/// buf_addr: CosmEXEデータが読み込まれたバッファアドレス
+/// buf_size: バッファサイズ
+/// 戻り値: 0=成功, 5=magic不一致
+export ulong loader_exec_buf(ulong buf_addr, ulong buf_size) {
+    DebugPort debug(0xE9);
+
+    // CosmEXEヘッダ検証
+    ulong magic = loader_read_u64(buf_addr);
+    if (magic != COSMEXE_MAGIC) {
+        debug.puts("[LOADER] error: bad magic: " as void*);
+        debug.print_hex(magic);
+        debug.println("" as void*);
+        return 5;
+    }
+
+    ulong entry_offset = loader_read_u64(buf_addr + 8);
+    ulong code_size = loader_read_u64(buf_addr + 16);
+
+    debug.puts("[LOADER] entry=" as void*);
+    debug.print_hex(entry_offset);
+    debug.puts(" code_size=" as void*);
+    debug.print_hex(code_size);
+    debug.println("" as void*);
+
+    // エントリポイントに制御を移す
+    // コードはヘッダ(32B)の後に配置されている
+    ulong code_base = buf_addr + COSMEXE_HEADER_SIZE;
+    ulong entry_addr = code_base + entry_offset;
+
+    debug.puts("[LOADER] jumping to " as void*);
+    debug.print_hex(entry_addr);
+    debug.println("" as void*);
+
+    // アプリのエントリポイントを呼び出す
+    // efi_main(0, 0) → 戻り値を返す
+    ulong ret = 0;
+    __asm__(`
+        movq ${r:entry_addr}, %rax;
+        xorq %rdi, %rdi;
+        xorq %rsi, %rsi;
+        call *%rax;
+        movq %rax, ${=r:ret}
+    `);
+
+    debug.puts("[LOADER] app returned: " as void*);
+    debug.print_hex(ret);
+    debug.println("" as void*);
+
+    return 0;
+}
+
+/// CosmEXEバイナリをCosmFSからロードし実行する（ヒープ自動確保版）
+/// name_addr: ファイル名のアドレス（NUL終端）
+/// 戻り値: 0=成功, 1=ファイル未発見, 2=サイズ取得失敗, 3=サイズ超過,
+///         4=読込失敗, 5=magic不一致, 6=ヒープ割当失敗
+export ulong loader_exec(ulong name_addr) {
+    DebugPort debug(0xE9);
+
+    debug.puts("[LOADER] loading: " as void*);
+    debug.puts(name_addr as void*);
+    debug.println("" as void*);
+
+    // 1. CosmFSでファイル検索
+    ulong find_result = cosmfs_op(LDR_FS_FIND, name_addr, 0, 0, 0);
+    if (find_result == LDR_NOT_FOUND) {
+        debug.println("[LOADER] error: file not found" as void*);
+        return 1;
+    }
+
+    // 2. ファイルサイズ取得
+    ulong size = cosmfs_op(LDR_FS_SIZE, name_addr, 0, 0, 0);
+    if (size == 0) {
+        debug.println("[LOADER] error: empty file" as void*);
+        return 2;
+    }
+    if (size > APP_MAX_SIZE) {
+        debug.println("[LOADER] error: binary too large" as void*);
+        return 3;
+    }
+
+    debug.puts("[LOADER] size=" as void*);
+    debug.print_hex(size);
+    debug.println("" as void*);
+
+    // 3. ヒープにバッファ確保して読み込み
+    ulong* heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+    ulong heap_addr = *heap_ptr;
+    Heap* heap = heap_addr as Heap*;
+    ulong load_addr = heap->alloc(size);
+    if (load_addr == 0) {
+        debug.println("[LOADER] error: heap alloc failed" as void*);
+        return 6;
+    }
+
+    ulong read_result = cosmfs_op(LDR_FS_READ, name_addr, load_addr, size, 0);
+    if (read_result == 0) {
+        debug.println("[LOADER] error: read failed" as void*);
+        return 4;
+    }
+
+    // 4. バッファ指定版で実行
+    return loader_exec_buf(load_addr, size);
+}
+

@@ -1,8 +1,13 @@
 //! platform: uefi
 // kernel::fs::initramfs - 初期ファイルローダー
 //
-// ブート時にサンプルファイルをCosmFSに自動ロードする。
+// ブート時にサンプルファイルとディレクトリ構造をCosmFSに自動ロードする。
 // ファイルデータはカーネルバイナリに文字列リテラルとして埋め込まれる。
+//
+// ディレクトリ構造:
+//   /bin     - 組み込みコマンド用
+//   /home    - ユーザーファイル用
+//   /tmp     - 一時ファイル用
 //
 // Bug #14回避: 1 export関数のみ。
 
@@ -11,26 +16,105 @@ import ./cosmfs;
 import ../mm/heap;
 import ../drivers/debug_port;
 import ../shell/shell_io;
+import ../apps/bin/help_data;
 
 // CosmFS操作コード
-const ulong FS_OP_CREATE  = 1;
-const ulong FS_OP_WRITE   = 2;
-const ulong FS_OP_MEMCPY  = 10;
+const ulong CM_FS_CREATE     = 1;
+const ulong CM_FS_WRITE      = 2;
+const ulong CM_FS_MEMCPY     = 10;
+const ulong CM_FS_SET_PARENT = 15;
 
-/// initramfsからCosmFSにファイルをロードする
+// ファイルタイプ
+const ulong CM_TYPE_FILE = 0;
+const ulong CM_TYPE_DIR  = 1;
+
+// ルートの親マーカー
+const ulong CM_ROOT = 0xFFFFFFFFFFFFFFFF;
+
+/// ディレクトリを作成するヘルパー
+export ulong initramfs_mkdir(ulong name, ulong name_len, Heap* heap) {
+    ulong name_buf = heap->alloc(name_len + 1);
+    if (name_buf == 0) { return CM_ROOT; }
+    cosmfs_op(CM_FS_MEMCPY, name_buf, name, name_len + 1, 0);
+    ulong result = cosmfs_op(CM_FS_CREATE, name_buf, 0, 0, CM_TYPE_DIR);
+    if (result != 0) { return CM_ROOT; }
+    // 作成されたエントリのインデックスを取得
+    ulong* cnt = ADDR_FS_FILE_COUNT as ulong*;
+    ulong idx = *cnt - 1;
+    return idx;
+}
+
+/// initramfsからCosmFSにファイルとディレクトリをロードする
 export void initramfs_load(Heap* heap) {
     DebugPort debug(0xE9);
+
+    // ============================================================
+    // ディレクトリ構造の作成
+    // ============================================================
+
+    // /bin
+    ulong bin_idx = initramfs_mkdir("bin" as ulong, 3, heap);
+    if (bin_idx != CM_ROOT) {
+        cosmfs_op(CM_FS_SET_PARENT, bin_idx, CM_ROOT, 0, 0);
+        debug.println("[INITRAMFS] created: /bin" as void*);
+    }
+
+    // /bin/help — CosmEXEバイナリ
+    ulong help_name_buf = heap->alloc(5);
+    if (help_name_buf != 0) {
+        cosmfs_op(CM_FS_MEMCPY, help_name_buf, "help" as ulong, 5, 0);
+        // CosmEXEはVA配置でサイズが増大するため十分なバッファを確保
+        ulong help_data_buf = heap->alloc(12288);
+        if (help_data_buf != 0) {
+            // CosmEXEバイナリをヒープに書き込み
+            ulong help_size = embed_help(help_data_buf);
+
+            // CosmFSにファイル作成 — サイズは実際のバイナリサイズを使用
+            cosmfs_op(CM_FS_CREATE, help_name_buf, help_data_buf, help_size, CM_TYPE_FILE);
+            cosmfs_op(CM_FS_WRITE, help_name_buf, help_data_buf, help_size, 0);
+
+            // /bin の子に設定
+            ulong* cnt_help = ADDR_FS_FILE_COUNT as ulong*;
+            if (bin_idx != CM_ROOT) {
+                cosmfs_op(CM_FS_SET_PARENT, *cnt_help - 1, bin_idx, 0, 0);
+            }
+            debug.puts("[INITRAMFS] loaded: /bin/help (" as void*);
+            debug.print_hex(help_size);
+            debug.println(" bytes)" as void*);
+        }
+    }
+
+    // /home
+    ulong home_idx = initramfs_mkdir("home" as ulong, 4, heap);
+    if (home_idx != CM_ROOT) {
+        cosmfs_op(CM_FS_SET_PARENT, home_idx, CM_ROOT, 0, 0);
+        debug.println("[INITRAMFS] created: /home" as void*);
+    }
+
+    // /tmp
+    ulong tmp_idx = initramfs_mkdir("tmp" as ulong, 3, heap);
+    if (tmp_idx != CM_ROOT) {
+        cosmfs_op(CM_FS_SET_PARENT, tmp_idx, CM_ROOT, 0, 0);
+        debug.println("[INITRAMFS] created: /tmp" as void*);
+    }
+
+    // ============================================================
+    // サンプルファイルの作成（ルートディレクトリに配置）
+    // ============================================================
 
     // --- readme.txt ---
     ulong rn_buf = heap->alloc(11);  // "readme.txt" + NUL
     if (rn_buf != 0) {
-        cosmfs_op(FS_OP_MEMCPY, rn_buf, "readme.txt" as ulong, 11, 0);  // NUL含む
+        cosmfs_op(CM_FS_MEMCPY, rn_buf, "readme.txt" as ulong, 11, 0);
         ulong rd_buf = heap->alloc(4096);
         if (rd_buf != 0) {
-            cosmfs_op(FS_OP_CREATE, rn_buf, rd_buf, 4096, 0);
-            cosmfs_op(FS_OP_WRITE, rn_buf,
+            cosmfs_op(CM_FS_CREATE, rn_buf, rd_buf, 4096, CM_TYPE_FILE);
+            cosmfs_op(CM_FS_WRITE, rn_buf,
                 "CosmOS v0.7.0 - Cm言語で書かれた実験的OS\nCommands: help, ls, cat, touch, rm, write, append, aria" as ulong,
                 93, 0);
+            // ルートに配置
+            ulong* cnt1 = ADDR_FS_FILE_COUNT as ulong*;
+            cosmfs_op(CM_FS_SET_PARENT, *cnt1 - 1, CM_ROOT, 0, 0);
             debug.println("[INITRAMFS] loaded: readme.txt" as void*);
         }
     }
@@ -38,13 +122,15 @@ export void initramfs_load(Heap* heap) {
     // --- hello.cm ---
     ulong hn_buf = heap->alloc(9);  // "hello.cm" + NUL
     if (hn_buf != 0) {
-        cosmfs_op(FS_OP_MEMCPY, hn_buf, "hello.cm" as ulong, 9, 0);  // NUL含む
+        cosmfs_op(CM_FS_MEMCPY, hn_buf, "hello.cm" as ulong, 9, 0);
         ulong hd_buf = heap->alloc(4096);
         if (hd_buf != 0) {
-            cosmfs_op(FS_OP_CREATE, hn_buf, hd_buf, 4096, 0);
-            cosmfs_op(FS_OP_WRITE, hn_buf,
+            cosmfs_op(CM_FS_CREATE, hn_buf, hd_buf, 4096, CM_TYPE_FILE);
+            cosmfs_op(CM_FS_WRITE, hn_buf,
                 "// hello.cm - CosmOS sample program\nexport void main() {\n    print(42);\n}" as ulong,
                 76, 0);
+            ulong* cnt2 = ADDR_FS_FILE_COUNT as ulong*;
+            cosmfs_op(CM_FS_SET_PARENT, *cnt2 - 1, CM_ROOT, 0, 0);
             debug.println("[INITRAMFS] loaded: hello.cm" as void*);
         }
     }
@@ -52,14 +138,15 @@ export void initramfs_load(Heap* heap) {
     // --- notes.txt ---
     ulong nn_buf = heap->alloc(10);  // "notes.txt" + NUL
     if (nn_buf != 0) {
-        cosmfs_op(FS_OP_MEMCPY, nn_buf, "notes.txt" as ulong, 10, 0);  // NUL含む
+        cosmfs_op(CM_FS_MEMCPY, nn_buf, "notes.txt" as ulong, 10, 0);
         ulong nd_buf = heap->alloc(4096);
         if (nd_buf != 0) {
-            cosmfs_op(FS_OP_CREATE, nn_buf, nd_buf, 4096, 0);
-            // 空ファイル（データ書き込みなし）
+            cosmfs_op(CM_FS_CREATE, nn_buf, nd_buf, 4096, CM_TYPE_FILE);
+            ulong* cnt3 = ADDR_FS_FILE_COUNT as ulong*;
+            cosmfs_op(CM_FS_SET_PARENT, *cnt3 - 1, CM_ROOT, 0, 0);
             debug.println("[INITRAMFS] loaded: notes.txt" as void*);
         }
     }
 
-    debug.println("[INITRAMFS] 3 files loaded" as void*);
+    debug.println("[INITRAMFS] 3 dirs + 3 files loaded" as void*);
 }

@@ -24,10 +24,10 @@ const ulong PAGE_SHIFT = 12;
 // 1つのulong内のビット数
 const ulong BITS_PER_ULONG = 64;
 
-// UEFIメモリタイプ（OS利用可能なもの）
+// UEFIメモリタイプ
+// 注意: ExitBootServices後、BS_Code/BS_Data領域はページテーブルから
+// 削除される場合がある（OVMF等）。安全にConventionalMemoryのみ使用する。
 const ulong EFI_CONVENTIONAL_MEMORY = 7;
-const ulong EFI_BOOT_SERVICES_CODE  = 3;
-const ulong EFI_BOOT_SERVICES_DATA  = 4;
 
 // ============================================================
 // PMM 構造体
@@ -80,10 +80,9 @@ impl PMM {
             ulong num_pages = *pages_ptr;
 
             // 利用可能なメモリタイプのみ最大アドレス計算
+            // ConventionalMemoryのみ使用（BS領域はExitBootServices後に無効化される）
             ulong is_ram = 0;
             if (mem_type == EFI_CONVENTIONAL_MEMORY) { is_ram = 1; }
-            if (mem_type == EFI_BOOT_SERVICES_CODE)  { is_ram = 1; }
-            if (mem_type == EFI_BOOT_SERVICES_DATA)  { is_ram = 1; }
 
             if (is_ram == 1) {
                 ulong region_end = phys_start + (num_pages * PAGE_SIZE);
@@ -131,11 +130,9 @@ impl PMM {
             ulong* pages_ptr = (desc_addr + 24) as ulong*;
             ulong num_pages = *pages_ptr;
 
-            // 利用可能なメモリタイプか判定
+            // 利用可能なメモリタイプか判定（ConventionalMemoryのみ）
             ulong is_usable = 0;
             if (mem_type == EFI_CONVENTIONAL_MEMORY) { is_usable = 1; }
-            if (mem_type == EFI_BOOT_SERVICES_CODE)  { is_usable = 1; }
-            if (mem_type == EFI_BOOT_SERVICES_DATA)  { is_usable = 1; }
 
             if (is_usable == 1) {
                 if (num_pages >= bmp_pages) {
@@ -194,11 +191,9 @@ impl PMM {
             ulong* pages_ptr = (desc_addr + 24) as ulong*;
             ulong num_pages = *pages_ptr;
 
-            // ConventionalMemory + BS_Code + BS_Data を利用可能とする
+            // ConventionalMemoryのみ利用可能とする
             ulong is_usable = 0;
             if (mem_type == EFI_CONVENTIONAL_MEMORY) { is_usable = 1; }
-            if (mem_type == EFI_BOOT_SERVICES_CODE)  { is_usable = 1; }
-            if (mem_type == EFI_BOOT_SERVICES_DATA)  { is_usable = 1; }
 
             if (is_usable == 1) {
                 ulong page_idx = phys_start >> PAGE_SHIFT;

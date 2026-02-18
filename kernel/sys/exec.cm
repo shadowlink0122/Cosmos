@@ -1,0 +1,194 @@
+//! platform: uefi
+// kernel::sys::exec - コマンド実行エンジン
+//
+// シェルコマンドをCLIツールとして実行するための統合ディスパッチャ。
+// apps/ ディレクトリ内のアプリケーションモジュールを統一インターフェース
+// app_xxx(argc, argv) → ulong で呼び出す。
+//
+// API:
+//   exec_command(buf_addr, buf_len) → 0=成功, 1=未発見
+
+import ../config;
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../lib/print;
+import ../mm/heap;
+import ../shell/shell_io;
+import ../fs/cosmfs;
+import ./loader;
+
+// アプリケーションモジュール（apps/ディレクトリ）
+// help — CosmEXE独立バイナリ（loader経由で実行）
+import ../apps/ps/ps;
+import ../apps/mem/mem;
+import ../apps/uptime/uptime;
+import ../apps/clear/clear;
+import ../apps/env/env;
+import ../apps/fs/fs;
+import ../apps/cm/cm;
+
+// ============================================================
+// ヘルパー
+// ============================================================
+
+/// 1バイト読み取り
+export ulong exec_read_byte(ulong addr) {
+    ulong ch = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:ch}
+    `);
+    return ch;
+}
+
+/// 文字列比較（固定長バッファ vs NUL終端リテラル）
+export ulong exec_streq(ulong buf_addr, ulong buf_len, ulong target) {
+    // ターゲット文字列の長さを計算
+    ulong target_len = 0;
+    ulong max_t = 64;
+    while (target_len < max_t) {
+        ulong ch = exec_read_byte(target + target_len);
+        if (ch == 0) { max_t = 0; }
+        if (ch != 0) { target_len = target_len + 1; }
+    }
+
+    if (buf_len != target_len) {
+        return 0;
+    }
+    ulong i = 0;
+    while (i < buf_len) {
+        ulong ch_a = exec_read_byte(buf_addr + i);
+        ulong ch_b = exec_read_byte(target + i);
+        if (ch_a != ch_b) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+/// コマンド名の長さ（最初のスペースまで）を取得
+export ulong exec_cmd_len(ulong buf_addr, ulong buf_len) {
+    ulong i = 0;
+    while (i < buf_len) {
+        ulong ch = exec_read_byte(buf_addr + i);
+        if (ch == 0x20) { return i; }  // スペース
+        i = i + 1;
+    }
+    return buf_len;
+}
+
+/// プレフィックスマッチ（starts_with）
+export ulong exec_starts_with(ulong buf_addr, ulong buf_len, ulong prefix, ulong prefix_len) {
+    if (buf_len < prefix_len) { return 0; }
+    ulong i = 0;
+    while (i < prefix_len) {
+        ulong ch_a = exec_read_byte(buf_addr + i);
+        ulong ch_b = exec_read_byte(prefix + i);
+        if (ch_a != ch_b) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// ============================================================
+// コマンドディスパッチャ
+// ============================================================
+
+/// コマンドを実行する（シェルから呼ばれる）
+/// 戻り値: 0=コマンド実行成功, 1=コマンド未発見
+export ulong exec_command(ulong buf_addr, ulong buf_len) {
+    if (buf_len == 0) { return 1; }
+
+    DebugPort debug(0xE9);
+    debug.puts("[EXEC] cmd=" as void*);
+    ulong cmd_l = exec_cmd_len(buf_addr, buf_len);
+    ulong di = 0;
+    while (di < cmd_l) {
+        ulong dch = exec_read_byte(buf_addr + di);
+        debug.putc(dch);
+        di = di + 1;
+    }
+    debug.println("" as void*);
+
+    // Heap取得
+    ulong* heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+    ulong heap_addr = *heap_ptr;
+    Heap* heap = heap_addr as Heap*;
+
+    // === 完全一致コマンド（引数なし） → app_xxx(0, 0) ===
+    if (exec_streq(buf_addr, buf_len, "help" as ulong) != 0) {
+        loader_exec("help" as ulong);
+        return 0;
+    }
+    if (exec_streq(buf_addr, buf_len, "ps" as ulong) != 0) {
+        app_ps(0, 0);
+        return 0;
+    }
+    if (exec_streq(buf_addr, buf_len, "mem" as ulong) != 0) {
+        app_mem(0, 0);
+        return 0;
+    }
+    if (exec_streq(buf_addr, buf_len, "uptime" as ulong) != 0) {
+        app_uptime(0, 0);
+        return 0;
+    }
+    if (exec_streq(buf_addr, buf_len, "clear" as ulong) != 0) {
+        app_clear(0, 0);
+        return 0;
+    }
+    if (exec_streq(buf_addr, buf_len, "ls" as ulong) != 0) {
+        cmd_ls();
+        return 0;
+    }
+    if (exec_streq(buf_addr, buf_len, "a.out" as ulong) != 0) {
+        cmd_run_aout(heap);
+        return 0;
+    }
+    if (exec_streq(buf_addr, buf_len, "env" as ulong) != 0) {
+        app_env(0, 0);
+        return 0;
+    }
+
+    // === プレフィックスコマンド（引数あり） ===
+    if (exec_starts_with(buf_addr, buf_len, "touch " as ulong, 6) != 0) {
+        cmd_touch(buf_addr, buf_len, heap);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "cat " as ulong, 4) != 0) {
+        cmd_cat(buf_addr, buf_len);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "rm " as ulong, 3) != 0) {
+        cmd_rm(buf_addr, buf_len);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "write " as ulong, 6) != 0) {
+        cmd_write(buf_addr, buf_len, heap);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "append " as ulong, 7) != 0) {
+        cmd_append(buf_addr, buf_len, heap);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "mkdir " as ulong, 6) != 0) {
+        cmd_mkdir(buf_addr, buf_len, heap);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "cp " as ulong, 3) != 0) {
+        cmd_cp(buf_addr, buf_len, heap);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "mv " as ulong, 3) != 0) {
+        cmd_mv(buf_addr, buf_len, heap);
+        return 0;
+    }
+    if (exec_starts_with(buf_addr, buf_len, "cm " as ulong, 3) != 0) {
+        cmd_cm(buf_addr, buf_len, heap);
+        return 0;
+    }
+
+    return 1;  // コマンド未発見
+}

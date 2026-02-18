@@ -1,0 +1,37 @@
+//! platform: uefi
+// kernel::sys::syscall_table - syscall番号定義
+//
+// int 0x80 によるソフトウェア割り込みで使用するsyscall番号。
+// rax = syscall番号、rdi/rsi/rdx/r10 = 引数。
+
+// ============================================================
+// syscall番号定数
+// ============================================================
+
+export const ulong SYS_EXIT    = 0;   // プロセス終了
+export const ulong SYS_WRITE   = 1;   // write(fd, buf, len) → bytes_written
+export const ulong SYS_READ    = 2;   // read(fd, buf, len) → bytes_read
+export const ulong SYS_OPEN    = 3;   // open(path, flags) → fd
+export const ulong SYS_CLOSE   = 4;   // close(fd) → 0
+export const ulong SYS_STAT    = 5;   // stat(path, buf) → 0
+export const ulong SYS_GETENV  = 6;   // getenv(name, buf, len) → len
+export const ulong SYS_GETCWD  = 7;   // getcwd(buf, len) → len
+export const ulong SYS_CHDIR   = 8;   // chdir(path) → 0
+
+// ============================================================
+// ファイルディスクリプタ定数
+// ============================================================
+
+export const ulong FD_STDIN  = 0;   // 標準入力
+export const ulong FD_STDOUT = 1;   // 標準出力
+export const ulong FD_STDERR = 2;   // 標準エラー出力
+
+// ============================================================
+// エラーコード
+// ============================================================
+
+export const ulong SYSCALL_OK       = 0;
+export const ulong SYSCALL_ERR      = 0xFFFFFFFFFFFFFFFF;  // 汎用エラー
+export const ulong SYSCALL_EBADF    = 0xFFFFFFFFFFFFFFF7;  // 不正なfd
+export const ulong SYSCALL_ENOSYS   = 0xFFFFFFFFFFFFFFF8;  // 未実装syscall
+export const ulong SYSCALL_EINVAL   = 0xFFFFFFFFFFFFFFF9;  // 不正な引数

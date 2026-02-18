@@ -12,14 +12,10 @@ import ../drivers/debug_port;
 import ../drivers/keyboard;
 import ../lib/print;
 import ../config;
-import ./cmd_help;
-import ./cmd_ps;
-import ./cmd_mem;
-import ./cmd_uptime;
-import ./cmd_fs;
 import ../mm/heap;
 import ../apps/aria/aria;
-import ./cmd_cm;
+import ../sys/exec;
+import ./shell_io;
 
 // ============================================================
 // 定数
@@ -140,6 +136,74 @@ export void shell_buf_write(ulong pos, ulong byte_val) {
     `);
 }
 
+/// コマンドバッファからバイトを読取る
+export ulong shell_buf_read(ulong pos) {
+    ulong addr = SHELL_BUF_ADDR + pos;
+    ulong val = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:val}
+    `);
+    return val;
+}
+
+/// カーソル位置以降のバッファ内容を再描画する（FBConsole）
+/// prompt_len: プロンプト文字列の長さ（"CosmOS > " = 9文字）
+export void shell_redraw_from(ulong cursor, ulong len) {
+    FBConsole con();
+    SerialPort serial(0x3F8);
+    ulong prompt_len = 9;  // "CosmOS > " の長さ
+
+    // FBConsoleのカーソルX位置をcursor+prompt_lenに設定
+    con._write(0x20, prompt_len + cursor);  // FB_OFF_CURSOR_X
+
+    // カーソル位置から末尾まで描画
+    ulong i = cursor;
+    while (i < len) {
+        ulong ch = shell_buf_read(i);
+        ulong px = (prompt_len + i) * 8;   // FONT_WIDTH
+        ulong cy = con._read(0x28);        // FB_OFF_CURSOR_Y
+        ulong py = cy * 16;                // FONT_HEIGHT
+        con.set_color(SHELL_COLOR_INPUT);
+        con.draw_char(px, py, ch);
+        i = i + 1;
+    }
+
+    // 末尾の残り文字をクリア（削除時のゴミ除去）
+    ulong clear_px = (prompt_len + len) * 8;
+    ulong cy2 = con._read(0x28);
+    ulong py2 = cy2 * 16;
+    con.draw_char(clear_px, py2, 0x20);  // 空白で消去
+
+    // FBConsoleカーソルをcursor位置に戻す
+    con._write(0x20, prompt_len + cursor);
+
+    // シリアル: カーソル位置も同期
+    // (シリアルではESCシーケンスで対応)
+    // まず行頭に戻ってプロンプト後から再描画
+    serial.putc(0x0D);  // CR
+    serial.puts("CosmOS > " as void*);
+    ulong j = 0;
+    while (j < len) {
+        ulong ch2 = shell_buf_read(j);
+        serial.putc(ch2);
+        j = j + 1;
+    }
+    serial.putc(0x20);  // 末尾クリア
+    // カーソルをcursor位置に移動（ESC[nG）
+    serial.putc(0x0D);
+    ulong k = 0;
+    ulong target = prompt_len + cursor;
+    while (k < target) {
+        serial.putc(0x1B);
+        serial.putc(0x5B);  // [
+        serial.putc(0x43);  // C (right)
+        k = k + 1;
+    }
+}
+
 /// コマンドを実行する
 export void shell_exec(ulong buf_addr, ulong buf_len) {
     SerialPort serial(0x3F8);
@@ -154,141 +218,21 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
     debug.print_hex(buf_len);
     debug.println("" as void*);
 
-    ulong matched = 0;
-
-    if (shell_streq(buf_addr, buf_len, "help" as void*) != 0) {
-        cmd_help();
-        matched = 1;
-    }
-    if (shell_streq(buf_addr, buf_len, "ps" as void*) != 0) {
-        cmd_ps();
-        matched = 1;
-    }
-    if (shell_streq(buf_addr, buf_len, "mem" as void*) != 0) {
-        cmd_mem();
-        matched = 1;
-    }
-    if (shell_streq(buf_addr, buf_len, "uptime" as void*) != 0) {
-        cmd_uptime();
-        matched = 1;
-    }
-    if (shell_streq(buf_addr, buf_len, "clear" as void*) != 0) {
-        serial.puts("\x1B[2J\x1B[H" as void*);
-        con.clear();
-        con.set_color(0x00FFFFFF);
-        con.println("  CosmOS v0.6.0" as void*);
-        con.newline();
-        matched = 1;
-    }
-
-    // --- ファイルシステムコマンド ---
-
-    if (shell_streq(buf_addr, buf_len, "ls" as void*) != 0) {
-        cmd_ls();
-        matched = 1;
-    }
-
-    ulong is_touch = shell_starts_with(buf_addr, buf_len, "touch " as void*, 6);
-    if (is_touch != 0) {
-        ulong* heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr = *heap_ptr;
-        Heap* heap = heap_addr as Heap*;
-        cmd_touch(buf_addr, buf_len, heap);
-        matched = 1;
-    }
-
-    ulong is_cat = shell_starts_with(buf_addr, buf_len, "cat " as void*, 4);
-    if (is_cat != 0) {
-        cmd_cat(buf_addr, buf_len);
-        matched = 1;
-    }
-
-    ulong is_rm = shell_starts_with(buf_addr, buf_len, "rm " as void*, 3);
-    if (is_rm != 0) {
-        cmd_rm(buf_addr, buf_len);
-        matched = 1;
-    }
-
-    ulong is_write = shell_starts_with(buf_addr, buf_len, "write " as void*, 6);
-    if (is_write != 0) {
-        ulong* heap_ptr2 = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr2 = *heap_ptr2;
-        Heap* heap2 = heap_addr2 as Heap*;
-        cmd_write(buf_addr, buf_len, heap2);
-        matched = 1;
-    }
-
-    ulong is_append = shell_starts_with(buf_addr, buf_len, "append " as void*, 7);
-    if (is_append != 0) {
-        ulong* heap_ptr3 = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr3 = *heap_ptr3;
-        Heap* heap3 = heap_addr3 as Heap*;
-        cmd_append(buf_addr, buf_len, heap3);
-        matched = 1;
-    }
-
-    ulong is_mkdir = shell_starts_with(buf_addr, buf_len, "mkdir " as void*, 6);
-    if (is_mkdir != 0) {
-        ulong* heap_ptr4 = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr4 = *heap_ptr4;
-        Heap* heap4 = heap_addr4 as Heap*;
-        cmd_mkdir(buf_addr, buf_len, heap4);
-        matched = 1;
-    }
-
-    ulong is_cp = shell_starts_with(buf_addr, buf_len, "cp " as void*, 3);
-    if (is_cp != 0) {
-        ulong* heap_ptr5 = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr5 = *heap_ptr5;
-        Heap* heap5 = heap_addr5 as Heap*;
-        cmd_cp(buf_addr, buf_len, heap5);
-        matched = 1;
-    }
-
-    ulong is_mv = shell_starts_with(buf_addr, buf_len, "mv " as void*, 3);
-    if (is_mv != 0) {
-        ulong* heap_ptr6 = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr6 = *heap_ptr6;
-        Heap* heap6 = heap_addr6 as Heap*;
-        cmd_mv(buf_addr, buf_len, heap6);
-        matched = 1;
-    }
-
-    // --- cm コンパイラ ---
-    ulong is_cm = shell_starts_with(buf_addr, buf_len, "cm " as void*, 3);
-    if (is_cm != 0) {
-        ulong* heap_ptr7 = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr7 = *heap_ptr7;
-        Heap* heap7 = heap_addr7 as Heap*;
-        cmd_cm(buf_addr, buf_len, heap7);
-        matched = 1;
-    }
-
-    // --- a.out 実行 ---
-    if (shell_streq(buf_addr, buf_len, "a.out" as void*) != 0) {
-        ulong* heap_ptr8 = ADDR_GLOBAL_HEAP as ulong*;
-        ulong heap_addr8 = *heap_ptr8;
-        Heap* heap8 = heap_addr8 as Heap*;
-        cmd_run_aout(heap8);
-        matched = 1;
-    }
-
-    // --- Aria エディタ ---
+    // Aria エディタ（シェルモード切替が必要なため、ここで処理）
     ulong is_aria = shell_starts_with(buf_addr, buf_len, "aria " as void*, 5);
     if (is_aria != 0) {
-        // ファイル名取得
-        ulong fname_start = 5;  // "aria " の後
+        ulong fname_start = 5;
         ulong fname_len = buf_len - fname_start;
         ulong fname_addr = buf_addr + fname_start;
-        // Aria初期化+ファイルオープン
         aria_init();
-        aria_op(1, fname_addr, fname_len, 0, 0);  // OPEN
-        // 初回描画
-        aria_op(3, 0, 0, 0, 0);  // RENDER
-        matched = 1;
+        aria_op(1, fname_addr, fname_len, 0, 0);
+        aria_op(3, 0, 0, 0, 0);
+        return;
     }
 
-    if (matched == 0) {
+    // コマンド実行エンジンに委譲
+    ulong result = exec_command(buf_addr, buf_len);
+    if (result != 0) {
         serial.puts("Unknown command. Type 'help'" as void*);
         serial.println("" as void*);
 
@@ -335,9 +279,43 @@ export void shell_process_input() {
 
     ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
     ulong pos = *pos_ptr;
+    ulong* cur_ptr = 0xDA8 as ulong*;  // ADDR_SHELL_CURSOR
+    ulong cursor = *cur_ptr;
 
     ulong ch = kb_read_char();
     if (ch == 0) {
+        return;
+    }
+
+    // ← 左矢印 (VKEY_LEFT = 0x82)
+    if (ch == 0x82) {
+        if (cursor > 0) {
+            cursor = cursor - 1;
+            *cur_ptr = cursor;
+            // シリアル: カーソル左移動
+            serial.putc(0x1B);
+            serial.putc(0x5B);  // [
+            serial.putc(0x44);  // D
+            // FBConsoleカーソルX更新
+            ulong new_x = 9 + cursor;
+            con._write(0x20, new_x);
+        }
+        return;
+    }
+
+    // → 右矢印 (VKEY_RIGHT = 0x83)
+    if (ch == 0x83) {
+        if (cursor < pos) {
+            cursor = cursor + 1;
+            *cur_ptr = cursor;
+            // シリアル: カーソル右移動
+            serial.putc(0x1B);
+            serial.putc(0x5B);  // [
+            serial.putc(0x43);  // C
+            // FBConsoleカーソルX更新
+            ulong new_x2 = 9 + cursor;
+            con._write(0x20, new_x2);
+        }
         return;
     }
 
@@ -349,6 +327,7 @@ export void shell_process_input() {
         shell_exec(SHELL_BUF_ADDR, pos);
         ulong zero = 0;
         *pos_ptr = zero;
+        *cur_ptr = zero;
         // プロンプト再表示
         serial.puts("CosmOS > " as void*);
         con.set_color(SHELL_COLOR_PROMPT);
@@ -360,28 +339,48 @@ export void shell_process_input() {
     // Backspace (0x08)
     ulong backspace = 0x08;
     if (ch == backspace) {
-        if (pos > 0) {
+        if (cursor > 0) {
+            // cursor位置の前の文字を削除
+            // cursor以降を左に1バイトシフト
+            ulong shift_i = cursor - 1;
+            while (shift_i < pos - 1) {
+                ulong next_ch = shell_buf_read(shift_i + 1);
+                shell_buf_write(shift_i, next_ch);
+                shift_i = shift_i + 1;
+            }
             pos = pos - 1;
+            cursor = cursor - 1;
             *pos_ptr = pos;
-            serial.putc(0x08);
-            serial.putc(0x20);
-            serial.putc(0x08);
-            con.backspace();
+            *cur_ptr = cursor;
+            // 再描画
+            shell_redraw_from(cursor, pos);
+            // FBConsoleカーソルをedit cursor位置に合わせる
+            con._write(0x20, 9 + cursor);
         }
         return;
     }
 
-    // 通常文字（0x20-0x7E のみ）— 矢印キー等は無視
+    // 通常文字（0x20-0x7E のみ）
     if (ch >= 0x20) {
         if (ch < 0x7F) {
             ulong max_pos = SHELL_BUF_SIZE - 1;
             if (pos < max_pos) {
-                shell_buf_write(pos, ch);
+                // cursor位置に挿入（cursor以降を右に1バイトシフト）
+                ulong shift_j = pos;
+                while (shift_j > cursor) {
+                    ulong prev_ch = shell_buf_read(shift_j - 1);
+                    shell_buf_write(shift_j, prev_ch);
+                    shift_j = shift_j - 1;
+                }
+                shell_buf_write(cursor, ch);
                 pos = pos + 1;
+                cursor = cursor + 1;
                 *pos_ptr = pos;
-                serial.putc(ch);
-                con.set_color(SHELL_COLOR_INPUT);
-                con.putc(ch);
+                *cur_ptr = cursor;
+                // 再描画
+                shell_redraw_from(cursor - 1, pos);
+                // FBConsoleカーソルをedit cursor位置に合わせる
+                con._write(0x20, 9 + cursor);
             }
         }
     }
@@ -430,4 +429,57 @@ export void shell_init() {
     con.set_color(SHELL_COLOR_INPUT);
 
     debug.println("[SHELL] shell initialized" as void*);
+
+    // カーソル点滅有効化（OS標準機能）
+    con.cursor_enable();
+
+    // 編集カーソル位置リセット
+    ulong init_zero = 0;
+    ulong* cursor_pos = 0xDA8 as ulong*;
+    *cursor_pos = init_zero;
+}
+
+// ============================================================
+// 例外復帰
+// ============================================================
+
+/// 例外ハンドラから復帰した後の復旧処理
+/// バッファをクリアし、エラーメッセージとプロンプトを再表示する
+export void shell_recover() {
+    SerialPort serial(0x3F8);
+    FBConsole con();
+
+    // シェルバッファをクリア
+    ulong zero = 0;
+    ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
+    *pos_ptr = zero;
+
+    ulong i = 0;
+    ulong buf_qwords = 16;
+    while (i < buf_qwords) {
+        ulong addr = SHELL_BUF_ADDR + (i * 8);
+        ulong* ptr = addr as ulong*;
+        *ptr = zero;
+        i = i + 1;
+    }
+
+    // エラーから復帰したメッセージ
+    con.set_color(SHELL_COLOR_ERROR);
+    con.newline();
+    con.println("[Recovered from exception]" as void*);
+    serial.println("" as void*);
+    serial.println("[Recovered from exception]" as void*);
+
+    // プロンプト再表示
+    serial.puts("CosmOS > " as void*);
+    con.set_color(SHELL_COLOR_PROMPT);
+    con.puts("CosmOS > " as void*);
+    con.set_color(SHELL_COLOR_INPUT);
+
+    // カーソル点滅リセット（OS標準機能）
+    con.cursor_enable();
+
+    // 編集カーソル位置リセット
+    ulong* cursor_pos = 0xDA8 as ulong*;
+    *cursor_pos = zero;
 }

@@ -43,6 +43,8 @@ import ./tests/arch/test_tss;
 import ./tests/drivers/test_keyboard;
 import ./tests/fs/test_cosmfs;
 import ./tests/apps/test_aria;
+import ./tests/sys/test_loader;
+import ./tests/integration/test_integration;
 import ./fs/cosmfs;
 import ./apps/aria/aria;
 import ./libs/boot_services;
@@ -88,7 +90,7 @@ void kernel_main_test(BootInfo* info) {
     VMM vmm();
     debug.println("[BOOT] paging enabled" as void*);
 
-    // ヒープ初期化
+    // ヒープ初期化（64ページ = 256KB、ConventionalMemoryのみ使用）
     Heap heap(&pmm, 64);
     debug.println("[BOOT] heap initialized" as void*);
 
@@ -135,11 +137,26 @@ void kernel_main_test(BootInfo* info) {
     test_scheduler(&runner);
     test_cosmfs(&runner);
     test_aria(&runner);
+    test_loader(&runner, &heap);
+    test_integration(&runner, &heap, &pmm);
     runner.print_results();
 
-    // テスト完了 — halt
-    debug.println("[BOOT] all tests done, halting" as void*);
-    serial.println("[CosmOS] Tests complete, system halted" as void*);
+    // テスト完了 — isa-debug-exitでQEMUを即座に終了
+    debug.println("[BOOT] all tests done, exiting QEMU" as void*);
+    serial.println("[CosmOS] Tests complete" as void*);
+
+    // port 0xf4への書き込みでQEMUが終了する
+    // 終了コード = (val << 1) | 1
+    // val=0 → exit 1 (成功), val>0 → exit >1 (失敗)
+    ulong exit_val = runner.fail_count;
+    ulong exit_port = 0xF4;
+    __asm__(`
+        movq ${r:exit_val}, %rax;
+        movq ${r:exit_port}, %rdx;
+        outb %al, %dx
+    `);
+
+    // フォールバック: debug-exitが使えない場合はhalt
     while (true) {
         __asm__("hlt");
     }
@@ -166,20 +183,20 @@ ulong efi_main(void* image_handle, void* system_table) {
     // BootInfo収集
     efi_println(system_table, "[Phase 1] Collecting boot information..." as void*);
 
-    BootInfo boot_info;
-    boot_info.fb.base_addr = 0;
-    boot_info.fb.size = 0;
-    boot_info.fb.width = 0 as uint;
-    boot_info.fb.height = 0 as uint;
-    boot_info.fb.stride = 0 as uint;
-    boot_info.fb.pixel_format = 0 as uint;
-    boot_info.mmap.map_buffer = 0 as void*;
-    boot_info.mmap.map_size = 0;
-    boot_info.mmap.map_key = 0;
-    boot_info.mmap.desc_size = 0;
-    boot_info.mmap.desc_version = 0 as uint;
-    boot_info.mmap.entry_count = 0 as uint;
-    boot_info.acpi_rsdp = 0;
+    BootInfo boot_info = {
+        fb: {
+            base_addr: 0, size: 0,
+            width: 0 as uint, height: 0 as uint,
+            stride: 0 as uint, pixel_format: 0 as uint
+        },
+        mmap: {
+            map_buffer: 0 as void*,
+            map_size: 0, map_key: 0,
+            desc_size: 0, desc_version: 0 as uint,
+            entry_count: 0 as uint
+        },
+        acpi_rsdp: 0
+    };
 
     // GOP情報
     efi_println(system_table, "  Initializing GOP..." as void*);

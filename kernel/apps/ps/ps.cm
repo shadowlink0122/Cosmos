@@ -1,13 +1,13 @@
 //! platform: uefi
-// kernel::shell::cmd_ps - psコマンド（タスク一覧表示）
+// kernel::apps::ps - psコマンド（タスク一覧表示）
 
-import ./shell_io;
-import ../config;
-import ../sched/task;
-import ../sched/scheduler;
+import ../../shell/shell_io;
+import ../../config;
+import ../../sched/task;
+import ../../sched/scheduler;
 
 /// psコマンド: タスク一覧を表示
-export void cmd_ps() {
+export ulong app_ps(ulong argc, ulong argv) {
     shell_set_color(SHELL_COLOR_HEADER);
     shell_println("  ID  STATE       TIMESLICE" as void*);
     shell_set_color(SHELL_COLOR_OUTPUT);
@@ -40,4 +40,5 @@ export void cmd_ps() {
     shell_puts("Total: " as void*);
     shell_print_hex(count);
     shell_println(" tasks" as void*);
+    return 0;
 }

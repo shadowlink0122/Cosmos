@@ -31,9 +31,26 @@ import ../config;
 // 定数
 // ============================================================
 
-const ulong FS_ENTRY_SIZE  = 32;
+const ulong FS_ENTRY_SIZE  = 48;
 const ulong FS_MAX_FILES   = 64;
 const ulong FS_INIT_CAP    = 4096;
+
+// エントリレイアウト (48B):
+//   +0x00: name_addr   — ファイル名バッファ
+//   +0x08: data_addr   — データバッファ
+//   +0x10: size        — ファイルサイズ
+//   +0x18: capacity    — バッファ容量
+//   +0x20: type        — 0=ファイル, 1=ディレクトリ
+const ulong FS_FIELD_TYPE   = 32;
+//   +0x28: parent_idx  — 親ディレクトリのインデックス (0xFFFF...=ルート)
+const ulong FS_FIELD_PARENT = 40;
+
+// ファイルタイプ
+export const ulong FS_TYPE_FILE = 0;
+export const ulong FS_TYPE_DIR  = 1;
+
+// ルートディレクトリの親インデックス（親なし）
+export const ulong FS_ROOT_PARENT = 0xFFFFFFFFFFFFFFFF;
 
 // 操作コード
 const ulong FS_OP_CREATE    = 1;
@@ -48,6 +65,9 @@ const ulong FS_OP_STRLEN    = 9;
 const ulong FS_OP_MEMCPY    = 10;
 const ulong FS_OP_APPEND    = 11;
 const ulong FS_OP_READ      = 12;
+const ulong FS_OP_FIND_IN_DIR = 13; // ディレクトリ内検索
+const ulong FS_OP_MKDIR       = 14; // ディレクトリ作成
+const ulong FS_OP_SET_PARENT  = 15; // 親ディレクトリ設定
 
 // ============================================================
 // 初期化
@@ -74,6 +94,9 @@ export void cosmfs_init() {
     ulong* init_ptr = ADDR_FS_INITIALIZED as ulong*;
     ulong one = 1;
     *init_ptr = one;
+    // カレントディレクトリ=ルート
+    ulong* cwd_ptr = ADDR_FS_CWD as ulong*;
+    *cwd_ptr = FS_ROOT_PARENT;
 }
 
 // ============================================================
@@ -195,7 +218,7 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
         return 0xFFFFFFFFFFFFFFFF;
     }
 
-    // op=1: CREATE (name_buf=arg1, data_buf=arg2, capacity=arg3)
+    // op=1: CREATE (name_buf=arg1, data_buf=arg2, capacity=arg3, type=arg4)
     if (op == FS_OP_CREATE) {
         ulong* cnt = ADDR_FS_FILE_COUNT as ulong*;
         ulong count = *cnt;
@@ -221,6 +244,14 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
         ulong a3 = base + 24;
         ulong* f3 = a3 as ulong*;
         *f3 = arg3;  // capacity
+        // typeフィールド
+        ulong a4 = base + FS_FIELD_TYPE;
+        ulong* f4 = a4 as ulong*;
+        *f4 = arg4;  // 0=file, 1=dir
+        // parent_idxフィールド（デフォルト=ルート）
+        ulong a5 = base + FS_FIELD_PARENT;
+        ulong* f5 = a5 as ulong*;
+        *f5 = FS_ROOT_PARENT;
         // ファイル数++
         ulong nc = count + 1;
         *cnt = nc;
@@ -377,6 +408,67 @@ export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4)
         ulong data_src = *da_ptr;
         cosmfs_op(FS_OP_MEMCPY, arg2, data_src, rlen, 0);
         return rlen;
+    }
+    // op=13: FIND_IN_DIR (name=arg1, parent_idx=arg2)
+    // 指定された親ディレクトリ内でファイル名を検索
+    if (op == FS_OP_FIND_IN_DIR) {
+        ulong* cnt = ADDR_FS_FILE_COUNT as ulong*;
+        ulong count = *cnt;
+        ulong fi = 0;
+        while (fi < count) {
+            ulong ea = ADDR_FS_FILE_TABLE + (fi * FS_ENTRY_SIZE);
+            // 親チェック
+            ulong pa = ea + FS_FIELD_PARENT;
+            ulong* pp = pa as ulong*;
+            ulong parent = *pp;
+            if (parent == arg2) {
+                // 名前比較
+                ulong* np = ea as ulong*;
+                ulong ename = *np;
+                if (ename != 0) {
+                    ulong si = 0;
+                    ulong smatch = 1;
+                    ulong max_cmp = 256;
+                    while (si < max_cmp) {
+                        ulong ch1 = 0;
+                        ulong ch2 = 0;
+                        ulong a1_addr = arg1 + si;
+                        ulong a2_addr = ename + si;
+                        __asm__(`
+                            movq ${r:a1_addr}, %rdi;
+                            xorq %rax, %rax;
+                            movb (%rdi), %al;
+                            movq %rax, ${=r:ch1};
+                            movq ${r:a2_addr}, %rdi;
+                            xorq %rax, %rax;
+                            movb (%rdi), %al;
+                            movq %rax, ${=r:ch2}
+                        `);
+                        if (ch1 != ch2) {
+                            smatch = 0;
+                            si = max_cmp;
+                        }
+                        if (ch1 == 0) {
+                            si = max_cmp;
+                        }
+                        si = si + 1;
+                    }
+                    if (smatch != 0) {
+                        return fi;
+                    }
+                }
+            }
+            fi = fi + 1;
+        }
+        return 0xFFFFFFFFFFFFFFFF;
+    }
+
+    // op=15: SET_PARENT (index=arg1, parent_idx=arg2)
+    if (op == FS_OP_SET_PARENT) {
+        ulong ea = ADDR_FS_FILE_TABLE + (arg1 * FS_ENTRY_SIZE) + FS_FIELD_PARENT;
+        ulong* ep = ea as ulong*;
+        *ep = arg2;
+        return 0;
     }
 
     return 0;

@@ -24,17 +24,20 @@ import ../config;
 
 /// フレームバッファテキストコンソール
 /// addr フィールドに固定メモリアドレスを保持し、
-/// そのアドレスにレイアウトされた8つのulongフィールドを操作する。
+/// そのアドレスにレイアウトされたulongフィールドを操作する。
 ///
 /// メモリレイアウト (addr + offset):
-///   +0x00: fb_addr    — フレームバッファの物理アドレス
-///   +0x08: width      — 水平解像度（ピクセル）
-///   +0x10: height     — 垂直解像度（ピクセル）
-///   +0x18: stride     — 1行あたりのピクセル数
-///   +0x20: cursor_x   — テキストカーソル列（文字単位）
-///   +0x28: cursor_y   — テキストカーソル行（文字単位）
-///   +0x30: fg_color   — 前景色（BGRA）
-///   +0x38: bg_color   — 背景色（BGRA）
+///   +0x00: fb_addr         — フレームバッファの物理アドレス
+///   +0x08: width           — 水平解像度（ピクセル）
+///   +0x10: height          — 垂直解像度（ピクセル）
+///   +0x18: stride          — 1行あたりのピクセル数
+///   +0x20: cursor_x        — テキストカーソル列（文字単位）
+///   +0x28: cursor_y        — テキストカーソル行（文字単位）
+///   +0x30: fg_color        — 前景色（BGRA）
+///   +0x38: bg_color        — 背景色（BGRA）
+///   +0x40: cursor_enabled  — カーソル点滅有効フラグ (0/1)
+///   +0x48: cursor_tick     — 前回の点滅切替tick
+///   +0x50: cursor_state    — 点滅状態 (0=非表示, 1=表示)
 export struct FBConsole {
     ulong addr;    // 固定メモリアドレス（実データへのポインタ）
 }
@@ -43,14 +46,20 @@ export struct FBConsole {
 // フィールドオフセット定数
 // ============================================================
 
-const ulong FB_OFF_ADDR     = 0x00;
-const ulong FB_OFF_WIDTH    = 0x08;
-const ulong FB_OFF_HEIGHT   = 0x10;
-const ulong FB_OFF_STRIDE   = 0x18;
-const ulong FB_OFF_CURSOR_X = 0x20;
-const ulong FB_OFF_CURSOR_Y = 0x28;
-const ulong FB_OFF_FG_COLOR = 0x30;
-const ulong FB_OFF_BG_COLOR = 0x38;
+const ulong FB_OFF_ADDR           = 0x00;
+const ulong FB_OFF_WIDTH          = 0x08;
+const ulong FB_OFF_HEIGHT         = 0x10;
+const ulong FB_OFF_STRIDE         = 0x18;
+const ulong FB_OFF_CURSOR_X       = 0x20;
+const ulong FB_OFF_CURSOR_Y       = 0x28;
+const ulong FB_OFF_FG_COLOR       = 0x30;
+const ulong FB_OFF_BG_COLOR       = 0x38;
+const ulong FB_OFF_CURSOR_ENABLED = 0x40;
+const ulong FB_OFF_CURSOR_TICK    = 0x48;
+const ulong FB_OFF_CURSOR_STATE   = 0x50;
+
+// カーソル点滅間隔（PIT tick数、100Hz基準で50tick = 500ms）
+const ulong CURSOR_BLINK_INTERVAL = 50;
 
 // ============================================================
 // カラー定数
@@ -101,6 +110,9 @@ impl FBConsole {
         self._write(FB_OFF_CURSOR_Y, 0);
         self._write(FB_OFF_FG_COLOR, FB_COLOR_GREEN);
         self._write(FB_OFF_BG_COLOR, FB_COLOR_DARK_BG);
+        self._write(FB_OFF_CURSOR_ENABLED, 0);
+        self._write(FB_OFF_CURSOR_TICK, 0);
+        self._write(FB_OFF_CURSOR_STATE, 0);
     }
 
     // --------------------------------------------------------
@@ -258,6 +270,9 @@ impl FBConsole {
 
     /// 1文字を出力（テキストカーソル自動進行）
     void putc(ulong ch) {
+        // 出力前にカーソルを消す
+        self.cursor_hide();
+
         // 改行文字
         if (ch == 10) {
             self.newline();
@@ -344,6 +359,7 @@ impl FBConsole {
 
     /// カーソルを1つ戻して空白で上書き（Backspace用）
     void backspace() {
+        self.cursor_hide();
         ulong cx = self._read(FB_OFF_CURSOR_X);
         if (cx > 0) {
             ulong new_cx = cx - 1;
@@ -352,6 +368,107 @@ impl FBConsole {
             ulong px = new_cx * FONT_WIDTH;
             ulong py = self._read(FB_OFF_CURSOR_Y) * FONT_HEIGHT;
             self.draw_char(px, py, 0x20);
+        }
+    }
+
+    // --------------------------------------------------------
+    // カーソル点滅（OS標準機能）
+    // --------------------------------------------------------
+
+    /// カーソル点滅を有効にする
+    void cursor_enable() {
+        self._write(FB_OFF_CURSOR_ENABLED, 1);
+        self._write(FB_OFF_CURSOR_STATE, 0);
+        // 現在のPIT tickを初期値に設定
+        ulong* tick_ptr = 0x900 as ulong*;
+        self._write(FB_OFF_CURSOR_TICK, *tick_ptr);
+    }
+
+    /// カーソル点滅を無効にする
+    void cursor_disable() {
+        self.cursor_hide();
+        self._write(FB_OFF_CURSOR_ENABLED, 0);
+    }
+
+    /// カーソルを即座に非表示にする（文字入力前に呼ぶ）
+    void cursor_hide() {
+        ulong state = self._read(FB_OFF_CURSOR_STATE);
+        if (state != 0) {
+            // カーソル位置のアンダーラインバーを消去
+            ulong cx = self._read(FB_OFF_CURSOR_X);
+            ulong cy = self._read(FB_OFF_CURSOR_Y);
+            ulong px = cx * FONT_WIDTH;
+            ulong py = cy * FONT_HEIGHT;
+            self.draw_cursor_bar(px, py, 0);
+            self._write(FB_OFF_CURSOR_STATE, 0);
+        }
+    }
+
+    /// カーソル点滅を更新する（メインループから定期的に呼び出す）
+    /// PIT tick(0x900, 100Hz)を参照し、500msごとに表示/非表示を切替
+    void cursor_update() {
+        ulong enabled = self._read(FB_OFF_CURSOR_ENABLED);
+        if (enabled == 0) { return; }
+
+        ulong* pit_tick_ptr = 0x900 as ulong*;
+        ulong current_tick = *pit_tick_ptr;
+        ulong last_tick = self._read(FB_OFF_CURSOR_TICK);
+        ulong diff = current_tick - last_tick;
+
+        if (diff < CURSOR_BLINK_INTERVAL) { return; }
+
+        // 切替タイミング
+        self._write(FB_OFF_CURSOR_TICK, current_tick);
+        ulong state = self._read(FB_OFF_CURSOR_STATE);
+        ulong cx = self._read(FB_OFF_CURSOR_X);
+        ulong cy = self._read(FB_OFF_CURSOR_Y);
+        ulong px = cx * FONT_WIDTH;
+        ulong py = cy * FONT_HEIGHT;
+
+        if (state == 0) {
+            // カーソル表示: アンダーラインバーを描画
+            self.draw_cursor_bar(px, py, 1);
+            self._write(FB_OFF_CURSOR_STATE, 1);
+        } else {
+            // カーソル非表示: アンダーラインバーを消去
+            self.draw_cursor_bar(px, py, 0);
+            self._write(FB_OFF_CURSOR_STATE, 0);
+        }
+    }
+
+    /// アンダーラインカーソルバーを描画/消去する
+    /// フォントセル下部2ピクセル行にfg_color(show=1)またはbg_color(show=0)のバーを描画
+    void draw_cursor_bar(ulong px, ulong py, ulong show) {
+        ulong fb = self._read(FB_OFF_ADDR);
+        ulong stride = self._read(FB_OFF_STRIDE);
+        ulong screen_w = self._read(FB_OFF_WIDTH);
+        ulong screen_h = self._read(FB_OFF_HEIGHT);
+        if (fb == 0) { return; }
+
+        ulong color = 0;
+        if (show != 0) {
+            color = self._read(FB_OFF_FG_COLOR);
+        } else {
+            color = self._read(FB_OFF_BG_COLOR);
+        }
+
+        // フォントセルの下2ピクセル行（row 14, 15）にバーを描画
+        ulong bar_row = 0;
+        while (bar_row < 2) {
+            ulong sy = py + 14 + bar_row;
+            if (sy < screen_h) {
+                ulong col = 0;
+                while (col < FONT_WIDTH) {
+                    ulong sx = px + col;
+                    if (sx < screen_w) {
+                        ulong offset = (sy * stride + sx) * 4;
+                        uint* pixel = (fb + offset) as uint*;
+                        *pixel = color as uint;
+                    }
+                    col += 1;
+                }
+            }
+            bar_row += 1;
         }
     }
 }

@@ -1,7 +1,13 @@
 //! platform: uefi
 // kernel::tests::test_pmm - PMM（物理メモリマネージャ）テスト
+//
+// alloc_page/alloc_pagesの基本動作に加え、
+// 割り当てられたページへの実際の書込み・読み戻し検証を行う。
+// これにより、UEFIページテーブルで書込み可能にマッピングされた
+// メモリのみが割り当てられることを保証する。
 
 import ../../drivers/serial;
+import ../../drivers/debug_port;
 import ../../mm/pmm;
 import ../test_runner;
 
@@ -12,28 +18,79 @@ import ../test_runner;
 /// PMM基本テストを実行する
 export void test_pmm(TestRunner* runner, PMM* pmm) {
     SerialPort serial(0x3F8);
+    DebugPort debug(0xE9);
     serial.println("[TEST] === PMM Tests ===" as void*);
 
-    // テスト1: alloc_pageが非ゼロアドレスを返す
-    ulong page1 = pmm->alloc_page();
-    runner->assert_nonzero(page1, "PMM alloc_page returns nonzero" as void*);
+    // テスト1: 初期化確認 — total_pagesが非ゼロ
+    ulong total = pmm->total_pages;
+    runner->assert_nonzero(total, "PMM: total_pages nonzero" as void*);
 
-    // テスト2: 2回目のallocが異なるアドレスを返す
-    ulong page2 = pmm->alloc_page();
-    ulong different = 0;
-    if (page1 != page2) {
-        different = 1;
+    // テスト2: free_pagesが非ゼロ
+    ulong free0 = pmm->free_pages;
+    runner->assert_nonzero(free0, "PMM: free_pages nonzero" as void*);
+
+    // テスト3: free_pages <= total_pages
+    ulong free_le_total = 0;
+    if (free0 <= total) {
+        free_le_total = 1;
     }
-    runner->assert_true(different, "PMM alloc returns different pages" as void*);
+    runner->assert_true(free_le_total, "PMM: free <= total" as void*);
 
-    // テスト3: free後のre-allocでページが再利用される
+    // テスト4: alloc_pageが非ゼロアドレスを返す
+    ulong page1 = pmm->alloc_page();
+    runner->assert_nonzero(page1, "PMM: alloc_page nonzero" as void*);
+
+    // テスト5: 割当ページに書込み→読み戻し（PF検出テスト）
+    runner->assert_mem_write(page1, 0xAAAABBBBCCCCDDDD, "PMM: alloc'd page writable" as void*);
+
+    // テスト6: alloc後にfree_pagesが減少
+    ulong free1 = pmm->free_pages;
+    ulong decreased = 0;
+    if (free1 < free0) {
+        decreased = 1;
+    }
+    runner->assert_true(decreased, "PMM: free_pages decreased after alloc" as void*);
+
+    // テスト7: 2回目のallocが異なるアドレスを返す
+    ulong page2 = pmm->alloc_page();
+    runner->assert_ne(page1, page2, "PMM: 2nd alloc different addr" as void*);
+
+    // テスト8: 2回目もページに書込み可能
+    runner->assert_mem_write(page2, 0x1122334455667788, "PMM: 2nd page writable" as void*);
+
+    // テスト9: 1回目の書込みが2回目で上書きされていない
+    ulong* check1 = page1 as ulong*;
+    ulong rb1 = *check1;
+    runner->assert_eq(rb1, 0xAAAABBBBCCCCDDDD, "PMM: 1st page not corrupted" as void*);
+
+    // テスト10: ページアドレスが4KBアライン
+    ulong page_mask = 4095;
+    ulong align1 = page1 & page_mask;
+    runner->assert_eq(align1, 0, "PMM: page addr 4KB aligned" as void*);
+
+    // テスト11: free後のre-allocでページが再利用される
     pmm->free_page(page1);
     ulong page3 = pmm->alloc_page();
-    runner->assert_eq(page3, page1, "PMM free/realloc reuses page" as void*);
+    runner->assert_eq(page3, page1, "PMM: free/realloc reuses page" as void*);
+
+    // テスト12: 再利用ページにも書込み可能
+    runner->assert_mem_write(page3, 0xFEDCBA9876543210, "PMM: reused page writable" as void*);
+
+    // テスト13: alloc_pages(2)で連続2ページ割当
+    ulong pages2 = pmm->alloc_pages(2);
+    runner->assert_nonzero(pages2, "PMM: alloc_pages(2) nonzero" as void*);
+
+    // テスト14: 連続ページの先頭に書込み可能
+    runner->assert_mem_write(pages2, 0x1111111111111111, "PMM: contiguous page[0] writable" as void*);
+
+    // テスト15: 連続ページの2ページ目に書込み可能
+    ulong page2_addr = pages2 + 4096;
+    runner->assert_mem_write(page2_addr, 0x2222222222222222, "PMM: contiguous page[1] writable" as void*);
 
     // クリーンアップ
     pmm->free_page(page2);
     pmm->free_page(page3);
+    pmm->free_pages(pages2, 2);
 
     serial.println("[TEST] PMM tests complete" as void*);
 }

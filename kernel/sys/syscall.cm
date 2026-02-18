@@ -1,0 +1,188 @@
+//! platform: uefi
+// kernel::sys::syscall - syscallディスパッチャ
+//
+// int 0x80 ソフトウェア割り込みを受け取り、raxのsyscall番号に基づいて
+// 適切なハンドラにディスパッチする。
+//
+// ABI規約:
+//   rax = syscall番号
+//   rdi = 引数1
+//   rsi = 引数2
+//   rdx = 引数3
+//   r10 = 引数4
+//   戻り値: rax
+//
+// 使用方法:
+//   syscall_init(idt_table) を呼んでベクタ0x80を登録
+
+import ../arch/idt;
+import ../arch/isr;
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../lib/print;
+import ./syscall_table;
+import ./env;
+
+// ============================================================
+// syscallハンドラエントリポイント（アセンブリスタブ）
+// ============================================================
+
+/// int 0x80 ハンドラ — Cmプロローグのスタック操作を考慮した安全な実装
+///
+/// 問題: Cmコンパイラはsyscall_entry()にプロローグを自動生成するため、
+///       `iretq`時にinterruptフレーム(RIP,CS,RFLAGS,RSP,SS)が
+///       スタックの正しい位置にない。
+/// 解決: 固定メモリ(0xDA0)にプロローグ直後のRSPを保存。
+///       dispatch後、保存したRSPからinterruptフレーム位置を逆算して復元。
+export void syscall_entry() {
+    // Cmプロローグ直後のRSPを固定メモリに保存
+    // プロローグは push rsi; push rdi; sub rsp, $X (計 X+16)
+    // interruptフレームはプロローグ前のRSP位置にある
+    __asm__(`
+        movq %rsp, %r11;
+        movq %r11, (0xDA0)
+    `);
+
+    // int 0x80 時のレジスタ状態を取得
+    ulong syscall_nr = 0;
+    ulong arg1 = 0;
+    ulong arg2 = 0;
+    ulong arg3 = 0;
+    __asm__(`
+        movq %rax, ${=r:syscall_nr};
+        movq %rdi, ${=r:arg1};
+        movq %rsi, ${=r:arg2};
+        movq %rdx, ${=r:arg3}
+    `);
+
+    ulong result = syscall_dispatch(syscall_nr, arg1, arg2, arg3);
+
+    // dispatch結果をraxに設定し、スタックをinterruptフレーム先頭に復元
+    // 保存RSP = プロローグ完了後 (push rsi + push rdi + sub rsp,$0xa8 後)
+    // interruptフレーム = 保存RSP + 0xa8 + 8(rdi) + 8(rsi) = 保存RSP + 0xb8
+    __asm__(`
+        movq ${r:result}, %rax;
+        movq (0xDA0), %rsp;
+        addq $$0xb8, %rsp;
+        iretq
+    `);
+}
+
+// ============================================================
+// syscallディスパッチャ
+// ============================================================
+
+/// syscall番号に基づいてハンドラを呼び出す
+export ulong syscall_dispatch(ulong nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_WRITE) {
+        return sys_write(arg1, arg2, arg3);
+    }
+    if (nr == SYS_READ) {
+        return sys_read(arg1, arg2, arg3);
+    }
+    if (nr == SYS_EXIT) {
+        sys_exit(arg1);
+        return 0;
+    }
+    if (nr == SYS_GETENV) {
+        return env_get(arg1);
+    }
+
+    // 未実装syscall
+    DebugPort debug = {port: 0xE9};
+    debug.puts("[SYSCALL] unknown nr=" as void*);
+    debug.print_hex(nr);
+    debug.println("" as void*);
+    return SYSCALL_ENOSYS;
+}
+
+// ============================================================
+// sys_write — fd, buf, len → bytes_written
+// ============================================================
+
+/// fd=1(stdout) or fd=2(stderr) に書き込む
+export ulong sys_write(ulong fd, ulong buf, ulong len) {
+    if (fd == FD_STDOUT) {
+        // FBConsole + シリアルに出力
+        FBConsole con();
+        SerialPort serial = {port: 0x3F8};
+        ulong i = 0;
+        while (i < len) {
+            ulong ch = 0;
+            ulong byte_addr = buf + i;
+            __asm__(`
+                movq ${r:byte_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            con.putc(ch);
+            serial.putc(ch);
+            i = i + 1;
+        }
+        return len;
+    }
+    if (fd == FD_STDERR) {
+        // シリアルのみに出力（エラー出力）
+        SerialPort serial = {port: 0x3F8};
+        ulong i = 0;
+        while (i < len) {
+            ulong ch = 0;
+            ulong byte_addr = buf + i;
+            __asm__(`
+                movq ${r:byte_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            serial.putc(ch);
+            i = i + 1;
+        }
+        return len;
+    }
+    return SYSCALL_EBADF;
+}
+
+// ============================================================
+// sys_read — fd, buf, len → bytes_read
+// ============================================================
+
+/// fd=0(stdin) から読み込む（現在は未実装、0を返す）
+export ulong sys_read(ulong fd, ulong buf, ulong len) {
+    if (fd == FD_STDIN) {
+        // TODO: キーボードバッファから読み取る
+        return 0;
+    }
+    return SYSCALL_EBADF;
+}
+
+// ============================================================
+// sys_exit — プロセス終了
+// ============================================================
+
+/// 現在のプロセスを終了する（現時点ではログのみ）
+export void sys_exit(ulong code) {
+    DebugPort debug = {port: 0xE9};
+    debug.puts("[SYSCALL] sys_exit code=" as void*);
+    debug.print_hex(code);
+    debug.println("" as void*);
+    // 現時点ではプロセス管理がないため、単にリターン
+}
+
+// ============================================================
+// 初期化
+// ============================================================
+
+/// syscallハンドラをIDTベクタ0x80に登録する
+export void syscall_init(uint* idt_table) {
+    IDT idt = {table: idt_table};
+
+    // DPL=3 のTrap Gate (0xEF) を使用
+    // P=1, DPL=3, Trap Gate = 1110_1111 = 0xEF
+    // Trap Gateを使用する理由: syscall中に割り込みを有効に保つ
+    ulong handler = fn_addr(syscall_entry as void*);
+    idt.set_gate(0x80, handler, 0xEF);
+
+    DebugPort debug = {port: 0xE9};
+    debug.println("[SYSCALL] handler registered at vector 0x80" as void*);
+}

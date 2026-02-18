@@ -425,8 +425,7 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
     *ext_ptr = zero;
 
     // IDTにベクタ33（IRQ1）のハンドラを登録
-    IDT idt;
-    idt.table = idt_table;
+    IDT idt = {table: idt_table};
     ulong vec33 = 33;
     idt.set_gate(vec33, fn_addr(irq1_handler as void*), IDT_INTERRUPT_GATE);
 
