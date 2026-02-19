@@ -16,10 +16,10 @@ import ../mm/pmm;
 // ============================================================
 
 // タスク状態
-const ulong TASK_READY      = 0;
-const ulong TASK_RUNNING    = 1;
-const ulong TASK_BLOCKED    = 2;
-const ulong TASK_TERMINATED = 3;
+const TaskState TASK_READY      = 0;
+const TaskState TASK_RUNNING    = 1;
+const TaskState TASK_BLOCKED    = 2;
+const TaskState TASK_TERMINATED = 3;
 
 // TCB配列の固定アドレスと制限
 const ulong TCB_BASE_ADDR   = 0x1000;   // TCB配列の先頭アドレス

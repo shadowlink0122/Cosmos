@@ -39,14 +39,14 @@ export ulong sys_fs_read(ulong path, ulong buf, ulong max_len) {
 
 /// SYS_FS_WRITE — ファイル書き込み
 /// arg1=path, arg2=buf, arg3=len → 0（成功）
-export ulong sys_fs_write(ulong path, ulong buf, ulong len) {
+export SyscallResult sys_fs_write(ulong path, ulong buf, ulong len) {
     cosmfs_op(COSMFS_OP_WRITE, path, buf, len, 0);
     return SYSCALL_OK;
 }
 
 /// SYS_FS_CREATE — ファイル作成
 /// arg1=path, arg2=buf, arg3=capacity → 0（成功）
-export ulong sys_fs_create(ulong path, ulong buf, ulong capacity) {
+export SyscallResult sys_fs_create(ulong path, ulong buf, ulong capacity) {
     cosmfs_op(COSMFS_OP_CREATE, path, buf, capacity, 0);
     return SYSCALL_OK;
 }
@@ -60,7 +60,7 @@ export ulong sys_fs_size(ulong path) {
 
 /// SYS_FS_MEMCPY — メモリコピー（バイト単位）
 /// arg1=dst, arg2=src, arg3=len → 0
-export ulong sys_fs_memcpy(ulong dst, ulong src, ulong len) {
+export SyscallResult sys_fs_memcpy(ulong dst, ulong src, ulong len) {
     cosmfs_op(COSMFS_OP_MEMCPY, dst, src, len, 0);
     return SYSCALL_OK;
 }

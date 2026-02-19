@@ -17,6 +17,9 @@ export typedef SyscallResult = ulong;
 /// ファイルディスクリプタ型
 export typedef Fd = ulong;
 
+/// プロセスID型（syscall API公開用）
+export typedef Pid = ulong;
+
 // ============================================================
 // syscall番号定数
 // ============================================================

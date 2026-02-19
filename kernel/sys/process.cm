@@ -13,6 +13,7 @@
 import ../sched/task;
 import ../sched/scheduler;
 import ../drivers/debug_port;
+import ../sys/syscall_table;
 
 // ============================================================
 // sys_spawn — 新しいタスクを生成する
@@ -20,7 +21,7 @@ import ../drivers/debug_port;
 // entry_fn: タスクのエントリポイント関数アドレス
 // 戻り値: 新しいタスクID（失敗時は0xFFFFFFFFFFFFFFFF）
 
-export ulong sys_spawn(ulong entry_fn) {
+export SyscallResult sys_spawn(ulong entry_fn) {
     DebugPort debug(0xE9);
     debug.puts("[PROCESS] sys_spawn entry=0x" as void*);
     debug.print_hex(entry_fn);
@@ -60,7 +61,7 @@ export ulong sys_spawn(ulong entry_fn) {
 // pid: 終了させるタスクID
 // 戻り値: 0=成功
 
-export ulong sys_kill(ulong pid) {
+export SyscallResult sys_kill(ulong pid) {
     DebugPort debug(0xE9);
     debug.puts("[PROCESS] sys_kill pid=" as void*);
     debug.print_hex(pid);
@@ -94,7 +95,7 @@ export ulong sys_kill(ulong pid) {
 // pid: 待機対象タスクID
 // 戻り値: 対象の終了コード
 
-export ulong sys_wait(ulong pid) {
+export SyscallResult sys_wait(ulong pid) {
     DebugPort debug(0xE9);
     debug.puts("[PROCESS] sys_wait pid=" as void*);
     debug.print_hex(pid);
@@ -138,7 +139,7 @@ export ulong sys_wait(ulong pid) {
 // sys_getpid — 現在のプロセスIDを取得
 // ============================================================
 
-export ulong sys_getpid() {
+export Pid sys_getpid() {
     return sched_current_id();
 }
 
@@ -147,7 +148,7 @@ export ulong sys_getpid() {
 // ============================================================
 // code: 終了コード
 
-export void sys_exit_task(ulong code) {
+export void sys_exit_task(ExitCode code) {
     DebugPort debug(0xE9);
     ulong current = sched_current_id();
     debug.puts("[PROCESS] sys_exit_task pid=" as void*);
