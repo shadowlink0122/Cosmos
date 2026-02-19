@@ -9,6 +9,7 @@
 //   path_parent(path_addr, heap) → 親ディレクトリのインデックス
 
 import ../config;
+import ../types;
 import ./cosmfs;
 import ../mm/heap;
 
@@ -17,7 +18,7 @@ import ../mm/heap;
 // ============================================================
 
 /// パス文字列の長さを取得
-export ulong path_strlen(ulong addr) {
+export ByteSize path_strlen(MemAddr addr) {
     ulong len = 0;
     ulong max_len = 256;
     while (len < max_len) {
@@ -38,7 +39,7 @@ export ulong path_strlen(ulong addr) {
 }
 
 /// パス文字列から1バイト読み取る
-ulong path_read_byte(ulong addr) {
+ulong path_read_byte(MemAddr addr) {
     ulong ch = 0;
     __asm__(`
         movq ${r:addr}, %rdi;
@@ -50,7 +51,7 @@ ulong path_read_byte(ulong addr) {
 }
 
 /// パス文字列の最後のスラッシュの後ろ（ベースネーム）のオフセットを返す
-export ulong path_basename_offset(ulong path_addr) {
+export ByteOffset path_basename_offset(MemAddr path_addr) {
     ulong len = path_strlen(path_addr);
     if (len == 0) { return 0; }
 
@@ -70,7 +71,7 @@ export ulong path_basename_offset(ulong path_addr) {
 /// "/" → FS_ROOT_PARENT
 /// "/bin" → binディレクトリのインデックス
 /// "/bin/ls" → binディレクトリ内のlsのインデックス
-export ulong path_resolve(ulong path_addr, Heap* heap) {
+export ulong path_resolve(MemAddr path_addr, Heap* heap) {
     ulong len = path_strlen(path_addr);
     if (len == 0) { return FS_ROOT_PARENT; }
 

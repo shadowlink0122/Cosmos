@@ -2,11 +2,11 @@
 // 自動生成ファイル — 手動で編集しないでください
 
 /// 8バイト書き込みヘルパー
-export void embed_help_w8(ulong addr, ulong val) {
+export void embed_help_w8(MemAddr addr, ulong val) {
     __asm__(` movq ${r:val}, %rax; movq ${r:addr}, %rdi; movq %rax, (%rdi) `);
 }
 
-export void embed_help_p0(ulong dst) {
+export void embed_help_p0(MemAddr dst) {
     embed_help_w8(dst + 0, 0x004558456d736f43);
     embed_help_w8(dst + 8, 0x0000000000000340);
     embed_help_w8(dst + 16, 0x0000000000002200);

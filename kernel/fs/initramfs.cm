@@ -12,6 +12,7 @@
 // Bug #14回避: 1 export関数のみ。
 
 import ../config;
+import ../types;
 import ./cosmfs;
 import ../mm/heap;
 import ../drivers/debug_port;
@@ -19,10 +20,10 @@ import ../shell/shell_io;
 import ../apps/bin/help_data;
 
 // CosmFS操作コード
-const ulong CM_FS_CREATE     = 1;
-const ulong CM_FS_WRITE      = 2;
-const ulong CM_FS_MEMCPY     = 10;
-const ulong CM_FS_SET_PARENT = 15;
+const FsOpCode CM_FS_CREATE     = 1;
+const FsOpCode CM_FS_WRITE      = 2;
+const FsOpCode CM_FS_MEMCPY     = 10;
+const FsOpCode CM_FS_SET_PARENT = 15;
 
 // ファイルタイプ
 const ulong CM_TYPE_FILE = 0;
@@ -32,7 +33,7 @@ const ulong CM_TYPE_DIR  = 1;
 const ulong CM_ROOT = 0xFFFFFFFFFFFFFFFF;
 
 /// ディレクトリを作成するヘルパー
-export ulong initramfs_mkdir(ulong name, ulong name_len, Heap* heap) {
+export FileIndex initramfs_mkdir(MemAddr name, ByteSize name_len, Heap* heap) {
     ulong name_buf = heap->alloc(name_len + 1);
     if (name_buf == 0) { return CM_ROOT; }
     cosmfs_op(CM_FS_MEMCPY, name_buf, name, name_len + 1, 0);
