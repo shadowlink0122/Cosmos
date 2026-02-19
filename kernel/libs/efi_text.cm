@@ -6,7 +6,7 @@
 // 注意: string型は関数パラメータとして渡すとデータが壊れるため、
 //       全てのインターフェースは void* + ulong で受け取る
 // 注意: ASMに渡す値は全てulongにキャストすること
-// 注意: ASMブロックでmust{}は使用しないこと（Cmコンパイラのバグ: ASM出力変数の制御フロー破壊）
+// 注意: Bug#7（must内ASMの制御フロー破壊）はコンパイラ側で修正済み（コンパイラバリア挿入）
 // 注意: ASM内ではvolatileレジスタ(R10,R11,RAX,RCX,RDX,R8,R9)のみ使用
 //       Win64 ABI callee-saved(RBX,RDI,RSI,R12-R15)は使用禁止
 

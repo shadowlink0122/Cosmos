@@ -197,6 +197,7 @@ export ulong scancode_to_ascii_shifted(ulong scancode) {
 // ============================================================
 
 /// IRQ1ハンドラ: PS/2キーボード割り込み
+/// 純ASM関数のためnaked属性が自動適用され、prologue/epilogueなしで生成される
 ///   1. RAX, RCX, RDX を退避
 ///   2. ポート0x60からスキャンコード読取り
 ///   3. 固定アドレスのリングバッファに格納

@@ -39,6 +39,7 @@ export struct IDT {
 // ============================================================
 
 /// 未登録ベクタのデフォルトハンドラ（iretqで即リターン）
+/// 純ASM関数のためnaked属性が自動適用され、prologue/epilogueなしで生成される
 export void idt_default_handler() {
     __asm__(`iretq`);
 }

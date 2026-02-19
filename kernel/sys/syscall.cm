@@ -22,6 +22,9 @@ import ../drivers/debug_port;
 import ../lib/print;
 import ./syscall_table;
 import ./env;
+import ./screen;
+import ./fs_syscall;
+import ./process;
 
 // ============================================================
 // syscallハンドラエントリポイント（アセンブリスタブ）
@@ -29,14 +32,16 @@ import ./env;
 
 /// int 0x80 ハンドラ — Cmプロローグのスタック操作を考慮した安全な実装
 ///
-/// 問題: Cmコンパイラはsyscall_entry()にプロローグを自動生成するため、
-///       `iretq`時にinterruptフレーム(RIP,CS,RFLAGS,RSP,SS)が
+/// 注意: この関数はASM文とCmコード（syscall_dispatch呼出し）が混在するため、
+///       コンパイラのnaked属性は適用されない（純ASM関数のみnaked化される）。
+///       通常のプロローグ（push rbp; sub rsp, $X 等）が自動生成される。
+///
+/// 問題: Cmプロローグにより`iretq`時にinterruptフレーム(RIP,CS,RFLAGS,RSP,SS)が
 ///       スタックの正しい位置にない。
 /// 解決: 固定メモリ(0xDA0)にプロローグ直後のRSPを保存。
 ///       dispatch後、保存したRSPからinterruptフレーム位置を逆算して復元。
 export void syscall_entry() {
     // Cmプロローグ直後のRSPを固定メモリに保存
-    // プロローグは push rsi; push rdi; sub rsp, $X (計 X+16)
     // interruptフレームはプロローグ前のRSP位置にある
     __asm__(`
         movq %rsp, %r11;
@@ -58,8 +63,8 @@ export void syscall_entry() {
     ulong result = syscall_dispatch(syscall_nr, arg1, arg2, arg3);
 
     // dispatch結果をraxに設定し、スタックをinterruptフレーム先頭に復元
-    // 保存RSP = プロローグ完了後 (push rsi + push rdi + sub rsp,$0xa8 後)
-    // interruptフレーム = 保存RSP + 0xa8 + 8(rdi) + 8(rsi) = 保存RSP + 0xb8
+    // 保存RSP = プロローグ完了後のRSP
+    // interruptフレーム = 保存RSP + プロローグサイズ（0xb8）
     __asm__(`
         movq ${r:result}, %rax;
         movq (0xDA0), %rsp;
@@ -86,6 +91,69 @@ export ulong syscall_dispatch(ulong nr, ulong arg1, ulong arg2, ulong arg3) {
     }
     if (nr == SYS_GETENV) {
         return env_get(arg1);
+    }
+
+    // 画面I/O syscall (10-18)
+    if (nr == SYS_SCREEN_CLEAR) {
+        return sys_screen_clear();
+    }
+    if (nr == SYS_SCREEN_PUTC) {
+        return sys_screen_putc(arg1);
+    }
+    if (nr == SYS_SCREEN_PUTS) {
+        return sys_screen_puts(arg1, arg2);
+    }
+    if (nr == SYS_SCREEN_SET_COLOR) {
+        return sys_screen_set_color(arg1);
+    }
+    if (nr == SYS_SCREEN_GET_SIZE) {
+        return sys_screen_get_size();
+    }
+    if (nr == SYS_SCREEN_SET_CURSOR) {
+        return sys_screen_set_cursor(arg1, arg2);
+    }
+    if (nr == SYS_SCREEN_NEWLINE) {
+        return sys_screen_newline();
+    }
+    if (nr == SYS_SCREEN_PRINT_NUM) {
+        return sys_screen_print_num(arg1);
+    }
+    if (nr == SYS_SCREEN_PRINT_HEX) {
+        return sys_screen_print_hex(arg1);
+    }
+
+    // ファイルI/O syscall (20-25)
+    if (nr == SYS_FS_OPEN) {
+        return sys_fs_open(arg1, arg2);
+    }
+    if (nr == SYS_FS_READ) {
+        return sys_fs_read(arg1, arg2, arg3);
+    }
+    if (nr == SYS_FS_WRITE) {
+        return sys_fs_write(arg1, arg2, arg3);
+    }
+    if (nr == SYS_FS_CREATE) {
+        return sys_fs_create(arg1, arg2, arg3);
+    }
+    if (nr == SYS_FS_SIZE) {
+        return sys_fs_size(arg1);
+    }
+    if (nr == SYS_FS_MEMCPY) {
+        return sys_fs_memcpy(arg1, arg2, arg3);
+    }
+
+    // プロセスsyscall (30-35)
+    if (nr == SYS_SPAWN) {
+        return sys_spawn(arg1);
+    }
+    if (nr == SYS_KILL) {
+        return sys_kill(arg1);
+    }
+    if (nr == SYS_WAIT) {
+        return sys_wait(arg1);
+    }
+    if (nr == SYS_GETPID) {
+        return sys_getpid();
     }
 
     // 未実装syscall
@@ -160,13 +228,14 @@ export ulong sys_read(ulong fd, ulong buf, ulong len) {
 // sys_exit — プロセス終了
 // ============================================================
 
-/// 現在のプロセスを終了する（現時点ではログのみ）
+/// 現在のプロセスを終了する
 export void sys_exit(ulong code) {
     DebugPort debug = {port: 0xE9};
     debug.puts("[SYSCALL] sys_exit code=" as void*);
     debug.print_hex(code);
     debug.println("" as void*);
-    // 現時点ではプロセス管理がないため、単にリターン
+    // プロセスマネージャ経由でタスク終了
+    sys_exit_task(code);
 }
 
 // ============================================================
