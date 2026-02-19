@@ -8,6 +8,8 @@ import ../../drivers/serial;
 import ../../drivers/debug_port;
 import ../../arch/gdt;
 import ../../arch/usermode;
+import ../../mm/pmm;
+import ../../mm/vmm;
 import ../../config;
 import ../test_runner;
 
@@ -16,26 +18,24 @@ import ../test_runner;
 // ============================================================
 
 /// ユーザモードテストを実行する
-export void test_usermode(TestRunner* runner) {
+export void test_usermode(TestRunner* runner, PMM* pmm, VMM* vmm) {
     SerialPort serial = {port: 0x3F8};
     serial.println("[TEST] === Usermode Tests ===" as void*);
 
     // テスト1: GDT User Data セグメントが正しく設定されている
-    // GDT[3] (offset 24) = User Data
     ulong* gdt_udata = (GDT_PERMANENT_ADDR + 24) as ulong*;
     ulong udata_val = *gdt_udata;
     runner->assert_eq(udata_val, GDT_USER_DATA, "GDT: User Data segment" as void*);
 
     // テスト2: GDT User Code セグメントが正しく設定されている
-    // GDT[4] (offset 32) = User Code
     ulong* gdt_ucode = (GDT_PERMANENT_ADDR + 32) as ulong*;
     ulong ucode_val = *gdt_ucode;
     runner->assert_eq(ucode_val, GDT_USER_CODE, "GDT: User Code segment" as void*);
 
-    // テスト3: User Data セレクタが正しい (0x18 | RPL=3 = 0x1B)
+    // テスト3: User Data セレクタが正しい
     runner->assert_eq(GDT_USER_DATA_SEL, 0x1B, "GDT: User Data selector = 0x1B" as void*);
 
-    // テスト4: User Code セレクタが正しい (0x20 | RPL=3 = 0x23)
+    // テスト4: User Code セレクタが正しい
     runner->assert_eq(GDT_USER_CODE_SEL, 0x23, "GDT: User Code selector = 0x23" as void*);
 
     // テスト5: usermode_init を呼び出してMSR設定
@@ -49,12 +49,10 @@ export void test_usermode(TestRunner* runner) {
 
     // テスト7: STAR MSR が正しく設定されている
     ulong star = msr_read(MSR_STAR);
-    // STAR[47:32] = 0x08 (Kernel CS)
     ulong shift32 = 32;
     ulong shift48 = 48;
     ulong star_kernel_cs = (star >> shift32) & 0xFFFF;
     runner->assert_eq(star_kernel_cs, 0x08, "STAR: kernel CS = 0x08" as void*);
-    // STAR[63:48] = 0x10 (sysret base)
     ulong star_sysret = (star >> shift48) & 0xFFFF;
     runner->assert_eq(star_sysret, 0x10, "STAR: sysret base = 0x10" as void*);
 
@@ -66,6 +64,17 @@ export void test_usermode(TestRunner* runner) {
     ulong sfmask = msr_read(MSR_SFMASK);
     ulong expected_mask = RFLAGS_IF | RFLAGS_TF | RFLAGS_DF;
     runner->assert_eq(sfmask, expected_mask, "SFMASK: IF|TF|DF masked" as void*);
+
+    // Ring 3 ラウンドトリップテスト:
+    // iretq → Ring 3 コード実行 → syscall → カーネル復帰
+    //
+    // 注意: UEFIのページテーブルは2MB huge pageを使用しているため、
+    // カーネルコード領域にPTE_USERを設定するには huge page の分割が必要。
+    // 現時点では自動テストではスキップし、Phase 3-C で
+    // 専用ユーザ空間ページテーブルを作成した後に実装する。
+    //
+    // テストインフラ (syscall_entry_fast テストモードSYS_EXIT復帰) は
+    // 既に実装済み。
 
     serial.println("[TEST] Usermode tests complete" as void*);
 }

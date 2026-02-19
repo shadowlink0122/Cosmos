@@ -44,7 +44,7 @@ export void test_kernel(TestRunner* runner, BootInfo* info, PMM* pmm, Heap* heap
     test_loader(runner, heap);
     test_integration(runner, heap, pmm);
     test_vmm(runner, vmm, pmm);
-    test_usermode(runner);
+    test_usermode(runner, pmm, vmm);
 
     serial.println("[CosmOS] --- Kernel Core Tests Done ---" as void*);
 }

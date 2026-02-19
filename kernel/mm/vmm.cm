@@ -159,6 +159,12 @@ impl VMM {
         if ((pml4_entry & PTE_PRESENT) != 0) {
             // 既存のPDPTテーブルを使用
             pdpt_base = pml4_entry & PTE_ADDR_MASK;
+            // PTE_USERフラグを中間テーブルにも伝播
+            if ((flags & PTE_USER) != 0) {
+                if ((pml4_entry & PTE_USER) == 0) {
+                    vmm_write64(pml4_entry_addr, pml4_entry | PTE_USER | PTE_WRITABLE);
+                }
+            }
         } else {
             // 新しいPDPTテーブルを割当
             pdpt_base = pmm->alloc_page();
@@ -180,6 +186,11 @@ impl VMM {
         MemAddr pd_base = 0;
         if ((pdpt_entry & PTE_PRESENT) != 0) {
             pd_base = pdpt_entry & PTE_ADDR_MASK;
+            if ((flags & PTE_USER) != 0) {
+                if ((pdpt_entry & PTE_USER) == 0) {
+                    vmm_write64(pdpt_entry_addr, pdpt_entry | PTE_USER | PTE_WRITABLE);
+                }
+            }
         } else {
             pd_base = pmm->alloc_page();
             if (pd_base == 0) {
@@ -199,6 +210,11 @@ impl VMM {
         MemAddr pt_base = 0;
         if ((pd_entry & PTE_PRESENT) != 0) {
             pt_base = pd_entry & PTE_ADDR_MASK;
+            if ((flags & PTE_USER) != 0) {
+                if ((pd_entry & PTE_USER) == 0) {
+                    vmm_write64(pd_entry_addr, pd_entry | PTE_USER | PTE_WRITABLE);
+                }
+            }
         } else {
             pt_base = pmm->alloc_page();
             if (pt_base == 0) {

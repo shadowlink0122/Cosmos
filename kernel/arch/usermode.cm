@@ -69,6 +69,14 @@ const ulong RFLAGS_DF = 0x400;   // Direction Flag
 const MemAddr USERMODE_KERNEL_RSP = 0xDB0;   // カーネルスタックポインタ保存
 const MemAddr USERMODE_USER_RSP   = 0xDB8;   // ユーザスタックポインタ保存
 
+// Ring 3 テストモード用固定メモリ
+const MemAddr USERMODE_TEST_FLAG      = 0xE08;  // テストモードフラグ (1=アクティブ)
+const MemAddr USERMODE_TEST_MAGIC     = 0xE10;  // Ring 3から書き込まれたマジック値
+const MemAddr USERMODE_TEST_CS        = 0xE18;  // Ring 3でのCS値
+const MemAddr USERMODE_TEST_SYSCALL   = 0xE20;  // syscall結果
+const MemAddr USERMODE_TEST_EXIT_CODE = 0xE28;  // 終了コード
+const MemAddr USERMODE_TEST_RETURN    = 0xE30;  // カーネル復帰先RIP
+
 // ============================================================
 // MSR読み書きヘルパー
 // ============================================================
@@ -191,7 +199,30 @@ export void syscall_entry_fast() {
         movq %rdx, ${=r:arg3}
     `);
 
-    // syscallディスパッチ（既存のsyscall_dispatchを呼ぶ）
+    // テストモード: Ring 3ラウンドトリップテストからのSYS_EXIT復帰
+    ulong* test_flag = USERMODE_TEST_FLAG as ulong*;
+    if (*test_flag == 1) {
+        if (syscall_nr == 0) {  // SYS_EXIT
+            *test_flag = 0;
+            // 終了コードを保存
+            ulong* exit_ptr = USERMODE_TEST_EXIT_CODE as ulong*;
+            *exit_ptr = arg1;
+            // カーネルコンテキスト復帰: iretq/sysretqではなく保存済みコンテキストに復帰
+            __asm__(`
+                movq (0xDD0), %rbx;
+                movq (0xDD8), %rbp;
+                movq (0xDE0), %r12;
+                movq (0xDE8), %r13;
+                movq (0xDF0), %r14;
+                movq (0xDF8), %r15;
+                movq (0xE00), %rsp;
+                movq (0xE30), %rax;
+                jmpq *%rax
+            `);
+        }
+    }
+
+    // 通常のsyscallディスパッチ
     SyscallResult result = syscall_dispatch(syscall_nr, arg1, arg2, arg3);
 
     // レジスタ復帰してsysretq
