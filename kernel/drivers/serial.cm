@@ -1,5 +1,6 @@
 //! platform: uefi
 // kernel::drivers::serial - UART シリアルコンソールドライバ
+import ../config;
 //
 // COM1 (0x3F8) への出力を提供する。
 // x86 I/Oポート命令（out/in）を使用するため、
@@ -14,7 +15,7 @@
 // ============================================================
 
 /// I/Oポートに1バイト出力
-export void outb(ulong port, ulong value) {
+export void outb(IoPort port, ulong value) {
     __asm__(`
         movq ${r:value}, %rax;
         movq ${r:port}, %rdx;
@@ -23,7 +24,7 @@ export void outb(ulong port, ulong value) {
 }
 
 /// I/Oポートから1バイト入力
-export ulong inb(ulong port) {
+export ulong inb(IoPort port) {
     ulong result = 0;
     __asm__(`
         movq ${r:port}, %rdx;
@@ -40,7 +41,7 @@ export ulong inb(ulong port) {
 
 /// UARTシリアルポート（COM1等）
 export struct SerialPort {
-    ulong port;    // ベースI/Oポートアドレス（COM1 = 0x3F8）
+    IoPort port;    // ベースI/Oポートアドレス（COM1 = 0x3F8）
 }
 
 // ============================================================

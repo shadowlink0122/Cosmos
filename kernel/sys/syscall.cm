@@ -78,7 +78,7 @@ export void syscall_entry() {
 // ============================================================
 
 /// syscall番号に基づいてハンドラを呼び出す
-export ulong syscall_dispatch(ulong nr, ulong arg1, ulong arg2, ulong arg3) {
+export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
     if (nr == SYS_WRITE) {
         return sys_write(arg1, arg2, arg3);
     }
@@ -169,7 +169,7 @@ export ulong syscall_dispatch(ulong nr, ulong arg1, ulong arg2, ulong arg3) {
 // ============================================================
 
 /// fd=1(stdout) or fd=2(stderr) に書き込む
-export ulong sys_write(ulong fd, ulong buf, ulong len) {
+export SyscallResult sys_write(Fd fd, MemAddr buf, ulong len) {
     if (fd == FD_STDOUT) {
         // FBConsole + シリアルに出力
         FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
@@ -177,7 +177,7 @@ export ulong sys_write(ulong fd, ulong buf, ulong len) {
         ulong i = 0;
         while (i < len) {
             ulong ch = 0;
-            ulong byte_addr = buf + i;
+            MemAddr byte_addr = buf + i;
             __asm__(`
                 movq ${r:byte_addr}, %rdi;
                 xorq %rax, %rax;
@@ -196,7 +196,7 @@ export ulong sys_write(ulong fd, ulong buf, ulong len) {
         ulong i = 0;
         while (i < len) {
             ulong ch = 0;
-            ulong byte_addr = buf + i;
+            MemAddr byte_addr = buf + i;
             __asm__(`
                 movq ${r:byte_addr}, %rdi;
                 xorq %rax, %rax;
@@ -216,7 +216,7 @@ export ulong sys_write(ulong fd, ulong buf, ulong len) {
 // ============================================================
 
 /// fd=0(stdin) から読み込む（現在は未実装、0を返す）
-export ulong sys_read(ulong fd, ulong buf, ulong len) {
+export SyscallResult sys_read(Fd fd, MemAddr buf, ulong len) {
     if (fd == FD_STDIN) {
         // TODO: キーボードバッファから読み取る
         return 0;

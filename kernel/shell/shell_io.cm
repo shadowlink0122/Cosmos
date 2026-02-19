@@ -60,7 +60,7 @@ export void shell_putc(ulong ch) {
 }
 
 /// FBConsole の色を設定
-export void shell_set_color(ulong color) {
+export void shell_set_color(Color color) {
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     con.set_color(color);
 }
