@@ -1,0 +1,247 @@
+//! platform: uefi
+// kernel::arch::usermode - ユーザモード遷移とsyscall/sysret
+//
+// x86_64のsyscall/sysret命令を使用してRing 0↔Ring 3の遷移を実現する。
+//
+// MSR設定:
+//   MSR_EFER  (0xC0000080): SCE ビット有効化
+//   MSR_STAR  (0xC0000081): カーネル/ユーザセグメントセレクタ
+//   MSR_LSTAR (0xC0000082): syscallエントリポイント
+//   MSR_SFMASK(0xC0000084): syscall時にマスクするRFLAGS
+//
+// syscall命令の動作:
+//   RCX ← RIP (復帰アドレス)
+//   R11 ← RFLAGS
+//   CS  ← STAR[47:32]     (Kernel Code = 0x08)
+//   SS  ← STAR[47:32] + 8 (Kernel Data = 0x10)
+//   RIP ← LSTAR
+//
+// sysret命令の動作:
+//   RIP ← RCX
+//   RFLAGS ← R11
+//   CS  ← STAR[63:48] + 16 (User Code = 0x18 + 16 = 0x28... RPL=3 → 0x23)
+//   SS  ← STAR[63:48] + 8  (User Data = 0x18 + 8 = 0x20... RPL=3 → 0x1B)
+//
+// 注: STAR[63:48] = 0x18 → sysret は CS = 0x18+16=0x28|3=0x2B? 
+// いいえ: Intel仕様ではsysretq(64bit) は CS = STAR[63:48]+16, SS = STAR[63:48]+8
+// STAR[63:48] = 0x1B (User Data sel with RPL3)
+// → CS = (0x1B & ~3) + 16 | 3 = 0x18 + 16 | 3 = 0x28 | 3 = 0x2B... 
+// 修正: STAR sysret用フィールドは GDT_USER_DATA_SEL 基底(RPLなし)を設定
+// 実際: sysret64 では CS = STAR[63:48]+16, SS = STAR[63:48]+8 (RPL3は自動)
+// GDTレイアウト: User Data=0x18, User Code=0x20
+// → STAR[63:48] = 0x18 → SS = 0x18+8=0x20... UData=0x18なのでSS=UData? 
+//
+// AMD64 spec: For sysretq, CS.sel = IA32_STAR[63:48]+16, SS.sel = IA32_STAR[63:48]+8
+// GDT: UData=0x18, UCode=0x20
+// STAR[63:48] should be 0x18:
+//   CS = 0x18 + 16 = 0x28 ← 不正（TSS位置）
+// 
+// 修正版: STAR[63:48] = 0x10 (実質 Kernel Data基底):
+//   SS = 0x10 + 8 = 0x18 (User Data) ✓
+//   CS = 0x10 + 16 = 0x20 (User Code) ✓ → RPL=3はCPUが自動設定
+//
+// これが正解！ STAR[63:48] = 0x10
+
+import ../config;
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../arch/gdt;
+import ../sys/syscall;
+
+// ============================================================
+// MSR 定数
+// ============================================================
+
+const ulong MSR_EFER   = 0xC0000080;   // Extended Feature Enable Register
+const ulong MSR_STAR   = 0xC0000081;   // SYSCALL target address
+const ulong MSR_LSTAR  = 0xC0000082;   // Long mode SYSCALL target
+const ulong MSR_SFMASK = 0xC0000084;   // SYSCALL flag mask
+
+// EFER ビット
+const ulong EFER_SCE = 1;  // System Call Extensions
+
+// RFLAGS ビット（SFMASK用）
+const ulong RFLAGS_IF = 0x200;   // Interrupt Flag
+const ulong RFLAGS_TF = 0x100;   // Trap Flag
+const ulong RFLAGS_DF = 0x400;   // Direction Flag
+
+// 固定メモリ: ユーザRSP/カーネルRSP 保存領域
+const MemAddr USERMODE_KERNEL_RSP = 0xDB0;   // カーネルスタックポインタ保存
+const MemAddr USERMODE_USER_RSP   = 0xDB8;   // ユーザスタックポインタ保存
+
+// ============================================================
+// MSR読み書きヘルパー
+// ============================================================
+
+/// MSRを読み取る (ECX=MSR番号 → EDX:EAX=値)
+ulong msr_read(ulong msr_num) {
+    ulong result = 0;
+    __asm__(`
+        movq ${r:msr_num}, %rcx;
+        rdmsr;
+        shlq $$32, %rdx;
+        orq %rdx, %rax;
+        movq %rax, ${=r:result}
+    `);
+    return result;
+}
+
+/// MSRに書き込む (ECX=MSR番号, EDX:EAX=値)
+void msr_write(ulong msr_num, ulong value) {
+    ulong dummy = 0;
+    __asm__(`
+        movq ${r:msr_num}, %rcx;
+        movq ${r:value}, %rax;
+        movq %rax, %rdx;
+        shrq $$32, %rdx;
+        wrmsr;
+        movq %rax, ${=r:dummy}
+    `);
+}
+
+// ============================================================
+// syscall/sysret 初期化
+// ============================================================
+
+/// syscall/sysret MSRを設定する
+///
+/// syscall_handler: syscallエントリポイントのアドレス
+export void usermode_init(MemAddr syscall_handler) {
+    DebugPort debug(0xE9);
+    SerialPort serial = {port: 0x3F8};
+
+    // Step 1: EFER.SCE を有効化
+    ulong efer = msr_read(MSR_EFER);
+    efer = efer | EFER_SCE;
+    msr_write(MSR_EFER, efer);
+    debug.println("[USERMODE] EFER.SCE enabled" as void*);
+
+    // Step 2: STAR MSR 設定
+    // bits [31:0]  = 予約 (EIPは使わない、LSTAR使用)
+    // bits [47:32] = syscall時の CS セレクタ (Kernel Code = 0x08)
+    //                SS = CS + 8 = 0x10 (Kernel Data)
+    // bits [63:48] = sysret時の基底セレクタ
+    //                SS = base + 8 = User Data (0x18)
+    //                CS = base + 16 = User Code (0x20)  (64bit mode)
+    //                → base = 0x10
+    ulong star_syscall = 0x08;  // Kernel CS
+    ulong star_sysret  = 0x10;  // base for User segments
+    ulong shift32 = 32;
+    ulong shift48 = 48;
+    ulong star_val = (star_syscall << shift32) | (star_sysret << shift48);
+    msr_write(MSR_STAR, star_val);
+    debug.puts("[USERMODE] STAR=0x" as void*);
+    debug.print_hex(star_val);
+    debug.println("" as void*);
+
+    // Step 3: LSTAR = syscallエントリポイント
+    msr_write(MSR_LSTAR, syscall_handler);
+    debug.puts("[USERMODE] LSTAR=0x" as void*);
+    debug.print_hex(syscall_handler);
+    debug.println("" as void*);
+
+    // Step 4: SFMASK = syscall時にクリアするRFLAGSビット
+    // IF=0: syscall中は割り込み無効
+    // TF=0: シングルステップ無効
+    // DF=0: 方向フラグクリア
+    ulong sfmask = RFLAGS_IF | RFLAGS_TF | RFLAGS_DF;
+    msr_write(MSR_SFMASK, sfmask);
+
+    serial.println("[CosmOS] syscall/sysret initialized" as void*);
+    debug.println("[USERMODE] initialization complete" as void*);
+}
+
+// ============================================================
+// syscallエントリポイント（高速パス）
+// ============================================================
+
+/// syscall命令で呼ばれるエントリポイント
+///
+/// syscall実行時のレジスタ状態:
+///   RCX = ユーザ復帰RIP
+///   R11 = ユーザRFLAGS
+///   RAX = syscall番号
+///   RDI = 引数1, RSI = 引数2, RDX = 引数3, R10 = 引数4
+///
+/// カーネルRSPは固定メモリに保存しておく（swapgs省略版）
+export void syscall_entry_fast() {
+    // ユーザRSPを保存、カーネルRSPに切替
+    __asm__(`
+        movq %rsp, (0xDB8);
+        movq (0xDB0), %rsp;
+        pushq %rcx;
+        pushq %r11;
+        pushq %rbx;
+        pushq %rbp;
+        pushq %r12;
+        pushq %r13;
+        pushq %r14;
+        pushq %r15
+    `);
+
+    // レジスタからsyscallパラメータを取得
+    SyscallNr syscall_nr = 0;
+    ulong arg1 = 0;
+    ulong arg2 = 0;
+    ulong arg3 = 0;
+    __asm__(`
+        movq %rax, ${=r:syscall_nr};
+        movq %rdi, ${=r:arg1};
+        movq %rsi, ${=r:arg2};
+        movq %rdx, ${=r:arg3}
+    `);
+
+    // syscallディスパッチ（既存のsyscall_dispatchを呼ぶ）
+    SyscallResult result = syscall_dispatch(syscall_nr, arg1, arg2, arg3);
+
+    // レジスタ復帰してsysretq
+    __asm__(`
+        movq ${r:result}, %rax;
+        popq %r15;
+        popq %r14;
+        popq %r13;
+        popq %r12;
+        popq %rbp;
+        popq %rbx;
+        popq %r11;
+        popq %rcx;
+        movq (0xDB8), %rsp;
+        sysretq
+    `);
+}
+
+// ============================================================
+// ユーザモード遷移
+// ============================================================
+
+/// Ring 3にジャンプする
+///
+/// entry:      ユーザプログラムのエントリポイントアドレス
+/// user_stack: ユーザスタックのトップアドレス
+///
+/// この関数は戻らない。ユーザプログラムがsyscall exitするまで制御はユーザ側。
+export void enter_usermode(MemAddr entry, MemAddr user_stack) {
+    DebugPort debug(0xE9);
+    debug.puts("[USERMODE] entering Ring 3: entry=0x" as void*);
+    debug.print_hex(entry);
+    debug.puts(", stack=0x" as void*);
+    debug.print_hex(user_stack);
+    debug.println("" as void*);
+
+    // 現在のカーネルRSPを保存（syscall時の復帰先）
+    __asm__(`
+        movq %rsp, (0xDB0)
+    `);
+
+    // sysretq でユーザ空間に遷移
+    // RCX = ユーザRIP (entry)
+    // R11 = RFLAGS (IF=1 で割り込み有効)
+    // RSP = ユーザスタック
+    ulong rflags_if = RFLAGS_IF;
+    __asm__(`
+        movq ${r:entry}, %rcx;
+        movq ${r:rflags_if}, %r11;
+        movq ${r:user_stack}, %rsp;
+        sysretq
+    `);
+}

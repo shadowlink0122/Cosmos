@@ -44,7 +44,7 @@ const ByteOffset TSS_OFF_IST1 = 36;
 const ByteOffset TSS_OFF_IOPB = 102;
 
 // GDTセレクタ
-const GdtSelector TSS_SELECTOR = 0x18;  // GDT[3]
+const GdtSelector TSS_SELECTOR = 0x28;  // GDT[5] (User Code/Dataの後)
 
 // ============================================================
 // TSS操作
@@ -122,9 +122,9 @@ export void tss_install_gdt() {
     MemAddr tss_base = TSS_BASE_ADDR;
     ulong tss_limit = TSS_SIZE - 1;
 
-    // GDTの[3]スロット（offset 0x18 = 24バイト目）
+    // GDTの[5]スロット（offset 0x28 = 40バイト目）
     MemAddr gdt_base = 0x800 as ulong;
-    ulong tss_gdt_offset = 24 as ulong;  // 3 * 8
+    ulong tss_gdt_offset = 40 as ulong;  // 5 * 8
 
     // 下位8バイト
     // bits 0-15: limit[0:15]
@@ -162,17 +162,17 @@ export void tss_install_gdt() {
     ulong high8 = (tss_base >> shift32);
     // bits 96-127: reserved = 0（high8の上位32ビットは0）
 
-    // GDTスロット3に下位8バイト書込み
+    // GDTスロット5に下位8バイト書込み
     ulong* gdt_slot3_lo = (gdt_base + tss_gdt_offset) as ulong*;
     *gdt_slot3_lo = low8;
 
-    // GDTスロット4に上位8バイト書込み
+    // GDTスロット6に上位8バイト書込み
     ulong* gdt_slot3_hi = (gdt_base + tss_gdt_offset + 8) as ulong*;
     *gdt_slot3_hi = high8;
 
-    // GDTRの更新（GDT_GDTR_OFFSET = 40に配置）
-    MemAddr gdtr_addr = gdt_base + 40;
-    ulong new_gdt_limit = 39 as ulong;  // 5 slots * 8 bytes - 1
+    // GDTRの更新（GDT_GDTR_OFFSET = 56に配置）
+    MemAddr gdtr_addr = gdt_base + 56;
+    ulong new_gdt_limit = 55 as ulong;  // 7 slots * 8 bytes - 1
     // ASMでGDTR limit更新 + lgdt再ロード
     __asm__(`
         movq ${r:gdtr_addr}, %rdi;

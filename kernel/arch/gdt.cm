@@ -6,10 +6,17 @@
 //
 // GDTエントリ構成:
 //   [0] Null Descriptor       (必須)
-//   [1] Kernel Code Segment   (CS: 64-bit, Ring 0)
-//   [2] Kernel Data Segment   (DS: Ring 0)
-//   [3-4] TSS Descriptor      (16バイト、tss.cmで設定)
-//   [offset 40] GDTR構造体  (10バイト)
+//   [1] Kernel Code Segment   (CS: 64-bit, Ring 0)  = 0x08
+//   [2] Kernel Data Segment   (DS: Ring 0)           = 0x10
+//   [3] User Data Segment     (DS: Ring 3)           = 0x18
+//   [4] User Code Segment     (CS: 64-bit, Ring 3)   = 0x20
+//   [5-6] TSS Descriptor      (16バイト、tss.cmで設定) = 0x28
+//   [offset 56] GDTR構造体  (10バイト)
+//
+// syscall/sysret 要件:
+//   STAR MSR の sysret_cs_base = User Data セレクタ基底 (0x18)
+//   sysret は CS = sysret_cs_base + 16, SS = sysret_cs_base + 8 を使用
+//   → User Data (0x18) の直後に User Code (0x20) が必要
 //
 // 注意: x86_64 Long Modeでは、ベース/リミットはほとんど無視される。
 //       Code Segmentの L(Long) ビットとDB=0 が重要。
@@ -32,24 +39,40 @@ import ../drivers/debug_port;
 const ulong GDT_NULL = 0x0000000000000000;
 
 // Kernel Code Segment (Ring 0, 64-bit long mode):
-//   Byte layout: 0x00AF9A000000FFFF
+//   Access: P=1, DPL=0, S=1, Type=Execute/Read (0x9A)
+//   Flags:  L=1, D=0, G=1 → 0xAF
 const ulong GDT_KERNEL_CODE = 0x00AF9A000000FFFF;
 
 // Kernel Data Segment (Ring 0):
-//   Byte layout: 0x00CF92000000FFFF
+//   Access: P=1, DPL=0, S=1, Type=Read/Write (0x92)
+//   Flags:  L=0, D=1, G=1 → 0xCF
 const ulong GDT_KERNEL_DATA = 0x00CF92000000FFFF;
 
+// User Data Segment (Ring 3):
+//   Access: P=1, DPL=3, S=1, Type=Read/Write (0xF2)
+//   Flags:  L=0, D=1, G=1 → 0xCF
+const ulong GDT_USER_DATA = 0x00CFF2000000FFFF;
+
+// User Code Segment (Ring 3, 64-bit long mode):
+//   Access: P=1, DPL=3, S=1, Type=Execute/Read (0xFA)
+//   Flags:  L=1, D=0, G=1 → 0xAF
+const ulong GDT_USER_CODE = 0x00AFFA000000FFFF;
+
 // セグメントセレクタ（GDTエントリのインデックス * 8）
-const GdtSelector GDT_NULL_SEL   = 0x00;
-const GdtSelector GDT_CODE64_SEL = 0x08;
-const GdtSelector GDT_DATA64_SEL = 0x10;
+const GdtSelector GDT_NULL_SEL       = 0x00;
+const GdtSelector GDT_CODE64_SEL     = 0x08;  // Kernel Code
+const GdtSelector GDT_DATA64_SEL     = 0x10;  // Kernel Data
+const GdtSelector GDT_USER_DATA_SEL  = 0x1B;  // User Data (0x18 | RPL=3)
+const GdtSelector GDT_USER_CODE_SEL  = 0x23;  // User Code (0x20 | RPL=3)
 
 // GDTデータの永続配置アドレス
 // UEFIアイデンティティマッピング下で安全に使用可能な低メモリ領域
 const MemAddr GDT_PERMANENT_ADDR = 0x800;
-// GDTRオフセット（5スロット * 8バイト = 40）
-// TSSディスクリプタ用のGDT[3],[4]を予約
-const ulong GDT_GDTR_OFFSET = 40;
+// GDTRオフセット（7スロット * 8バイト = 56）
+// TSS: [5],[6] の後
+const ulong GDT_GDTR_OFFSET = 56;
+// GDTスロット数（Null + KCode + KData + UData + UCode + TSS lo + TSS hi）
+const ulong GDT_NUM_SLOTS = 7;
 
 // ============================================================
 // GDT読み込み
@@ -65,11 +88,13 @@ export void gdt_init() {
 
     // GDT定数をローカル変数にコピー（ASMから参照するため）
     ulong gdt_null = GDT_NULL;
-    ulong gdt_code = GDT_KERNEL_CODE;
-    ulong gdt_data = GDT_KERNEL_DATA;
+    ulong gdt_kcode = GDT_KERNEL_CODE;
+    ulong gdt_kdata = GDT_KERNEL_DATA;
+    ulong gdt_udata = GDT_USER_DATA;
+    ulong gdt_ucode = GDT_USER_CODE;
     GdtSelector cs_sel = GDT_CODE64_SEL;
     GdtSelector ds_sel = GDT_DATA64_SEL;
-    ulong gdt_limit = 39;  // 5 * 8 - 1（TSS用スロットを予約）
+    ulong gdt_limit = (GDT_NUM_SLOTS * 8) - 1;  // 55
     ulong gdt_addr = GDT_PERMANENT_ADDR;
     ulong gdtr_offset = GDT_GDTR_OFFSET;
 
@@ -82,20 +107,24 @@ export void gdt_init() {
         // GDTエントリを永続メモリに書き込み
         movq ${r:gdt_null}, %rax;
         movq %rax, (%rdi);          // [0] Null Descriptor
-        movq ${r:gdt_code}, %rax;
-        movq %rax, 8(%rdi);         // [1] Kernel Code
-        movq ${r:gdt_data}, %rax;
-        movq %rax, 16(%rdi);        // [2] Kernel Data
-        // [3-4] TSS用スロット（ゼロで初期化、tss.cmが後で設定）
+        movq ${r:gdt_kcode}, %rax;
+        movq %rax, 8(%rdi);         // [1] Kernel Code (0x08)
+        movq ${r:gdt_kdata}, %rax;
+        movq %rax, 16(%rdi);        // [2] Kernel Data (0x10)
+        movq ${r:gdt_udata}, %rax;
+        movq %rax, 24(%rdi);        // [3] User Data   (0x18)
+        movq ${r:gdt_ucode}, %rax;
+        movq %rax, 32(%rdi);        // [4] User Code   (0x20)
+        // [5-6] TSS用スロット（ゼロで初期化、tss.cmが後で設定）
         xorq %rax, %rax;
-        movq %rax, 24(%rdi);        // [3] TSS lo (placeholder)
-        movq %rax, 32(%rdi);        // [4] TSS hi (placeholder)
+        movq %rax, 40(%rdi);        // [5] TSS lo (placeholder)
+        movq %rax, 48(%rdi);        // [6] TSS hi (placeholder)
 
-        // GDTR構造体をoffset 40に構築
+        // GDTR構造体をoffset 56に構築
         movq ${r:gdtr_offset}, %rcx;
-        addq %rdi, %rcx;            // rcx = GDT + 40
+        addq %rdi, %rcx;            // rcx = GDT + 56
         movq ${r:gdt_limit}, %rax;
-        movw %ax, (%rcx);           // limit = 39
+        movw %ax, (%rcx);           // limit = 55
         movq %rdi, %rax;
         movq %rax, 2(%rcx);         // base = GDT先頭アドレス
 
@@ -119,7 +148,7 @@ export void gdt_init() {
         2:
     `);
 
-    debug.println("[BOOT] gdt_init: done" as void*);
+    debug.println("[BOOT] gdt_init: done (7 slots: Null+KCode+KData+UData+UCode+TSS)" as void*);
     SerialPort serial = {port: 0x3F8};
-    serial.println("[CosmOS] GDT initialized" as void*);
+    serial.println("[CosmOS] GDT initialized (Ring 0+3)" as void*);
 }
