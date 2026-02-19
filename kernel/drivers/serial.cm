@@ -130,7 +130,7 @@ impl SerialPort {
 // ============================================================
 
 impl SerialPort for OutputWriter {
-    void putc(ulong ch) {
+    void putc(AsciiChar ch) {
         self.wait_ready();
         outb(self.port, ch);
     }

@@ -36,7 +36,7 @@ import ../../shell/fs_result;
 
 // CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
 
-const ulong CM_NOT_FOUND = 0xFFFFFFFFFFFFFFFF;
+const MemAddr CM_NOT_FOUND = 0xFFFFFFFFFFFFFFFF;
 
 // バイトコード命令
 const FsOpCode OP_HALT      = 0;
@@ -47,13 +47,13 @@ const FsOpCode OP_PRINT_STR = 2;
 const ByteSize INSTR_SIZE = 16;
 
 // コンパイラ用一時領域
-const ulong CM_INSTR_COUNT = 0xCE0;
+const MemAddr CM_INSTR_COUNT = 0xCE0;
 
 // エラーコード定数
-const ulong CM_OK            = 0;
-const ulong CM_ERR_ALLOC     = 2;
-const ulong CM_ERR_NOT_FOUND = 3;
-const ulong CM_ERR_EMPTY     = 4;
+const FsError CM_OK            = 0;
+const FsError CM_ERR_ALLOC     = 2;
+const FsError CM_ERR_NOT_FOUND = 3;
+const FsError CM_ERR_EMPTY     = 4;
 
 /// cmコマンドのヘルプを表示
 export void cm_help() {
@@ -175,7 +175,9 @@ export ByteSize cm_compile_source(MemAddr src, ByteSize src_len, MemAddr code_bu
 /// a.outファイルを作成してバイトコードを書き込む
 /// 戻り値: Result（成功時value=0、失敗時errorにコード）
 export FsResult cm_create_aout(MemAddr code_buf, ByteSize code_size, Heap* heap) {
-    FsResult r_name = FsResult::from_alloc(heap->alloc(6) as ulong);
+    MemAddr __r_name_addr = heap->alloc(6);
+
+    FsResult r_name = FsResult::from_alloc(__r_name_addr);
     if (r_name.is_err != 0) { return r_name; }
     ulong aout_name = r_name.value;
     cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
@@ -185,7 +187,10 @@ export FsResult cm_create_aout(MemAddr code_buf, ByteSize code_size, Heap* heap)
         cosmfs_op(FS_OP_DELETE, aout_name, 0, 0, 0);
     }
 
-    FsResult r_data = FsResult::from_alloc(heap->alloc(4096) as ulong);
+    MemAddr __r_data_addr = heap->alloc(4096);
+
+
+    FsResult r_data = FsResult::from_alloc(__r_data_addr);
     if (r_data.is_err != 0) { return r_data; }
 
     FsResult r_create = FsResult::from_create(cosmfs_op(FS_OP_CREATE, aout_name, r_data.value, 4096, 0));
@@ -229,7 +234,9 @@ export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     }
 
     // ファイル名をバッファにコピー
-    FsResult r_name = FsResult::from_alloc(heap->alloc(arg_len + 1) as ulong);
+    MemAddr __r_name_addr = heap->alloc(arg_len + 1);
+
+    FsResult r_name = FsResult::from_alloc(__r_name_addr);
     if (r_name.is_err != 0) { r_name.print_error(); return; }
     ulong name_buf = r_name.value;
     cosmfs_op(FS_OP_MEMCPY, name_buf, buf_addr + arg_start, arg_len, 0);
@@ -244,14 +251,19 @@ export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     if (r_size.is_err != 0) { r_size.print_error(); return; }
     ulong src_size = r_size.value;
 
-    FsResult r_src = FsResult::from_alloc(heap->alloc(src_size + 1) as ulong);
+    MemAddr __r_src_addr = heap->alloc(src_size + 1);
+
+
+    FsResult r_src = FsResult::from_alloc(__r_src_addr);
     if (r_src.is_err != 0) { r_src.print_error(); return; }
 
     FsResult r_read = FsResult::from_op_nz(cosmfs_op(FS_OP_READ, name_buf, r_src.value, src_size, 0));
     if (r_read.is_err != 0) { r_read.print_error(); return; }
 
     // バイトコードバッファ
-    FsResult r_code = FsResult::from_alloc(heap->alloc(256) as ulong);
+    MemAddr __r_code_addr = heap->alloc(256);
+
+    FsResult r_code = FsResult::from_alloc(__r_code_addr);
     if (r_code.is_err != 0) { r_code.print_error(); return; }
 
     // コンパイル実行
@@ -267,7 +279,9 @@ export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
 
 /// a.outコマンド: バイトコードVMで実行
 export void cmd_run_aout(Heap* heap) {
-    FsResult r_name = FsResult::from_alloc(heap->alloc(6) as ulong);
+    MemAddr __r_name_addr = heap->alloc(6);
+
+    FsResult r_name = FsResult::from_alloc(__r_name_addr);
     if (r_name.is_err != 0) { r_name.print_error(); return; }
     ulong aout_name = r_name.value;
     cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
@@ -284,7 +298,10 @@ export void cmd_run_aout(Heap* heap) {
     if (r_size.is_err != 0) { r_size.print_error(); return; }
     ulong code_size = r_size.value;
 
-    FsResult r_buf = FsResult::from_alloc(heap->alloc(code_size) as ulong);
+    MemAddr __r_buf_addr = heap->alloc(code_size);
+
+
+    FsResult r_buf = FsResult::from_alloc(__r_buf_addr);
     if (r_buf.is_err != 0) { r_buf.print_error(); return; }
 
     FsResult r_read = FsResult::from_op_nz(cosmfs_op(FS_OP_READ, aout_name, r_buf.value, code_size, 0));

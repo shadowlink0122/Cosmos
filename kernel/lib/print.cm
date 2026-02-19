@@ -269,7 +269,7 @@ impl FBConsole {
     }
 
     /// 1文字を出力（テキストカーソル自動進行）
-    void putc(ulong ch) {
+    void putc(AsciiChar ch) {
         // 出力前にカーソルを消す
         self.cursor_hide();
 

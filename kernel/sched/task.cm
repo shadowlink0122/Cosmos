@@ -24,28 +24,28 @@ const TaskState TASK_TERMINATED = 3;
 
 // TCB配列の固定アドレスと制限
 const MemAddr TCB_BASE_ADDR   = 0x1000;   // TCB配列の先頭アドレス
-const ulong TCB_SIZE        = 128;      // 1 TCB = 128バイト（16フィールド × 8バイト）
-const ulong MAX_TASKS       = 8;        // 最大タスク数
-const ulong TASK_STACK_PAGES = 1;       // タスクスタック = 1ページ(4KB)
+const ByteSize TCB_SIZE     = 128;      // 1 TCB = 128バイト（16フィールド × 8バイト）
+const Count MAX_TASKS       = 8;        // 最大タスク数
+const PageCount TASK_STACK_PAGES = 1;   // タスクスタック = 1ページ(4KB)
 
 // デフォルトタイムスライス（tick数 = 100ms at 100Hz）
 const Tick DEFAULT_TIMESLICE = 10;
 
 // TCB内フィールドオフセット（各8バイト）
-const ulong TCB_OFF_ID         = 0;     // task_id
-const ulong TCB_OFF_STATE      = 8;     // state
-const ulong TCB_OFF_RSP        = 16;    // rsp（保存されたスタックポインタ）
-const ulong TCB_OFF_STACK_BASE = 24;    // stack_base
-const ulong TCB_OFF_STACK_SIZE = 32;    // stack_size
-const ulong TCB_OFF_ENTRY      = 40;    // entry（エントリポイント関数アドレス）
-const ulong TCB_OFF_NEXT       = 48;    // next（次のTCB番号、循環リスト用）
-const ulong TCB_OFF_TIMESLICE  = 56;    // タイムスライス残り（tick数）
+const ByteOffset TCB_OFF_ID         = 0;     // task_id
+const ByteOffset TCB_OFF_STATE      = 8;     // state
+const ByteOffset TCB_OFF_RSP        = 16;    // rsp（保存されたスタックポインタ）
+const ByteOffset TCB_OFF_STACK_BASE = 24;    // stack_base
+const ByteOffset TCB_OFF_STACK_SIZE = 32;    // stack_size
+const ByteOffset TCB_OFF_ENTRY      = 40;    // entry（エントリポイント関数アドレス）
+const ByteOffset TCB_OFF_NEXT       = 48;    // next（次のTCB番号、循環リスト用）
+const ByteOffset TCB_OFF_TIMESLICE  = 56;    // タイムスライス残り（tick数）
 
 // 拡張フィールド (Phase 2: プロセスマネージャ)
-const ulong TCB_OFF_PROCESS_TYPE = 64;  // プロセス種別 (0=kernel, 1=user)
-const ulong TCB_OFF_PARENT_ID    = 72;  // 親タスクID
-const ulong TCB_OFF_EXIT_CODE    = 80;  // 終了コード
-const ulong TCB_OFF_WAIT_FOR     = 88;  // 待機対象タスクID (BLOCKEDのとき)
+const ByteOffset TCB_OFF_PROCESS_TYPE = 64;  // プロセス種別 (0=kernel, 1=user)
+const ByteOffset TCB_OFF_PARENT_ID    = 72;  // 親タスクID
+const ByteOffset TCB_OFF_EXIT_CODE    = 80;  // 終了コード
+const ByteOffset TCB_OFF_WAIT_FOR     = 88;  // 待機対象タスクID (BLOCKEDのとき)
 
 // ============================================================
 // TCBフィールドアクセス（ポインタ直接操作）
@@ -57,14 +57,14 @@ export MemAddr tcb_addr(TaskId task_id) {
 }
 
 /// TCBフィールドを読取
-export ulong tcb_read(TaskId task_id, ulong offset) {
+export ulong tcb_read(TaskId task_id, ByteOffset offset) {
     MemAddr addr = tcb_addr(task_id) + offset;
     ulong* ptr = addr as ulong*;
     return *ptr;
 }
 
 /// TCBフィールドを書込
-export void tcb_write(TaskId task_id, ulong offset, ulong value) {
+export void tcb_write(TaskId task_id, ByteOffset offset, ulong value) {
     MemAddr addr = tcb_addr(task_id) + offset;
     ulong* ptr = addr as ulong*;
     *ptr = value;
@@ -93,7 +93,7 @@ export ulong task_create(TaskId task_id, MemAddr entry_fn, PMM* pmm) {
     // PMMからスタック割当（4ページ = 16KB）
     // FBConsole呼出しチェーン(fb_puts→draw_char→font_get_row→font_data)の
     // 深い呼出し深度に対応するため、1ページでは不足
-    ulong stack_pages = 4;
+    PageCount stack_pages = 4;
     MemAddr stack_base = pmm->alloc_pages(stack_pages);
     if (stack_base == 0) {
         debug.println("[TASK] ERROR: cannot alloc stack" as void*);

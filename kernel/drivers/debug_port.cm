@@ -39,7 +39,7 @@ impl DebugPort {
 // ============================================================
 
 impl DebugPort for OutputWriter {
-    void putc(ulong ch) {
+    void putc(AsciiChar ch) {
         outb(self.port, ch);
     }
 

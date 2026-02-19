@@ -17,7 +17,7 @@
 /// putc/puts/println/print_hex の4メソッドを要求する。
 /// SerialPort, DebugPort が実装。
 export interface OutputWriter {
-    void putc(ulong ch);
+    void putc(AsciiChar ch);
     void puts(void* data);
     void println(void* data);
     void print_hex(ulong value);

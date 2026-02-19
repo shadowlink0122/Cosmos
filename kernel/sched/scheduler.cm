@@ -44,13 +44,13 @@ export void sched_set_current(TaskId task_id) {
 }
 
 /// タスク数を取得
-export ulong sched_task_count() {
+export Count sched_task_count() {
     ulong* ptr = SCHED_COUNT_ADDR as ulong*;
     return *ptr;
 }
 
 /// タスク数を設定
-export void sched_set_count(ulong count) {
+export void sched_set_count(Count count) {
     ulong* ptr = SCHED_COUNT_ADDR as ulong*;
     *ptr = count;
 }

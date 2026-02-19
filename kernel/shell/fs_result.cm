@@ -42,7 +42,7 @@ const FsError FS_ERR_CREATE    = 8;   // ファイル作成失敗
 const FsError FS_ERR_NULL      = 9;   // NULLデータ
 
 // CosmFSのエラーセンチネル値（types.cmのINVALID_VALUEを使用）
-const ulong FS_SENTINEL = INVALID_VALUE;
+const MemAddr FS_SENTINEL = INVALID_VALUE;
 
 // ============================================================
 // FsResult メソッド実装
@@ -55,7 +55,7 @@ impl FsResult {
     }
 
     /// エラーFsResultを生成
-    static FsResult err(ulong code) {
+    static FsResult err(FsError code) {
         return {is_err: 1, value: 0, error: code};
     }
 
@@ -79,7 +79,7 @@ impl FsResult {
     }
 
     /// heap->alloc()の結果をFsResultに変換
-    static FsResult from_alloc(ulong addr) {
+    static FsResult from_alloc(MemAddr addr) {
         if (addr == 0) {
             return FsResult::err(FS_ERR_ALLOC);
         }
@@ -89,7 +89,7 @@ impl FsResult {
     /// CREATE操作の結果をFsResultに変換（0=成功、非0=エラー）
     static FsResult from_create(ulong result) {
         if (result == 0) {
-            return FsResult::ok(0 as ulong);
+            return FsResult::ok(result);
         }
         if (result == 2) {
             return FsResult::err(FS_ERR_EXISTS);

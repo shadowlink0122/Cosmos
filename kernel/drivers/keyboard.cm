@@ -32,7 +32,7 @@ import ../arch/isr;
 
 // キーバッファの固定アドレスとサイズ
 const MemAddr KB_BUF_ADDR      = 0xC00;  // リングバッファ開始
-const ulong KB_BUF_SIZE      = 64;     // バッファサイズ（バイト）
+const ByteSize KB_BUF_SIZE   = 64;     // バッファサイズ（バイト）
 const MemAddr KB_WRITE_IDX     = 0xC40;  // 書込みインデックス
 const MemAddr KB_READ_IDX      = 0xC48;  // 読取りインデックス
 const MemAddr KB_COUNT         = 0xC50;  // バッファ内要素数
@@ -54,8 +54,8 @@ const KeyCode VKEY_LEFT  = 0x82;
 const KeyCode VKEY_RIGHT = 0x83;
 
 // PS/2 I/Oポート
-const ulong KB_DATA_PORT   = 0x60;  // キーボードデータポート
-const ulong KB_STATUS_PORT = 0x64;  // キーボードステータスポート
+const IoPort KB_DATA_PORT   = 0x60;  // キーボードデータポート
+const IoPort KB_STATUS_PORT = 0x64;  // キーボードステータスポート
 
 // ============================================================
 // スキャンコード→ASCII変換テーブル（US配列、Set 1）

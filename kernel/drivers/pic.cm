@@ -97,7 +97,7 @@ impl PIC8259A {
     /// 指定IRQ番号をアンマスク（有効化）する
     void unmask(IrqNr irq) {
         IoPort port = self.master_data;
-        ulong irq_line = irq;
+        IrqNr irq_line = irq;
         if (irq >= 8) {
             port = self.slave_data;
             irq_line = irq - 8;
