@@ -10,6 +10,7 @@
 //   ulong page = pmm.alloc_page();
 //   pmm.free_page(page);
 
+import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 
@@ -18,7 +19,7 @@ import ../drivers/debug_port;
 // ============================================================
 
 // ページサイズ: 4KiB
-const ulong PAGE_SIZE = 4096;
+const ByteSize PAGE_SIZE = 4096;
 // ページシフト: 4096 = 2^12
 const ulong PAGE_SHIFT = 12;
 // 1つのulong内のビット数
@@ -36,10 +37,10 @@ const ulong EFI_CONVENTIONAL_MEMORY = 7;
 /// ビットマップ物理メモリマネージャ
 export struct PMM {
     ulong* bitmap;       // ビットマップ配列（1ビット = 1ページ）
-    ulong total_pages;   // 管理対象の総ページ数
-    ulong free_pages;    // 空きページ数
-    ulong bitmap_size;   // ビットマップサイズ（バイト）
-    ulong max_phys_addr; // 検出された最大物理アドレス
+    PageCount total_pages;   // 管理対象の総ページ数
+    PageCount free_pages;    // 空きページ数
+    ByteSize bitmap_size;   // ビットマップサイズ（バイト）
+    MemAddr max_phys_addr; // 検出された最大物理アドレス
 }
 
 // ============================================================
@@ -53,12 +54,12 @@ impl PMM {
     /// mmap_size:   メモリマップ全体のサイズ
     /// desc_size:   1エントリのサイズ
     /// entry_count: エントリ数
-    overload self(void* mmap_buf, ulong mmap_size, ulong desc_size, ulong entry_count) {
+    overload self(void* mmap_buf, ByteSize mmap_size, ByteSize desc_size, Count entry_count) {
         DebugPort debug(0xE9);
 
         // --- Pass 1: 利用可能メモリの最大物理アドレスを検出 ---
         // Conventional/BS_Code/BS_Dataのみカウント（MMIO/Reserved除外）
-        ulong max_addr = 0;
+        MemAddr max_addr = 0;
         ulong idx = 0;
         ulong type_mask = 4294967295;  // 0xFFFFFFFF
 
@@ -290,7 +291,7 @@ impl PMM {
 
     /// 1ページ（4KiB）を割当し、物理アドレスを返す
     /// 割当失敗時は0を返す
-    ulong alloc_page() {
+    MemAddr alloc_page() {
         if (self.free_pages == 0) {
             return 0;
         }
@@ -328,7 +329,7 @@ impl PMM {
     }
 
     /// ページを解放する
-    void free_page(ulong phys_addr) {
+    void free_page(MemAddr phys_addr) {
         ulong page_idx = phys_addr >> PAGE_SHIFT;
         if (page_idx >= self.total_pages) {
             return;
@@ -342,7 +343,7 @@ impl PMM {
 
     /// N個の連続ページを割当し、先頭物理アドレスを返す
     /// 割当失敗時は0を返す
-    ulong alloc_pages(ulong count) {
+    MemAddr alloc_pages(PageCount count) {
         if (count == 0) { return 0; }
         if (self.free_pages < count) { return 0; }
 
@@ -375,7 +376,7 @@ impl PMM {
     }
 
     /// N個の連続ページを解放する
-    void free_pages(ulong phys_addr, ulong count) {
+    void free_pages(MemAddr phys_addr, PageCount count) {
         ulong page_idx = phys_addr >> PAGE_SHIFT;
         ulong i = 0;
         while (i < count) {

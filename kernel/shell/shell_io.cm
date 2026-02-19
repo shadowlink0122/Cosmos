@@ -52,7 +52,7 @@ export void shell_newline() {
 }
 
 /// serial + FBConsole に1文字出力
-export void shell_putc(ulong ch) {
+export void shell_putc(AsciiChar ch) {
     SerialPort serial = {port: 0x3F8};
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     serial.putc(ch);
@@ -100,14 +100,14 @@ export void shell_print_num(ulong value) {
         return;
     }
     // 0xCF0を一時バッファとして使用（最大20桁だが10桁で十分）
-    ulong tmp_buf = 0xCF0;
+    MemAddr tmp_buf = 0xCF0;
     ulong cnt = 0;
     ulong n = value;
 
     // 桁を逆順でバッファに格納
     while (n > 0) {
         ulong rem = n - ((n / 10) * 10);  // n % 10
-        ulong addr = tmp_buf + cnt;
+        MemAddr addr = tmp_buf + cnt;
         __asm__(`
             movq ${r:addr}, %rdi;
             movq ${r:rem}, %rax;
@@ -122,8 +122,8 @@ export void shell_print_num(ulong value) {
     ulong i = cnt;
     while (i > 0) {
         i = i - 1;
-        ulong raddr = tmp_buf + i;
-        ulong ch = 0;
+        MemAddr raddr = tmp_buf + i;
+        AsciiChar ch = 0;
         __asm__(`
             movq ${r:raddr}, %rdi;
             xorq %rax, %rax;

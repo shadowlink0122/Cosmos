@@ -24,6 +24,8 @@
 // 固定アドレスマップ:
 //   0xB20: TSS構造体（104バイト）
 
+import ../types;
+import ../config;
 import ../drivers/debug_port;
 
 // ============================================================
@@ -31,18 +33,18 @@ import ../drivers/debug_port;
 // ============================================================
 
 // TSS固定アドレス
-const ulong TSS_BASE_ADDR = 0xB20;
-const ulong TSS_SIZE = 104;
+const MemAddr TSS_BASE_ADDR = 0xB20;
+const ByteSize TSS_SIZE = 104;
 
 // TSSフィールドオフセット
-const ulong TSS_OFF_RSP0 = 4;
-const ulong TSS_OFF_RSP1 = 12;
-const ulong TSS_OFF_RSP2 = 20;
-const ulong TSS_OFF_IST1 = 36;
-const ulong TSS_OFF_IOPB = 102;
+const ByteOffset TSS_OFF_RSP0 = 4;
+const ByteOffset TSS_OFF_RSP1 = 12;
+const ByteOffset TSS_OFF_RSP2 = 20;
+const ByteOffset TSS_OFF_IST1 = 36;
+const ByteOffset TSS_OFF_IOPB = 102;
 
 // GDTセレクタ
-const ulong TSS_SELECTOR = 0x18;  // GDT[3]
+const GdtSelector TSS_SELECTOR = 0x18;  // GDT[3]
 
 // ============================================================
 // TSS操作
@@ -50,7 +52,7 @@ const ulong TSS_SELECTOR = 0x18;  // GDT[3]
 
 /// TSS構造体を初期化する
 /// kernel_rsp0: カーネルスタックのトップアドレス
-export void tss_init(ulong kernel_rsp0) {
+export void tss_init(MemAddr kernel_rsp0) {
     DebugPort debug(0xE9);
 
     // TSS領域をゼロクリア（104バイト / 8 = 13 qwords）
@@ -58,7 +60,7 @@ export void tss_init(ulong kernel_rsp0) {
     ulong i = 0 as ulong;
     ulong tss_qwords = 13 as ulong;
     while (i < tss_qwords) {
-        ulong addr = TSS_BASE_ADDR + (i * 8);
+        MemAddr addr = TSS_BASE_ADDR + (i * 8);
         ulong* ptr = addr as ulong*;
         *ptr = zero;
         i = i + 1;
@@ -71,8 +73,8 @@ export void tss_init(ulong kernel_rsp0) {
     // IOPBオフセットをTSSサイズに設定（IOポートマップ無し）
     // offset 102のulongを読み取り、下位16ビットにTSSサイズを設定
     // 注: offset 102はアラインされていないので、バイト単位で書込み
-    ulong iopb_lo_addr = TSS_BASE_ADDR + TSS_OFF_IOPB;
-    ulong iopb_hi_addr = iopb_lo_addr + 1;
+    MemAddr iopb_lo_addr = TSS_BASE_ADDR + TSS_OFF_IOPB;
+    MemAddr iopb_hi_addr = iopb_lo_addr + 1;
     ulong ff_mask = 0xFF as ulong;
     ulong iopb_lo_val = TSS_SIZE & ff_mask;
     ulong iopb_hi_val = (TSS_SIZE >> 8) & ff_mask;
@@ -92,7 +94,7 @@ export void tss_init(ulong kernel_rsp0) {
 }
 
 /// RSP0を更新する（タスク切替時に呼ぶ）
-export void tss_set_rsp0(ulong new_rsp0) {
+export void tss_set_rsp0(MemAddr new_rsp0) {
     ulong* rsp0_ptr = (TSS_BASE_ADDR + TSS_OFF_RSP0) as ulong*;
     *rsp0_ptr = new_rsp0;
 }
@@ -117,11 +119,11 @@ export void tss_set_rsp0(ulong new_rsp0) {
 export void tss_install_gdt() {
     DebugPort debug(0xE9);
 
-    ulong tss_base = TSS_BASE_ADDR;
+    MemAddr tss_base = TSS_BASE_ADDR;
     ulong tss_limit = TSS_SIZE - 1;
 
     // GDTの[3]スロット（offset 0x18 = 24バイト目）
-    ulong gdt_base = 0x800 as ulong;
+    MemAddr gdt_base = 0x800 as ulong;
     ulong tss_gdt_offset = 24 as ulong;  // 3 * 8
 
     // 下位8バイト
@@ -169,7 +171,7 @@ export void tss_install_gdt() {
     *gdt_slot3_hi = high8;
 
     // GDTRの更新（GDT_GDTR_OFFSET = 40に配置）
-    ulong gdtr_addr = gdt_base + 40;
+    MemAddr gdtr_addr = gdt_base + 40;
     ulong new_gdt_limit = 39 as ulong;  // 5 slots * 8 bytes - 1
     // ASMでGDTR limit更新 + lgdt再ロード
     __asm__(`

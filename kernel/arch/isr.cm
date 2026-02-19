@@ -9,6 +9,8 @@
 //   isr.init();
 
 import ./idt;
+import ../types;
+import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 
@@ -17,7 +19,7 @@ import ../drivers/debug_port;
 // ============================================================
 
 /// ベクタ番号に対する例外名を返す
-export void* exception_name(ulong vector) {
+export void* exception_name(IdtVector vector) {
     if (vector == 0)  { return "Division Error (#DE)" as void*; }
     if (vector == 1)  { return "Debug (#DB)" as void*; }
     if (vector == 2)  { return "NMI" as void*; }
@@ -44,7 +46,7 @@ export void* exception_name(ulong vector) {
 // ============================================================
 
 /// 例外発生時にデバッグ情報を出力し、リカバリーポイントがあればシェルに復帰する
-export void exception_handler(ulong vector, ulong error_code) {
+export void exception_handler(IdtVector vector, ulong error_code) {
     // シリアルポート・デバッグポートを直接初期化して使用
     SerialPort serial = {port: 0x3F8};
     DebugPort debug = {port: 0xE9};
@@ -74,8 +76,8 @@ export void exception_handler(ulong vector, ulong error_code) {
     // リカバリーポイントが設定されているか確認
     ulong* rsp_ptr = 0xD88 as ulong*;
     ulong* rip_ptr = 0xD90 as ulong*;
-    ulong recovery_rsp = *rsp_ptr;
-    ulong recovery_rip = *rip_ptr;
+    MemAddr recovery_rsp = *rsp_ptr;
+    MemAddr recovery_rip = *rip_ptr;
 
     if (recovery_rsp != 0) {
         serial.println("[EXCEPTION] Recovering to shell..." as void*);
@@ -143,7 +145,7 @@ export void isr_31() { exception_handler(31, 0); }
 // ============================================================
 
 /// 関数ポインタをulongアドレスに変換するヘルパー
-export ulong fn_addr(void* fn) {
+export MemAddr fn_addr(void* fn) {
     return fn as ulong;
 }
 

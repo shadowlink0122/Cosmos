@@ -12,6 +12,7 @@
 import ../../drivers/serial;
 import ../../drivers/debug_port;
 import ../../mm/heap;
+import ../../config;
 import ../test_runner;
 
 // ============================================================
@@ -25,7 +26,7 @@ export void test_heap(TestRunner* runner, Heap* heap) {
     serial.println("[TEST] === Heap Tests ===" as void*);
 
     // テスト1: ベースアドレスが非ゼロ（初期化成功）
-    ulong base = heap->base_addr;
+    MemAddr base = heap->base_addr;
     runner->assert_nonzero(base, "Heap: base addr nonzero" as void*);
 
     // テスト2: サイズが非ゼロ（ページ割当成功）
@@ -41,14 +42,14 @@ export void test_heap(TestRunner* runner, Heap* heap) {
     runner->assert_eq(free0, size, "Heap: initial free == size" as void*);
 
     // テスト5: alloc(16) — 非ゼロアドレスが返る
-    ulong ptr1 = heap->alloc(16);
+    MemAddr ptr1 = heap->alloc(16);
     runner->assert_nonzero(ptr1, "Heap: alloc(16) returns nonzero" as void*);
 
     // テスト6: alloc結果に書込み→読み戻し（PF検出の核心テスト）
     runner->assert_mem_write(ptr1, 0xDEADBEEFCAFE0001, "Heap: alloc'd memory writable" as void*);
 
     // テスト7: 2回目のalloc — 異なるアドレスが返る
-    ulong ptr2 = heap->alloc(32);
+    MemAddr ptr2 = heap->alloc(32);
     runner->assert_nonzero(ptr2, "Heap: alloc(32) returns nonzero" as void*);
     runner->assert_ne(ptr1, ptr2, "Heap: 2nd alloc returns different addr" as void*);
 
@@ -78,7 +79,7 @@ export void test_heap(TestRunner* runner, Heap* heap) {
     runner->assert_true(in_range1, "Heap: alloc addr within heap range" as void*);
 
     // テスト12: 大量alloc（ヒープサイズ超過）→ 0が返る
-    ulong huge = heap->alloc(size);
+    MemAddr huge = heap->alloc(size);
     runner->assert_eq(huge, 0, "Heap: oversized alloc returns 0" as void*);
 
     serial.println("[TEST] Heap tests complete" as void*);

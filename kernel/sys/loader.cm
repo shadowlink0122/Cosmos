@@ -29,7 +29,7 @@ const ulong LDR_NOT_FOUND  = 0xFFFFFFFFFFFFFFFF;
 // ============================================================
 
 /// 8バイト読み取り（リトルエンディアン）
-export ulong loader_read_u64(ulong addr) {
+export ulong loader_read_u64(MemAddr addr) {
     ulong val = 0;
     __asm__(`
         movq ${r:addr}, %rdi;
@@ -47,7 +47,7 @@ export ulong loader_read_u64(ulong addr) {
 /// buf_addr: CosmEXEデータが読み込まれたバッファアドレス
 /// buf_size: バッファサイズ
 /// 戻り値: 0=成功, 5=magic不一致
-export ulong loader_exec_buf(ulong buf_addr, ulong buf_size) {
+export ulong loader_exec_buf(MemAddr buf_addr, ulong buf_size) {
     DebugPort debug(0xE9);
 
     // CosmEXEヘッダ検証
@@ -70,8 +70,8 @@ export ulong loader_exec_buf(ulong buf_addr, ulong buf_size) {
 
     // エントリポイントに制御を移す
     // コードはヘッダ(32B)の後に配置されている
-    ulong code_base = buf_addr + COSMEXE_HEADER_SIZE;
-    ulong entry_addr = code_base + entry_offset;
+    MemAddr code_base = buf_addr + COSMEXE_HEADER_SIZE;
+    MemAddr entry_addr = code_base + entry_offset;
 
     debug.puts("[LOADER] jumping to " as void*);
     debug.print_hex(entry_addr);
@@ -99,7 +99,7 @@ export ulong loader_exec_buf(ulong buf_addr, ulong buf_size) {
 /// name_addr: ファイル名のアドレス（NUL終端）
 /// 戻り値: 0=成功, 1=ファイル未発見, 2=サイズ取得失敗, 3=サイズ超過,
 ///         4=読込失敗, 5=magic不一致, 6=ヒープ割当失敗
-export ulong loader_exec(ulong name_addr) {
+export ulong loader_exec(MemAddr name_addr) {
     DebugPort debug(0xE9);
 
     debug.puts("[LOADER] loading: " as void*);
@@ -130,9 +130,9 @@ export ulong loader_exec(ulong name_addr) {
 
     // 3. ヒープにバッファ確保して読み込み
     ulong* heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
-    ulong heap_addr = *heap_ptr;
+    MemAddr heap_addr = *heap_ptr;
     Heap* heap = heap_addr as Heap*;
-    ulong load_addr = heap->alloc(size);
+    MemAddr load_addr = heap->alloc(size);
     if (load_addr == 0) {
         debug.println("[LOADER] error: heap alloc failed" as void*);
         return 6;

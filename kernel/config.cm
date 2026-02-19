@@ -2,44 +2,9 @@
 // kernel::config - カーネル全体設定
 //
 // 固定メモリアドレスマップ、バージョン定数、色定数を一元管理する。
-// 各モジュールはこのファイルをimportして参照する。
+// 型定義は types.cm に分離。各モジュールはこのファイルをimportして参照する。
 
-// ============================================================
-// カーネル共通型定義（typedef）
-// ============================================================
-
-/// メモリアドレス型 — 固定メモリ領域やポインタ先アドレスを表す
-export typedef MemAddr = ulong;
-
-/// I/Oポート型 — x86のI/Oポート番号（0x3F8等）を表す
-export typedef IoPort = ulong;
-
-/// 色値型 — BGRA形式の32ビットピクセル色を表す
-export typedef Color = ulong;
-
-/// ページ数型 — 物理メモリページ（4KiB単位）の数
-export typedef PageCount = ulong;
-
-/// タスクID型 — カーネル内部のタスク識別子
-export typedef TaskId = ulong;
-
-/// タイマーtick型 — PITタイマーのtickカウント
-export typedef Tick = ulong;
-
-/// IRQ番号型 — ハードウェア割り込み番号（0-15）
-export typedef IrqNr = ulong;
-
-/// スキャンコード型 — PS/2キーボードのスキャンコード
-export typedef ScanCode = ulong;
-
-/// ASCII文字型 — ASCII文字コード（0-127）
-export typedef AsciiChar = ulong;
-
-/// 終了コード型 — プロセスの終了コード
-export typedef ExitCode = ulong;
-
-/// タスク状態型 — READY/RUNNING/BLOCKED/TERMINATED
-export typedef TaskState = ulong;
+import ./types;
 
 // ============================================================
 // カーネルバージョン

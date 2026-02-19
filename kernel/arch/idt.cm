@@ -9,6 +9,8 @@
 //   idt.set_gate(0, handler_addr, IDT_INTERRUPT_GATE);
 //   idt.load();
 
+import ../types;
+import ../config;
 import ../drivers/serial;
 
 // ============================================================
@@ -57,7 +59,7 @@ impl IDT {
     }
 
     /// IDTテーブルの指定ベクタにゲートディスクリプタを設定する
-    void set_gate(ulong vector, ulong handler, ulong type_attr) {
+    void set_gate(IdtVector vector, MemAddr handler, ulong type_attr) {
         // 各エントリは4つのuint（16バイト）
         ulong idx = vector * 4;
 
@@ -76,7 +78,7 @@ impl IDT {
         ulong entry1 = (offset_mid << 16) | (type_attr << 8);
 
         // ポインタ演算でエントリの各uintにアクセス
-        ulong base_addr = self.table as ulong;
+        MemAddr base_addr = self.table as ulong;
         ulong byte_offset = idx * 4;  // sizeof(uint) = 4
 
         uint* p0 = (base_addr + byte_offset) as uint*;
@@ -92,7 +94,7 @@ impl IDT {
 
     /// IDTRを構築し、lidt命令でIDTをCPUにロードする
     void load() {
-        ulong idt_addr = self.table as ulong;
+        MemAddr idt_addr = self.table as ulong;
         ulong idt_limit = 4095;  // 256 * 16 - 1
 
         __asm__(`
@@ -110,7 +112,7 @@ impl IDT {
     void init() {
         // デフォルトハンドラのアドレスを取得
         void* handler_ptr = idt_default_handler as void*;
-        ulong default_addr = handler_ptr as ulong;
+        MemAddr default_addr = handler_ptr as ulong;
 
         // 全256エントリをデフォルトハンドラで初期化
         ulong i = 0;

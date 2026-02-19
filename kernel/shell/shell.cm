@@ -22,9 +22,9 @@ import ./shell_io;
 // ============================================================
 
 // コマンドバッファ
-const ulong SHELL_BUF_ADDR = 0xD00;  // コマンドバッファ（128バイト）
+const MemAddr SHELL_BUF_ADDR = 0xD00;  // コマンドバッファ（128バイト）
 const ulong SHELL_BUF_SIZE = 128;
-const ulong SHELL_POS_ADDR = 0xD80;  // バッファ位置
+const MemAddr SHELL_POS_ADDR = 0xD80;  // バッファ位置
 
 // ============================================================
 // 文字列比較ヘルパー
@@ -32,15 +32,15 @@ const ulong SHELL_POS_ADDR = 0xD80;  // バッファ位置
 
 /// 2つの文字列を比較する（固定アドレスの文字列 vs リテラル）
 /// 一致すれば1、不一致なら0を返す
-export ulong shell_streq(ulong buf_addr, ulong buf_len, void* target) {
-    ulong target_addr = target as ulong;
+export ulong shell_streq(MemAddr buf_addr, ulong buf_len, void* target) {
+    MemAddr target_addr = target as ulong;
 
     // ターゲット文字列の長さを計算
     ulong target_len = 0;
     ulong zero_byte = 0;
     while (true) {
-        ulong ch = 0;
-        ulong check_addr = target_addr + target_len;
+        AsciiChar ch = 0;
+        MemAddr check_addr = target_addr + target_len;
         __asm__(`
             movq ${r:check_addr}, %rdi;
             xorq %rax, %rax;
@@ -59,8 +59,8 @@ export ulong shell_streq(ulong buf_addr, ulong buf_len, void* target) {
 
     ulong i = 0;
     while (i < buf_len) {
-        ulong ch_buf = 0;
-        ulong buf_byte_addr = buf_addr + i;
+        AsciiChar ch_buf = 0;
+        MemAddr buf_byte_addr = buf_addr + i;
         __asm__(`
             movq ${r:buf_byte_addr}, %rdi;
             xorq %rax, %rax;
@@ -68,8 +68,8 @@ export ulong shell_streq(ulong buf_addr, ulong buf_len, void* target) {
             movq %rax, ${=r:ch_buf}
         `);
 
-        ulong ch_target = 0;
-        ulong target_byte_addr = target_addr + i;
+        AsciiChar ch_target = 0;
+        MemAddr target_byte_addr = target_addr + i;
         __asm__(`
             movq ${r:target_byte_addr}, %rdi;
             xorq %rax, %rax;
@@ -88,16 +88,16 @@ export ulong shell_streq(ulong buf_addr, ulong buf_len, void* target) {
 
 /// コマンドバッファが指定プレフィックスで始まるか判定
 /// 一致すれば1、不一致なら0を返す
-export ulong shell_starts_with(ulong buf_addr, ulong buf_len, void* prefix, ulong prefix_len) {
+export ulong shell_starts_with(MemAddr buf_addr, ulong buf_len, void* prefix, ulong prefix_len) {
     if (buf_len < prefix_len) {
         return 0;
     }
 
-    ulong prefix_addr = prefix as ulong;
+    MemAddr prefix_addr = prefix as ulong;
     ulong i = 0;
     while (i < prefix_len) {
-        ulong ch_buf = 0;
-        ulong buf_byte_addr = buf_addr + i;
+        AsciiChar ch_buf = 0;
+        MemAddr buf_byte_addr = buf_addr + i;
         __asm__(`
             movq ${r:buf_byte_addr}, %rdi;
             xorq %rax, %rax;
@@ -105,8 +105,8 @@ export ulong shell_starts_with(ulong buf_addr, ulong buf_len, void* prefix, ulon
             movq %rax, ${=r:ch_buf}
         `);
 
-        ulong ch_prefix = 0;
-        ulong prefix_byte_addr = prefix_addr + i;
+        AsciiChar ch_prefix = 0;
+        MemAddr prefix_byte_addr = prefix_addr + i;
         __asm__(`
             movq ${r:prefix_byte_addr}, %rdi;
             xorq %rax, %rax;
@@ -127,8 +127,8 @@ export ulong shell_starts_with(ulong buf_addr, ulong buf_len, void* prefix, ulon
 // ============================================================
 
 /// コマンドバッファにバイトを書込む
-export void shell_buf_write(ulong pos, ulong byte_val) {
-    ulong addr = SHELL_BUF_ADDR + pos;
+export void shell_buf_write(ulong pos, AsciiChar byte_val) {
+    MemAddr addr = SHELL_BUF_ADDR + pos;
     __asm__(`
         movq ${r:addr}, %rdi;
         movq ${r:byte_val}, %rax;
@@ -137,9 +137,9 @@ export void shell_buf_write(ulong pos, ulong byte_val) {
 }
 
 /// コマンドバッファからバイトを読取る
-export ulong shell_buf_read(ulong pos) {
-    ulong addr = SHELL_BUF_ADDR + pos;
-    ulong val = 0;
+export AsciiChar shell_buf_read(ulong pos) {
+    MemAddr addr = SHELL_BUF_ADDR + pos;
+    AsciiChar val = 0;
     __asm__(`
         movq ${r:addr}, %rdi;
         xorq %rax, %rax;
@@ -162,7 +162,7 @@ export void shell_redraw_from(ulong cursor, ulong len) {
     // カーソル位置から末尾まで描画
     ulong i = cursor;
     while (i < len) {
-        ulong ch = shell_buf_read(i);
+        AsciiChar ch = shell_buf_read(i);
         ulong px = (prompt_len + i) * 8;   // FONT_WIDTH
         ulong cy = con._read(0x28);        // FB_OFF_CURSOR_Y
         ulong py = cy * 16;                // FONT_HEIGHT
@@ -187,7 +187,7 @@ export void shell_redraw_from(ulong cursor, ulong len) {
     serial.puts("CosmOS > " as void*);
     ulong j = 0;
     while (j < len) {
-        ulong ch2 = shell_buf_read(j);
+        AsciiChar ch2 = shell_buf_read(j);
         serial.putc(ch2);
         j = j + 1;
     }
@@ -205,7 +205,7 @@ export void shell_redraw_from(ulong cursor, ulong len) {
 }
 
 /// コマンドを実行する
-export void shell_exec(ulong buf_addr, ulong buf_len) {
+export void shell_exec(MemAddr buf_addr, ulong buf_len) {
     SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
@@ -254,7 +254,7 @@ export void shell_process_input() {
     // Ariaモードチェック
     ulong aria_running = aria_op(4, 0, 0, 0, 0);  // IS_RUNNING
     if (aria_running != 0) {
-        ulong ch = kb_read_char();
+        AsciiChar ch = kb_read_char();
         if (ch == 0) {
             return;
         }
@@ -283,7 +283,7 @@ export void shell_process_input() {
     ulong* cur_ptr = 0xDA8 as ulong*;  // ADDR_SHELL_CURSOR
     ulong cursor = *cur_ptr;
 
-    ulong ch = kb_read_char();
+    AsciiChar ch = kb_read_char();
     if (ch == 0) {
         return;
     }
@@ -345,7 +345,7 @@ export void shell_process_input() {
             // cursor以降を左に1バイトシフト
             ulong shift_i = cursor - 1;
             while (shift_i < pos - 1) {
-                ulong next_ch = shell_buf_read(shift_i + 1);
+                AsciiChar next_ch = shell_buf_read(shift_i + 1);
                 shell_buf_write(shift_i, next_ch);
                 shift_i = shift_i + 1;
             }
@@ -369,7 +369,7 @@ export void shell_process_input() {
                 // cursor位置に挿入（cursor以降を右に1バイトシフト）
                 ulong shift_j = pos;
                 while (shift_j > cursor) {
-                    ulong prev_ch = shell_buf_read(shift_j - 1);
+                    AsciiChar prev_ch = shell_buf_read(shift_j - 1);
                     shell_buf_write(shift_j, prev_ch);
                     shift_j = shift_j - 1;
                 }
@@ -405,7 +405,7 @@ export void shell_init() {
     ulong i = 0;
     ulong buf_qwords = 16;
     while (i < buf_qwords) {
-        ulong addr = SHELL_BUF_ADDR + (i * 8);
+        MemAddr addr = SHELL_BUF_ADDR + (i * 8);
         ulong* ptr = addr as ulong*;
         *ptr = zero;
         i = i + 1;
@@ -420,7 +420,7 @@ export void shell_init() {
     serial.puts("CosmOS> " as void*);
 
     // FBConsole バナー + プロンプト
-    con.set_color(0x00FFFFFF);
+    con.set_color(0x00FFFFFF as Color);
     con.println("================================" as void*);
     con.println("  CosmOS v0.6.0 Kernel Shell" as void*);
     con.println("  Type 'help' for commands" as void*);
@@ -458,7 +458,7 @@ export void shell_recover() {
     ulong i = 0;
     ulong buf_qwords = 16;
     while (i < buf_qwords) {
-        ulong addr = SHELL_BUF_ADDR + (i * 8);
+        MemAddr addr = SHELL_BUF_ADDR + (i * 8);
         ulong* ptr = addr as ulong*;
         *ptr = zero;
         i = i + 1;

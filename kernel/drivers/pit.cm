@@ -134,7 +134,7 @@ impl PIT {
 
         // IDTにベクタ32（IRQ0）のハンドラを登録
         IDT idt = {table: idt_table};
-        ulong vec32 = 32;
+        IdtVector vec32 = 32;
         idt.set_gate(vec32, fn_addr(irq0_handler as void*), IDT_INTERRUPT_GATE);
 
         // IDTを再ロード

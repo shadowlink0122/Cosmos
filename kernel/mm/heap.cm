@@ -10,6 +10,7 @@
 //   ulong ptr = heap.alloc(1024); // 1024バイト割当
 //   heap.free(ptr);               // 解放（フリーリストに返却）
 
+import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 import ./pmm;
@@ -34,7 +35,7 @@ const ulong HEAP_USED_BIT = 0x8000000000000000;
 
 /// Bump + フリーリスト方式のカーネルヒープ
 export struct Heap {
-    ulong base_addr;     // ヒープ領域の先頭物理アドレス
+    MemAddr base_addr;     // ヒープ領域の先頭物理アドレス
     ulong size;          // ヒープ領域の総サイズ（バイト）
     ulong offset;        // 現在のBump割当オフセット（次の割当位置）
     ulong alloc_count;   // 割当回数
@@ -78,7 +79,7 @@ impl Heap {
     /// メモリ割当（Bump方式、8バイトアラインメント）
     /// size: 割り当てるバイト数
     /// 戻り値: 割り当てた領域のアドレス（失敗時は0）
-    ulong alloc(ulong size) {
+    MemAddr alloc(ulong size) {
         if (self.base_addr == 0) {
             return 0;
         }
@@ -120,7 +121,7 @@ impl Heap {
 
     /// メモリ解放
     /// addr: alloc()で返されたアドレス
-    void free(ulong addr) {
+    void free(MemAddr addr) {
         if (addr == 0) {
             return;
         }

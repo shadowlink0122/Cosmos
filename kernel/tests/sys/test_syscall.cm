@@ -13,6 +13,7 @@ import ../../drivers/debug_port;
 import ../../sys/syscall;
 import ../../sys/syscall_table;
 import ../../sys/screen;
+import ../../config;
 import ../../sys/env;
 
 /// Syscallテストを実行
@@ -26,23 +27,23 @@ export void test_syscall(TestRunner* runner) {
     // ============================================================
 
     // --- Test 1: sys_screen_set_color は SYSCALL_OK を返す ---
-    ulong ret_color = sys_screen_set_color(0x0F);
+    SyscallResult ret_color = sys_screen_set_color(0x0F);
     runner->assert_zero(ret_color, "Syscall: set_color returns OK" as void*);
 
     // --- Test 2: sys_screen_newline は SYSCALL_OK を返す ---
-    ulong ret_nl = sys_screen_newline();
+    SyscallResult ret_nl = sys_screen_newline();
     runner->assert_zero(ret_nl, "Syscall: newline returns OK" as void*);
 
     // --- Test 3: sys_screen_print_num は SYSCALL_OK を返す ---
-    ulong ret_num = sys_screen_print_num(42);
+    SyscallResult ret_num = sys_screen_print_num(42);
     runner->assert_zero(ret_num, "Syscall: print_num returns OK" as void*);
 
     // --- Test 4: sys_screen_print_hex は SYSCALL_OK を返す ---
-    ulong ret_hex = sys_screen_print_hex(0xFF);
+    SyscallResult ret_hex = sys_screen_print_hex(0xFF);
     runner->assert_zero(ret_hex, "Syscall: print_hex returns OK" as void*);
 
     // --- Test 5: sys_screen_clear は SYSCALL_OK を返す ---
-    ulong ret_clr = sys_screen_clear();
+    SyscallResult ret_clr = sys_screen_clear();
     runner->assert_zero(ret_clr, "Syscall: screen_clear returns OK" as void*);
 
     // ============================================================
@@ -58,20 +59,20 @@ export void test_syscall(TestRunner* runner) {
     runner->assert_eq(ecount, four, "Syscall: env_count=4 after init" as void*);
 
     // --- Test 7: env_get("PATH") は非ゼロ（存在する） ---
-    ulong path_addr = env_get("PATH" as ulong);
+    MemAddr path_addr = env_get("PATH" as ulong);
     runner->assert_nonzero(path_addr, "Syscall: env_get PATH found" as void*);
 
     // --- Test 8: env_get("HOME") は非ゼロ ---
-    ulong home_addr = env_get("HOME" as ulong);
+    MemAddr home_addr = env_get("HOME" as ulong);
     runner->assert_nonzero(home_addr, "Syscall: env_get HOME found" as void*);
 
     // --- Test 9: env_get("NONEXIST") は0（未発見） ---
-    ulong missing_addr = env_get("NONEXIST" as ulong);
+    MemAddr missing_addr = env_get("NONEXIST" as ulong);
     runner->assert_zero(missing_addr, "Syscall: env_get missing=0" as void*);
 
     // --- Test 10: env_set + env_get ラウンドトリップ ---
     env_set("TESTVAR" as ulong, "testval" as ulong);
-    ulong tv_addr = env_get("TESTVAR" as ulong);
+    MemAddr tv_addr = env_get("TESTVAR" as ulong);
     runner->assert_nonzero(tv_addr, "Syscall: env_set/get roundtrip" as void*);
 
     // --- Test 11: env_count が1増加 ---
@@ -84,12 +85,12 @@ export void test_syscall(TestRunner* runner) {
     // ============================================================
 
     // --- Test 12: 未知syscall番号はENOSYSを返す ---
-    ulong unknown_nr = 999;
-    ulong result = syscall_dispatch(unknown_nr, 0, 0, 0);
+    SyscallNr unknown_nr = 999;
+    SyscallResult result = syscall_dispatch(unknown_nr, 0, 0, 0);
     runner->assert_eq(result, SYSCALL_ENOSYS, "Syscall: unknown nr returns ENOSYS" as void*);
 
     // --- Test 13: SYS_GETPID はsyscall_dispatch経由でも動作 ---
-    ulong pid_result = syscall_dispatch(SYS_GETPID, 0, 0, 0);
+    SyscallResult pid_result = syscall_dispatch(SYS_GETPID, 0, 0, 0);
     runner->assert_zero(pid_result, "Syscall: dispatch GETPID=0" as void*);
 
     serial.println("[TEST] Syscall tests complete" as void*);

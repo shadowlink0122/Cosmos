@@ -4,21 +4,7 @@
 // int 0x80 によるソフトウェア割り込みで使用するsyscall番号。
 // rax = syscall番号、rdi/rsi/rdx/r10 = 引数。
 
-// ============================================================
-// syscall型定義（typedef）
-// ============================================================
-
-/// Syscall番号型
-export typedef SyscallNr = ulong;
-
-/// Syscall戻り値型（成功=0、エラー=負値相当）
-export typedef SyscallResult = ulong;
-
-/// ファイルディスクリプタ型
-export typedef Fd = ulong;
-
-/// プロセスID型（syscall API公開用）
-export typedef Pid = ulong;
+import ../types;
 
 // ============================================================
 // syscall番号定数

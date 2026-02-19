@@ -26,23 +26,23 @@ export struct DebugPort {
 impl DebugPort {
     /// 引数付きコンストラクタ: ポートアドレス設定
     /// 使用例: DebugPort debug(0xE9);
-    overload self(ulong port_addr) {
+    overload self(IoPort port_addr) {
         self.port = port_addr;
     }
 
     /// デバッグポートに1バイト出力
-    void putc(ulong ch) {
+    void putc(AsciiChar ch) {
         outb(self.port, ch);
     }
 
     /// デバッグポートにNUL終端文字列を出力
     void puts(void* data) {
-        ulong data_val = data as ulong;
+        MemAddr data_val = data as ulong;
         ulong i = 0;
 
         while (true) {
-            ulong byte_val = 0;
-            ulong addr = data_val + i;
+            AsciiChar byte_val = 0;
+            MemAddr addr = data_val + i;
             __asm__(`
                 movq ${r:addr}, %r10;
                 xorq %rax, %rax;

@@ -7,6 +7,7 @@
 // Cmのselfコピー問題はv0.14.1で修正済みだが、
 // 固定アドレスTCB設計に適したフリー関数+ポインタ方式を維持。
 
+import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 import ../mm/pmm;
@@ -51,20 +52,20 @@ const ulong TCB_OFF_WAIT_FOR     = 88;  // 待機対象タスクID (BLOCKEDの�
 // ============================================================
 
 /// 指定タスクIDのTCBベースアドレスを取得
-export MemAddr tcb_addr(ulong task_id) {
+export MemAddr tcb_addr(TaskId task_id) {
     return TCB_BASE_ADDR + (task_id * TCB_SIZE);
 }
 
 /// TCBフィールドを読取
-export ulong tcb_read(ulong task_id, ulong offset) {
-    ulong addr = tcb_addr(task_id) + offset;
+export ulong tcb_read(TaskId task_id, ulong offset) {
+    MemAddr addr = tcb_addr(task_id) + offset;
     ulong* ptr = addr as ulong*;
     return *ptr;
 }
 
 /// TCBフィールドを書込
-export void tcb_write(ulong task_id, ulong offset, ulong value) {
-    ulong addr = tcb_addr(task_id) + offset;
+export void tcb_write(TaskId task_id, ulong offset, ulong value) {
+    MemAddr addr = tcb_addr(task_id) + offset;
     ulong* ptr = addr as ulong*;
     *ptr = value;
 }
@@ -80,7 +81,7 @@ export void tcb_write(ulong task_id, ulong offset, ulong value) {
 /// pmm:       PMMへのポインタ（スタック割当用）
 ///
 /// 戻り値: 成功=1, 失敗=0
-export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
+export ulong task_create(TaskId task_id, MemAddr entry_fn, PMM* pmm) {
     DebugPort debug(0xE9);
 
     // IDチェック
@@ -93,7 +94,7 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
     // FBConsole呼出しチェーン(fb_puts→draw_char→font_get_row→font_data)の
     // 深い呼出し深度に対応するため、1ページでは不足
     ulong stack_pages = 4;
-    ulong stack_base = pmm->alloc_pages(stack_pages);
+    MemAddr stack_base = pmm->alloc_pages(stack_pages);
     if (stack_base == 0) {
         debug.println("[TASK] ERROR: cannot alloc stack" as void*);
         return 0;
@@ -103,7 +104,7 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
     ulong stack_size = 4096 * stack_pages;
 
     // スタックトップ（x86_64はスタックが下方に伸びる）
-    ulong stack_top = stack_base + stack_size;
+    MemAddr stack_top = stack_base + stack_size;
 
     // 初期コンテキストをスタック上に構築
     // switch_to()のpop順序に合わせる:
@@ -125,40 +126,40 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
     ulong zero = 0;
 
     // アラインメントパッド（疑似return address）
-    ulong addr_pad = stack_top - 8;
+    MemAddr addr_pad = stack_top - 8;
     ulong* ptr_pad = addr_pad as ulong*;
     *ptr_pad = zero;
 
-    ulong addr_ret = stack_top - 16;
+    MemAddr addr_ret = stack_top - 16;
     ulong* ptr_ret = addr_ret as ulong*;
     *ptr_ret = entry_fn;
 
-    ulong addr_rbx = stack_top - 24;
+    MemAddr addr_rbx = stack_top - 24;
     ulong* ptr_rbx = addr_rbx as ulong*;
     *ptr_rbx = zero;
 
-    ulong addr_rbp = stack_top - 32;
+    MemAddr addr_rbp = stack_top - 32;
     ulong* ptr_rbp = addr_rbp as ulong*;
     *ptr_rbp = zero;
 
-    ulong addr_r12 = stack_top - 40;
+    MemAddr addr_r12 = stack_top - 40;
     ulong* ptr_r12 = addr_r12 as ulong*;
     *ptr_r12 = zero;
 
-    ulong addr_r13 = stack_top - 48;
+    MemAddr addr_r13 = stack_top - 48;
     ulong* ptr_r13 = addr_r13 as ulong*;
     *ptr_r13 = zero;
 
-    ulong addr_r14 = stack_top - 56;
+    MemAddr addr_r14 = stack_top - 56;
     ulong* ptr_r14 = addr_r14 as ulong*;
     *ptr_r14 = zero;
 
-    ulong addr_r15 = stack_top - 64;
+    MemAddr addr_r15 = stack_top - 64;
     ulong* ptr_r15 = addr_r15 as ulong*;
     *ptr_r15 = zero;
 
     // 初期RSP = 8つのエントリをpushした位置
-    ulong initial_rsp = stack_top - 64;
+    MemAddr initial_rsp = stack_top - 64;
 
     // TCBフィールドを書込
     tcb_write(task_id, TCB_OFF_ID, task_id);

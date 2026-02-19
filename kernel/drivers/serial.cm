@@ -51,7 +51,7 @@ export struct SerialPort {
 impl SerialPort {
     /// 引数付きコンストラクタ: ポートアドレス設定 + ハードウェア初期化
     /// 使用例: SerialPort serial(0x3F8);
-    overload self(ulong port_addr) {
+    overload self(IoPort port_addr) {
         self.port = port_addr;
 
         // 割り込みを無効化
@@ -77,7 +77,7 @@ impl SerialPort {
 
     /// シリアルポートを初期化（ボーレート115200, 8N1, FIFO有効）
     void init() {
-        ulong p = self.port;
+        IoPort p = self.port;
 
         // 割り込みを無効化
         outb(p + 1, 0x00);  // IER
@@ -110,7 +110,7 @@ impl SerialPort {
 
     /// 送信バッファが空になるまで待機
     void wait_ready() {
-        ulong lsr_port = self.port + 5;  // LSR
+        IoPort lsr_port = self.port + 5;  // LSR
         ulong thre_mask = 0x20;
         ulong status = inb(lsr_port);
         ulong thre = status & thre_mask;
@@ -121,19 +121,19 @@ impl SerialPort {
     }
 
     /// 1バイト出力
-    void putc(ulong ch) {
+    void putc(AsciiChar ch) {
         self.wait_ready();
         outb(self.port, ch);
     }
 
     /// NUL終端文字列を出力
     void puts(void* data) {
-        ulong data_val = data as ulong;
+        MemAddr data_val = data as ulong;
         ulong i = 0;
 
         while (true) {
-            ulong byte_val = 0;
-            ulong addr = data_val + i;
+            AsciiChar byte_val = 0;
+            MemAddr addr = data_val + i;
             __asm__(`
                 movq ${r:addr}, %r10;
                 xorq %rax, %rax;

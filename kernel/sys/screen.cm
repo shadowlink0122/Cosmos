@@ -7,8 +7,21 @@
 
 import ../drivers/serial;
 import ../lib/print;
+import ../types;
 import ../config;
 import ./syscall_table;
+
+// ============================================================
+// フィールドオフセット定数
+// ============================================================
+
+const ulong SCREEN_FB_ADDR  = 0x00;
+const ulong SCREEN_WIDTH    = 0x08;
+const ulong SCREEN_HEIGHT   = 0x10;
+const ulong SCREEN_STRIDE   = 0x18;
+const ulong SCREEN_CURSOR_X = 0x20;
+const ulong SCREEN_CURSOR_Y = 0x28;
+const ulong SCREEN_FG_COLOR = 0x30;
 
 // ============================================================
 // 画面I/O syscallハンドラ
@@ -22,7 +35,7 @@ export SyscallResult sys_screen_clear() {
 }
 
 /// SYS_SCREEN_PUTC — 1文字出力（serial + FBConsole）
-export SyscallResult sys_screen_putc(ulong ch) {
+export SyscallResult sys_screen_putc(AsciiChar ch) {
     SerialPort serial = {port: 0x3F8};
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     serial.putc(ch);
@@ -36,7 +49,7 @@ export SyscallResult sys_screen_puts(MemAddr buf, ulong len) {
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     ulong i = 0;
     while (i < len) {
-        ulong ch = 0;
+        AsciiChar ch = 0;
         MemAddr byte_addr = buf + i;
         __asm__(`
             movq ${r:byte_addr}, %rdi;
@@ -77,9 +90,9 @@ export SyscallResult sys_screen_get_size() {
 /// SYS_SCREEN_SET_CURSOR — カーソル位置を設定
 export SyscallResult sys_screen_set_cursor(ulong x, ulong y) {
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
-    ulong* px = (con.addr + 0x20) as ulong*;  // FB_OFF_CURSOR_X
+    ulong* px = (con.addr + SCREEN_CURSOR_X) as ulong*;
     *px = x;
-    ulong* py = (con.addr + 0x28) as ulong*;  // FB_OFF_CURSOR_Y
+    ulong* py = (con.addr + SCREEN_CURSOR_Y) as ulong*;
     *py = y;
     return SYSCALL_OK;
 }
@@ -122,7 +135,7 @@ export SyscallResult sys_screen_print_num(ulong value) {
     while (i > 0) {
         i = i - 1;
         MemAddr raddr = tmp_buf + i;
-        ulong ch = 0;
+        AsciiChar ch = 0;
         __asm__(`
             movq ${r:raddr}, %rdi;
             xorq %rax, %rax;

@@ -8,6 +8,7 @@ import ../../drivers/debug_port;
 import ../../drivers/pit;
 import ../../sched/task;
 import ../../sched/scheduler;
+import ../../config;
 import ../test_runner;
 
 // ============================================================
@@ -15,13 +16,13 @@ import ../test_runner;
 // ============================================================
 
 // タスクAの完了フラグ（固定アドレス0xB00）
-const ulong TASK_A_DONE_ADDR = 0xB00;
+const MemAddr TASK_A_DONE_ADDR = 0xB00;
 // タスクBの完了フラグ（固定アドレス0xB08）
-const ulong TASK_B_DONE_ADDR = 0xB08;
+const MemAddr TASK_B_DONE_ADDR = 0xB08;
 // プリエンプティブタスクCのカウンタ（固定アドレス0xB90）
-const ulong TASK_C_COUNT_ADDR = 0xB90;
+const MemAddr TASK_C_COUNT_ADDR = 0xB90;
 // プリエンプティブタスクDのカウンタ（固定アドレス0xB98）
-const ulong TASK_D_COUNT_ADDR = 0xB98;
+const MemAddr TASK_D_COUNT_ADDR = 0xB98;
 
 /// テストタスクA: 協調スケジューリング
 export void task_a_fn() {
@@ -36,7 +37,7 @@ export void task_a_fn() {
     debug.println("[TASK-A] work done, yielding" as void*);
 
     // 自身をTERMINATEDに設定
-    ulong my_id = sched_current_id();
+    TaskId my_id = sched_current_id();
     tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
 
     // yieldしてスケジューラに制御を返す
@@ -59,7 +60,7 @@ export void task_b_fn() {
 
     debug.println("[TASK-B] work done, yielding" as void*);
 
-    ulong my_id = sched_current_id();
+    TaskId my_id = sched_current_id();
     tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
 
     schedule();
@@ -96,8 +97,8 @@ export void task_c_fn() {
         // need_reschedフラグを確認
         ulong resched = pit_check_resched();
         if (resched != 0) {
-            ulong my_id = sched_current_id();
-            ulong remaining = tcb_read(my_id, TCB_OFF_TIMESLICE);
+            TaskId my_id = sched_current_id();
+            Tick remaining = tcb_read(my_id, TCB_OFF_TIMESLICE);
             if (remaining == 0) {
                 schedule();
             }
@@ -108,7 +109,7 @@ export void task_c_fn() {
     debug.print_hex(count);
     debug.println(" iterations" as void*);
 
-    ulong my_id = sched_current_id();
+    TaskId my_id = sched_current_id();
     tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
     schedule();
 
@@ -140,8 +141,8 @@ export void task_d_fn() {
 
         ulong resched = pit_check_resched();
         if (resched != 0) {
-            ulong my_id = sched_current_id();
-            ulong remaining = tcb_read(my_id, TCB_OFF_TIMESLICE);
+            TaskId my_id = sched_current_id();
+            Tick remaining = tcb_read(my_id, TCB_OFF_TIMESLICE);
             if (remaining == 0) {
                 schedule();
             }
@@ -152,7 +153,7 @@ export void task_d_fn() {
     debug.print_hex(count);
     debug.println(" iterations" as void*);
 
-    ulong my_id = sched_current_id();
+    TaskId my_id = sched_current_id();
     tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
     schedule();
 
@@ -183,7 +184,7 @@ export void test_scheduler(TestRunner* runner) {
     *cnt_d = zero;
 
     // テスト1: sched_init済み（current_taskが0であること）
-    ulong current = sched_current_id();
+    TaskId current = sched_current_id();
     runner->assert_eq(current, zero, "Scheduler current task is 0 (idle)" as void*);
 
     // テスト2: タスク数が1（idleのみ）
@@ -192,21 +193,21 @@ export void test_scheduler(TestRunner* runner) {
     runner->assert_eq(count, one, "Scheduler has 1 task (idle)" as void*);
 
     // テスト3: タスクAを生成
-    ulong task_a_addr = fn_addr(task_a_fn as void*);
-    ulong id_a = sched_spawn(task_a_addr);
+    MemAddr task_a_addr = fn_addr(task_a_fn as void*);
+    TaskId id_a = sched_spawn(task_a_addr);
     ulong two = 2 as ulong;
     ulong new_count = sched_task_count();
     runner->assert_eq(new_count, two, "Scheduler has 2 tasks after spawn" as void*);
 
     // テスト4: タスクBを生成
-    ulong task_b_addr = fn_addr(task_b_fn as void*);
-    ulong id_b = sched_spawn(task_b_addr);
+    MemAddr task_b_addr = fn_addr(task_b_fn as void*);
+    TaskId id_b = sched_spawn(task_b_addr);
     ulong three = 3 as ulong;
     new_count = sched_task_count();
     runner->assert_eq(new_count, three, "Scheduler has 3 tasks after 2nd spawn" as void*);
 
     // テスト5: タスクAの状態がREADY
-    ulong state_a = tcb_read(id_a, TCB_OFF_STATE);
+    TaskState state_a = tcb_read(id_a, TCB_OFF_STATE);
     runner->assert_eq(state_a, TASK_READY, "Task A state is READY" as void*);
 
     // テスト6: スケジューラを有効化
@@ -230,11 +231,11 @@ export void test_scheduler(TestRunner* runner) {
 
     // === プリエンプティブスケジューリングテスト ===
     // タスクC/Dを生成（10回ループでhlt+yield）
-    ulong task_c_addr = fn_addr(task_c_fn as void*);
-    ulong id_c = sched_spawn(task_c_addr);
+    MemAddr task_c_addr = fn_addr(task_c_fn as void*);
+    TaskId id_c = sched_spawn(task_c_addr);
 
-    ulong task_d_addr = fn_addr(task_d_fn as void*);
-    ulong id_d = sched_spawn(task_d_addr);
+    MemAddr task_d_addr = fn_addr(task_d_fn as void*);
+    TaskId id_d = sched_spawn(task_d_addr);
 
     ulong five = 5 as ulong;
     new_count = sched_task_count();

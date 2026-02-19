@@ -12,6 +12,7 @@
 // インライン展開時はcall命令がないため、retではなく
 // jmpラベルで復帰ポイントに戻る設計。
 
+import ../config;
 import ../drivers/debug_port;
 
 // ============================================================
@@ -29,7 +30,7 @@ import ../drivers/debug_port;
 /// 復帰時: 既存タスクはpop後にjmp .Lresume_pointで復帰。
 ///        新規タスクはpop後にret（初期スタックにentry_fnがある）で開始。
 ///        区別: 復帰ラベルアドレスをpushしておき、retで統一的に処理。
-export void switch_to(ulong old_rsp_ptr, ulong new_rsp) {
+export void switch_to(MemAddr old_rsp_ptr, MemAddr new_rsp) {
     __asm__(`
         // パラメータをr10, r11に退避
         movq ${r:old_rsp_ptr}, %r10;

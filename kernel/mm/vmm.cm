@@ -13,6 +13,7 @@
 //   VMM vmm();
 //   vmm.print_stats();
 
+import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 
@@ -50,7 +51,7 @@ const ulong INDEX_MASK = 511;
 /// 仮想メモリマネージャ
 /// 現段階ではUEFIのページテーブルを継承して使用
 export struct VMM {
-    ulong cr3_value;    // 現在のCR3レジスタ値（PML4物理アドレス）
+    MemAddr cr3_value;    // 現在のCR3レジスタ値（PML4物理アドレス）
     ulong is_active;    // ページング有効フラグ
 }
 

@@ -49,7 +49,7 @@ export void syscall_entry() {
     `);
 
     // int 0x80 時のレジスタ状態を取得
-    ulong syscall_nr = 0;
+    SyscallNr syscall_nr = 0;
     ulong arg1 = 0;
     ulong arg2 = 0;
     ulong arg3 = 0;
@@ -60,7 +60,7 @@ export void syscall_entry() {
         movq %rdx, ${=r:arg3}
     `);
 
-    ulong result = syscall_dispatch(syscall_nr, arg1, arg2, arg3);
+    SyscallResult result = syscall_dispatch(syscall_nr, arg1, arg2, arg3);
 
     // dispatch結果をraxに設定し、スタックをinterruptフレーム先頭に復元
     // 保存RSP = プロローグ完了後のRSP
@@ -176,7 +176,7 @@ export SyscallResult sys_write(Fd fd, MemAddr buf, ulong len) {
         SerialPort serial = {port: 0x3F8};
         ulong i = 0;
         while (i < len) {
-            ulong ch = 0;
+            AsciiChar ch = 0;
             MemAddr byte_addr = buf + i;
             __asm__(`
                 movq ${r:byte_addr}, %rdi;
@@ -195,7 +195,7 @@ export SyscallResult sys_write(Fd fd, MemAddr buf, ulong len) {
         SerialPort serial = {port: 0x3F8};
         ulong i = 0;
         while (i < len) {
-            ulong ch = 0;
+            AsciiChar ch = 0;
             MemAddr byte_addr = buf + i;
             __asm__(`
                 movq ${r:byte_addr}, %rdi;
@@ -229,7 +229,7 @@ export SyscallResult sys_read(Fd fd, MemAddr buf, ulong len) {
 // ============================================================
 
 /// 現在のプロセスを終了する
-export void sys_exit(ulong code) {
+export void sys_exit(ExitCode code) {
     DebugPort debug = {port: 0xE9};
     debug.puts("[SYSCALL] sys_exit code=" as void*);
     debug.print_hex(code);
@@ -249,7 +249,7 @@ export void syscall_init(uint* idt_table) {
     // DPL=3 のTrap Gate (0xEF) を使用
     // P=1, DPL=3, Trap Gate = 1110_1111 = 0xEF
     // Trap Gateを使用する理由: syscall中に割り込みを有効に保つ
-    ulong handler = fn_addr(syscall_entry as void*);
+    MemAddr handler = fn_addr(syscall_entry as void*);
     idt.set_gate(0x80, handler, 0xEF);
 
     DebugPort debug = {port: 0xE9};

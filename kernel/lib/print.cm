@@ -46,29 +46,29 @@ export struct FBConsole {
 // フィールドオフセット定数
 // ============================================================
 
-const ulong FB_OFF_ADDR           = 0x00;
-const ulong FB_OFF_WIDTH          = 0x08;
-const ulong FB_OFF_HEIGHT         = 0x10;
-const ulong FB_OFF_STRIDE         = 0x18;
-const ulong FB_OFF_CURSOR_X       = 0x20;
-const ulong FB_OFF_CURSOR_Y       = 0x28;
-const ulong FB_OFF_FG_COLOR       = 0x30;
-const ulong FB_OFF_BG_COLOR       = 0x38;
-const ulong FB_OFF_CURSOR_ENABLED = 0x40;
-const ulong FB_OFF_CURSOR_TICK    = 0x48;
-const ulong FB_OFF_CURSOR_STATE   = 0x50;
+const ByteOffset FB_OFF_ADDR           = 0x00;
+const ByteOffset FB_OFF_WIDTH          = 0x08;
+const ByteOffset FB_OFF_HEIGHT         = 0x10;
+const ByteOffset FB_OFF_STRIDE         = 0x18;
+const ByteOffset FB_OFF_CURSOR_X       = 0x20;
+const ByteOffset FB_OFF_CURSOR_Y       = 0x28;
+const ByteOffset FB_OFF_FG_COLOR       = 0x30;
+const ByteOffset FB_OFF_BG_COLOR       = 0x38;
+const ByteOffset FB_OFF_CURSOR_ENABLED = 0x40;
+const ByteOffset FB_OFF_CURSOR_TICK    = 0x48;
+const ByteOffset FB_OFF_CURSOR_STATE   = 0x50;
 
 // カーソル点滅間隔（PIT tick数、100Hz基準で50tick = 500ms）
-const ulong CURSOR_BLINK_INTERVAL = 50;
+const Tick CURSOR_BLINK_INTERVAL = 50;
 
 // ============================================================
 // カラー定数
 // ============================================================
 
-const ulong FB_COLOR_WHITE   = 0x00FFFFFF;
-const ulong FB_COLOR_BLACK   = 0x00000000;
-const ulong FB_COLOR_GREEN   = 0x0000FF00;
-const ulong FB_COLOR_DARK_BG = 0x00101020;
+const Color FB_COLOR_WHITE   = 0x00FFFFFF;
+const Color FB_COLOR_BLACK   = 0x00000000;
+const Color FB_COLOR_GREEN   = 0x0000FF00;
+const Color FB_COLOR_DARK_BG = 0x00101020;
 
 // ============================================================
 // FBConsole impl
@@ -101,7 +101,7 @@ impl FBConsole {
     // --------------------------------------------------------
 
     /// FBConsoleを初期化する
-    void init(ulong fb_addr, ulong width, ulong height, ulong stride) {
+    void init(MemAddr fb_addr, ulong width, ulong height, ulong stride) {
         self._write(FB_OFF_ADDR, fb_addr);
         self._write(FB_OFF_WIDTH, width);
         self._write(FB_OFF_HEIGHT, height);
@@ -120,7 +120,7 @@ impl FBConsole {
     // --------------------------------------------------------
 
     /// 前景色を設定する
-    void set_color(ulong fg) {
+    void set_color(Color fg) {
         self._write(FB_OFF_FG_COLOR, fg);
     }
 
@@ -478,7 +478,7 @@ impl FBConsole {
 // ============================================================
 
 /// グローバルFBConsoleの実データを初期化する
-export void fb_init_global(ulong fb_addr, ulong width, ulong height, ulong stride) {
+export void fb_init_global(MemAddr fb_addr, ulong width, ulong height, ulong stride) {
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     con.init(fb_addr, width, height, stride);
 }

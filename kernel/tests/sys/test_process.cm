@@ -9,10 +9,11 @@ import ../../drivers/serial;
 import ../../drivers/debug_port;
 import ../../sched/task;
 import ../../sched/scheduler;
+import ../../config;
 import ../../sys/process;
 
 // テストタスク完了フラグ（固定アドレス）
-const ulong PROC_TEST_DONE_ADDR = 0xBA0;
+const MemAddr PROC_TEST_DONE_ADDR = 0xBA0;
 
 /// テスト用ダミータスク: 完了フラグを設定して終了
 export void proc_test_task_fn() {
@@ -21,7 +22,7 @@ export void proc_test_task_fn() {
     *flag = one;
 
     // sys_exit_taskで正常終了（exit_code=42）
-    ulong exit_code = 42;
+    ExitCode exit_code = 42;
     sys_exit_task(exit_code);
 
     // ここには到達しない
@@ -42,13 +43,13 @@ export void test_process(TestRunner* runner) {
     *flag = zero;
 
     // --- Test 1: sys_getpid() はidleタスクの場合0を返す ---
-    ulong pid = sys_getpid();
+    Pid pid = sys_getpid();
     runner->assert_zero(pid, "Process: getpid returns 0 (idle)" as void*);
 
     // --- Test 2: sys_spawn() は新しいpidを返す ---
     ulong prev_count = sched_task_count();
-    ulong entry = fn_addr(proc_test_task_fn as void*);
-    ulong new_pid = sys_spawn(entry);
+    MemAddr entry = fn_addr(proc_test_task_fn as void*);
+    Pid new_pid = sys_spawn(entry);
     ulong spawn_ok = 0;
     if (new_pid != 0xFFFFFFFFFFFFFFFF) {
         spawn_ok = 1;
@@ -66,23 +67,23 @@ export void test_process(TestRunner* runner) {
     runner->assert_eq(ptype, one, "Process: spawned task type=user(1)" as void*);
 
     // --- Test 5: 生成タスクのparent_idが呼出し元(0) ---
-    ulong parent = tcb_read(new_pid, TCB_OFF_PARENT_ID);
+    TaskId parent = tcb_read(new_pid, TCB_OFF_PARENT_ID);
     runner->assert_zero(parent, "Process: spawned parent_id=0 (idle)" as void*);
 
     // --- Test 6: 生成タスクの初期状態がREADY ---
-    ulong state = tcb_read(new_pid, TCB_OFF_STATE);
+    TaskState state = tcb_read(new_pid, TCB_OFF_STATE);
     runner->assert_eq(state, TASK_READY, "Process: spawned task state=READY" as void*);
 
     // --- Test 7: 生成タスクのexit_codeが初期値0 ---
-    ulong ecode = tcb_read(new_pid, TCB_OFF_EXIT_CODE);
+    ExitCode ecode = tcb_read(new_pid, TCB_OFF_EXIT_CODE);
     runner->assert_zero(ecode, "Process: spawned exit_code=0 (init)" as void*);
 
     // --- Test 8: 生成タスクのwait_forが初期値0 ---
-    ulong wfor = tcb_read(new_pid, TCB_OFF_WAIT_FOR);
+    TaskId wfor = tcb_read(new_pid, TCB_OFF_WAIT_FOR);
     runner->assert_zero(wfor, "Process: spawned wait_for=0 (init)" as void*);
 
     // --- Test 9: sys_getpidが現在のidle(0)を返すことを再確認 ---
-    ulong pid2 = sys_getpid();
+    Pid pid2 = sys_getpid();
     runner->assert_zero(pid2, "Process: getpid still 0 after spawn" as void*);
 
     // --- Test 10: スケジュール実行後にタスクが完了 ---
@@ -94,12 +95,12 @@ export void test_process(TestRunner* runner) {
     runner->assert_true(done, "Process: test task executed (flag set)" as void*);
 
     // --- Test 11: タスク終了後のexit_codeが42 ---
-    ulong final_code = tcb_read(new_pid, TCB_OFF_EXIT_CODE);
-    ulong expected_code = 42;
+    ExitCode final_code = tcb_read(new_pid, TCB_OFF_EXIT_CODE);
+    ExitCode expected_code = 42;
     runner->assert_eq(final_code, expected_code, "Process: exit_code=42 after exit" as void*);
 
     // --- Test 12: タスク終了後のstateがTERMINATED ---
-    ulong final_state = tcb_read(new_pid, TCB_OFF_STATE);
+    TaskState final_state = tcb_read(new_pid, TCB_OFF_STATE);
     runner->assert_eq(final_state, TASK_TERMINATED, "Process: state=TERMINATED after exit" as void*);
 
     // スケジューラ無効化

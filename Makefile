@@ -247,14 +247,16 @@ test: download-ovmf
 	fi; \
 	echo ""; \
 	echo "結果: $$PASS passed, $$FAIL failed"; \
-	if [ $$QEMU_EXIT -eq 1 ]; then \
-		echo "✓ テスト完了（QEMU正常終了）"; \
-	elif [ $$QEMU_EXIT -eq 0 ] || [ $$QEMU_EXIT -ge 124 ]; then \
-		echo "⚠ タイムアウトまたはQEMU異常終了 (exit=$$QEMU_EXIT)"; \
+	if [ $$FAIL -gt 0 ]; then \
+		echo "✗ テスト失敗 ($$FAIL件のFAIL)"; \
 		exit 1; \
+	elif [ $$PASS -eq 0 ]; then \
+		echo "✗ テスト失敗 (テスト結果なし)"; \
+		exit 1; \
+	elif [ $$QEMU_EXIT -eq 1 ]; then \
+		echo "✓ テスト完了（QEMU正常終了, $$PASS件PASS）"; \
 	else \
-		echo "✗ テスト失敗 (QEMU exit=$$QEMU_EXIT)"; \
-		exit 1; \
+		echo "✓ テスト完了（$$PASS件PASS, QEMU exit=$$QEMU_EXIT）"; \
 	fi
 
 # ============================================================

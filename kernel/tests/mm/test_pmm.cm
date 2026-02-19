@@ -9,6 +9,7 @@
 import ../../drivers/serial;
 import ../../drivers/debug_port;
 import ../../mm/pmm;
+import ../../config;
 import ../test_runner;
 
 // ============================================================
@@ -22,11 +23,11 @@ export void test_pmm(TestRunner* runner, PMM* pmm) {
     serial.println("[TEST] === PMM Tests ===" as void*);
 
     // テスト1: 初期化確認 — total_pagesが非ゼロ
-    ulong total = pmm->total_pages;
+    PageCount total = pmm->total_pages;
     runner->assert_nonzero(total, "PMM: total_pages nonzero" as void*);
 
     // テスト2: free_pagesが非ゼロ
-    ulong free0 = pmm->free_pages;
+    PageCount free0 = pmm->free_pages;
     runner->assert_nonzero(free0, "PMM: free_pages nonzero" as void*);
 
     // テスト3: free_pages <= total_pages
@@ -37,14 +38,14 @@ export void test_pmm(TestRunner* runner, PMM* pmm) {
     runner->assert_true(free_le_total, "PMM: free <= total" as void*);
 
     // テスト4: alloc_pageが非ゼロアドレスを返す
-    ulong page1 = pmm->alloc_page();
+    MemAddr page1 = pmm->alloc_page();
     runner->assert_nonzero(page1, "PMM: alloc_page nonzero" as void*);
 
     // テスト5: 割当ページに書込み→読み戻し（PF検出テスト）
     runner->assert_mem_write(page1, 0xAAAABBBBCCCCDDDD, "PMM: alloc'd page writable" as void*);
 
     // テスト6: alloc後にfree_pagesが減少
-    ulong free1 = pmm->free_pages;
+    PageCount free1 = pmm->free_pages;
     ulong decreased = 0;
     if (free1 < free0) {
         decreased = 1;
@@ -52,7 +53,7 @@ export void test_pmm(TestRunner* runner, PMM* pmm) {
     runner->assert_true(decreased, "PMM: free_pages decreased after alloc" as void*);
 
     // テスト7: 2回目のallocが異なるアドレスを返す
-    ulong page2 = pmm->alloc_page();
+    MemAddr page2 = pmm->alloc_page();
     runner->assert_ne(page1, page2, "PMM: 2nd alloc different addr" as void*);
 
     // テスト8: 2回目もページに書込み可能
@@ -70,21 +71,21 @@ export void test_pmm(TestRunner* runner, PMM* pmm) {
 
     // テスト11: free後のre-allocでページが再利用される
     pmm->free_page(page1);
-    ulong page3 = pmm->alloc_page();
+    MemAddr page3 = pmm->alloc_page();
     runner->assert_eq(page3, page1, "PMM: free/realloc reuses page" as void*);
 
     // テスト12: 再利用ページにも書込み可能
     runner->assert_mem_write(page3, 0xFEDCBA9876543210, "PMM: reused page writable" as void*);
 
     // テスト13: alloc_pages(2)で連続2ページ割当
-    ulong pages2 = pmm->alloc_pages(2);
+    MemAddr pages2 = pmm->alloc_pages(2);
     runner->assert_nonzero(pages2, "PMM: alloc_pages(2) nonzero" as void*);
 
     // テスト14: 連続ページの先頭に書込み可能
     runner->assert_mem_write(pages2, 0x1111111111111111, "PMM: contiguous page[0] writable" as void*);
 
     // テスト15: 連続ページの2ページ目に書込み可能
-    ulong page2_addr = pages2 + 4096;
+    MemAddr page2_addr = pages2 + 4096;
     runner->assert_mem_write(page2_addr, 0x2222222222222222, "PMM: contiguous page[1] writable" as void*);
 
     // クリーンアップ

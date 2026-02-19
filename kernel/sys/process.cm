@@ -21,17 +21,17 @@ import ../sys/syscall_table;
 // entry_fn: タスクのエントリポイント関数アドレス
 // 戻り値: 新しいタスクID（失敗時は0xFFFFFFFFFFFFFFFF）
 
-export SyscallResult sys_spawn(ulong entry_fn) {
+export SyscallResult sys_spawn(MemAddr entry_fn) {
     DebugPort debug(0xE9);
     debug.puts("[PROCESS] sys_spawn entry=0x" as void*);
     debug.print_hex(entry_fn);
     debug.println("" as void*);
 
     // 現在のタスクIDを親として記録
-    ulong parent_id = sched_current_id();
+    TaskId parent_id = sched_current_id();
 
     // sched_spawnで新タスク生成
-    ulong pid = sched_spawn(entry_fn);
+    TaskId pid = sched_spawn(entry_fn);
     if (pid == 0xFFFFFFFF) {
         debug.println("[PROCESS] spawn failed" as void*);
         ulong err = 0xFFFFFFFFFFFFFFFF;
@@ -61,7 +61,7 @@ export SyscallResult sys_spawn(ulong entry_fn) {
 // pid: 終了させるタスクID
 // 戻り値: 0=成功
 
-export SyscallResult sys_kill(ulong pid) {
+export SyscallResult sys_kill(Pid pid) {
     DebugPort debug(0xE9);
     debug.puts("[PROCESS] sys_kill pid=" as void*);
     debug.print_hex(pid);
@@ -95,7 +95,7 @@ export SyscallResult sys_kill(ulong pid) {
 // pid: 待機対象タスクID
 // 戻り値: 対象の終了コード
 
-export SyscallResult sys_wait(ulong pid) {
+export SyscallResult sys_wait(Pid pid) {
     DebugPort debug(0xE9);
     debug.puts("[PROCESS] sys_wait pid=" as void*);
     debug.print_hex(pid);
@@ -108,9 +108,9 @@ export SyscallResult sys_wait(ulong pid) {
     }
 
     // 対象が既にTERMINATEDなら即座にexit_codeを返す
-    ulong state = tcb_read(pid, TCB_OFF_STATE);
+    TaskState state = tcb_read(pid, TCB_OFF_STATE);
     if (state == TASK_TERMINATED) {
-        ulong code = tcb_read(pid, TCB_OFF_EXIT_CODE);
+        ExitCode code = tcb_read(pid, TCB_OFF_EXIT_CODE);
         debug.puts("[PROCESS] wait: already terminated, code=" as void*);
         debug.print_hex(code);
         debug.println("" as void*);
@@ -118,7 +118,7 @@ export SyscallResult sys_wait(ulong pid) {
     }
 
     // まだ実行中 → 現在タスクをBLOCKEDにしてschedule()
-    ulong current = sched_current_id();
+    TaskId current = sched_current_id();
     tcb_write(current, TCB_OFF_STATE, TASK_BLOCKED);
     tcb_write(current, TCB_OFF_WAIT_FOR, pid);
 
@@ -131,7 +131,7 @@ export SyscallResult sys_wait(ulong pid) {
     schedule();
 
     // schedule()から戻ってきた = 対象が終了した
-    ulong code = tcb_read(pid, TCB_OFF_EXIT_CODE);
+    ExitCode code = tcb_read(pid, TCB_OFF_EXIT_CODE);
     return code;
 }
 
@@ -150,7 +150,7 @@ export Pid sys_getpid() {
 
 export void sys_exit_task(ExitCode code) {
     DebugPort debug(0xE9);
-    ulong current = sched_current_id();
+    TaskId current = sched_current_id();
     debug.puts("[PROCESS] sys_exit_task pid=" as void*);
     debug.print_hex(current);
     debug.puts(", code=" as void*);
@@ -173,14 +173,14 @@ export void sys_exit_task(ExitCode code) {
 // ============================================================
 
 /// 指定pidをwait_forとしてBLOCKEDしているタスクがあればREADYに変更
-export void wake_waiting_parent(ulong pid) {
+export void wake_waiting_parent(TaskId pid) {
     DebugPort debug(0xE9);
     ulong count = sched_task_count();
     ulong i = 0;
     while (i < count) {
-        ulong state = tcb_read(i, TCB_OFF_STATE);
+        TaskState state = tcb_read(i, TCB_OFF_STATE);
         if (state == TASK_BLOCKED) {
-            ulong wait_for = tcb_read(i, TCB_OFF_WAIT_FOR);
+            TaskId wait_for = tcb_read(i, TCB_OFF_WAIT_FOR);
             if (wait_for == pid) {
                 tcb_write(i, TCB_OFF_STATE, TASK_READY);
                 debug.puts("[PROCESS] woke up task " as void*);

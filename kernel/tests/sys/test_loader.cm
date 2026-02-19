@@ -23,10 +23,10 @@ const ulong TL_NOT_FOUND     = 0xFFFFFFFFFFFFFFFF;
 const ulong TL_TYPE_FILE     = 0;
 
 // テスト用固定メモリ領域（0x6000以降、CosmFSテストの0x5300と衝突しない）
-const ulong TL_DATA_BUF   = 0x6000;   // CosmEXEデータバッファ 4KB
-const ulong TL_FNAME_BUF  = 0x7000;   // ファイル名バッファ 64B
-const ulong TL_READ_BUF   = 0x7100;   // 読み込みバッファ 4KB
-const ulong TL_TEMP_BUF   = 0x8200;   // 一時バッファ 64B
+const MemAddr TL_DATA_BUF   = 0x6000;   // CosmEXEデータバッファ 4KB
+const MemAddr TL_FNAME_BUF  = 0x7000;   // ファイル名バッファ 64B
+const MemAddr TL_READ_BUF   = 0x7100;   // 読み込みバッファ 4KB
+const MemAddr TL_TEMP_BUF   = 0x8200;   // 一時バッファ 64B
 
 /// CosmEXEローダーテスト
 export void test_loader(TestRunner* runner, Heap* heap) {
@@ -55,7 +55,7 @@ export void test_loader(TestRunner* runner, Heap* heap) {
     // --- Test 4: loader_read_u64 既知値の読み取り ---
     // 固定アドレスに既知値を書き込み → read back
     ulong wr_val = 0xCAFEBABEDEADBEEF;
-    ulong wr_addr = TL_TEMP_BUF;
+    MemAddr wr_addr = TL_TEMP_BUF;
     __asm__(`
         movq ${r:wr_val}, %rax;
         movq ${r:wr_addr}, %rdi;

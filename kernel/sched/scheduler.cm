@@ -9,6 +9,7 @@
 //   0xA08: task_count（登録済みタスク数）
 //   0xA10: scheduler_enabled（スケジューラ有効フラグ）
 
+import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 import ../drivers/pit;
@@ -21,23 +22,23 @@ import ./context;
 // ============================================================
 
 // スケジューラ状態の固定アドレス
-const ulong SCHED_CURRENT_ADDR  = 0xA00;  // 現在のタスクID
-const ulong SCHED_COUNT_ADDR    = 0xA08;  // タスク数
-const ulong SCHED_ENABLED_ADDR  = 0xA10;  // スケジューラ有効フラグ
-const ulong SCHED_PMM_ADDR      = 0xA18;  // PMMポインタ（スタック割当用）
+const MemAddr SCHED_CURRENT_ADDR  = 0xA00;  // 現在のタスクID
+const MemAddr SCHED_COUNT_ADDR    = 0xA08;  // タスク数
+const MemAddr SCHED_ENABLED_ADDR  = 0xA10;  // スケジューラ有効フラグ
+const MemAddr SCHED_PMM_ADDR      = 0xA18;  // PMMポインタ（スタック割当用）
 
 // ============================================================
 // スケジューラ状態アクセス
 // ============================================================
 
 /// 現在のタスクIDを取得
-export ulong sched_current_id() {
+export TaskId sched_current_id() {
     ulong* ptr = SCHED_CURRENT_ADDR as ulong*;
     return *ptr;
 }
 
 /// 現在のタスクIDを設定
-export void sched_set_current(ulong task_id) {
+export void sched_set_current(TaskId task_id) {
     ulong* ptr = SCHED_CURRENT_ADDR as ulong*;
     *ptr = task_id;
 }
@@ -108,10 +109,10 @@ export void sched_init(PMM* pmm) {
 /// entry_fn: タスクのエントリポイント関数アドレス
 ///
 /// 戻り値: 割り当てられたタスクID（失敗時は0xFFFFFFFFFFFFFFFF）
-export ulong sched_spawn(ulong entry_fn) {
+export TaskId sched_spawn(MemAddr entry_fn) {
     DebugPort debug(0xE9);
 
-    ulong count = sched_task_count();
+    TaskId count = sched_task_count();
     if (count >= MAX_TASKS) {
         debug.println("[SCHED] ERROR: max tasks reached" as void*);
         ulong err = 0xFFFFFFFF;
@@ -164,20 +165,20 @@ export void sched_timer_tick() {
         return;
     }
 
-    ulong current_id = sched_current_id();
-    ulong remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
+    TaskId current_id = sched_current_id();
+    Tick remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
 
     if (remaining > 0) {
-        ulong new_remaining = remaining - 1;
+        Tick new_remaining = remaining - 1;
         tcb_write(current_id, TCB_OFF_TIMESLICE, new_remaining);
     }
 }
 
 /// TERMINATED以外の次のREADYタスクを循環リストから探す
 /// 全タスクがTERMINATEDの場合はcurrent_idを返す
-export ulong find_next_ready(ulong current_id) {
+export TaskId find_next_ready(TaskId current_id) {
     ulong count = sched_task_count();
-    ulong next_id = tcb_read(current_id, TCB_OFF_NEXT);
+    TaskId next_id = tcb_read(current_id, TCB_OFF_NEXT);
     ulong checked = 0;
 
     // 循環リストを最大count回巡回して探す
@@ -187,7 +188,7 @@ export ulong find_next_ready(ulong current_id) {
             return current_id;
         }
 
-        ulong state = tcb_read(next_id, TCB_OFF_STATE);
+        TaskState state = tcb_read(next_id, TCB_OFF_STATE);
         // READYまたはRUNNINGのタスクのみ選択
         // TERMINATED, BLOCKEDはスキップ
         if (state != TASK_TERMINATED) {
@@ -197,7 +198,7 @@ export ulong find_next_ready(ulong current_id) {
         }
 
         // TERMINATED/BLOCKED — 次を見る
-        next_id = tcb_read(next_id, TCB_OFF_NEXT);
+        next_id = tcb_read(next_id, TCB_OFF_NEXT) as TaskId;
         checked = checked + 1;
     }
 
@@ -221,10 +222,10 @@ export void schedule() {
     }
 
     // 現在のタスクID
-    ulong current_id = sched_current_id();
+    TaskId current_id = sched_current_id();
 
     // 次のREADYタスクを探す（TERMINATEDをスキップ）
-    ulong next_id = find_next_ready(current_id);
+    TaskId next_id = find_next_ready(current_id);
 
     // 同じタスクなら切替不要
     if (next_id == current_id) {
@@ -232,7 +233,7 @@ export void schedule() {
     }
 
     // 現タスクをRUNNING→READYに変更
-    ulong current_state = tcb_read(current_id, TCB_OFF_STATE);
+    TaskState current_state = tcb_read(current_id, TCB_OFF_STATE);
     if (current_state == TASK_RUNNING) {
         tcb_write(current_id, TCB_OFF_STATE, TASK_READY);
     }
@@ -243,8 +244,8 @@ export void schedule() {
     sched_set_current(next_id);
 
     // コンテキストスイッチ
-    ulong old_rsp_addr = tcb_addr(current_id) + TCB_OFF_RSP;
-    ulong new_rsp = tcb_read(next_id, TCB_OFF_RSP);
+    MemAddr old_rsp_addr = tcb_addr(current_id) + TCB_OFF_RSP;
+    MemAddr new_rsp = tcb_read(next_id, TCB_OFF_RSP);
 
     // スイッチログ出力
     DebugPort debug(0xE9);
@@ -271,8 +272,8 @@ export void idle_loop() {
         ulong resched = pit_check_resched();
         if (resched != 0) {
             // タイムスライスチェック
-            ulong current_id = sched_current_id();
-            ulong remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
+            TaskId current_id = sched_current_id();
+            Tick remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
             if (remaining == 0) {
                 schedule();
             }

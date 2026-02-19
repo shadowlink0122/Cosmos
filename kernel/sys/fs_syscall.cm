@@ -11,13 +11,13 @@ import ../drivers/debug_port;
 import ./syscall_table;
 
 // CosmFS操作コード（cosmfs.cm内部と一致）
-const ulong COSMFS_OP_CREATE = 1;
-const ulong COSMFS_OP_WRITE  = 2;
-const ulong COSMFS_OP_SIZE   = 3;
-const ulong COSMFS_OP_FIND   = 5;
-const ulong COSMFS_OP_STRLEN = 9;
-const ulong COSMFS_OP_MEMCPY = 10;
-const ulong COSMFS_OP_READ   = 12;
+const FsOpCode COSMFS_OP_CREATE = 1;
+const FsOpCode COSMFS_OP_WRITE  = 2;
+const FsOpCode COSMFS_OP_SIZE   = 3;
+const FsOpCode COSMFS_OP_FIND   = 5;
+const FsOpCode COSMFS_OP_STRLEN = 9;
+const FsOpCode COSMFS_OP_MEMCPY = 10;
+const FsOpCode COSMFS_OP_READ   = 12;
 
 // ============================================================
 // ファイルI/O syscallハンドラ

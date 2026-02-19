@@ -38,7 +38,7 @@ const MemAddr KB_READ_IDX      = 0xC48;  // 読取りインデックス
 const MemAddr KB_COUNT         = 0xC50;  // バッファ内要素数
 const MemAddr KB_LAST_SCANCODE = 0xC58;  // 最後のスキャンコード
 const MemAddr KB_SHIFT_STATE   = 0xC60;  // Shiftキー状態
-const ulong KB_EXTENDED_FLAG = 0xC68;  // 0xE0拡張フラグ
+const MemAddr KB_EXTENDED_FLAG = 0xC68;  // 0xE0拡張フラグ
 
 // キーボードレイアウト定数
 const ulong KB_LAYOUT_US  = 0;
@@ -48,10 +48,10 @@ const ulong KB_LAYOUT_JIS = 1;
 const ulong KB_LAYOUT = KB_LAYOUT_JIS;
 
 // 矢印キーの仮想キーコード
-const ulong VKEY_UP    = 0x80;
-const ulong VKEY_DOWN  = 0x81;
-const ulong VKEY_LEFT  = 0x82;
-const ulong VKEY_RIGHT = 0x83;
+const KeyCode VKEY_UP    = 0x80;
+const KeyCode VKEY_DOWN  = 0x81;
+const KeyCode VKEY_LEFT  = 0x82;
+const KeyCode VKEY_RIGHT = 0x83;
 
 // PS/2 I/Oポート
 const ulong KB_DATA_PORT   = 0x60;  // キーボードデータポート
@@ -388,18 +388,18 @@ export void irq1_handler() {
 /// バッファが空の場合は0を返す
 export ScanCode kb_read_scancode() {
     ulong* count_ptr = KB_COUNT as ulong*;
-    ulong count = *count_ptr;
+    Count count = *count_ptr;
     if (count == 0) {
         return 0;
     }
 
     // buf[read_idx] を読取り
     ulong* read_ptr = KB_READ_IDX as ulong*;
-    ulong read_idx = *read_ptr;
-    ulong byte_addr = KB_BUF_ADDR + read_idx;
+    ByteOffset read_idx = *read_ptr;
+    MemAddr byte_addr = KB_BUF_ADDR + read_idx;
 
     // ASMでバイト読取り
-    ulong scancode = 0;
+    ScanCode scancode = 0;
     __asm__(`
         movq ${r:byte_addr}, %rdi;
         xorq %rax, %rax;
@@ -413,14 +413,14 @@ export ScanCode kb_read_scancode() {
     *read_ptr = new_read;
 
     // count--
-    ulong new_count = count - 1;
+    Count new_count = count - 1;
     *count_ptr = new_count;
 
     return scancode;
 }
 
 /// キーバッファにデータがあるかチェック
-export ulong kb_has_data() {
+export Count kb_has_data() {
     ulong* count_ptr = KB_COUNT as ulong*;
     return *count_ptr;
 }
@@ -436,7 +436,7 @@ export ScanCode kb_last_scancode() {
 /// 矢印キーは仮想キーコード(VKEY_UP等)を返す
 /// バッファが空の場合や変換不能キーの場合は0を返す
 export AsciiChar kb_read_char() {
-    ulong scancode = kb_read_scancode();
+    ScanCode scancode = kb_read_scancode();
     if (scancode == 0) {
         return 0;
     }
@@ -484,7 +484,7 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
     ulong i = 0;
     ulong buf_qwords = 8;
     while (i < buf_qwords) {
-        ulong addr = KB_BUF_ADDR + (i * 8);
+        MemAddr addr = KB_BUF_ADDR + (i * 8);
         ulong* ptr = addr as ulong*;
         *ptr = zero;
         i = i + 1;
@@ -498,14 +498,14 @@ export void keyboard_init(PIC8259A* pic, uint* idt_table) {
 
     // IDTにベクタ33（IRQ1）のハンドラを登録
     IDT idt = {table: idt_table};
-    ulong vec33 = 33;
+    IdtVector vec33 = 33;
     idt.set_gate(vec33, fn_addr(irq1_handler as void*), IDT_INTERRUPT_GATE);
 
     // IDTを再ロード
     idt.load();
 
     // PICのIRQ1をアンマスク（有効化）
-    ulong irq1 = 1;
+    IrqNr irq1 = 1;
     pic->unmask(irq1);
 
     debug.println("[KBD] PS/2 keyboard initialized" as void*);

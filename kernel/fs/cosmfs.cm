@@ -31,9 +31,9 @@ import ../config;
 // 定数
 // ============================================================
 
-const ulong FS_ENTRY_SIZE  = 48;
-const ulong FS_MAX_FILES   = 64;
-const ulong FS_INIT_CAP    = 4096;
+const ByteSize FS_ENTRY_SIZE  = 48;
+const Count FS_MAX_FILES   = 64;
+const ByteSize FS_INIT_CAP    = 4096;
 
 // エントリレイアウト (48B):
 //   +0x00: name_addr   — ファイル名バッファ
@@ -41,9 +41,9 @@ const ulong FS_INIT_CAP    = 4096;
 //   +0x10: size        — ファイルサイズ
 //   +0x18: capacity    — バッファ容量
 //   +0x20: type        — 0=ファイル, 1=ディレクトリ
-const ulong FS_FIELD_TYPE   = 32;
+const ByteOffset FS_FIELD_TYPE   = 32;
 //   +0x28: parent_idx  — 親ディレクトリのインデックス (0xFFFF...=ルート)
-const ulong FS_FIELD_PARENT = 40;
+const ByteOffset FS_FIELD_PARENT = 40;
 
 // ファイルタイプ
 export const ulong FS_TYPE_FILE = 0;
@@ -53,21 +53,21 @@ export const ulong FS_TYPE_DIR  = 1;
 export const ulong FS_ROOT_PARENT = 0xFFFFFFFFFFFFFFFF;
 
 // 操作コード
-const ulong FS_OP_CREATE    = 1;
-const ulong FS_OP_WRITE     = 2;
-const ulong FS_OP_SIZE      = 3;
-const ulong FS_OP_DELETE    = 4;
-const ulong FS_OP_FIND      = 5;
-const ulong FS_OP_GET_DATA  = 6;
-const ulong FS_OP_COUNT     = 7;
-const ulong FS_OP_ENTRY_RD  = 8;
-const ulong FS_OP_STRLEN    = 9;
-const ulong FS_OP_MEMCPY    = 10;
-const ulong FS_OP_APPEND    = 11;
-const ulong FS_OP_READ      = 12;
-const ulong FS_OP_FIND_IN_DIR = 13; // ディレクトリ内検索
-const ulong FS_OP_MKDIR       = 14; // ディレクトリ作成
-const ulong FS_OP_SET_PARENT  = 15; // 親ディレクトリ設定
+const FsOpCode FS_OP_CREATE    = 1;
+const FsOpCode FS_OP_WRITE     = 2;
+const FsOpCode FS_OP_SIZE      = 3;
+const FsOpCode FS_OP_DELETE    = 4;
+const FsOpCode FS_OP_FIND      = 5;
+const FsOpCode FS_OP_GET_DATA  = 6;
+const FsOpCode FS_OP_COUNT     = 7;
+const FsOpCode FS_OP_ENTRY_RD  = 8;
+const FsOpCode FS_OP_STRLEN    = 9;
+const FsOpCode FS_OP_MEMCPY    = 10;
+const FsOpCode FS_OP_APPEND    = 11;
+const FsOpCode FS_OP_READ      = 12;
+const FsOpCode FS_OP_FIND_IN_DIR = 13;
+const FsOpCode FS_OP_MKDIR       = 14;
+const FsOpCode FS_OP_SET_PARENT  = 15;
 
 // ============================================================
 // 初期化
@@ -103,7 +103,7 @@ export void cosmfs_init() {
 // 統合操作関数
 // ============================================================
 
-export ulong cosmfs_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+export ulong cosmfs_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
     // ----- バイト操作(内部) -----
 
     // op=9: STRLEN

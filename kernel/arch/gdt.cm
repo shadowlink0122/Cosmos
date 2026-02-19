@@ -19,6 +19,8 @@
 //       （関数のスタックフレーム等）に配置すると、
 //       割り込み発生時にCPUがGDTを読み直した際に#GPが起きる。
 
+import ../types;
+import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 
@@ -38,12 +40,13 @@ const ulong GDT_KERNEL_CODE = 0x00AF9A000000FFFF;
 const ulong GDT_KERNEL_DATA = 0x00CF92000000FFFF;
 
 // セグメントセレクタ（GDTエントリのインデックス * 8）
-const ulong KERNEL_CS = 0x08;  // GDT[1]
-const ulong KERNEL_DS = 0x10;  // GDT[2]
+const GdtSelector GDT_NULL_SEL   = 0x00;
+const GdtSelector GDT_CODE64_SEL = 0x08;
+const GdtSelector GDT_DATA64_SEL = 0x10;
 
 // GDTデータの永続配置アドレス
 // UEFIアイデンティティマッピング下で安全に使用可能な低メモリ領域
-const ulong GDT_PERMANENT_ADDR = 0x800;
+const MemAddr GDT_PERMANENT_ADDR = 0x800;
 // GDTRオフセット（5スロット * 8バイト = 40）
 // TSSディスクリプタ用のGDT[3],[4]を予約
 const ulong GDT_GDTR_OFFSET = 40;
@@ -64,8 +67,8 @@ export void gdt_init() {
     ulong gdt_null = GDT_NULL;
     ulong gdt_code = GDT_KERNEL_CODE;
     ulong gdt_data = GDT_KERNEL_DATA;
-    ulong cs_sel = KERNEL_CS;
-    ulong ds_sel = KERNEL_DS;
+    GdtSelector cs_sel = GDT_CODE64_SEL;
+    GdtSelector ds_sel = GDT_DATA64_SEL;
     ulong gdt_limit = 39;  // 5 * 8 - 1（TSS用スロットを予約）
     ulong gdt_addr = GDT_PERMANENT_ADDR;
     ulong gdtr_offset = GDT_GDTR_OFFSET;
