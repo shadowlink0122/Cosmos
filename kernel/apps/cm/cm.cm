@@ -175,7 +175,7 @@ export ByteSize cm_compile_source(MemAddr src, ByteSize src_len, MemAddr code_bu
 /// a.outファイルを作成してバイトコードを書き込む
 /// 戻り値: Result（成功時value=0、失敗時errorにコード）
 export FsResult cm_create_aout(MemAddr code_buf, ByteSize code_size, Heap* heap) {
-    FsResult r_name = fs_from_alloc(heap->alloc(6));
+    FsResult r_name = FsResult::from_alloc(heap->alloc(6) as ulong);
     if (r_name.is_err != 0) { return r_name; }
     ulong aout_name = r_name.value;
     cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
@@ -185,16 +185,16 @@ export FsResult cm_create_aout(MemAddr code_buf, ByteSize code_size, Heap* heap)
         cosmfs_op(FS_OP_DELETE, aout_name, 0, 0, 0);
     }
 
-    FsResult r_data = fs_from_alloc(heap->alloc(4096));
+    FsResult r_data = FsResult::from_alloc(heap->alloc(4096) as ulong);
     if (r_data.is_err != 0) { return r_data; }
 
-    FsResult r_create = fs_from_create(cosmfs_op(FS_OP_CREATE, aout_name, r_data.value, 4096, 0));
+    FsResult r_create = FsResult::from_create(cosmfs_op(FS_OP_CREATE, aout_name, r_data.value, 4096, 0));
     if (r_create.is_err != 0) { return r_create; }
 
-    FsResult r_write = fs_from_op(cosmfs_op(FS_OP_WRITE, aout_name, code_buf, code_size, 0));
+    FsResult r_write = FsResult::from_op(cosmfs_op(FS_OP_WRITE, aout_name, code_buf, code_size, 0));
     if (r_write.is_err != 0) { return r_write; }
 
-    return fs_ok(0 as ulong);
+    return FsResult::ok(0 as ulong);
 }
 
 /// cmコマンド: .cmファイルをコンパイルしてa.outを生成
@@ -229,37 +229,37 @@ export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     }
 
     // ファイル名をバッファにコピー
-    FsResult r_name = fs_from_alloc(heap->alloc(arg_len + 1));
-    if (r_name.is_err != 0) { fs_print_error(r_name.error); return; }
+    FsResult r_name = FsResult::from_alloc(heap->alloc(arg_len + 1) as ulong);
+    if (r_name.is_err != 0) { r_name.print_error(); return; }
     ulong name_buf = r_name.value;
     cosmfs_op(FS_OP_MEMCPY, name_buf, buf_addr + arg_start, arg_len, 0);
     cmd_write_byte(name_buf + arg_len, 0);
 
     // ソースファイルの検索
-    FsResult r_find = fs_from_op(cosmfs_op(FS_OP_FIND, name_buf, 0, 0, 0));
-    if (r_find.is_err != 0) { fs_print_error(r_find.error); return; }
+    FsResult r_find = FsResult::from_op(cosmfs_op(FS_OP_FIND, name_buf, 0, 0, 0));
+    if (r_find.is_err != 0) { r_find.print_error(); return; }
 
     // ソースファイル読み込み
-    FsResult r_size = fs_from_op_nz(cosmfs_op(FS_OP_SIZE, name_buf, 0, 0, 0));
-    if (r_size.is_err != 0) { fs_print_error(r_size.error); return; }
+    FsResult r_size = FsResult::from_op_nz(cosmfs_op(FS_OP_SIZE, name_buf, 0, 0, 0));
+    if (r_size.is_err != 0) { r_size.print_error(); return; }
     ulong src_size = r_size.value;
 
-    FsResult r_src = fs_from_alloc(heap->alloc(src_size + 1));
-    if (r_src.is_err != 0) { fs_print_error(r_src.error); return; }
+    FsResult r_src = FsResult::from_alloc(heap->alloc(src_size + 1) as ulong);
+    if (r_src.is_err != 0) { r_src.print_error(); return; }
 
-    FsResult r_read = fs_from_op_nz(cosmfs_op(FS_OP_READ, name_buf, r_src.value, src_size, 0));
-    if (r_read.is_err != 0) { fs_print_error(r_read.error); return; }
+    FsResult r_read = FsResult::from_op_nz(cosmfs_op(FS_OP_READ, name_buf, r_src.value, src_size, 0));
+    if (r_read.is_err != 0) { r_read.print_error(); return; }
 
     // バイトコードバッファ
-    FsResult r_code = fs_from_alloc(heap->alloc(256));
-    if (r_code.is_err != 0) { fs_print_error(r_code.error); return; }
+    FsResult r_code = FsResult::from_alloc(heap->alloc(256) as ulong);
+    if (r_code.is_err != 0) { r_code.print_error(); return; }
 
     // コンパイル実行
     ulong code_size = cm_compile_source(r_src.value, src_size, r_code.value);
 
     // a.out作成
     FsResult r_aout = cm_create_aout(r_code.value, code_size, heap);
-    if (r_aout.is_err != 0) { fs_print_error(r_aout.error); return; }
+    if (r_aout.is_err != 0) { r_aout.print_error(); return; }
 
     shell_set_color(0x0000FF88);
     shell_println("Compiled successfully -> a.out" as void*);
@@ -267,12 +267,12 @@ export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
 
 /// a.outコマンド: バイトコードVMで実行
 export void cmd_run_aout(Heap* heap) {
-    FsResult r_name = fs_from_alloc(heap->alloc(6));
-    if (r_name.is_err != 0) { fs_print_error(r_name.error); return; }
+    FsResult r_name = FsResult::from_alloc(heap->alloc(6) as ulong);
+    if (r_name.is_err != 0) { r_name.print_error(); return; }
     ulong aout_name = r_name.value;
     cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
 
-    FsResult r_find = fs_from_op(cosmfs_op(FS_OP_FIND, aout_name, 0, 0, 0));
+    FsResult r_find = FsResult::from_op(cosmfs_op(FS_OP_FIND, aout_name, 0, 0, 0));
     if (r_find.is_err != 0) {
         shell_set_color(0x00FF4444);
         shell_println("Error: a.out not found" as void*);
@@ -280,15 +280,15 @@ export void cmd_run_aout(Heap* heap) {
         return;
     }
 
-    FsResult r_size = fs_from_op_nz(cosmfs_op(FS_OP_SIZE, aout_name, 0, 0, 0));
-    if (r_size.is_err != 0) { fs_print_error(r_size.error); return; }
+    FsResult r_size = FsResult::from_op_nz(cosmfs_op(FS_OP_SIZE, aout_name, 0, 0, 0));
+    if (r_size.is_err != 0) { r_size.print_error(); return; }
     ulong code_size = r_size.value;
 
-    FsResult r_buf = fs_from_alloc(heap->alloc(code_size));
-    if (r_buf.is_err != 0) { fs_print_error(r_buf.error); return; }
+    FsResult r_buf = FsResult::from_alloc(heap->alloc(code_size) as ulong);
+    if (r_buf.is_err != 0) { r_buf.print_error(); return; }
 
-    FsResult r_read = fs_from_op_nz(cosmfs_op(FS_OP_READ, aout_name, r_buf.value, code_size, 0));
-    if (r_read.is_err != 0) { fs_print_error(r_read.error); return; }
+    FsResult r_read = FsResult::from_op_nz(cosmfs_op(FS_OP_READ, aout_name, r_buf.value, code_size, 0));
+    if (r_read.is_err != 0) { r_read.print_error(); return; }
 
     shell_set_color(0x00FFFFFF);
     cm_vm_exec(r_buf.value, code_size);
