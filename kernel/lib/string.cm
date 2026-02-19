@@ -7,6 +7,7 @@
 // 提供関数:
 //   メモリ操作: k_memcpy, k_memset, k_memmove, k_memcmp
 //   文字列操作: k_strlen, k_strcmp, k_strncmp, k_strcpy, k_strncpy
+import ../types;
 
 // ============================================================
 // メモリ操作
@@ -14,7 +15,7 @@
 
 /// メモリコピー（src → dst、len バイト）
 /// 領域の重なりは非対応（重なる場合は k_memmove を使用）
-export void k_memcpy(ulong dst, ulong src, ulong len) {
+export void k_memcpy(MemAddr dst, MemAddr src, ByteSize len) {
     ulong i = 0;
     while (i < len) {
         ulong src_addr = src + i;
@@ -33,7 +34,7 @@ export void k_memcpy(ulong dst, ulong src, ulong len) {
 }
 
 /// メモリを指定バイト値で埋める
-export void k_memset(ulong dst, ulong value, ulong len) {
+export void k_memset(MemAddr dst, ulong value, ByteSize len) {
     ulong i = 0;
     while (i < len) {
         ulong addr = dst + i;
@@ -48,7 +49,7 @@ export void k_memset(ulong dst, ulong value, ulong len) {
 
 /// メモリコピー（重なり対応）
 /// src < dst の場合は末尾からコピー
-export void k_memmove(ulong dst, ulong src, ulong len) {
+export void k_memmove(MemAddr dst, MemAddr src, ByteSize len) {
     if (len == 0) {
         return;
     }
@@ -80,7 +81,7 @@ export void k_memmove(ulong dst, ulong src, ulong len) {
 }
 
 /// メモリ比較（一致なら0、不一致なら非ゼロ）
-export ulong k_memcmp(ulong addr1, ulong addr2, ulong len) {
+export ulong k_memcmp(MemAddr addr1, MemAddr addr2, ByteSize len) {
     ulong i = 0;
     while (i < len) {
         ulong a1 = addr1 + i;
@@ -112,7 +113,7 @@ export ulong k_memcmp(ulong addr1, ulong addr2, ulong len) {
 // ============================================================
 
 /// 指定アドレスから1バイト読み取る
-export ulong k_read_byte(ulong addr) {
+export AsciiChar k_read_byte(MemAddr addr) {
     ulong val = 0;
     __asm__(`
         movq ${r:addr}, %rsi;
@@ -124,7 +125,7 @@ export ulong k_read_byte(ulong addr) {
 }
 
 /// 指定アドレスに1バイト書き込む
-export void k_write_byte(ulong addr, ulong byte_val) {
+export void k_write_byte(MemAddr addr, AsciiChar byte_val) {
     __asm__(`
         movq ${r:addr}, %rdi;
         movq ${r:byte_val}, %rax;
@@ -137,7 +138,7 @@ export void k_write_byte(ulong addr, ulong byte_val) {
 // ============================================================
 
 /// NUL終端文字列の長さを返す
-export ulong k_strlen(ulong str) {
+export ByteSize k_strlen(MemAddr str) {
     ulong len = 0;
     while (true) {
         ulong ch = k_read_byte(str + len);
@@ -151,7 +152,7 @@ export ulong k_strlen(ulong str) {
 
 /// 2つのNUL終端文字列を比較する
 /// 一致なら0、不一致なら非ゼロ
-export ulong k_strcmp(ulong s1, ulong s2) {
+export ulong k_strcmp(MemAddr s1, MemAddr s2) {
     ulong i = 0;
     while (true) {
         ulong c1 = k_read_byte(s1 + i);
@@ -168,7 +169,7 @@ export ulong k_strcmp(ulong s1, ulong s2) {
 }
 
 /// 最大nバイトまで文字列を比較する
-export ulong k_strncmp(ulong s1, ulong s2, ulong n) {
+export ulong k_strncmp(MemAddr s1, MemAddr s2, ByteSize n) {
     ulong i = 0;
     while (i < n) {
         ulong c1 = k_read_byte(s1 + i);
@@ -185,7 +186,7 @@ export ulong k_strncmp(ulong s1, ulong s2, ulong n) {
 }
 
 /// 文字列をコピーする（NUL終端含む）
-export void k_strcpy(ulong dst, ulong src) {
+export void k_strcpy(MemAddr dst, MemAddr src) {
     ulong i = 0;
     while (true) {
         ulong ch = k_read_byte(src + i);
@@ -198,7 +199,7 @@ export void k_strcpy(ulong dst, ulong src) {
 }
 
 /// 最大nバイトまで文字列をコピーする
-export void k_strncpy(ulong dst, ulong src, ulong n) {
+export void k_strncpy(MemAddr dst, MemAddr src, ByteSize n) {
     ulong i = 0;
     while (i < n) {
         ulong ch = k_read_byte(src + i);

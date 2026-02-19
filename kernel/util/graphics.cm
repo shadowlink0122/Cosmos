@@ -4,6 +4,8 @@
 // ピクセルフォーマット: BGRA (Blue, Green, Red, Reserved) 各8bit
 // 注意: UEFIではグローバル変数書き込み不可のため、全パラメータは引数経由で渡す
 
+import ../types;
+import ../config;
 import ../libs/efi_gop;
 import ../libs/efi_text;
 
@@ -23,7 +25,7 @@ export const ulong COLOR_GRAY    = 0x00808080;
 export const ulong COLOR_ORANGE  = 0x00FFA500;
 
 /// RGB値から色を作成
-export ulong make_color(ulong r, ulong g, ulong b) {
+export Color make_color(ulong r, ulong g, ulong b) {
     return (r << 16) | (g << 8) | b;
 }
 
@@ -32,7 +34,7 @@ export ulong make_color(ulong r, ulong g, ulong b) {
 // ============================================================
 
 /// 1ピクセルを描画
-export void draw_pixel(ulong fb, ulong width, ulong height, ulong stride, ulong x, ulong y, ulong color) {
+export void draw_pixel(MemAddr fb, FbDimension width, FbDimension height, FbDimension stride, Pixel x, Pixel y, Color color) {
     // 範囲外チェック
     if (x >= width) { return; }
     if (y >= height) { return; }
@@ -45,12 +47,12 @@ export void draw_pixel(ulong fb, ulong width, ulong height, ulong stride, ulong 
 }
 
 /// 水平線を描画
-export void draw_hline(ulong fb, ulong width, ulong height, ulong stride, ulong x, ulong y, ulong length, ulong color) {
+export void draw_hline(MemAddr fb, FbDimension width, FbDimension height, FbDimension stride, Pixel x, Pixel y, Pixel len, Color color) {
     if (y >= height) { return; }
 
     ulong i = 0;
-    while (i < length) {
-        ulong px = x + i;
+    while (i < len) {
+        Pixel px = x + i;
         if (px >= width) { return; }
         ulong offset = (y * stride + px) * 4;
         uint* pixel = (fb + offset) as uint*;
@@ -60,12 +62,12 @@ export void draw_hline(ulong fb, ulong width, ulong height, ulong stride, ulong 
 }
 
 /// 垂直線を描画
-export void draw_vline(ulong fb, ulong width, ulong height, ulong stride, ulong x, ulong y, ulong length, ulong color) {
+export void draw_vline(MemAddr fb, FbDimension width, FbDimension height, FbDimension stride, Pixel x, Pixel y, Pixel len, Color color) {
     if (x >= width) { return; }
 
     ulong i = 0;
-    while (i < length) {
-        ulong py = y + i;
+    while (i < len) {
+        Pixel py = y + i;
         if (py >= height) { return; }
         ulong offset = (py * stride + x) * 4;
         uint* pixel = (fb + offset) as uint*;
@@ -75,7 +77,7 @@ export void draw_vline(ulong fb, ulong width, ulong height, ulong stride, ulong 
 }
 
 /// 任意の直線を描画（Bresenhamアルゴリズム）
-export void draw_line(ulong fb, ulong width, ulong height, ulong stride, ulong x0, ulong y0, ulong x1, ulong y1, ulong color) {
+export void draw_line(MemAddr fb, FbDimension width, FbDimension height, FbDimension stride, Pixel x0, Pixel y0, Pixel x1, Pixel y1, Color color) {
     // 水平・垂直の特殊ケース
     if (y0 == y1) {
         if (x0 <= x1) {
@@ -144,7 +146,7 @@ export void draw_line(ulong fb, ulong width, ulong height, ulong stride, ulong x
 // ============================================================
 
 /// 矩形の枠を描画
-export void draw_rect(ulong fb, ulong width, ulong height, ulong stride, ulong x, ulong y, ulong w, ulong h, ulong color) {
+export void draw_rect(MemAddr fb, FbDimension width, FbDimension height, FbDimension stride, Pixel x, Pixel y, Pixel w, Pixel h, Color color) {
     draw_hline(fb, width, height, stride, x, y, w, color);
     draw_hline(fb, width, height, stride, x, y + h - 1, w, color);
     draw_vline(fb, width, height, stride, x, y, h, color);
@@ -152,7 +154,7 @@ export void draw_rect(ulong fb, ulong width, ulong height, ulong stride, ulong x
 }
 
 /// 矩形を塗りつぶし
-export void fill_rect(ulong fb, ulong width, ulong height, ulong stride, ulong x, ulong y, ulong w, ulong h, ulong color) {
+export void fill_rect(MemAddr fb, FbDimension width, FbDimension height, FbDimension stride, Pixel x, Pixel y, Pixel w, Pixel h, Color color) {
     ulong j = 0;
     while (j < h) {
         draw_hline(fb, width, height, stride, x, y + j, w, color);
