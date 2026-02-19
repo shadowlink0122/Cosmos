@@ -1,0 +1,73 @@
+//! platform: uefi
+// kernel::tests::test_vmm - 仮想メモリマネージャテスト
+//
+// VMM の translate() を使って既存のアイデンティティマッピングを検証。
+// map_page/unmap_page はQEMU上で実際にページテーブルを操作するため、
+// 慎重にテスト用のアドレス範囲を使用する。
+
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../mm/vmm;
+import ../../mm/pmm;
+import ../../config;
+import ../test_runner;
+
+// ============================================================
+// VMM テスト
+// ============================================================
+
+/// VMMテストを実行する
+export void test_vmm(TestRunner* runner, VMM* vmm, PMM* pmm) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[TEST] === VMM Tests ===" as void*);
+
+    // テスト1: CR3が非ゼロ（初期化成功）
+    MemAddr cr3 = vmm->cr3_value;
+    runner->assert_nonzero(cr3, "VMM: CR3 nonzero" as void*);
+
+    // テスト2: is_active == 1
+    runner->assert_eq(vmm->is_active, 1, "VMM: paging active" as void*);
+
+    // テスト3: translate() — PMMから割当済みのページはマッピングされている
+    // UEFIのidentity mapでは物理メモリ全体がマップされているので
+    // PMM管理外のアドレス(huge page)ではなく、PMM経由で確実にマップ済みの領域を使用
+    MemAddr pmm_page = pmm->alloc_page();
+    if (pmm_page != 0) {
+        MemAddr translated = vmm->translate(pmm_page);
+        runner->assert_eq(translated, pmm_page, "VMM: identity map PMM page" as void*);
+    }
+
+    // テスト4: translate() — 別のPMMページも同様
+    MemAddr pmm_page2 = pmm->alloc_page();
+    if (pmm_page2 != 0) {
+        MemAddr translated2 = vmm->translate(pmm_page2);
+        runner->assert_eq(translated2, pmm_page2, "VMM: identity map PMM page 2" as void*);
+    }
+
+    // テスト5: map_page + translate + unmap サイクル
+    // テスト用仮想アドレス: 0x800000（8MB）— 通常未使用領域
+    MemAddr test_virt3 = 0x800000;
+    MemAddr test_phys = pmm->alloc_page();
+    if (test_phys != 0) {
+        // マッピング作成
+        ulong map_result = vmm->map_page(test_virt3, test_phys, PTE_KERNEL_RW, pmm);
+        runner->assert_eq(map_result, 0, "VMM: map_page returns 0 (success)" as void*);
+
+        // translate で確認
+        MemAddr mapped_phys = vmm->translate(test_virt3);
+        runner->assert_eq(mapped_phys, test_phys, "VMM: translate mapped addr" as void*);
+
+        // マッピング解除
+        ulong unmap_result = vmm->unmap_page(test_virt3);
+        runner->assert_eq(unmap_result, 0, "VMM: unmap_page returns 0" as void*);
+
+        // 解除後のtranslate → 0
+        MemAddr after_unmap = vmm->translate(test_virt3);
+        runner->assert_eq(after_unmap, 0, "VMM: translate after unmap returns 0" as void*);
+    }
+
+    // テスト6: map_count が増加したか
+    runner->assert_nonzero(vmm->map_count, "VMM: map_count > 0 after map" as void*);
+
+    serial.println("[TEST] VMM tests complete" as void*);
+}

@@ -124,7 +124,7 @@ void kernel_main_test(BootInfo* info) {
     serial.println("[CosmOS] ==============================" as void*);
 
     TestRunner runner();
-    test_kernel(&runner, info, &pmm, &heap, &pit);
+    test_kernel(&runner, info, &pmm, &heap, &pit, &vmm);
 
     serial.println("[CosmOS] ==============================" as void*);
     serial.println("[CosmOS] Running app tests..." as void*);

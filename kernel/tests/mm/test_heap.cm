@@ -82,5 +82,38 @@ export void test_heap(TestRunner* runner, Heap* heap) {
     MemAddr huge = heap->alloc(size);
     runner->assert_eq(huge, 0, "Heap: oversized alloc returns 0" as void*);
 
+    // ============================================================
+    // フリーリスト再利用テスト
+    // ============================================================
+
+    // テスト13: free後のフリーリストカウント
+    heap->free(ptr1);
+    runner->assert_eq(heap->free_count, 1, "Heap: free_count=1 after free" as void*);
+
+    // テスト14: free後に再alloc → フリーリストから再利用
+    MemAddr ptr3 = heap->alloc(16);
+    runner->assert_nonzero(ptr3, "Heap: realloc after free returns nonzero" as void*);
+
+    // テスト15: 再利用ブロックに書き込み可能
+    runner->assert_mem_write(ptr3, 0xAAAABBBBCCCCDDDD, "Heap: reused block writable" as void*);
+
+    // テスト16: ptr2がまだ有効（上書きされていない）
+    ulong* check_ptr2 = ptr2 as ulong*;
+    ulong readback2 = *check_ptr2;
+    runner->assert_eq(readback2, 0x0102030405060708, "Heap: ptr2 not corrupted after reuse" as void*);
+
+    // テスト17: free → free → alloc のサイクル
+    heap->free(ptr2);
+    heap->free(ptr3);
+    runner->assert_eq(heap->free_count, 2, "Heap: free_count=2 after 2 frees" as void*);
+
+    MemAddr ptr4 = heap->alloc(8);
+    runner->assert_nonzero(ptr4, "Heap: alloc from 2-item freelist" as void*);
+    runner->assert_mem_write(ptr4, 0x1234567890ABCDEF, "Heap: freelist reuse writable" as void*);
+
+    // テスト18: アラインメント確認（フリーリスト経由）
+    ulong align4 = ptr4 & align_mask;
+    runner->assert_eq(align4, 0, "Heap: freelist alloc 8-byte aligned" as void*);
+
     serial.println("[TEST] Heap tests complete" as void*);
 }

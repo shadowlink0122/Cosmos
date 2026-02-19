@@ -8,6 +8,7 @@ import ../drivers/serial;
 import ../arch/boot_info;
 import ../mm/pmm;
 import ../mm/heap;
+import ../mm/vmm;
 import ../drivers/pit;
 import ./test_runner;
 import ./boot/test_boot;
@@ -22,9 +23,10 @@ import ./sys/test_loader;
 import ./sys/test_process;
 import ./sys/test_syscall;
 import ./integration/test_integration;
+import ./mm/test_vmm;
 
 /// カーネルコアテストスイートを実行
-export void test_kernel(TestRunner* runner, BootInfo* info, PMM* pmm, Heap* heap, PIT* pit) {
+export void test_kernel(TestRunner* runner, BootInfo* info, PMM* pmm, Heap* heap, PIT* pit, VMM* vmm) {
     SerialPort serial = {port: 0x3F8};
     serial.println("[CosmOS] --- Kernel Core Tests ---" as void*);
 
@@ -40,6 +42,7 @@ export void test_kernel(TestRunner* runner, BootInfo* info, PMM* pmm, Heap* heap
     test_syscall(runner);
     test_loader(runner, heap);
     test_integration(runner, heap, pmm);
+    test_vmm(runner, vmm, pmm);
 
     serial.println("[CosmOS] --- Kernel Core Tests Done ---" as void*);
 }
