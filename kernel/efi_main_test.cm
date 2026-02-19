@@ -34,27 +34,19 @@ import ./mm/heap;
 import ./sched/task;
 import ./sched/scheduler;
 import ./tests/test_runner;
-import ./tests/mm/test_pmm;
-import ./tests/mm/test_heap;
-import ./tests/drivers/test_pit;
-import ./tests/boot/test_boot;
-import ./tests/sched/test_scheduler;
-import ./tests/arch/test_tss;
-import ./tests/drivers/test_keyboard;
-import ./tests/fs/test_cosmfs;
-import ./tests/apps/test_aria;
-import ./tests/sys/test_loader;
-import ./tests/integration/test_integration;
+import ./tests/test_kernel;
+import ./tests/test_apps;
 import ./fs/cosmfs;
 import ./apps/aria/aria;
 import ./libs/boot_services;
+import ./sys/syscall;
 
 // ============================================================
 // テスト用 kernel_main
 // ============================================================
 
 void kernel_main_test(BootInfo* info) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
 
     debug.println("[BOOT] kernel_main_test entered" as void*);
@@ -80,6 +72,10 @@ void kernel_main_test(BootInfo* info) {
     // IDT再ロード
     idt.load();
     debug.println("[BOOT] IDT reloaded" as void*);
+
+    // Syscallハンドラ登録（Ariaがsyscall経由でI/Oを行うため）
+    syscall_init(idt_table);
+    debug.println("[BOOT] syscall handler registered" as void*);
 
     // PMM初期化
     PMM pmm(info->mmap.map_buffer, info->mmap.map_size,
@@ -128,17 +124,13 @@ void kernel_main_test(BootInfo* info) {
     serial.println("[CosmOS] ==============================" as void*);
 
     TestRunner runner();
-    test_boot(&runner, info, &pmm, &heap);
-    test_pmm(&runner, &pmm);
-    test_heap(&runner, &heap);
-    test_pit(&runner, &pit);
-    test_tss(&runner);
-    test_keyboard(&runner);
-    test_scheduler(&runner);
-    test_cosmfs(&runner);
-    test_aria(&runner);
-    test_loader(&runner, &heap);
-    test_integration(&runner, &heap, &pmm);
+    test_kernel(&runner, info, &pmm, &heap, &pit);
+
+    serial.println("[CosmOS] ==============================" as void*);
+    serial.println("[CosmOS] Running app tests..." as void*);
+    serial.println("[CosmOS] ==============================" as void*);
+
+    test_apps(&runner);
     runner.print_results();
 
     // テスト完了 — isa-debug-exitでQEMUを即座に終了
@@ -170,7 +162,7 @@ ulong efi_main(void* image_handle, void* system_table) {
     DebugPort debug(0xE9);
     debug.println("[BOOT] efi_main (TEST) entered" as void*);
 
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     serial.println("[CosmOS] Test mode boot started" as void*);
 
     efi_clear_screen(system_table);

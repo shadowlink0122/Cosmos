@@ -1,0 +1,26 @@
+//! platform: uefi
+// kernel::tests::test_apps - アプリケーションテストスイート
+//
+// Ariaエディタ等のアプリケーションテストを一括実行する。
+
+import ../drivers/serial;
+import ./test_runner;
+import ./apps/test_aria_basic;
+import ./apps/test_aria_nav;
+import ./apps/test_aria_edit;
+import ./apps/test_aria_file;
+import ./apps/test_exec;
+
+/// アプリケーションテストスイートを実行
+export void test_apps(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[CosmOS] --- Application Tests ---" as void*);
+
+    test_aria_basic(runner);
+    test_aria_nav(runner);
+    test_aria_edit(runner);
+    test_aria_file(runner);
+    test_exec(runner);
+
+    serial.println("[CosmOS] --- Application Tests Done ---" as void*);
+}

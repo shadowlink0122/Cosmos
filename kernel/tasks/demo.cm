@@ -36,8 +36,8 @@ export void demo_yield() {
 
 /// デモタスク1: シアン色出力
 export void demo_task1_fn() {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
 
     serial.println("[Task-1] Started" as void*);
     con.set_color(0x0000FFFF);  // シアン
@@ -85,8 +85,8 @@ export void demo_task1_fn() {
 
 /// デモタスク2: 黄色出力
 export void demo_task2_fn() {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
 
     serial.println("[Task-2] Started" as void*);
     con.set_color(0x00FFFF00);  // 黄色
@@ -133,7 +133,7 @@ export void demo_task2_fn() {
 // ============================================================
 
 export void demo_spawn_tasks() {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
 
     ulong addr1 = fn_addr(demo_task1_fn as void*);

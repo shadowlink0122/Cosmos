@@ -17,7 +17,7 @@ import ../test_runner;
 
 /// PMM基本テストを実行する
 export void test_pmm(TestRunner* runner, PMM* pmm) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println("[TEST] === PMM Tests ===" as void*);
 

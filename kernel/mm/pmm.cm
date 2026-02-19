@@ -396,7 +396,7 @@ impl PMM {
 
     /// メモリ統計をシリアルに出力
     void print_stats() {
-        SerialPort serial(0x3F8);
+        SerialPort serial = {port: 0x3F8};
         DebugPort debug(0xE9);
 
         ulong mb_div = 1048576;

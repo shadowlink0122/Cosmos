@@ -35,7 +35,7 @@ impl TestRunner {
     /// 条件が真であることをアサート
     void assert_true(ulong condition, void* test_name) {
         DebugPort debug(0xE9);
-        SerialPort serial(0x3F8);
+        SerialPort serial = {port: 0x3F8};
         ulong one = 1 as ulong;
 
         if (condition != 0) {
@@ -89,6 +89,36 @@ impl TestRunner {
         self.assert_true(condition, test_name);
     }
 
+    /// aがbより小さいことをアサート
+    void assert_lt(ulong a, ulong b, void* test_name) {
+        ulong condition = 0;
+        if (a < b) {
+            condition = 1;
+        }
+        self.assert_true(condition, test_name);
+    }
+
+    /// aがb以下であることをアサート
+    void assert_le(ulong a, ulong b, void* test_name) {
+        ulong condition = 0;
+        if (a < b) {
+            condition = 1;
+        }
+        if (a == b) {
+            condition = 1;
+        }
+        self.assert_true(condition, test_name);
+    }
+
+    /// aが0であることをアサート
+    void assert_zero(ulong a, void* test_name) {
+        ulong condition = 0;
+        if (a == 0) {
+            condition = 1;
+        }
+        self.assert_true(condition, test_name);
+    }
+
     /// メモリアドレスに書込み→読み戻しが一致することをアサート
     /// addr: テスト対象アドレス（0の場合はスキップしてFAIL）
     /// pattern: 書き込む値
@@ -112,7 +142,7 @@ impl TestRunner {
     /// テスト結果サマリーを出力
     void print_results() {
         DebugPort debug(0xE9);
-        SerialPort serial(0x3F8);
+        SerialPort serial = {port: 0x3F8};
 
         debug.puts("[TEST] results: " as void*);
         serial.puts("[TEST] results: " as void*);

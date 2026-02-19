@@ -466,7 +466,7 @@ export ulong kb_read_char() {
 /// idt_table: IDTテーブルへのポインタ（ベクタ33登録用）
 export void keyboard_init(PIC8259A* pic, uint* idt_table) {
     DebugPort debug(0xE9);
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
 
     // バッファを初期化
     ulong zero = 0;

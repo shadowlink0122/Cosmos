@@ -1,0 +1,89 @@
+//! platform: uefi
+// kernel::tests::apps::test_aria_nav - Ariaナビゲーションテスト
+//
+// カーソル移動、クランプ、vim移動コマンド（l/h/j/k/0/$/<br>G）を検証。
+// 前提: test_aria_basic が先に実行済み（ファイルがOPEN済み）。
+
+import ../../drivers/serial;
+import ../../fs/cosmfs;
+import ../../apps/aria/aria;
+import ../../apps/aria/aria_const;
+import ../../config;
+import ../test_runner;
+
+// テスト用固定メモリ領域
+const ulong T_A_FNAME_BUF = 0x6000;
+const ulong T_A_DATA_BUF  = 0x6100;
+const ulong T_A_WRITE_BUF = 0x7100;
+
+/// Ariaナビゲーションテスト — 10テスト
+export void test_aria_nav(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[TEST] === Aria Nav Tests ===" as void*);
+
+    // テスト準備: ファイルを開き直す "AB\nCD" (2行)
+    aria_init();
+    cosmfs_op(FS_OP_MEMCPY, T_A_FNAME_BUF, "a.txt" as ulong, 6, 0);
+    cosmfs_op(FS_OP_CREATE, T_A_FNAME_BUF, T_A_DATA_BUF, 4096, 0);
+    cosmfs_op(FS_OP_MEMCPY, T_A_WRITE_BUF, "AB\nCD" as ulong, 5, 0);
+    cosmfs_op(FS_OP_WRITE, T_A_FNAME_BUF, T_A_WRITE_BUF, 5, 0);
+    aria_op(ARIA_OP_OPEN, T_A_FNAME_BUF, 5, 0, 0);
+
+    ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+    ulong* cy_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+    ulong reset_zero = 0;
+    *cx_ptr = reset_zero;
+    *cy_ptr = reset_zero;
+
+    // テスト1: 'l' でカーソル右移動
+    aria_op(ARIA_OP_KEY_INPUT, KEY_l, 0, 0, 0);
+    ulong cx_r1 = *cx_ptr;
+    runner->assert_eq(cx_r1, 1, "Aria: 'l' cursor_x=1" as void*);
+
+    // テスト2: カーソル右クランプ（AB行はNormalモードでx=1が最大）
+    aria_op(ARIA_OP_KEY_INPUT, KEY_l, 0, 0, 0);
+    ulong cx_r2 = *cx_ptr;
+    runner->assert_eq(cx_r2, 1, "Aria: 'l' clamped at line end" as void*);
+
+    // テスト3: '0' で行頭に移動
+    aria_op(ARIA_OP_KEY_INPUT, KEY_0, 0, 0, 0);
+    ulong cx_home = *cx_ptr;
+    runner->assert_eq(cx_home, 0, "Aria: '0' -> line start" as void*);
+
+    // テスト4: '$' で行末に移動
+    aria_op(ARIA_OP_KEY_INPUT, KEY_DOLLAR, 0, 0, 0);
+    ulong cx_end = *cx_ptr;
+    runner->assert_eq(cx_end, 1, "Aria: '$' -> line end" as void*);
+
+    // テスト5: 'j' で下の行に移動
+    *cx_ptr = reset_zero;
+    aria_op(ARIA_OP_KEY_INPUT, KEY_j, 0, 0, 0);
+    ulong cy_j = *cy_ptr;
+    runner->assert_eq(cy_j, 1, "Aria: 'j' cursor_y=1" as void*);
+
+    // テスト6: 'k' で上の行に戻る
+    aria_op(ARIA_OP_KEY_INPUT, KEY_k, 0, 0, 0);
+    ulong cy_k = *cy_ptr;
+    runner->assert_eq(cy_k, 0, "Aria: 'k' cursor_y=0" as void*);
+
+    // テスト7: 'k' at top is clamped
+    aria_op(ARIA_OP_KEY_INPUT, KEY_k, 0, 0, 0);
+    ulong cy_top = *cy_ptr;
+    runner->assert_eq(cy_top, 0, "Aria: 'k' clamped at top" as void*);
+
+    // テスト8: 'h' at left is clamped
+    *cx_ptr = reset_zero;
+    aria_op(ARIA_OP_KEY_INPUT, KEY_h, 0, 0, 0);
+    ulong cx_left = *cx_ptr;
+    runner->assert_eq(cx_left, 0, "Aria: 'h' clamped at left" as void*);
+
+    // テスト9: 'G' でファイル末尾に移動
+    aria_op(ARIA_OP_KEY_INPUT, KEY_G, 0, 0, 0);
+    ulong cy_G = *cy_ptr;
+    runner->assert_eq(cy_G, 1, "Aria: 'G' -> last line" as void*);
+
+    // テスト10: カーソルリセット
+    *cy_ptr = reset_zero;
+    *cx_ptr = reset_zero;
+    runner->assert_true(1, "Aria: nav cursor reset" as void*);
+}

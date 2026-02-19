@@ -48,7 +48,7 @@ export ulong efi_exit_boot_services(void* system_table, void* image_handle, ulon
 
 /// GOP情報をBootInfoに収集する
 export void collect_fb_info(void* system_table, BootInfo* info) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
 
     ulong fb_base = 0;
     ulong width = 0;
@@ -80,7 +80,7 @@ export void collect_fb_info(void* system_table, BootInfo* info) {
 /// メモリマップを取得してBootInfoに格納する
 export ulong collect_memory_map(void* system_table, BootInfo* info) {
     DebugPort debug(0xE9);
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     debug.println("[BOOT] collect_memory_map: start" as void*);
 
     ulong map_size = 0;

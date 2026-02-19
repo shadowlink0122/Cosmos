@@ -152,8 +152,8 @@ export ulong shell_buf_read(ulong pos) {
 /// カーソル位置以降のバッファ内容を再描画する（FBConsole）
 /// prompt_len: プロンプト文字列の長さ（"CosmOS > " = 9文字）
 export void shell_redraw_from(ulong cursor, ulong len) {
-    FBConsole con();
-    SerialPort serial(0x3F8);
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    SerialPort serial = {port: 0x3F8};
     ulong prompt_len = 9;  // "CosmOS > " の長さ
 
     // FBConsoleのカーソルX位置をcursor+prompt_lenに設定
@@ -206,9 +206,9 @@ export void shell_redraw_from(ulong cursor, ulong len) {
 
 /// コマンドを実行する
 export void shell_exec(ulong buf_addr, ulong buf_len) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
 
     if (buf_len == 0) {
         return;
@@ -248,8 +248,8 @@ export void shell_exec(ulong buf_addr, ulong buf_len) {
 
 /// シェルのメインループ（idle_loopから呼ばれる）
 export void shell_process_input() {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
 
     // Ariaモードチェック
     ulong aria_running = aria_op(4, 0, 0, 0, 0);  // IS_RUNNING
@@ -266,7 +266,8 @@ export void shell_process_input() {
             // 再描画
             aria_op(3, 0, 0, 0, 0);  // RENDER
         } else {
-            // Aria終了 — シェルに復帰
+            // Aria終了 — シェルに復帰（画面クリア）
+            shell_clear();
             shell_set_color(SHELL_COLOR_OUTPUT);
             shell_println("[Aria closed]" as void*);
             serial.puts("CosmOS > " as void*);
@@ -392,9 +393,9 @@ export void shell_process_input() {
 
 /// シェルを初期化する
 export void shell_init() {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
 
     // バッファをクリア
     ulong zero = 0;
@@ -446,8 +447,8 @@ export void shell_init() {
 /// 例外ハンドラから復帰した後の復旧処理
 /// バッファをクリアし、エラーメッセージとプロンプトを再表示する
 export void shell_recover() {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
 
     // シェルバッファをクリア
     ulong zero = 0;

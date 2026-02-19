@@ -12,7 +12,7 @@ import ../test_runner;
 /// PIT割り込みテストを実行する
 /// 前提: PIT初期化済み、sti実行済み
 export void test_pit(TestRunner* runner, PIT* pit) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     serial.println("[TEST] === PIT Tests ===" as void*);
 
     // テスト1: 割り込み有効化後にtickがインクリメントされる

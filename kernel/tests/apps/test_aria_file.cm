@@ -1,0 +1,104 @@
+//! platform: uefi
+// kernel::tests::apps::test_aria_file - Ariaファイルテスト
+//
+// 保存、終了（:q/:wq）、新規ファイル作成を検証。
+
+import ../../drivers/serial;
+import ../../fs/cosmfs;
+import ../../apps/aria/aria;
+import ../../apps/aria/aria_const;
+import ../../config;
+import ../test_runner;
+
+// テスト用固定メモリ領域
+const ulong T_A_FNAME_BUF = 0x6000;
+const ulong T_A_DATA_BUF  = 0x6100;
+const ulong T_A_WRITE_BUF = 0x7100;
+const ulong T_A_READ_BUF  = 0x7200;
+// 新規ファイル用に別バッファ（CosmFSポインタ共有問題回避）
+const ulong T_A_NEW_FNAME = 0x7300;
+
+/// Ariaファイルテスト — 7テスト
+export void test_aria_file(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[TEST] === Aria File Tests ===" as void*);
+
+    // テスト準備: ファイルを開いて編集済み状態にする
+    aria_init();
+    cosmfs_op(FS_OP_MEMCPY, T_A_FNAME_BUF, "c.txt" as ulong, 6, 0);
+    cosmfs_op(FS_OP_CREATE, T_A_FNAME_BUF, T_A_DATA_BUF, 4096, 0);
+    cosmfs_op(FS_OP_MEMCPY, T_A_WRITE_BUF, "Hi" as ulong, 2, 0);
+    cosmfs_op(FS_OP_WRITE, T_A_FNAME_BUF, T_A_WRITE_BUF, 2, 0);
+    aria_op(ARIA_OP_OPEN, T_A_FNAME_BUF, 5, 0, 0);
+
+    // 1文字挿入してmodified=1にする
+    aria_op(ARIA_OP_KEY_INPUT, KEY_i, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, 0x41, 0, 0, 0);  // 'A'
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ESC, 0, 0, 0);
+
+    // テスト1: SAVE
+    ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+    aria_op(ARIA_OP_SAVE, 0, 0, 0, 0);
+    ulong mod_after = *mod_ptr;
+    runner->assert_eq(mod_after, 0, "Aria: SAVE clears modified" as void*);
+
+    // テスト2: SAVEしたデータがCosmFSに永続化されている
+    ulong readback = cosmfs_op(FS_OP_READ, T_A_FNAME_BUF, T_A_READ_BUF, 64, 0);
+    ulong save_ok = 0;
+    if (readback > 0) {
+        save_ok = 1;
+    }
+    runner->assert_true(save_ok, "Aria: SAVE persists to CosmFS" as void*);
+
+    // テスト3: ':q' で終了
+    aria_op(ARIA_OP_KEY_INPUT, KEY_COLON, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_q, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ENTER, 0, 0, 0);
+    ulong r_quit = aria_op(ARIA_OP_IS_RUNNING, 0, 0, 0, 0);
+    runner->assert_eq(r_quit, 0, "Aria: ':q' quits editor" as void*);
+
+    // テスト4: :wq で保存して終了
+    aria_init();
+    aria_op(ARIA_OP_OPEN, T_A_FNAME_BUF, 5, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_COLON, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_w, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_q, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ENTER, 0, 0, 0);
+    ulong r_wq = aria_op(ARIA_OP_IS_RUNNING, 0, 0, 0, 0);
+    runner->assert_eq(r_wq, 0, "Aria: ':wq' saves and quits" as void*);
+
+    // === 新規ファイル作成テスト ===
+
+    // テスト5: 存在しないファイルのOPENで自動作成
+    // 注意: CosmFSはファイル名をポインタで保持するため、
+    // 別バッファ(T_A_NEW_FNAME)を使用する。
+    aria_init();
+    cosmfs_op(FS_OP_MEMCPY, T_A_NEW_FNAME, "new.txt" as ulong, 8, 0);
+    aria_op(ARIA_OP_OPEN, T_A_NEW_FNAME, 7, 0, 0);
+    ulong r_new = aria_op(ARIA_OP_IS_RUNNING, 0, 0, 0, 0);
+    runner->assert_eq(r_new, 1, "Aria: OPEN new file creates it" as void*);
+
+    // テスト6: 新規ファイルのバッファサイズは0
+    ulong* bs_new = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+    ulong bsn = *bs_new;
+    ulong is_empty = 0;
+    if (bsn == 0) {
+        is_empty = 1;
+    }
+    runner->assert_true(is_empty, "Aria: new file buf_size=0" as void*);
+
+    // テスト7: 新規ファイルに文字入力→保存→CosmFSに書かれている
+    aria_op(ARIA_OP_KEY_INPUT, KEY_i, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, 0x58, 0, 0, 0);      // 'X'
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ESC, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_COLON, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_w, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_q, 0, 0, 0);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ENTER, 0, 0, 0);
+    ulong new_sz = cosmfs_op(FS_OP_SIZE, T_A_NEW_FNAME, 0, 0, 0);
+    ulong new_ok = 0;
+    if (new_sz > 0) {
+        new_ok = 1;
+    }
+    runner->assert_true(new_ok, "Aria: new file saved to CosmFS" as void*);
+}

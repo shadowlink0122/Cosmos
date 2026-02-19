@@ -20,7 +20,7 @@ import ../test_runner;
 
 /// ヒープ基本テストを実行する
 export void test_heap(TestRunner* runner, Heap* heap) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println("[TEST] === Heap Tests ===" as void*);
 

@@ -167,7 +167,7 @@ export void task_d_fn() {
 
 /// スケジューラテストを実行する
 export void test_scheduler(TestRunner* runner) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println("[TEST] === Scheduler Tests ===" as void*);
 

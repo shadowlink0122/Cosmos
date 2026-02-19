@@ -12,7 +12,7 @@ import ../test_runner;
 
 /// キーボードドライバテストを実行する
 export void test_keyboard(TestRunner* runner) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println("[TEST] === Keyboard Tests ===" as void*);
 

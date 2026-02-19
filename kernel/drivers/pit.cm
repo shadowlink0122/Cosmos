@@ -104,7 +104,7 @@ impl PIT {
     /// idt_table: IDTテーブルへのポインタ（ベクタ32登録用）
     void init(PIC8259A* pic, uint* idt_table) {
         DebugPort debug(0xE9);
-        SerialPort serial(0x3F8);
+        SerialPort serial = {port: 0x3F8};
 
         // tickカウンタを0に初期化
         ulong* tick_ptr = PIT_TICK_ADDR as ulong*;

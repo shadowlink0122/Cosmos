@@ -1,0 +1,96 @@
+//! platform: uefi
+// kernel::tests::sys::test_syscall - Syscallテスト
+//
+// syscallディスパッチャとsyscallハンドラの単体テスト。
+// 画面・環境変数syscallを直接呼出しで検証。
+//
+// 注: CosmFS CRUD テストはtest_cosmfsで包括的にカバー。
+// ここではsyscallディスパッチャとsyscallハンドラ固有の動作を検証。
+
+import ../test_runner;
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../sys/syscall;
+import ../../sys/syscall_table;
+import ../../sys/screen;
+import ../../sys/env;
+
+/// Syscallテストを実行
+export void test_syscall(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === Syscall Tests ===" as void*);
+
+    // ============================================================
+    // 画面syscall テスト（クラッシュしないことを検証）
+    // ============================================================
+
+    // --- Test 1: sys_screen_set_color は SYSCALL_OK を返す ---
+    ulong ret_color = sys_screen_set_color(0x0F);
+    runner->assert_zero(ret_color, "Syscall: set_color returns OK" as void*);
+
+    // --- Test 2: sys_screen_newline は SYSCALL_OK を返す ---
+    ulong ret_nl = sys_screen_newline();
+    runner->assert_zero(ret_nl, "Syscall: newline returns OK" as void*);
+
+    // --- Test 3: sys_screen_print_num は SYSCALL_OK を返す ---
+    ulong ret_num = sys_screen_print_num(42);
+    runner->assert_zero(ret_num, "Syscall: print_num returns OK" as void*);
+
+    // --- Test 4: sys_screen_print_hex は SYSCALL_OK を返す ---
+    ulong ret_hex = sys_screen_print_hex(0xFF);
+    runner->assert_zero(ret_hex, "Syscall: print_hex returns OK" as void*);
+
+    // --- Test 5: sys_screen_clear は SYSCALL_OK を返す ---
+    ulong ret_clr = sys_screen_clear();
+    runner->assert_zero(ret_clr, "Syscall: screen_clear returns OK" as void*);
+
+    // ============================================================
+    // 環境変数 テスト
+    // ============================================================
+
+    // 環境変数テーブルを初期化
+    env_init();
+
+    // --- Test 6: env_count は初期変数（4つ） ---
+    ulong ecount = env_count();
+    ulong four = 4;
+    runner->assert_eq(ecount, four, "Syscall: env_count=4 after init" as void*);
+
+    // --- Test 7: env_get("PATH") は非ゼロ（存在する） ---
+    ulong path_addr = env_get("PATH" as ulong);
+    runner->assert_nonzero(path_addr, "Syscall: env_get PATH found" as void*);
+
+    // --- Test 8: env_get("HOME") は非ゼロ ---
+    ulong home_addr = env_get("HOME" as ulong);
+    runner->assert_nonzero(home_addr, "Syscall: env_get HOME found" as void*);
+
+    // --- Test 9: env_get("NONEXIST") は0（未発見） ---
+    ulong missing_addr = env_get("NONEXIST" as ulong);
+    runner->assert_zero(missing_addr, "Syscall: env_get missing=0" as void*);
+
+    // --- Test 10: env_set + env_get ラウンドトリップ ---
+    env_set("TESTVAR" as ulong, "testval" as ulong);
+    ulong tv_addr = env_get("TESTVAR" as ulong);
+    runner->assert_nonzero(tv_addr, "Syscall: env_set/get roundtrip" as void*);
+
+    // --- Test 11: env_count が1増加 ---
+    ulong ecount2 = env_count();
+    ulong five = 5;
+    runner->assert_eq(ecount2, five, "Syscall: env_count=5 after set" as void*);
+
+    // ============================================================
+    // Syscallディスパッチ テスト
+    // ============================================================
+
+    // --- Test 12: 未知syscall番号はENOSYSを返す ---
+    ulong unknown_nr = 999;
+    ulong result = syscall_dispatch(unknown_nr, 0, 0, 0);
+    runner->assert_eq(result, SYSCALL_ENOSYS, "Syscall: unknown nr returns ENOSYS" as void*);
+
+    // --- Test 13: SYS_GETPID はsyscall_dispatch経由でも動作 ---
+    ulong pid_result = syscall_dispatch(SYS_GETPID, 0, 0, 0);
+    runner->assert_zero(pid_result, "Syscall: dispatch GETPID=0" as void*);
+
+    serial.println("[TEST] Syscall tests complete" as void*);
+}

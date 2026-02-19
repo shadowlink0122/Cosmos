@@ -31,7 +31,7 @@ const ulong TL_TEMP_BUF   = 0x8200;   // 一時バッファ 64B
 /// CosmEXEローダーテスト
 export void test_loader(TestRunner* runner, Heap* heap) {
     DebugPort debug(0xE9);
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     serial.println("[TEST] === Loader Tests ===" as void*);
     debug.println("[TEST_LOADER] start" as void*);
 
@@ -120,7 +120,8 @@ export void test_loader(TestRunner* runner, Heap* heap) {
 
     // --- Test 12: CosmFSにhelpファイルを登録 ---
     cosmfs_op(TL_FS_MEMCPY, TL_FNAME_BUF, "help" as ulong, 5, 0);
-    cosmfs_op(TL_FS_CREATE, TL_FNAME_BUF, TL_DATA_BUF, 4096, TL_TYPE_FILE);
+    // capacityをhelp_sizeに合わせる（help_size > 4096のためWRITEが切り詰められていた）
+    cosmfs_op(TL_FS_CREATE, TL_FNAME_BUF, TL_DATA_BUF, help_size, TL_TYPE_FILE);
     cosmfs_op(TL_FS_WRITE, TL_FNAME_BUF, TL_DATA_BUF, help_size, 0);
 
     ulong found = cosmfs_op(TL_FS_FIND, TL_FNAME_BUF, 0, 0, 0);

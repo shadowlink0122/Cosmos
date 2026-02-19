@@ -35,7 +35,7 @@ const ulong IT_READ_BUF   = 0xA200;
 
 /// 結合テストを実行する
 export void test_integration(TestRunner* runner, Heap* heap, PMM* pmm) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println("[TEST] === Integration Tests ===" as void*);
 

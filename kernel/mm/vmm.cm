@@ -81,7 +81,7 @@ impl VMM {
 
     /// 統計情報出力
     void print_stats() {
-        SerialPort serial(0x3F8);
+        SerialPort serial = {port: 0x3F8};
         DebugPort debug(0xE9);
 
         serial.puts("[VMM] CR3=0x" as void*);

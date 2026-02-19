@@ -21,7 +21,7 @@ import ../test_runner;
 /// ブートシーケンスのテストを実行する
 export void test_boot(TestRunner* runner, BootInfo* info,
                       PMM* pmm, Heap* heap) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println("[TEST] === Boot Tests ===" as void*);
 

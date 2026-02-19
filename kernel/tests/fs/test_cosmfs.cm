@@ -34,7 +34,7 @@ const ulong T_FNAME2_BUF = 0x5300;   // ファイル名2バッファ 64B
 
 /// CosmFSテストを実行する
 export void test_cosmfs(TestRunner* runner) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     serial.println("[TEST] === CosmFS Tests ===" as void*);
 
     // CosmFS初期化

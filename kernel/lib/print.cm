@@ -479,6 +479,6 @@ impl FBConsole {
 
 /// グローバルFBConsoleの実データを初期化する
 export void fb_init_global(ulong fb_addr, ulong width, ulong height, ulong stride) {
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     con.init(fb_addr, width, height, stride);
 }

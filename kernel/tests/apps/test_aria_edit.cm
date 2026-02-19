@@ -1,0 +1,80 @@
+//! platform: uefi
+// kernel::tests::apps::test_aria_edit - Aria編集テスト
+//
+// 文字挿入、削除（Backspace/x）、改行を検証。
+
+import ../../drivers/serial;
+import ../../fs/cosmfs;
+import ../../apps/aria/aria;
+import ../../apps/aria/aria_const;
+import ../../config;
+import ../test_runner;
+
+// テスト用固定メモリ領域
+const ulong T_A_FNAME_BUF = 0x6000;
+const ulong T_A_DATA_BUF  = 0x6100;
+const ulong T_A_WRITE_BUF = 0x7100;
+
+/// Aria編集テスト — 8テスト
+export void test_aria_edit(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[TEST] === Aria Edit Tests ===" as void*);
+
+    // テスト準備: 新しいファイル "Hi" (2バイト)
+    aria_init();
+    cosmfs_op(FS_OP_MEMCPY, T_A_FNAME_BUF, "b.txt" as ulong, 6, 0);
+    cosmfs_op(FS_OP_CREATE, T_A_FNAME_BUF, T_A_DATA_BUF, 4096, 0);
+    cosmfs_op(FS_OP_MEMCPY, T_A_WRITE_BUF, "Hi" as ulong, 2, 0);
+    cosmfs_op(FS_OP_WRITE, T_A_FNAME_BUF, T_A_WRITE_BUF, 2, 0);
+    aria_op(ARIA_OP_OPEN, T_A_FNAME_BUF, 5, 0, 0);
+
+    // テスト1: INSERT_CHARで文字挿入 → バッファサイズ+1
+    aria_op(ARIA_OP_KEY_INPUT, KEY_i, 0, 0, 0);  // Insertモード
+    aria_op(ARIA_OP_KEY_INPUT, 0x41, 0, 0, 0);  // 'A'
+    ulong* bs_ptr = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+    ulong bs_after = *bs_ptr;
+    runner->assert_eq(bs_after, 3, "Aria: INSERT 'A' -> buf_size=3" as void*);
+
+    // テスト2: modified フラグがセットされた
+    ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+    ulong modified = *mod_ptr;
+    runner->assert_eq(modified, 1, "Aria: modified=1 after insert" as void*);
+
+    // テスト3: Backspaceで文字削除
+    aria_op(ARIA_OP_KEY_INPUT, KEY_BACKSPACE, 0, 0, 0);
+    ulong bs_del = *bs_ptr;
+    runner->assert_eq(bs_del, 2, "Aria: Backspace -> buf_size=2" as void*);
+
+    // テスト4: NEWLINEでバッファサイズ+1、行数+1
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ENTER, 0, 0, 0);
+    ulong bs_nl = *bs_ptr;
+    runner->assert_eq(bs_nl, 3, "Aria: Enter -> buf_size=3" as void*);
+    ulong* nl_ptr = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+    ulong nl_after = *nl_ptr;
+    runner->assert_eq(nl_after, 2, "Aria: Enter -> num_lines=2" as void*);
+
+    // テスト5-6: NEWLINE後のcursor_yが+1、cursor_xが0
+    ulong* cy_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+    ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+    ulong cy_nl = *cy_ptr;
+    ulong cx_nl = *cx_ptr;
+    runner->assert_eq(cy_nl, 1, "Aria: Enter -> cursor_y=1" as void*);
+    runner->assert_eq(cx_nl, 0, "Aria: Enter -> cursor_x=0" as void*);
+
+    // ESCで戻す
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ESC, 0, 0, 0);
+
+    // テスト7: 'x' でカーソル上の文字を削除
+    // ENTER後のバッファ = "\nHi" (3バイト)
+    // (0,0) は改行文字なので 'x' はスキップされる
+    // → cursor_y=1, cursor_x=0 にして 'H' の位置で削除
+    ulong zero_v = 0;
+    ulong one_v = 1;
+    *cy_ptr = one_v;  // 2行目（'Hi'の行）
+    *cx_ptr = zero_v;
+    ulong bs_before_x = *bs_ptr;
+    aria_op(ARIA_OP_KEY_INPUT, KEY_x, 0, 0, 0);
+    ulong bs_x = *bs_ptr;
+    ulong expected_x = bs_before_x - 1;
+    runner->assert_eq(bs_x, expected_x, "Aria: 'x' deletes char" as void*);
+}

@@ -19,7 +19,7 @@ import ../drivers/debug_port;
 
 /// カーネルメッセージを serial + debug に同時出力（改行付き）
 export void klog(void* msg) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println(msg);
     debug.println(msg);
@@ -27,7 +27,7 @@ export void klog(void* msg) {
 
 /// カーネルメッセージを serial + debug に同時出力（改行なし）
 export void klog_puts(void* msg) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.puts(msg);
     debug.puts(msg);
@@ -35,7 +35,7 @@ export void klog_puts(void* msg) {
 
 /// 16進数値を serial + debug に同時出力
 export void klog_hex(ulong value) {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.print_hex(value);
     debug.print_hex(value);
@@ -43,7 +43,7 @@ export void klog_hex(ulong value) {
 
 /// 改行のみを出力
 export void klog_ln() {
-    SerialPort serial(0x3F8);
+    SerialPort serial = {port: 0x3F8};
     DebugPort debug(0xE9);
     serial.println("" as void*);
     debug.println("" as void*);
