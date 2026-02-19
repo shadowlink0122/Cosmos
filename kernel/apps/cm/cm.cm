@@ -26,6 +26,7 @@
 
 import ../../drivers/serial;
 import ../../drivers/debug_port;
+import ../../types;
 import ../../fs/cosmfs;
 import ../../mm/heap;
 import ../../config;
@@ -34,23 +35,23 @@ import ../fs/fs;
 import ../../shell/fs_result;
 
 // CosmFS操作コード
-const ulong CM_FS_CREATE  = 1;
-const ulong CM_FS_WRITE   = 2;
-const ulong CM_FS_SIZE    = 3;
-const ulong CM_FS_DELETE  = 4;
-const ulong CM_FS_FIND    = 5;
-const ulong CM_FS_MEMCPY  = 10;
-const ulong CM_FS_READ    = 12;
+const FsOpCode CM_FS_CREATE  = 1;
+const FsOpCode CM_FS_WRITE   = 2;
+const FsOpCode CM_FS_SIZE    = 3;
+const FsOpCode CM_FS_DELETE  = 4;
+const FsOpCode CM_FS_FIND    = 5;
+const FsOpCode CM_FS_MEMCPY  = 10;
+const FsOpCode CM_FS_READ    = 12;
 
 const ulong CM_NOT_FOUND = 0xFFFFFFFFFFFFFFFF;
 
 // バイトコード命令
-const ulong OP_HALT      = 0;
-const ulong OP_PRINT_NUM = 1;
-const ulong OP_PRINT_STR = 2;
+const FsOpCode OP_HALT      = 0;
+const FsOpCode OP_PRINT_NUM = 1;
+const FsOpCode OP_PRINT_STR = 2;
 
 // バイトコード1命令のサイズ（バイト）
-const ulong INSTR_SIZE = 16;
+const ByteSize INSTR_SIZE = 16;
 
 // コンパイラ用一時領域
 const ulong CM_INSTR_COUNT = 0xCE0;
@@ -80,7 +81,7 @@ export void cm_help() {
 }
 
 /// バイトコードに命令を書き込む
-export void cm_emit(ulong code_buf, ulong idx, ulong opcode, ulong operand) {
+export void cm_emit(MemAddr code_buf, Count idx, FsOpCode opcode, ulong operand) {
     ulong offset = idx * INSTR_SIZE;
     ulong* op_ptr = (code_buf + offset) as ulong*;
     *op_ptr = opcode;
@@ -89,7 +90,7 @@ export void cm_emit(ulong code_buf, ulong idx, ulong opcode, ulong operand) {
 }
 
 /// ソースコード中の数値リテラルを解析する
-export ulong cm_parse_number(ulong src, ulong pos, ulong len) {
+export ulong cm_parse_number(MemAddr src, ByteOffset pos, ByteSize len) {
     ulong result = 0;
     while (pos < len) {
         ulong ch = cmd_read_byte(src + pos);
@@ -102,7 +103,7 @@ export ulong cm_parse_number(ulong src, ulong pos, ulong len) {
 }
 
 /// print()パターンを1つ処理してバイトコード生成
-export ulong cm_compile_print(ulong src, ulong print_pos, ulong src_len, ulong code_buf) {
+export ByteOffset cm_compile_print(MemAddr src, ByteOffset print_pos, ByteSize src_len, MemAddr code_buf) {
     ulong* cnt_ptr = CM_INSTR_COUNT as ulong*;
     ulong idx = *cnt_ptr;
     ulong first_ch = cmd_read_byte(src + print_pos);
@@ -135,7 +136,7 @@ export ulong cm_compile_print(ulong src, ulong print_pos, ulong src_len, ulong c
 }
 
 /// ソースコード全体をスキャンしてprint()を探す
-export ulong cm_compile_source(ulong src, ulong src_len, ulong code_buf) {
+export ByteSize cm_compile_source(MemAddr src, ByteSize src_len, MemAddr code_buf) {
     ulong* cnt_ptr = CM_INSTR_COUNT as ulong*;
     ulong zero = 0;
     *cnt_ptr = zero;
@@ -180,7 +181,7 @@ export ulong cm_compile_source(ulong src, ulong src_len, ulong code_buf) {
 
 /// a.outファイルを作成してバイトコードを書き込む
 /// 戻り値: Result（成功時value=0、失敗時errorにコード）
-export FsResult cm_create_aout(ulong code_buf, ulong code_size, Heap* heap) {
+export FsResult cm_create_aout(MemAddr code_buf, ByteSize code_size, Heap* heap) {
     FsResult r_name = fs_from_alloc(heap->alloc(6));
     if (r_name.is_err != 0) { return r_name; }
     ulong aout_name = r_name.value;
@@ -204,7 +205,7 @@ export FsResult cm_create_aout(ulong code_buf, ulong code_size, Heap* heap) {
 }
 
 /// cmコマンド: .cmファイルをコンパイルしてa.outを生成
-export void cmd_cm(ulong buf_addr, ulong buf_len, Heap* heap) {
+export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     ulong arg_len = cmd_arg_len(buf_addr, arg_start, buf_len);
 
@@ -301,7 +302,7 @@ export void cmd_run_aout(Heap* heap) {
 }
 
 /// バイトコードVM実行エンジン
-export void cm_vm_exec(ulong code_buf, ulong code_size) {
+export void cm_vm_exec(MemAddr code_buf, ByteSize code_size) {
     ulong pc = 0;
     ulong steps = 0;
     ulong max_steps = 1000;

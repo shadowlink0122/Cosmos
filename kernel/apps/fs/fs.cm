@@ -15,6 +15,7 @@
 
 import ../../shell/shell_io;
 import ../../shell/fs_result;
+import ../../types;
 import ../../config;
 import ../../fs/cosmfs;
 import ../../mm/heap;
@@ -23,24 +24,24 @@ import ../../mm/heap;
 // CosmFS操作コード（cosmfs.cmと一致させる）
 // ============================================================
 
-const ulong FS_OP_CREATE    = 1;
-const ulong FS_OP_WRITE     = 2;
-const ulong FS_OP_SIZE      = 3;
-const ulong FS_OP_DELETE    = 4;
-const ulong FS_OP_FIND      = 5;
-const ulong FS_OP_GET_DATA  = 6;
-const ulong FS_OP_COUNT     = 7;
-const ulong FS_OP_ENTRY_RD  = 8;
-const ulong FS_OP_STRLEN    = 9;
-const ulong FS_OP_MEMCPY    = 10;
-const ulong FS_OP_APPEND    = 11;
+const FsOpCode FS_OP_CREATE    = 1;
+const FsOpCode FS_OP_WRITE     = 2;
+const FsOpCode FS_OP_SIZE      = 3;
+const FsOpCode FS_OP_DELETE    = 4;
+const FsOpCode FS_OP_FIND      = 5;
+const FsOpCode FS_OP_GET_DATA  = 6;
+const FsOpCode FS_OP_COUNT     = 7;
+const FsOpCode FS_OP_ENTRY_RD  = 8;
+const FsOpCode FS_OP_STRLEN    = 9;
+const FsOpCode FS_OP_MEMCPY    = 10;
+const FsOpCode FS_OP_APPEND    = 11;
 
 // ============================================================
 // 引数解析ヘルパー
 // ============================================================
 
 /// 1バイト読み取り
-export ulong cmd_read_byte(ulong addr) {
+export AsciiChar cmd_read_byte(MemAddr addr) {
     ulong result = 0;
     __asm__(`
         movq ${r:addr}, %rdi;
@@ -52,7 +53,7 @@ export ulong cmd_read_byte(ulong addr) {
 }
 
 /// 1バイト書き込み
-export void cmd_write_byte(ulong addr, ulong val) {
+export void cmd_write_byte(MemAddr addr, AsciiChar val) {
     __asm__(`
         movq ${r:addr}, %rdi;
         movq ${r:val}, %rax;
@@ -61,7 +62,7 @@ export void cmd_write_byte(ulong addr, ulong val) {
 }
 
 /// コマンドバッファから最初のスペース以降の引数の開始位置を返す
-export ulong cmd_find_arg(ulong buf_addr, ulong buf_len) {
+export ByteOffset cmd_find_arg(MemAddr buf_addr, ByteSize buf_len) {
     ulong i = 0;
     while (i < buf_len) {
         ulong ch = cmd_read_byte(buf_addr + i);
@@ -75,7 +76,7 @@ export ulong cmd_find_arg(ulong buf_addr, ulong buf_len) {
 }
 
 /// 引数の長さを返す
-export ulong cmd_arg_len(ulong buf_addr, ulong arg_start, ulong buf_len) {
+export ByteSize cmd_arg_len(MemAddr buf_addr, ByteOffset arg_start, ByteSize buf_len) {
     ulong len = 0;
     ulong i = arg_start;
     while (i < buf_len) {
@@ -125,7 +126,7 @@ export void cmd_ls() {
 // touch コマンド
 // ============================================================
 
-export void cmd_touch(ulong buf_addr, ulong buf_len, Heap* heap) {
+export void cmd_touch(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     if (arg_start >= buf_len) {
         shell_set_color(SHELL_COLOR_ERROR);
@@ -164,7 +165,7 @@ export void cmd_touch(ulong buf_addr, ulong buf_len, Heap* heap) {
 // cat コマンド
 // ============================================================
 
-export void cmd_cat(ulong buf_addr, ulong buf_len) {
+export void cmd_cat(MemAddr buf_addr, ByteSize buf_len) {
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     if (arg_start >= buf_len) {
         shell_set_color(SHELL_COLOR_ERROR);
@@ -205,7 +206,7 @@ export void cmd_cat(ulong buf_addr, ulong buf_len) {
 // rm コマンド
 // ============================================================
 
-export void cmd_rm(ulong buf_addr, ulong buf_len) {
+export void cmd_rm(MemAddr buf_addr, ByteSize buf_len) {
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     if (arg_start >= buf_len) {
         shell_set_color(SHELL_COLOR_ERROR);
@@ -235,7 +236,7 @@ export void cmd_rm(ulong buf_addr, ulong buf_len) {
 // write コマンド
 // ============================================================
 
-export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
+export void cmd_write(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     if (arg_start >= buf_len) {
         shell_set_color(SHELL_COLOR_ERROR);
@@ -300,7 +301,7 @@ export void cmd_write(ulong buf_addr, ulong buf_len, Heap* heap) {
 // append コマンド
 // ============================================================
 
-export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
+export void cmd_append(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     if (arg_start >= buf_len) {
         shell_set_color(SHELL_COLOR_ERROR);
@@ -364,7 +365,7 @@ export void cmd_append(ulong buf_addr, ulong buf_len, Heap* heap) {
 // mkdir コマンド（ディレクトリマーカー作成）
 // ============================================================
 
-export void cmd_mkdir(ulong buf_addr, ulong buf_len, Heap* heap) {
+export void cmd_mkdir(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     ulong arg_start = cmd_find_arg(buf_addr, buf_len);
     if (arg_start >= buf_len) {
         shell_set_color(SHELL_COLOR_ERROR);
@@ -408,7 +409,7 @@ export void cmd_mkdir(ulong buf_addr, ulong buf_len, Heap* heap) {
 // cp コマンド（ファイルコピー）
 // ============================================================
 
-export void cmd_cp(ulong buf_addr, ulong buf_len, Heap* heap) {
+export void cmd_cp(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     // "cp src dst" — 引数を2つ解析
     ulong arg1_start = cmd_find_arg(buf_addr, buf_len);
     if (arg1_start >= buf_len) {
@@ -488,7 +489,7 @@ export void cmd_cp(ulong buf_addr, ulong buf_len, Heap* heap) {
 // mv コマンド（ファイル移動）
 // ============================================================
 
-export void cmd_mv(ulong buf_addr, ulong buf_len, Heap* heap) {
+export void cmd_mv(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     // "mv src dst" — 引数を2つ解析
     ulong arg1_start = cmd_find_arg(buf_addr, buf_len);
     if (arg1_start >= buf_len) {

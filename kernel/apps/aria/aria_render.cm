@@ -12,11 +12,11 @@ import ./aria_const;
 // ============================================================
 
 // op=1: RENDER（全画面再描画）
-export ulong aria_render_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
     if (op != 1) { return 0; }
 
     // 画面サイズ取得 (syscall: SC_SCREEN_GET_SIZE)
-    ulong sc_gsz = SC_SCREEN_GET_SIZE;
+    SyscallNr sc_gsz = SC_SCREEN_GET_SIZE;
     ulong packed_size = 0;
     __asm__(`
         movq ${r:sc_gsz}, %rax;
@@ -60,16 +60,16 @@ export ulong aria_render_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong 
     }
 
     // 画面クリア (syscall)
-    ulong sc_clr = SC_SCREEN_CLEAR;
+    SyscallNr sc_clr = SC_SCREEN_CLEAR;
     __asm__(` movq ${r:sc_clr}, %rax; int $$0x80 `);
 
     // syscall定数（繰り返し使用）
-    ulong sc_scol = SC_SCREEN_SET_COLOR;
-    ulong sc_pc = SC_SCREEN_PUTC;
-    ulong sc_nl = SC_SCREEN_NEWLINE;
-    ulong hdr_color = COLOR_HEADER;
-    ulong out_color = COLOR_OUTPUT;
-    ulong ch_sp = 0x20;
+    SyscallNr sc_scol = SC_SCREEN_SET_COLOR;
+    SyscallNr sc_pc = SC_SCREEN_PUTC;
+    SyscallNr sc_nl = SC_SCREEN_NEWLINE;
+    Color hdr_color = COLOR_HEADER;
+    Color out_color = COLOR_OUTPUT;
+    AsciiChar ch_sp = 0x20;
 
     // ================================================================
     // ヘッダー行: " Aria: <filename> [+]"
@@ -201,7 +201,7 @@ export ulong aria_render_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong 
     // ================================================================
     // ステータスバー
     // ================================================================
-    ulong prompt_color = COLOR_PROMPT;
+    Color prompt_color = COLOR_PROMPT;
     __asm__(` movq ${r:sc_scol}, %rax; movq ${r:prompt_color}, %rdi; int $$0x80 `);
 
     ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;

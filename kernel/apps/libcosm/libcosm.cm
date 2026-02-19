@@ -13,22 +13,24 @@
 //   cosm_print_hex(val)     — 16進数出力
 //   cosm_getenv(key)        — 環境変数取得
 
+import ../../types;
+
 // ============================================================
 // syscall番号定数（syscall_table.cmと一致）
 // ============================================================
 
-const ulong COSM_SYS_EXIT    = 0;
-const ulong COSM_SYS_WRITE   = 1;
-const ulong COSM_SYS_GETENV  = 6;
+const SyscallNr COSM_SYS_EXIT    = 0;
+const SyscallNr COSM_SYS_WRITE   = 1;
+const SyscallNr COSM_SYS_GETENV  = 6;
 
-const ulong COSM_FD_STDOUT   = 1;
+const Fd COSM_FD_STDOUT   = 1;
 
 // ============================================================
 // 低レベルsyscall発行
 // ============================================================
 
 /// syscall発行: int 0x80 (rax=nr, rdi=a1, rsi=a2, rdx=a3)
-export ulong cosm_syscall3(ulong nr, ulong a1, ulong a2, ulong a3) {
+export SyscallResult cosm_syscall3(SyscallNr nr, ulong a1, ulong a2, ulong a3) {
     ulong ret = 0;
     __asm__(`
         movq ${r:nr}, %rax;
@@ -42,7 +44,7 @@ export ulong cosm_syscall3(ulong nr, ulong a1, ulong a2, ulong a3) {
 }
 
 /// syscall発行: int 0x80 (rax=nr, rdi=a1)
-export ulong cosm_syscall1(ulong nr, ulong a1) {
+export SyscallResult cosm_syscall1(SyscallNr nr, ulong a1) {
     ulong ret = 0;
     __asm__(`
         movq ${r:nr}, %rax;
@@ -58,7 +60,7 @@ export ulong cosm_syscall1(ulong nr, ulong a1) {
 // ============================================================
 
 /// 1バイト読み取り
-export ulong cosm_read_byte(ulong addr) {
+export AsciiChar cosm_read_byte(MemAddr addr) {
     ulong ch = 0;
     __asm__(`
         movq ${r:addr}, %rdi;
@@ -70,7 +72,7 @@ export ulong cosm_read_byte(ulong addr) {
 }
 
 /// NUL終端文字列の長さを計算
-export ulong cosm_strlen(ulong addr) {
+export ByteSize cosm_strlen(MemAddr addr) {
     ulong len = 0;
     ulong max = 4096;
     while (len < max) {
@@ -86,25 +88,25 @@ export ulong cosm_strlen(ulong addr) {
 // ============================================================
 
 /// プロセス終了
-export void cosm_exit(ulong code) {
+export void cosm_exit(ExitCode code) {
     cosm_syscall1(COSM_SYS_EXIT, code);
 }
 
 /// バイト列書き込み
-export ulong cosm_write(ulong fd, ulong buf, ulong len) {
+export SyscallResult cosm_write(Fd fd, MemAddr buf, ByteSize len) {
     return cosm_syscall3(COSM_SYS_WRITE, fd, buf, len);
 }
 
 /// NUL終端文字列出力 (stdout)
-export void cosm_puts(ulong msg) {
+export void cosm_puts(MemAddr msg) {
     ulong len = cosm_strlen(msg);
     cosm_write(COSM_FD_STDOUT, msg, len);
 }
 
 /// 1文字出力
-export void cosm_putc(ulong ch) {
+export void cosm_putc(AsciiChar ch) {
     // 一時領域に1バイト書いて出力
-    ulong tmp = 0xCE0;  // 一時バッファ
+    MemAddr tmp = 0xCE0;  // 一時バッファ
     __asm__(`
         movq ${r:tmp}, %rdi;
         movq ${r:ch}, %rax;
@@ -114,7 +116,7 @@ export void cosm_putc(ulong ch) {
 }
 
 /// 改行付き文字列出力
-export void cosm_println(ulong msg) {
+export void cosm_println(MemAddr msg) {
     cosm_puts(msg);
     cosm_putc(0x0A);  // '\n'
 }
@@ -150,6 +152,6 @@ export void cosm_print_hex(ulong value) {
 }
 
 /// 環境変数取得
-export ulong cosm_getenv(ulong key) {
+export MemAddr cosm_getenv(MemAddr key) {
     return cosm_syscall1(COSM_SYS_GETENV, key);
 }

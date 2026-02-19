@@ -11,13 +11,13 @@ import ./aria_const;
 // ============================================================
 
 // op=1: OPEN, op=2: SAVE
-export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+export ulong aria_file_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
 
     // ----- OPEN (arg1=filename_addr, arg2=filename_len) -----
     if (op == 1) {
         // ファイル名をコピー (syscall: SC_FS_MEMCPY)
-        ulong sc_memcpy = SC_FS_MEMCPY;
-        ulong memcpy_dst = ADDR_ARIA_FILENAME;
+        SyscallNr sc_memcpy = SC_FS_MEMCPY;
+        MemAddr memcpy_dst = ADDR_ARIA_FILENAME;
         __asm__(`
             movq ${r:sc_memcpy}, %rax;
             movq ${r:memcpy_dst}, %rdi;
@@ -26,7 +26,7 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
             int $$0x80
         `);
         // NUL終端
-        ulong nul_addr = ADDR_ARIA_FILENAME + arg2;
+        MemAddr nul_addr = ADDR_ARIA_FILENAME + arg2;
         __asm__(`
             movq ${r:nul_addr}, %rdi;
             xorq %rax, %rax;
@@ -37,9 +37,9 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
         *fl = arg2;
 
         // ファイルサイズ取得 (syscall: SC_FS_SIZE)
-        ulong sc_size = SC_FS_SIZE;
-        ulong fname_addr = ADDR_ARIA_FILENAME;
-        ulong fsize = 0;
+        SyscallNr sc_size = SC_FS_SIZE;
+        MemAddr fname_addr = ADDR_ARIA_FILENAME;
+        ByteSize fsize = 0;
         __asm__(`
             movq ${r:sc_size}, %rax;
             movq ${r:fname_addr}, %rdi;
@@ -48,12 +48,12 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
         `);
 
         // ファイル読み込み or 作成
-        ulong loaded = 0;
+        ByteSize loaded = 0;
         if (fsize != 0xFFFFFFFFFFFFFFFF) {
             if (fsize > 0) {
-                ulong sc_read = SC_FS_READ;
-                ulong buf_addr = ADDR_ARIA_BUFFER;
-                ulong buf_cap = ARIA_BUF_SIZE;
+                SyscallNr sc_read = SC_FS_READ;
+                MemAddr buf_addr = ADDR_ARIA_BUFFER;
+                ByteSize buf_cap = ARIA_BUF_SIZE;
                 __asm__(`
                     movq ${r:sc_read}, %rax;
                     movq ${r:fname_addr}, %rdi;
@@ -65,9 +65,9 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
             }
         } else {
             // ファイルが存在しない場合は自動作成
-            ulong sc_create = SC_FS_CREATE;
-            ulong create_buf = ADDR_ARIA_BUFFER;
-            ulong create_cap = ARIA_BUF_SIZE;
+            SyscallNr sc_create = SC_FS_CREATE;
+            MemAddr create_buf = ADDR_ARIA_BUFFER;
+            ByteSize create_cap = ARIA_BUF_SIZE;
             __asm__(`
                 movq ${r:sc_create}, %rax;
                 movq ${r:fname_addr}, %rdi;
@@ -82,11 +82,11 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
         *bs = loaded;
 
         // 行数カウント
-        ulong lines = 1;
+        Count lines = 1;
         ulong li = 0;
         while (li < loaded) {
-            ulong ch = 0;
-            ulong la = ADDR_ARIA_BUFFER + li;
+            AsciiChar ch = 0;
+            MemAddr la = ADDR_ARIA_BUFFER + li;
             __asm__(`
                 movq ${r:la}, %rdi;
                 xorq %rax, %rax;
@@ -130,8 +130,8 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
         ulong buf_size = *bs;
 
         // ファイルが存在しない場合は作成
-        ulong sc_sz = SC_FS_SIZE;
-        ulong sv_fname = ADDR_ARIA_FILENAME;
+        SyscallNr sc_sz = SC_FS_SIZE;
+        MemAddr sv_fname = ADDR_ARIA_FILENAME;
         ulong fcheck = 0;
         __asm__(`
             movq ${r:sc_sz}, %rax;
@@ -140,9 +140,9 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
             movq %rax, ${=r:fcheck}
         `);
         if (fcheck == 0xFFFFFFFFFFFFFFFF) {
-            ulong sc_cr = SC_FS_CREATE;
-            ulong cr_buf2 = ADDR_ARIA_BUFFER;
-            ulong cr_cap2 = 4096;
+            SyscallNr sc_cr = SC_FS_CREATE;
+            MemAddr cr_buf2 = ADDR_ARIA_BUFFER;
+            ByteSize cr_cap2 = 4096;
             __asm__(`
                 movq ${r:sc_cr}, %rax;
                 movq ${r:sv_fname}, %rdi;
@@ -153,8 +153,8 @@ export ulong aria_file_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong ar
         }
 
         // 書き込み
-        ulong sc_wr = SC_FS_WRITE;
-        ulong wr_buf = ADDR_ARIA_BUFFER;
+        SyscallNr sc_wr = SC_FS_WRITE;
+        MemAddr wr_buf = ADDR_ARIA_BUFFER;
         ulong written = 0;
         __asm__(`
             movq ${r:sc_wr}, %rax;
