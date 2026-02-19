@@ -1,4 +1,5 @@
 //! platform: uefi
+import ../config;
 // kernel::drivers::keyboard - PS/2 キーボードドライバ
 //
 // PS/2キーボードからのスキャンコードをIRQ1経由で受信し、
@@ -30,13 +31,13 @@ import ../arch/isr;
 // ============================================================
 
 // キーバッファの固定アドレスとサイズ
-const ulong KB_BUF_ADDR      = 0xC00;  // リングバッファ開始
+const MemAddr KB_BUF_ADDR      = 0xC00;  // リングバッファ開始
 const ulong KB_BUF_SIZE      = 64;     // バッファサイズ（バイト）
-const ulong KB_WRITE_IDX     = 0xC40;  // 書込みインデックス
-const ulong KB_READ_IDX      = 0xC48;  // 読取りインデックス
-const ulong KB_COUNT         = 0xC50;  // バッファ内要素数
-const ulong KB_LAST_SCANCODE = 0xC58;  // 最後のスキャンコード
-const ulong KB_SHIFT_STATE   = 0xC60;  // Shiftキー状態
+const MemAddr KB_WRITE_IDX     = 0xC40;  // 書込みインデックス
+const MemAddr KB_READ_IDX      = 0xC48;  // 読取りインデックス
+const MemAddr KB_COUNT         = 0xC50;  // バッファ内要素数
+const MemAddr KB_LAST_SCANCODE = 0xC58;  // 最後のスキャンコード
+const MemAddr KB_SHIFT_STATE   = 0xC60;  // Shiftキー状態
 const ulong KB_EXTENDED_FLAG = 0xC68;  // 0xE0拡張フラグ
 
 // キーボードレイアウト定数
@@ -62,7 +63,7 @@ const ulong KB_STATUS_PORT = 0x64;  // キーボードステータスポート
 
 /// メイクコード（キー押下）からASCIIへの変換
 /// 未定義キーは0を返す
-export ulong scancode_to_ascii(ulong scancode) {
+export AsciiChar scancode_to_ascii(ScanCode scancode) {
     // 数字行
     if (scancode == 0x02) { return 0x31; }  // 1
     if (scancode == 0x03) { return 0x32; }  // 2
@@ -150,7 +151,7 @@ export ulong scancode_to_ascii(ulong scancode) {
 }
 
 /// Shift押下時のスキャンコード→ASCII変換
-export ulong scancode_to_ascii_shifted(ulong scancode) {
+export AsciiChar scancode_to_ascii_shifted(ScanCode scancode) {
     // 数字行（Shift付き）
     if (scancode == 0x02) { return 0x21; }  // !
     // レイアウト依存キー
@@ -385,7 +386,7 @@ export void irq1_handler() {
 
 /// キーバッファからスキャンコードを1つ取得する
 /// バッファが空の場合は0を返す
-export ulong kb_read_scancode() {
+export ScanCode kb_read_scancode() {
     ulong* count_ptr = KB_COUNT as ulong*;
     ulong count = *count_ptr;
     if (count == 0) {
@@ -425,7 +426,7 @@ export ulong kb_has_data() {
 }
 
 /// 最後に受信したスキャンコードを取得
-export ulong kb_last_scancode() {
+export ScanCode kb_last_scancode() {
     ulong* ptr = KB_LAST_SCANCODE as ulong*;
     return *ptr;
 }
@@ -434,7 +435,7 @@ export ulong kb_last_scancode() {
 /// Shift状態を考慮して変換する
 /// 矢印キーは仮想キーコード(VKEY_UP等)を返す
 /// バッファが空の場合や変換不能キーの場合は0を返す
-export ulong kb_read_char() {
+export AsciiChar kb_read_char() {
     ulong scancode = kb_read_scancode();
     if (scancode == 0) {
         return 0;

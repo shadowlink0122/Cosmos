@@ -10,6 +10,7 @@
 //   pic.send_eoi(1);   // EOI送信
 
 import ./serial;  // outb/inb関数を再利用
+import ../config;
 
 // ============================================================
 // ICW（初期化コマンドワード）定数
@@ -25,10 +26,10 @@ const ulong PIC_EOI   = 0x20;   // End Of Interrupt
 
 /// 8259A PIC割り込みコントローラ
 export struct PIC8259A {
-    ulong master_cmd;    // マスターPICコマンドポート（通常0x20）
-    ulong master_data;   // マスターPICデータポート（通常0x21）
-    ulong slave_cmd;     // スレーブPICコマンドポート（通常0xA0）
-    ulong slave_data;    // スレーブPICデータポート（通常0xA1）
+    IoPort master_cmd;    // マスターPICコマンドポート（通常0x20）
+    IoPort master_data;   // マスターPICデータポート（通常0x21）
+    IoPort slave_cmd;     // スレーブPICコマンドポート（通常0xA0）
+    IoPort slave_data;    // スレーブPICデータポート（通常0xA1）
 }
 
 // ============================================================
@@ -95,7 +96,7 @@ impl PIC8259A {
 
     /// 指定IRQ番号をアンマスク（有効化）する
     void unmask(ulong irq) {
-        ulong port = self.master_data;
+        IoPort port = self.master_data;
         ulong irq_line = irq;
         if (irq >= 8) {
             port = self.slave_data;

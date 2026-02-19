@@ -8,6 +8,7 @@
 //   debug.println("msg" as void*);
 
 import ./serial;  // outb関数を再利用
+import ../config;
 
 // ============================================================
 // DebugPort 構造体
@@ -15,7 +16,7 @@ import ./serial;  // outb関数を再利用
 
 /// QEMUデバッグコンソールポート
 export struct DebugPort {
-    ulong port;    // デバッグI/Oポートアドレス（QEMU = 0xE9）
+    IoPort port;    // デバッグI/Oポートアドレス（QEMU = 0xE9）
 }
 
 // ============================================================
