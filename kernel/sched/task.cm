@@ -23,7 +23,7 @@ const ulong TASK_TERMINATED = 3;
 
 // TCB配列の固定アドレスと制限
 const ulong TCB_BASE_ADDR   = 0x1000;   // TCB配列の先頭アドレス
-const ulong TCB_SIZE        = 64;       // 1 TCB = 64バイト（8フィールド × 8バイト）
+const ulong TCB_SIZE        = 128;      // 1 TCB = 128バイト（16フィールド × 8バイト）
 const ulong MAX_TASKS       = 8;        // 最大タスク数
 const ulong TASK_STACK_PAGES = 1;       // タスクスタック = 1ページ(4KB)
 
@@ -39,6 +39,12 @@ const ulong TCB_OFF_STACK_SIZE = 32;    // stack_size
 const ulong TCB_OFF_ENTRY      = 40;    // entry（エントリポイント関数アドレス）
 const ulong TCB_OFF_NEXT       = 48;    // next（次のTCB番号、循環リスト用）
 const ulong TCB_OFF_TIMESLICE  = 56;    // タイムスライス残り（tick数）
+
+// 拡張フィールド (Phase 2: プロセスマネージャ)
+const ulong TCB_OFF_PROCESS_TYPE = 64;  // プロセス種別 (0=kernel, 1=user)
+const ulong TCB_OFF_PARENT_ID    = 72;  // 親タスクID
+const ulong TCB_OFF_EXIT_CODE    = 80;  // 終了コード
+const ulong TCB_OFF_WAIT_FOR     = 88;  // 待機対象タスクID (BLOCKEDのとき)
 
 // ============================================================
 // TCBフィールドアクセス（ポインタ直接操作）
@@ -164,6 +170,12 @@ export ulong task_create(ulong task_id, ulong entry_fn, PMM* pmm) {
     tcb_write(task_id, TCB_OFF_NEXT, zero);  // スケジューラが後で設定
     tcb_write(task_id, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
 
+    // 拡張フィールド初期化
+    tcb_write(task_id, TCB_OFF_PROCESS_TYPE, zero);
+    tcb_write(task_id, TCB_OFF_PARENT_ID, zero);
+    tcb_write(task_id, TCB_OFF_EXIT_CODE, zero);
+    tcb_write(task_id, TCB_OFF_WAIT_FOR, zero);
+
     debug.puts("[TASK] created id=" as void*);
     debug.print_hex(task_id);
     debug.puts(", stack=0x" as void*);
@@ -189,6 +201,12 @@ export void task_create_idle() {
     tcb_write(zero, TCB_OFF_ENTRY, zero);
     tcb_write(zero, TCB_OFF_NEXT, zero);
     tcb_write(zero, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
+
+    // 拡張フィールド初期化
+    tcb_write(zero, TCB_OFF_PROCESS_TYPE, zero);
+    tcb_write(zero, TCB_OFF_PARENT_ID, zero);
+    tcb_write(zero, TCB_OFF_EXIT_CODE, zero);
+    tcb_write(zero, TCB_OFF_WAIT_FOR, zero);
 
     debug.println("[TASK] idle task (id=0) created" as void*);
 }

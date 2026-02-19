@@ -188,11 +188,15 @@ export ulong find_next_ready(ulong current_id) {
         }
 
         ulong state = tcb_read(next_id, TCB_OFF_STATE);
+        // READYまたはRUNNINGのタスクのみ選択
+        // TERMINATED, BLOCKEDはスキップ
         if (state != TASK_TERMINATED) {
-            return next_id;
+            if (state != TASK_BLOCKED) {
+                return next_id;
+            }
         }
 
-        // TERMINATED — 次を見る
+        // TERMINATED/BLOCKED — 次を見る
         next_id = tcb_read(next_id, TCB_OFF_NEXT);
         checked = checked + 1;
     }

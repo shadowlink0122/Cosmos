@@ -18,6 +18,31 @@ export const ulong SYS_GETENV  = 6;   // getenv(name, buf, len) → len
 export const ulong SYS_GETCWD  = 7;   // getcwd(buf, len) → len
 export const ulong SYS_CHDIR   = 8;   // chdir(path) → 0
 
+// 画面I/O syscall (10-19)
+export const ulong SYS_SCREEN_CLEAR      = 10;  // 画面クリア
+export const ulong SYS_SCREEN_PUTC       = 11;  // putc(ch)
+export const ulong SYS_SCREEN_PUTS       = 12;  // puts(buf, len)
+export const ulong SYS_SCREEN_SET_COLOR  = 13;  // set_color(color)
+export const ulong SYS_SCREEN_GET_SIZE   = 14;  // → rows<<32 | cols
+export const ulong SYS_SCREEN_SET_CURSOR = 15;  // set_cursor(x, y)
+export const ulong SYS_SCREEN_NEWLINE    = 16;  // 改行
+export const ulong SYS_SCREEN_PRINT_NUM  = 17;  // print_num(value) 10進数出力
+export const ulong SYS_SCREEN_PRINT_HEX  = 18;  // print_hex(value) 16進数出力
+
+// ファイルI/O syscall (20-29)
+export const ulong SYS_FS_OPEN   = 20;  // fs_open(path, path_len) → fd or size
+export const ulong SYS_FS_READ   = 21;  // fs_read(path, buf, len) → bytes
+export const ulong SYS_FS_WRITE  = 22;  // fs_write(path, buf, len) → 0
+export const ulong SYS_FS_CREATE = 23;  // fs_create(path, buf, capacity) → 0
+export const ulong SYS_FS_SIZE   = 24;  // fs_size(path) → size
+export const ulong SYS_FS_MEMCPY = 25;  // fs_memcpy(dst, src, len) → 0
+
+// プロセスsyscall (30-35)
+export const ulong SYS_SPAWN  = 30;  // spawn(entry_fn) → pid
+export const ulong SYS_KILL   = 31;  // kill(pid) → 0
+export const ulong SYS_WAIT   = 34;  // wait(pid) → exit_code
+export const ulong SYS_GETPID = 35;  // getpid() → pid
+
 // ============================================================
 // ファイルディスクリプタ定数
 // ============================================================

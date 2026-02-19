@@ -1,986 +1,121 @@
 //! platform: uefi
-// kernel::apps::aria - Aria テキストエディタ
+// kernel::apps::aria - Aria テキストエディタ（ディスパッチャ）
 //
 // vim風モーダルテキストエディタ。CosmFS上のファイルを編集可能。
-// Bug #14回避のため2 export関数のみ（aria_init + aria_op）。
+// このファイルはエントリポイントとして動作し、各サブモジュールに委譲する。
 //
-// メモリレイアウト:
-//   ADDR_ARIA_STATE  (0x2000): エディタ状態構造体
-//   ADDR_ARIA_BUFFER (0x2100): テキストバッファ 4KB
-//   ADDR_ARIA_FILENAME (0x3100): ファイル名 64B
-//   ADDR_ARIA_CMDLINE  (0x3140): コマンドライン 64B
-//
-// 状態オフセット:
-//   +0x00: mode (0=Normal, 1=Insert, 2=Command)
-//   +0x08: cursor_x
-//   +0x10: cursor_y
-//   +0x18: buf_size
-//   +0x20: scroll_top
-//   +0x28: modified
-//   +0x30: running
-//   +0x38: filename_len
-//   +0x40: cmd_len
-//   +0x48: num_lines
-//   +0x50: status_msg (0=なし, 1=保存完了, 2=保存失敗)
+// ディレクトリ構成:
+//     aria.cm         — ディスパッチャ（このファイル）
+//     aria_const.cm   — 定数定義
+//     aria_file.cm    — ファイルI/O（OPEN / SAVE）
+//     aria_render.cm  — 画面描画
+//     aria_input.cm   — キー入力処理
+//     aria_edit.cm    — テキスト編集操作
 //
 // API:
-//   aria_init()  — 初期化
-//   aria_op(op, arg1, arg2, arg3, arg4)  — 統合操作
-//     op=1:  OPEN       arg1=filename_addr, arg2=filename_len
-//     op=2:  KEY_INPUT  arg1=keycode
-//     op=3:  RENDER     — 画面描画
-//     op=4:  IS_RUNNING — return 0/1
-//     op=5:  SAVE
-//     op=6:  GET_MODE   — return mode
-//     op=7:  INSERT_CHAR arg1=char
-//     op=8:  DELETE_CHAR
-//     op=9:  CURSOR_MOVE arg1=direction(0=上,1=下,2=左,3=右)
-//     op=10: NEWLINE
+//     aria_init()  — 初期化
+//     aria_op(op, arg1, arg2, arg3, arg4) — 操作実行
+//         op=1:  OPEN   arg1=filename_addr, arg2=filename_len
+//         op=2:  KEY_INPUT  arg1=keycode
+//         op=3:  RENDER
+//         op=4:  IS_RUNNING → 0/1
+//         op=5:  SAVE
+//         op=6:  GET_MODE → mode
+//         op=7:  INSERT_CHAR arg1=char
+//         op=8:  DELETE_CHAR
+//         op=9:  CURSOR_MOVE arg1=direction(0=上,1=下,2=左,3=右)
+//         op=10: NEWLINE
+//
+// 注意: カーネルモジュールをimportしない。全I/Oはsyscall経由。
 
-import ../../config;
-import ../../fs/cosmfs;
-import ../../drivers/serial;
-import ../../shell/shell_io;
-
-// ============================================================
-// 定数
-// ============================================================
-
-// 操作コード
-const ulong ARIA_OP_OPEN       = 1;
-const ulong ARIA_OP_KEY_INPUT  = 2;
-const ulong ARIA_OP_RENDER     = 3;
-const ulong ARIA_OP_IS_RUNNING = 4;
-const ulong ARIA_OP_SAVE       = 5;
-const ulong ARIA_OP_GET_MODE   = 6;
-const ulong ARIA_OP_INSERT_CHAR = 7;
-const ulong ARIA_OP_DELETE_CHAR = 8;
-const ulong ARIA_OP_CURSOR_MOVE = 9;
-const ulong ARIA_OP_NEWLINE    = 10;
-
-// モード
-const ulong MODE_NORMAL  = 0;
-const ulong MODE_INSERT  = 1;
-const ulong MODE_COMMAND = 2;
-
-// 状態オフセット
-const ulong OFF_MODE       = 0;
-const ulong OFF_CURSOR_X   = 8;
-const ulong OFF_CURSOR_Y   = 16;
-const ulong OFF_BUF_SIZE   = 24;
-const ulong OFF_SCROLL_TOP = 32;
-const ulong OFF_MODIFIED   = 40;
-const ulong OFF_RUNNING    = 48;
-const ulong OFF_FNAME_LEN  = 56;
-const ulong OFF_CMD_LEN    = 64;
-const ulong OFF_NUM_LINES  = 72;
-const ulong OFF_STATUS_MSG = 80;
-
-// CosmFS操作コード（cosmfs.cmと一致）
-const ulong FS_OP_WRITE     = 2;
-const ulong FS_OP_SIZE      = 3;
-const ulong FS_OP_FIND      = 5;
-const ulong FS_OP_STRLEN    = 9;
-const ulong FS_OP_MEMCPY    = 10;
-const ulong FS_OP_READ      = 12;
-
-// キーコード
-const ulong KEY_ESC       = 0x1B;
-const ulong KEY_COLON     = 0x3A;  // ':'
-const ulong KEY_BACKSPACE = 0x08;
-const ulong KEY_ENTER     = 0x0A;
-const ulong KEY_h = 0x68;
-const ulong KEY_j = 0x6A;
-const ulong KEY_k = 0x6B;
-const ulong KEY_l = 0x6C;
-const ulong KEY_i = 0x69;
-const ulong KEY_a = 0x61;
-const ulong KEY_o = 0x6F;
-const ulong KEY_x = 0x78;
-const ulong KEY_q = 0x71;
-const ulong KEY_w = 0x77;
-const ulong KEY_EXCL = 0x21;  // '!'
-
-// 矢印キー仮想キーコード（keyboard.cmと一致）
-const ulong VKEY_UP    = 0x80;
-const ulong VKEY_DOWN  = 0x81;
-const ulong VKEY_LEFT  = 0x82;
-const ulong VKEY_RIGHT = 0x83;
+import ./aria_const;
+import ./aria_file;
+import ./aria_render;
+import ./aria_input;
+import ./aria_edit;
 
 // ============================================================
 // 初期化
 // ============================================================
 
 export void aria_init() {
-    // 状態領域をゼロクリア
-    ulong i = 0;
-    while (i < 128) {
-        ulong addr = ADDR_ARIA_STATE + i;
-        __asm__(`
-            movq ${r:addr}, %rdi;
-            xorq %rax, %rax;
-            movb %al, (%rdi)
-        `);
-        i = i + 1;
-    }
-    // テキストバッファをゼロクリア
-    ulong bi = 0;
-    while (bi < ARIA_BUF_SIZE) {
-        ulong baddr = ADDR_ARIA_BUFFER + bi;
-        __asm__(`
-            movq ${r:baddr}, %rdi;
-            xorq %rax, %rax;
-            movb %al, (%rdi)
-        `);
-        bi = bi + 1;
-    }
+    // 初期化はaria_file_op(OPEN)で行うため、ここでは何もしない
 }
 
 // ============================================================
-// ヘルパー: バイト読み書き
-// ============================================================
-
-// 注意: Bug #15のためヘルパー関数は使えない。
-// 全て aria_op 内にインライン化する。
-
-// ============================================================
-// 統合操作関数
+// 統合操作ディスパッチャ
 // ============================================================
 
 export ulong aria_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
 
-    // ----- 状態読み書きヘルパー（インライン） -----
-
-    // op=4: IS_RUNNING
+    // IS_RUNNING
     if (op == ARIA_OP_IS_RUNNING) {
         ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
         return *rp;
     }
 
-    // op=6: GET_MODE
+    // GET_MODE
     if (op == ARIA_OP_GET_MODE) {
         ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
         return *mp;
     }
 
-    // op=1: OPEN (filename_addr=arg1, filename_len=arg2)
+    // OPEN → aria_file_op(1, ...)
     if (op == ARIA_OP_OPEN) {
-        // ファイル名をコピー
-        cosmfs_op(FS_OP_MEMCPY, ADDR_ARIA_FILENAME, arg1, arg2, 0);
-        // NUL終端
-        ulong nul_addr = ADDR_ARIA_FILENAME + arg2;
-        __asm__(`
-            movq ${r:nul_addr}, %rdi;
-            xorq %rax, %rax;
-            movb %al, (%rdi)
-        `);
-        // ファイル名長保存
-        ulong* fl = (ADDR_ARIA_STATE + OFF_FNAME_LEN) as ulong*;
-        *fl = arg2;
-
-        // ファイル内容を読み込み
-        ulong fsize = cosmfs_op(FS_OP_SIZE, ADDR_ARIA_FILENAME, 0, 0, 0);
-        ulong loaded = 0;
-        if (fsize != 0xFFFFFFFFFFFFFFFF) {
-            if (fsize > 0) {
-                loaded = cosmfs_op(FS_OP_READ, ADDR_ARIA_FILENAME, ADDR_ARIA_BUFFER, ARIA_BUF_SIZE, 0);
-            }
-        }
-
-        // バッファサイズ設定
-        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
-        *bs = loaded;
-
-        // 行数カウント
-        ulong lines = 1;
-        ulong li = 0;
-        while (li < loaded) {
-            ulong ch = 0;
-            ulong la = ADDR_ARIA_BUFFER + li;
-            __asm__(`
-                movq ${r:la}, %rdi;
-                xorq %rax, %rax;
-                movb (%rdi), %al;
-                movq %rax, ${=r:ch}
-            `);
-            if (ch == 0x0A) {
-                lines = lines + 1;
-            }
-            li = li + 1;
-        }
-        ulong* nl = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
-        *nl = lines;
-
-        // 初期状態設定
-        ulong* mode = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
-        ulong zero = 0;
-        *mode = zero;  // Normal
-        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
-        *cx = zero;
-        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
-        *cy = zero;
-        ulong* st = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
-        *st = zero;
-        ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
-        *mod = zero;
-        ulong* cl = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
-        *cl = zero;
-
-        // running = 1
-        ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
-        ulong one = 1;
-        *rp = one;
-
-        return 0;
+        return aria_file_op(1, arg1, arg2, arg3, arg4);
     }
 
-    // op=3: RENDER — 画面描画（インプレース更新）
+    // RENDER → aria_render_op(1, ...)
     if (op == ARIA_OP_RENDER) {
-        // 画面サイズ取得
-        ulong screen_rows = shell_get_rows();
-        ulong screen_cols = shell_get_cols();
-        // テキスト表示行数 = 画面行数 - 2（ヘッダー1行 + ステータス1行）
-        ulong text_rows = screen_rows - 2;
-        if (text_rows > screen_rows) {
-            text_rows = 1;  // アンダーフロー防止
-        }
-
-        // カーソル位置読み込み
-        ulong* cy_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
-        ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
-        ulong cur_y = *cy_ptr;
-        ulong cur_x = *cx_ptr;
-
-        // スクロールオフセット自動調整
-        ulong* st_ptr = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
-        ulong scroll_top = *st_ptr;
-        // カーソルが画面上方に出た場合
-        if (cur_y < scroll_top) {
-            scroll_top = cur_y;
-            *st_ptr = scroll_top;
-        }
-        // カーソルが画面下方に出た場合
-        ulong scroll_bottom = scroll_top + text_rows;
-        if (cur_y >= scroll_bottom) {
-            scroll_top = cur_y - text_rows + 1;
-            *st_ptr = scroll_top;
-        }
-
-        // 画面クリア + カーソルリセット
-        shell_clear();
-
-        // === ヘッダー行 ===
-        shell_set_color(SHELL_COLOR_HEADER);
-        shell_puts(" Aria: " as void*);
-        shell_puts(ADDR_ARIA_FILENAME as void*);
-        // 変更フラグ表示
-        ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
-        ulong modified = *mod_ptr;
-        if (modified != 0) {
-            shell_puts(" [+]" as void*);
-        }
-        shell_newline();
-
-        // === テキスト領域 ===
-        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
-        ulong buf_size = *bs;
-
-        // テキスト行を描画
-        ulong screen_line = 0;
-        while (screen_line < text_rows) {
-            ulong file_line = scroll_top + screen_line;
-            ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
-            ulong num_lines = *nlp;
-
-            if (file_line < num_lines) {
-                // この行の先頭バッファ位置を計算
-                ulong line_start = 0;
-                ulong cur_line = 0;
-                ulong fi = 0;
-                while (cur_line < file_line) {
-                    if (fi >= buf_size) {
-                        cur_line = file_line;  // break
-                    } else {
-                        ulong ch = 0;
-                        ulong fa = ADDR_ARIA_BUFFER + fi;
-                        __asm__(`
-                            movq ${r:fa}, %rdi;
-                            xorq %rax, %rax;
-                            movb (%rdi), %al;
-                            movq %rax, ${=r:ch}
-                        `);
-                        fi = fi + 1;
-                        if (ch == 0x0A) {
-                            cur_line = cur_line + 1;
-                            line_start = fi;
-                        }
-                    }
-                }
-
-                // 行番号（3桁）
-                shell_set_color(SHELL_COLOR_HEADER);
-                ulong display_num = file_line + 1;
-                shell_print_hex(display_num);
-                shell_puts(" " as void*);
-
-                // 行内容を描画
-                shell_set_color(SHELL_COLOR_OUTPUT);
-                ulong col = 0;
-                ulong bi = line_start;
-                ulong line_done = 0;
-                while (line_done == 0) {
-                    if (bi >= buf_size) {
-                        line_done = 1;
-                    } else {
-                        ulong ch = 0;
-                        ulong ba = ADDR_ARIA_BUFFER + bi;
-                        __asm__(`
-                            movq ${r:ba}, %rdi;
-                            xorq %rax, %rax;
-                            movb (%rdi), %al;
-                            movq %rax, ${=r:ch}
-                        `);
-                        if (ch == 0x0A) {
-                            line_done = 1;
-                        } else {
-                            // カーソル位置ハイライト
-                            if (file_line == cur_y) {
-                                if (col == cur_x) {
-                                    shell_set_color(0x0000FF00);  // 明るい緑
-                                    shell_putc(ch);
-                                    shell_set_color(SHELL_COLOR_OUTPUT);
-                                } else {
-                                    shell_putc(ch);
-                                }
-                            } else {
-                                shell_putc(ch);
-                            }
-                            col = col + 1;
-                            bi = bi + 1;
-                        }
-                    }
-                }
-
-                // カーソルが行末にある場合のブロックカーソル表示
-                if (file_line == cur_y) {
-                    if (cur_x >= col) {
-                        shell_set_color(0x0000FF00);  // 明るい緑
-                        shell_putc(0x5F);  // '_' ブロックカーソル
-                        shell_set_color(SHELL_COLOR_OUTPUT);
-                    }
-                }
-            } else {
-                // ファイル末尾以降の空行
-                shell_set_color(SHELL_COLOR_HEADER);
-                shell_puts("~" as void*);
-            }
-
-            shell_newline();
-            screen_line = screen_line + 1;
-        }
-
-        // === ステータスバー（最下行） ===
-        shell_set_color(SHELL_COLOR_PROMPT);
-        ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
-        ulong mode = *mp;
-        if (mode == MODE_NORMAL) {
-            shell_puts(" NORMAL " as void*);
-        }
-        if (mode == MODE_INSERT) {
-            shell_puts(" INSERT " as void*);
-        }
-        if (mode == MODE_COMMAND) {
-            shell_puts(" :" as void*);
-            ulong* clp = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
-            ulong clen = *clp;
-            ulong ci = 0;
-            while (ci < clen) {
-                ulong cc = 0;
-                ulong ca = ADDR_ARIA_CMDLINE + ci;
-                __asm__(`
-                    movq ${r:ca}, %rdi;
-                    xorq %rax, %rax;
-                    movb (%rdi), %al;
-                    movq %rax, ${=r:cc}
-                `);
-                shell_putc(cc);
-                ci = ci + 1;
-            }
-            shell_puts(" " as void*);
-        }
-        // カーソル位置表示
-        shell_set_color(SHELL_COLOR_OUTPUT);
-        shell_puts(" L" as void*);
-        ulong disp_y = cur_y + 1;
-        shell_print_hex(disp_y);
-        shell_puts(",C" as void*);
-        ulong disp_x = cur_x + 1;
-        shell_print_hex(disp_x);
-
-        // ステータスメッセージ表示
-        ulong* sm_ptr = (ADDR_ARIA_STATE + OFF_STATUS_MSG) as ulong*;
-        ulong smsg = *sm_ptr;
-        if (smsg == 1) {
-            shell_set_color(0x0000FF00);  // 緑
-            shell_puts("  Written" as void*);
-            // メッセージクリア
-            ulong zero_s = 0;
-            *sm_ptr = zero_s;
-        }
-        if (smsg == 2) {
-            shell_set_color(SHELL_COLOR_ERROR);
-            shell_puts("  Write failed" as void*);
-            ulong zero_s2 = 0;
-            *sm_ptr = zero_s2;
-        }
-
-        return 0;
+        return aria_render_op(1, arg1, arg2, arg3, arg4);
     }
 
-    // op=2: KEY_INPUT (keycode=arg1)
+    // KEY_INPUT → aria_input_op(1, ...)
+    // 戻り値の特殊コードを処理（SAVE要求など）
     if (op == ARIA_OP_KEY_INPUT) {
-        ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
-        ulong mode = *mp;
-
-        // === Normalモード ===
-        if (mode == MODE_NORMAL) {
-            // ':' → Commandモード
-            if (arg1 == KEY_COLON) {
-                ulong cmd_mode = MODE_COMMAND;
-                *mp = cmd_mode;
-                ulong* cl = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
-                ulong zero = 0;
-                *cl = zero;
-                return 0;
-            }
-            // 'i' → Insertモード
-            if (arg1 == KEY_i) {
-                ulong ins_mode = MODE_INSERT;
-                *mp = ins_mode;
-                return 0;
-            }
-            // カーソル移動 h/j/k/l
-            if (arg1 == KEY_h) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 2, 0, 0, 0);  // 左
-                return 0;
-            }
-            if (arg1 == KEY_j) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 1, 0, 0, 0);  // 下
-                return 0;
-            }
-            if (arg1 == KEY_k) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 0, 0, 0, 0);  // 上
-                return 0;
-            }
-            if (arg1 == KEY_l) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 3, 0, 0, 0);  // 右
-                return 0;
-            }
-            // 矢印キー対応
-            if (arg1 == VKEY_UP) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 0, 0, 0, 0);  // 上
-                return 0;
-            }
-            if (arg1 == VKEY_DOWN) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 1, 0, 0, 0);  // 下
-                return 0;
-            }
-            if (arg1 == VKEY_LEFT) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 2, 0, 0, 0);  // 左
-                return 0;
-            }
-            if (arg1 == VKEY_RIGHT) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 3, 0, 0, 0);  // 右
-                return 0;
-            }
+        ulong result = aria_input_op(1, arg1, arg2, arg3, arg4);
+        // 0xFE01 = :w (SAVE要求)
+        if (result == 0xFE01) {
+            aria_file_op(2, 0, 0, 0, 0);
+            ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
+            ulong normal_mode = MODE_NORMAL;
+            *mp = normal_mode;
             return 0;
         }
-
-        // === Insertモード ===
-        if (mode == MODE_INSERT) {
-            // ESC → Normalモード
-            if (arg1 == KEY_ESC) {
-                ulong normal_mode = MODE_NORMAL;
-                *mp = normal_mode;
-                return 0;
-            }
-            // Backspace
-            if (arg1 == KEY_BACKSPACE) {
-                aria_op(ARIA_OP_DELETE_CHAR, 0, 0, 0, 0);
-                return 0;
-            }
-            // Enter
-            if (arg1 == KEY_ENTER) {
-                aria_op(ARIA_OP_NEWLINE, 0, 0, 0, 0);
-                return 0;
-            }
-            // 矢印キー対応（Insertモード）
-            if (arg1 == VKEY_UP) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 0, 0, 0, 0);
-                return 0;
-            }
-            if (arg1 == VKEY_DOWN) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 1, 0, 0, 0);
-                return 0;
-            }
-            if (arg1 == VKEY_LEFT) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 2, 0, 0, 0);
-                return 0;
-            }
-            if (arg1 == VKEY_RIGHT) {
-                aria_op(ARIA_OP_CURSOR_MOVE, 3, 0, 0, 0);
-                return 0;
-            }
-            // 通常文字
-            if (arg1 >= 0x20) {
-                if (arg1 < 0x7F) {
-                    aria_op(ARIA_OP_INSERT_CHAR, arg1, 0, 0, 0);
-                }
-            }
-            return 0;
-        }
-
-        // === Commandモード ===
-        if (mode == MODE_COMMAND) {
-            // ESC → Normalモード
-            if (arg1 == KEY_ESC) {
-                ulong normal_mode = MODE_NORMAL;
-                *mp = normal_mode;
-                return 0;
-            }
-            // Enter → コマンド実行
-            if (arg1 == KEY_ENTER) {
-                ulong* cl = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
-                ulong clen = *cl;
-
-                // コマンド解析
-                if (clen == 1) {
-                    ulong c0 = 0;
-                    __asm__(`
-                        movq ${r:ADDR_ARIA_CMDLINE}, %rdi;
-                        xorq %rax, %rax;
-                        movb (%rdi), %al;
-                        movq %rax, ${=r:c0}
-                    `);
-                    // :q → 終了
-                    if (c0 == KEY_q) {
-                        ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
-                        ulong zero = 0;
-                        *rp = zero;
-                        return 0;
-                    }
-                    // :w → 保存
-                    if (c0 == KEY_w) {
-                        aria_op(ARIA_OP_SAVE, 0, 0, 0, 0);
-                        ulong normal_mode = MODE_NORMAL;
-                        *mp = normal_mode;
-                        return 0;
-                    }
-                }
-                if (clen == 2) {
-                    ulong c0 = 0;
-                    __asm__(`
-                        movq ${r:ADDR_ARIA_CMDLINE}, %rdi;
-                        xorq %rax, %rax;
-                        movb (%rdi), %al;
-                        movq %rax, ${=r:c0}
-                    `);
-                    ulong c1_addr = ADDR_ARIA_CMDLINE + 1;
-                    ulong c1 = 0;
-                    __asm__(`
-                        movq ${r:c1_addr}, %rdi;
-                        xorq %rax, %rax;
-                        movb (%rdi), %al;
-                        movq %rax, ${=r:c1}
-                    `);
-                    // :wq → 保存して終了
-                    if (c0 == KEY_w) {
-                        if (c1 == KEY_q) {
-                            aria_op(ARIA_OP_SAVE, 0, 0, 0, 0);
-                            ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
-                            ulong zero = 0;
-                            *rp = zero;
-                            return 0;
-                        }
-                    }
-                    // :q! → 保存せず強制終了
-                    if (c0 == KEY_q) {
-                        if (c1 == KEY_EXCL) {
-                            ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
-                            ulong zero = 0;
-                            *rp = zero;
-                            return 0;
-                        }
-                    }
-                }
-                // 3文字コマンド
-                if (clen == 3) {
-                    ulong c0 = 0;
-                    __asm__(`
-                        movq ${r:ADDR_ARIA_CMDLINE}, %rdi;
-                        xorq %rax, %rax;
-                        movb (%rdi), %al;
-                        movq %rax, ${=r:c0}
-                    `);
-                    ulong c1_addr = ADDR_ARIA_CMDLINE + 1;
-                    ulong c1 = 0;
-                    __asm__(`
-                        movq ${r:c1_addr}, %rdi;
-                        xorq %rax, %rax;
-                        movb (%rdi), %al;
-                        movq %rax, ${=r:c1}
-                    `);
-                    ulong c2_addr = ADDR_ARIA_CMDLINE + 2;
-                    ulong c2 = 0;
-                    __asm__(`
-                        movq ${r:c2_addr}, %rdi;
-                        xorq %rax, %rax;
-                        movb (%rdi), %al;
-                        movq %rax, ${=r:c2}
-                    `);
-                    // :wq! → 保存して強制終了
-                    if (c0 == KEY_w) {
-                        if (c1 == KEY_q) {
-                            if (c2 == KEY_EXCL) {
-                                aria_op(ARIA_OP_SAVE, 0, 0, 0, 0);
-                                ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
-                                ulong zero = 0;
-                                *rp = zero;
-                                return 0;
-                            }
-                        }
-                    }
-                }
-                // 不明コマンド → Normalに戻る
-                ulong normal_mode = MODE_NORMAL;
-                *mp = normal_mode;
-                return 0;
-            }
-            // Backspace
-            if (arg1 == KEY_BACKSPACE) {
-                ulong* cl = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
-                ulong clen = *cl;
-                if (clen > 0) {
-                    ulong nc = clen - 1;
-                    *cl = nc;
-                }
-                return 0;
-            }
-            // 通常文字 → コマンドラインに追加
-            if (arg1 >= 0x20) {
-                if (arg1 < 0x7F) {
-                    ulong* cl = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
-                    ulong clen = *cl;
-                    if (clen < 62) {
-                        ulong ca = ADDR_ARIA_CMDLINE + clen;
-                        __asm__(`
-                            movq ${r:ca}, %rdi;
-                            movq ${r:arg1}, %rax;
-                            movb %al, (%rdi)
-                        `);
-                        ulong nc = clen + 1;
-                        *cl = nc;
-                    }
-                }
-            }
-            return 0;
-        }
-
-        return 0;
-    }
-
-    // op=5: SAVE — ファイル保存
-    if (op == ARIA_OP_SAVE) {
-        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
-        ulong buf_size = *bs;
-        ulong written = cosmfs_op(FS_OP_WRITE, ADDR_ARIA_FILENAME, ADDR_ARIA_BUFFER, buf_size, 0);
-        ulong* sm = (ADDR_ARIA_STATE + OFF_STATUS_MSG) as ulong*;
-        if (written > 0) {
-            ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+        // 0xFE02 = :wq (SAVE+QUIT要求)
+        if (result == 0xFE02) {
+            aria_file_op(2, 0, 0, 0, 0);
+            ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
             ulong zero = 0;
-            *mod = zero;
-            ulong msg_ok = 1;
-            *sm = msg_ok;
-        } else {
-            ulong msg_fail = 2;
-            *sm = msg_fail;
+            *rp = zero;
+            return 0;
         }
-        return 0;
+        return result;
     }
 
-    // op=7: INSERT_CHAR (char=arg1)
+    // SAVE → aria_file_op(2, ...)
+    if (op == ARIA_OP_SAVE) {
+        return aria_file_op(2, arg1, arg2, arg3, arg4);
+    }
+
+    // INSERT_CHAR → aria_edit_op(1, ...)
     if (op == ARIA_OP_INSERT_CHAR) {
-        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
-        ulong buf_size = *bs;
-        if (buf_size >= ARIA_BUF_SIZE) {
-            return 0;  // バッファフル
-        }
-        // カーソル位置を計算（行/列→バッファオフセット）
-        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
-        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
-        ulong cur_y = *cy;
-        ulong cur_x = *cx;
-
-        // バッファ内のカーソル位置を計算
-        ulong pos = 0;
-        ulong line = 0;
-        while (line < cur_y) {
-            if (pos >= buf_size) {
-                line = cur_y;  // break
-            } else {
-                ulong ch = 0;
-                ulong pa = ADDR_ARIA_BUFFER + pos;
-                __asm__(`
-                    movq ${r:pa}, %rdi;
-                    xorq %rax, %rax;
-                    movb (%rdi), %al;
-                    movq %rax, ${=r:ch}
-                `);
-                if (ch == 0x0A) {
-                    line = line + 1;
-                }
-                pos = pos + 1;
-            }
-        }
-        pos = pos + cur_x;
-        if (pos > buf_size) {
-            pos = buf_size;
-        }
-
-        // pos以降を1バイト後方にシフト
-        ulong si = buf_size;
-        while (si > pos) {
-            ulong src = ADDR_ARIA_BUFFER + si - 1;
-            ulong dst = ADDR_ARIA_BUFFER + si;
-            ulong sv = 0;
-            __asm__(`
-                movq ${r:src}, %rdi;
-                xorq %rax, %rax;
-                movb (%rdi), %al;
-                movq %rax, ${=r:sv}
-            `);
-            __asm__(`
-                movq ${r:dst}, %rdi;
-                movq ${r:sv}, %rax;
-                movb %al, (%rdi)
-            `);
-            si = si - 1;
-        }
-
-        // 文字を挿入
-        ulong ins_addr = ADDR_ARIA_BUFFER + pos;
-        __asm__(`
-            movq ${r:ins_addr}, %rdi;
-            movq ${r:arg1}, %rax;
-            movb %al, (%rdi)
-        `);
-
-        // サイズ++
-        ulong new_size = buf_size + 1;
-        *bs = new_size;
-
-        // カーソル右に移動
-        ulong nx = cur_x + 1;
-        *cx = nx;
-
-        // 変更フラグ
-        ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
-        ulong one = 1;
-        *mod = one;
-
-        return 0;
+        return aria_edit_op(1, arg1, arg2, arg3, arg4);
     }
 
-    // op=8: DELETE_CHAR (Backspace)
+    // DELETE_CHAR → aria_edit_op(2, ...)
     if (op == ARIA_OP_DELETE_CHAR) {
-        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
-        ulong buf_size = *bs;
-        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
-        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
-        ulong cur_y = *cy;
-        ulong cur_x = *cx;
-
-        // バッファ位置計算
-        ulong pos = 0;
-        ulong line = 0;
-        while (line < cur_y) {
-            if (pos >= buf_size) {
-                line = cur_y;
-            } else {
-                ulong ch = 0;
-                ulong pa = ADDR_ARIA_BUFFER + pos;
-                __asm__(`
-                    movq ${r:pa}, %rdi;
-                    xorq %rax, %rax;
-                    movb (%rdi), %al;
-                    movq %rax, ${=r:ch}
-                `);
-                if (ch == 0x0A) {
-                    line = line + 1;
-                }
-                pos = pos + 1;
-            }
-        }
-        pos = pos + cur_x;
-        if (pos == 0) {
-            return 0;  // 先頭では削除不可
-        }
-        if (pos > buf_size) {
-            pos = buf_size;
-        }
-
-        // 削除対象の文字をチェック（改行かどうか）
-        ulong del_pos = pos - 1;
-        ulong del_ch = 0;
-        ulong da = ADDR_ARIA_BUFFER + del_pos;
-        __asm__(`
-            movq ${r:da}, %rdi;
-            xorq %rax, %rax;
-            movb (%rdi), %al;
-            movq %rax, ${=r:del_ch}
-        `);
-
-        // del_pos以降を1バイト前方にシフト
-        ulong di = del_pos;
-        ulong max_d = buf_size - 1;
-        while (di < max_d) {
-            ulong src = ADDR_ARIA_BUFFER + di + 1;
-            ulong dst = ADDR_ARIA_BUFFER + di;
-            ulong sv = 0;
-            __asm__(`
-                movq ${r:src}, %rdi;
-                xorq %rax, %rax;
-                movb (%rdi), %al;
-                movq %rax, ${=r:sv}
-            `);
-            __asm__(`
-                movq ${r:dst}, %rdi;
-                movq ${r:sv}, %rax;
-                movb %al, (%rdi)
-            `);
-            di = di + 1;
-        }
-
-        // サイズ--
-        ulong new_size = buf_size - 1;
-        *bs = new_size;
-
-        // カーソル移動
-        if (del_ch == 0x0A) {
-            // 改行削除: 前の行末に移動
-            if (cur_y > 0) {
-                ulong ny = cur_y - 1;
-                *cy = ny;
-                // 前の行の長さを計算してcursor_xに設定
-                ulong prev_len = 0;
-                ulong pi = del_pos;
-                ulong found = 0;
-                while (found == 0) {
-                    if (pi == 0) {
-                        found = 1;
-                    } else {
-                        pi = pi - 1;
-                        ulong pc = 0;
-                        ulong paddr = ADDR_ARIA_BUFFER + pi;
-                        __asm__(`
-                            movq ${r:paddr}, %rdi;
-                            xorq %rax, %rax;
-                            movb (%rdi), %al;
-                            movq %rax, ${=r:pc}
-                        `);
-                        if (pc == 0x0A) {
-                            prev_len = del_pos - pi - 1;
-                            found = 1;
-                        }
-                        if (pi == 0) {
-                            if (found == 0) {
-                                prev_len = del_pos;
-                                found = 1;
-                            }
-                        }
-                    }
-                }
-                *cx = prev_len;
-            }
-            // 行数更新
-            ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
-            ulong nlines = *nlp;
-            if (nlines > 1) {
-                ulong new_lines = nlines - 1;
-                *nlp = new_lines;
-            }
-        } else {
-            // 通常文字削除: カーソル左に
-            if (cur_x > 0) {
-                ulong nx = cur_x - 1;
-                *cx = nx;
-            }
-        }
-
-        // 変更フラグ
-        ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
-        ulong one = 1;
-        *mod = one;
-
-        return 0;
+        return aria_edit_op(2, arg1, arg2, arg3, arg4);
     }
 
-    // op=9: CURSOR_MOVE (direction=arg1: 0=上,1=下,2=左,3=右)
+    // CURSOR_MOVE → aria_edit_op(3, ...)
     if (op == ARIA_OP_CURSOR_MOVE) {
-        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
-        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
-        ulong cur_y = *cy;
-        ulong cur_x = *cx;
-
-        // 上
-        if (arg1 == 0) {
-            if (cur_y > 0) {
-                ulong ny = cur_y - 1;
-                *cy = ny;
-            }
-        }
-        // 下
-        if (arg1 == 1) {
-            ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
-            ulong nlines = *nlp;
-            ulong next_y = cur_y + 1;
-            if (next_y < nlines) {
-                *cy = next_y;
-            }
-        }
-        // 左
-        if (arg1 == 2) {
-            if (cur_x > 0) {
-                ulong nx = cur_x - 1;
-                *cx = nx;
-            }
-        }
-        // 右
-        if (arg1 == 3) {
-            ulong nx = cur_x + 1;
-            *cx = nx;
-        }
-        return 0;
+        return aria_edit_op(3, arg1, arg2, arg3, arg4);
     }
 
-    // op=10: NEWLINE
+    // NEWLINE → aria_edit_op(4, ...)
     if (op == ARIA_OP_NEWLINE) {
-        // 改行文字を挿入
-        aria_op(ARIA_OP_INSERT_CHAR, 0x0A, 0, 0, 0);
-        // カーソルを次の行の先頭に
-        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
-        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
-        ulong cur_y = *cy;
-        ulong ny = cur_y + 1;
-        *cy = ny;
-        ulong zero = 0;
-        *cx = zero;
-        // 行数更新
-        ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
-        ulong nlines = *nlp;
-        ulong new_lines = nlines + 1;
-        *nlp = new_lines;
-        return 0;
+        return aria_edit_op(4, arg1, arg2, arg3, arg4);
     }
 
     return 0;

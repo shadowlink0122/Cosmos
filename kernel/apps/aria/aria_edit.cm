@@ -1,0 +1,351 @@
+//! platform: uefi
+// kernel::apps::aria::aria_edit - Ariaテキスト編集操作
+//
+// INSERT_CHAR / DELETE_CHAR / CURSOR_MOVE / NEWLINE を処理する。
+// Bug #14回避のため、export関数は aria_edit_op のみ。
+
+import ./aria_const;
+
+// ============================================================
+// 編集操作ディスパッチャ
+// ============================================================
+
+// op=1: INSERT_CHAR(arg1=char)
+// op=2: DELETE_CHAR
+// op=3: CURSOR_MOVE(arg1=direction: 0=上,1=下,2=左,3=右)
+// op=4: NEWLINE
+export ulong aria_edit_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+
+    // ===== INSERT_CHAR =====
+    if (op == 1) {
+        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+        ulong buf_size = *bs;
+        if (buf_size >= ARIA_BUF_SIZE) {
+            return 0;
+        }
+
+        // カーソル位置→バッファオフセット
+        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+        ulong cur_y = *cy;
+        ulong cur_x = *cx;
+
+        ulong pos = 0;
+        ulong line = 0;
+        while (line < cur_y) {
+            if (pos >= buf_size) {
+                line = cur_y;
+            } else {
+                ulong ch = 0;
+                ulong pa = ADDR_ARIA_BUFFER + pos;
+                __asm__(` movq ${r:pa}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+                if (ch == 0x0A) {
+                    line = line + 1;
+                }
+                pos = pos + 1;
+            }
+        }
+        pos = pos + cur_x;
+        if (pos > buf_size) {
+            pos = buf_size;
+        }
+
+        // pos以降を1バイト後方にシフト
+        ulong si = buf_size;
+        while (si > pos) {
+            ulong src = ADDR_ARIA_BUFFER + si - 1;
+            ulong dst = ADDR_ARIA_BUFFER + si;
+            ulong sv = 0;
+            __asm__(` movq ${r:src}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:sv} `);
+            __asm__(` movq ${r:dst}, %rdi; movq ${r:sv}, %rax; movb %al, (%rdi) `);
+            si = si - 1;
+        }
+
+        // 文字を挿入
+        ulong ins_addr = ADDR_ARIA_BUFFER + pos;
+        __asm__(` movq ${r:ins_addr}, %rdi; movq ${r:arg1}, %rax; movb %al, (%rdi) `);
+
+        // サイズ++
+        ulong new_size = buf_size + 1;
+        *bs = new_size;
+
+        // カーソル右移動（改行以外）
+        if (arg1 != 0x0A) {
+            ulong nx = cur_x + 1;
+            *cx = nx;
+        }
+
+        // 変更フラグ
+        ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+        ulong one = 1;
+        *mod = one;
+
+        return 0;
+    }
+
+    // ===== DELETE_CHAR =====
+    if (op == 2) {
+        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+        ulong buf_size = *bs;
+        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+        ulong cur_y = *cy;
+        ulong cur_x = *cx;
+
+        // バッファ位置計算
+        ulong pos = 0;
+        ulong line = 0;
+        while (line < cur_y) {
+            if (pos >= buf_size) {
+                line = cur_y;
+            } else {
+                ulong ch = 0;
+                ulong pa = ADDR_ARIA_BUFFER + pos;
+                __asm__(` movq ${r:pa}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+                if (ch == 0x0A) {
+                    line = line + 1;
+                }
+                pos = pos + 1;
+            }
+        }
+        pos = pos + cur_x;
+        if (pos == 0) {
+            return 0;
+        }
+        if (pos > buf_size) {
+            pos = buf_size;
+        }
+
+        // 削除対象チェック
+        ulong del_pos = pos - 1;
+        ulong del_ch = 0;
+        ulong da = ADDR_ARIA_BUFFER + del_pos;
+        __asm__(` movq ${r:da}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:del_ch} `);
+
+        // 前方シフト
+        ulong di = del_pos;
+        ulong max_d = buf_size - 1;
+        while (di < max_d) {
+            ulong src = ADDR_ARIA_BUFFER + di + 1;
+            ulong dst = ADDR_ARIA_BUFFER + di;
+            ulong sv = 0;
+            __asm__(` movq ${r:src}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:sv} `);
+            __asm__(` movq ${r:dst}, %rdi; movq ${r:sv}, %rax; movb %al, (%rdi) `);
+            di = di + 1;
+        }
+
+        // サイズ--
+        ulong new_size = buf_size - 1;
+        *bs = new_size;
+
+        // カーソル移動
+        if (del_ch == 0x0A) {
+            // 改行削除: 前の行末に移動
+            if (cur_y > 0) {
+                ulong ny = cur_y - 1;
+                *cy = ny;
+                // 前の行の長さを計算
+                ulong prev_len = 0;
+                ulong pi = del_pos;
+                ulong found = 0;
+                while (found == 0) {
+                    if (pi == 0) {
+                        found = 1;
+                    } else {
+                        pi = pi - 1;
+                        ulong pc = 0;
+                        ulong paddr = ADDR_ARIA_BUFFER + pi;
+                        __asm__(` movq ${r:paddr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:pc} `);
+                        if (pc == 0x0A) {
+                            prev_len = del_pos - pi - 1;
+                            found = 1;
+                        }
+                        if (pi == 0) {
+                            if (found == 0) {
+                                prev_len = del_pos;
+                                found = 1;
+                            }
+                        }
+                    }
+                }
+                *cx = prev_len;
+            }
+            // 行数更新
+            ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+            ulong nlines = *nlp;
+            if (nlines > 1) {
+                ulong new_lines = nlines - 1;
+                *nlp = new_lines;
+            }
+        } else {
+            // 通常文字削除
+            if (cur_x > 0) {
+                ulong nx = cur_x - 1;
+                *cx = nx;
+            }
+        }
+
+        // 変更フラグ
+        ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+        ulong one = 1;
+        *mod = one;
+
+        return 0;
+    }
+
+    // ===== CURSOR_MOVE (arg1: 0=上,1=下,2=左,3=右) =====
+    if (op == 3) {
+        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+        ulong* m_bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+        ulong m_buf = *m_bs;
+        ulong cur_y = *cy;
+        ulong cur_x = *cx;
+
+        // --- 上 ---
+        if (arg1 == 0) {
+            if (cur_y > 0) {
+                ulong ny = cur_y - 1;
+                *cy = ny;
+                // 移動先行の長さ計算→クランプ
+                ulong up_pos = 0;
+                ulong up_line = 0;
+                while (up_line < ny) {
+                    if (up_pos >= m_buf) {
+                        up_line = ny;
+                    } else {
+                        ulong uch = 0;
+                        ulong ua = ADDR_ARIA_BUFFER + up_pos;
+                        __asm__(` movq ${r:ua}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:uch} `);
+                        if (uch == 0x0A) { up_line = up_line + 1; }
+                        up_pos = up_pos + 1;
+                    }
+                }
+                ulong up_col = 0;
+                ulong up_eol = 0;
+                while (up_eol == 0) {
+                    if (up_pos >= m_buf) { up_eol = 1; }
+                    else {
+                        ulong uch2 = 0;
+                        ulong ua2 = ADDR_ARIA_BUFFER + up_pos;
+                        __asm__(` movq ${r:ua2}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:uch2} `);
+                        if (uch2 == 0x0A) { up_eol = 1; }
+                        else { up_col = up_col + 1; up_pos = up_pos + 1; }
+                    }
+                }
+                if (cur_x >= up_col) {
+                    if (up_col > 0) { ulong unx = up_col - 1; *cx = unx; }
+                    else { ulong uzero = 0; *cx = uzero; }
+                }
+            }
+        }
+
+        // --- 下 ---
+        if (arg1 == 1) {
+            ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+            ulong nlines = *nlp;
+            ulong next_y = cur_y + 1;
+            if (next_y < nlines) {
+                *cy = next_y;
+                ulong dn_pos = 0;
+                ulong dn_line = 0;
+                while (dn_line < next_y) {
+                    if (dn_pos >= m_buf) { dn_line = next_y; }
+                    else {
+                        ulong dch = 0;
+                        ulong dna = ADDR_ARIA_BUFFER + dn_pos;
+                        __asm__(` movq ${r:dna}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:dch} `);
+                        if (dch == 0x0A) { dn_line = dn_line + 1; }
+                        dn_pos = dn_pos + 1;
+                    }
+                }
+                ulong dn_col = 0;
+                ulong dn_eol = 0;
+                while (dn_eol == 0) {
+                    if (dn_pos >= m_buf) { dn_eol = 1; }
+                    else {
+                        ulong dch2 = 0;
+                        ulong dna2 = ADDR_ARIA_BUFFER + dn_pos;
+                        __asm__(` movq ${r:dna2}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:dch2} `);
+                        if (dch2 == 0x0A) { dn_eol = 1; }
+                        else { dn_col = dn_col + 1; dn_pos = dn_pos + 1; }
+                    }
+                }
+                if (cur_x >= dn_col) {
+                    if (dn_col > 0) { ulong dnx = dn_col - 1; *cx = dnx; }
+                    else { ulong dzero = 0; *cx = dzero; }
+                }
+            }
+        }
+
+        // --- 左 ---
+        if (arg1 == 2) {
+            if (cur_x > 0) {
+                ulong nx = cur_x - 1;
+                *cx = nx;
+            }
+        }
+
+        // --- 右（行長でクランプ）---
+        if (arg1 == 3) {
+            ulong rt_pos = 0;
+            ulong rt_line = 0;
+            while (rt_line < cur_y) {
+                if (rt_pos >= m_buf) { rt_line = cur_y; }
+                else {
+                    ulong rch = 0;
+                    ulong ra = ADDR_ARIA_BUFFER + rt_pos;
+                    __asm__(` movq ${r:ra}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:rch} `);
+                    if (rch == 0x0A) { rt_line = rt_line + 1; }
+                    rt_pos = rt_pos + 1;
+                }
+            }
+            ulong rt_col = 0;
+            ulong rt_eol = 0;
+            while (rt_eol == 0) {
+                if (rt_pos >= m_buf) { rt_eol = 1; }
+                else {
+                    ulong rch2 = 0;
+                    ulong ra2 = ADDR_ARIA_BUFFER + rt_pos;
+                    __asm__(` movq ${r:ra2}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:rch2} `);
+                    if (rch2 == 0x0A) { rt_eol = 1; }
+                    else { rt_col = rt_col + 1; rt_pos = rt_pos + 1; }
+                }
+            }
+            ulong nx = cur_x + 1;
+            ulong* m_mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
+            ulong m_mode = *m_mp;
+            if (m_mode == MODE_INSERT) {
+                if (nx <= rt_col) { *cx = nx; }
+            } else {
+                if (rt_col > 0) {
+                    ulong rt_max = rt_col - 1;
+                    if (nx <= rt_max) { *cx = nx; }
+                }
+            }
+        }
+        return 0;
+    }
+
+    // ===== NEWLINE =====
+    if (op == 4) {
+        // 改行文字を挿入
+        aria_edit_op(1, 0x0A, 0, 0, 0);
+        // カーソルを次の行の先頭に
+        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+        ulong cur_y = *cy;
+        ulong ny = cur_y + 1;
+        *cy = ny;
+        ulong zero = 0;
+        *cx = zero;
+        // 行数更新
+        ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+        ulong nlines = *nlp;
+        ulong new_lines = nlines + 1;
+        *nlp = new_lines;
+        return 0;
+    }
+
+    return 0;
+}

@@ -90,10 +90,10 @@ jobs:
           retention-days: 1
 
   # ========================================
-  # UEFI テスト - QEMUでブートテスト
+  # カーネルテスト - QEMUで自動テスト実行
   # ========================================
-  boot-test:
-    name: ブートテスト
+  kernel-test:
+    name: カーネルテスト
     needs: build
     runs-on: ubuntu-22.04
     steps:
@@ -107,12 +107,21 @@ jobs:
 
       - run: chmod +x Cm/cm 2>/dev/null || true
 
+      - name: LLVM インストール
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ env.LLVM_VERSION }}
+          sudo apt-get install -y llvm-${{ env.LLVM_VERSION }}-dev clang-${{ env.LLVM_VERSION }} lld-${{ env.LLVM_VERSION }}
+          echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
+
       - name: QEMU インストール
         run: sudo apt-get install -y qemu-system-x86
 
-      - name: UEFI ブートテスト
-        run: |
-          echo "=== Cosmos UEFI ブートテスト ==="
-          # TODO: 自動ブートテストスクリプトを追加
-          echo "✅ ブートテスト（手動確認待ち）"
-        continue-on-error: true
+      - name: OVMF ダウンロード
+        run: make download-ovmf
+
+      - name: カーネルテスト実行
+        run: make test
+        timeout-minutes: 5
+
