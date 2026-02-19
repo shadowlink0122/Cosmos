@@ -52,22 +52,22 @@ export const ulong FS_TYPE_DIR  = 1;
 // ルートディレクトリの親インデックス（親なし）
 export const ulong FS_ROOT_PARENT = 0xFFFFFFFFFFFFFFFF;
 
-// 操作コード
-const FsOpCode FS_OP_CREATE    = 1;
-const FsOpCode FS_OP_WRITE     = 2;
-const FsOpCode FS_OP_SIZE      = 3;
-const FsOpCode FS_OP_DELETE    = 4;
-const FsOpCode FS_OP_FIND      = 5;
-const FsOpCode FS_OP_GET_DATA  = 6;
-const FsOpCode FS_OP_COUNT     = 7;
-const FsOpCode FS_OP_ENTRY_RD  = 8;
-const FsOpCode FS_OP_STRLEN    = 9;
-const FsOpCode FS_OP_MEMCPY    = 10;
-const FsOpCode FS_OP_APPEND    = 11;
-const FsOpCode FS_OP_READ      = 12;
-const FsOpCode FS_OP_FIND_IN_DIR = 13;
-const FsOpCode FS_OP_MKDIR       = 14;
-const FsOpCode FS_OP_SET_PARENT  = 15;
+// 操作コード（export: 全モジュールから参照可能）
+export const FsOpCode FS_OP_CREATE    = 1;
+export const FsOpCode FS_OP_WRITE     = 2;
+export const FsOpCode FS_OP_SIZE      = 3;
+export const FsOpCode FS_OP_DELETE    = 4;
+export const FsOpCode FS_OP_FIND      = 5;
+export const FsOpCode FS_OP_GET_DATA  = 6;
+export const FsOpCode FS_OP_COUNT     = 7;
+export const FsOpCode FS_OP_ENTRY_RD  = 8;
+export const FsOpCode FS_OP_STRLEN    = 9;
+export const FsOpCode FS_OP_MEMCPY    = 10;
+export const FsOpCode FS_OP_APPEND    = 11;
+export const FsOpCode FS_OP_READ      = 12;
+export const FsOpCode FS_OP_FIND_IN_DIR = 13;
+export const FsOpCode FS_OP_MKDIR       = 14;
+export const FsOpCode FS_OP_SET_PARENT  = 15;
 
 // ============================================================
 // 初期化

@@ -34,14 +34,7 @@ import ../../shell/shell_io;
 import ../fs/fs;
 import ../../shell/fs_result;
 
-// CosmFS操作コード
-const FsOpCode CM_FS_CREATE  = 1;
-const FsOpCode CM_FS_WRITE   = 2;
-const FsOpCode CM_FS_SIZE    = 3;
-const FsOpCode CM_FS_DELETE  = 4;
-const FsOpCode CM_FS_FIND    = 5;
-const FsOpCode CM_FS_MEMCPY  = 10;
-const FsOpCode CM_FS_READ    = 12;
+// CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
 
 const ulong CM_NOT_FOUND = 0xFFFFFFFFFFFFFFFF;
 
@@ -185,20 +178,20 @@ export FsResult cm_create_aout(MemAddr code_buf, ByteSize code_size, Heap* heap)
     FsResult r_name = fs_from_alloc(heap->alloc(6));
     if (r_name.is_err != 0) { return r_name; }
     ulong aout_name = r_name.value;
-    cosmfs_op(CM_FS_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
+    cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
 
-    ulong existing = cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0);
+    ulong existing = cosmfs_op(FS_OP_FIND, aout_name, 0, 0, 0);
     if (existing != CM_NOT_FOUND) {
-        cosmfs_op(CM_FS_DELETE, aout_name, 0, 0, 0);
+        cosmfs_op(FS_OP_DELETE, aout_name, 0, 0, 0);
     }
 
     FsResult r_data = fs_from_alloc(heap->alloc(4096));
     if (r_data.is_err != 0) { return r_data; }
 
-    FsResult r_create = fs_from_create(cosmfs_op(CM_FS_CREATE, aout_name, r_data.value, 4096, 0));
+    FsResult r_create = fs_from_create(cosmfs_op(FS_OP_CREATE, aout_name, r_data.value, 4096, 0));
     if (r_create.is_err != 0) { return r_create; }
 
-    FsResult r_write = fs_from_op(cosmfs_op(CM_FS_WRITE, aout_name, code_buf, code_size, 0));
+    FsResult r_write = fs_from_op(cosmfs_op(FS_OP_WRITE, aout_name, code_buf, code_size, 0));
     if (r_write.is_err != 0) { return r_write; }
 
     return fs_ok(0 as ulong);
@@ -239,22 +232,22 @@ export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
     FsResult r_name = fs_from_alloc(heap->alloc(arg_len + 1));
     if (r_name.is_err != 0) { fs_print_error(r_name.error); return; }
     ulong name_buf = r_name.value;
-    cosmfs_op(CM_FS_MEMCPY, name_buf, buf_addr + arg_start, arg_len, 0);
+    cosmfs_op(FS_OP_MEMCPY, name_buf, buf_addr + arg_start, arg_len, 0);
     cmd_write_byte(name_buf + arg_len, 0);
 
     // ソースファイルの検索
-    FsResult r_find = fs_from_op(cosmfs_op(CM_FS_FIND, name_buf, 0, 0, 0));
+    FsResult r_find = fs_from_op(cosmfs_op(FS_OP_FIND, name_buf, 0, 0, 0));
     if (r_find.is_err != 0) { fs_print_error(r_find.error); return; }
 
     // ソースファイル読み込み
-    FsResult r_size = fs_from_op_nz(cosmfs_op(CM_FS_SIZE, name_buf, 0, 0, 0));
+    FsResult r_size = fs_from_op_nz(cosmfs_op(FS_OP_SIZE, name_buf, 0, 0, 0));
     if (r_size.is_err != 0) { fs_print_error(r_size.error); return; }
     ulong src_size = r_size.value;
 
     FsResult r_src = fs_from_alloc(heap->alloc(src_size + 1));
     if (r_src.is_err != 0) { fs_print_error(r_src.error); return; }
 
-    FsResult r_read = fs_from_op_nz(cosmfs_op(CM_FS_READ, name_buf, r_src.value, src_size, 0));
+    FsResult r_read = fs_from_op_nz(cosmfs_op(FS_OP_READ, name_buf, r_src.value, src_size, 0));
     if (r_read.is_err != 0) { fs_print_error(r_read.error); return; }
 
     // バイトコードバッファ
@@ -277,9 +270,9 @@ export void cmd_run_aout(Heap* heap) {
     FsResult r_name = fs_from_alloc(heap->alloc(6));
     if (r_name.is_err != 0) { fs_print_error(r_name.error); return; }
     ulong aout_name = r_name.value;
-    cosmfs_op(CM_FS_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
+    cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
 
-    FsResult r_find = fs_from_op(cosmfs_op(CM_FS_FIND, aout_name, 0, 0, 0));
+    FsResult r_find = fs_from_op(cosmfs_op(FS_OP_FIND, aout_name, 0, 0, 0));
     if (r_find.is_err != 0) {
         shell_set_color(0x00FF4444);
         shell_println("Error: a.out not found" as void*);
@@ -287,14 +280,14 @@ export void cmd_run_aout(Heap* heap) {
         return;
     }
 
-    FsResult r_size = fs_from_op_nz(cosmfs_op(CM_FS_SIZE, aout_name, 0, 0, 0));
+    FsResult r_size = fs_from_op_nz(cosmfs_op(FS_OP_SIZE, aout_name, 0, 0, 0));
     if (r_size.is_err != 0) { fs_print_error(r_size.error); return; }
     ulong code_size = r_size.value;
 
     FsResult r_buf = fs_from_alloc(heap->alloc(code_size));
     if (r_buf.is_err != 0) { fs_print_error(r_buf.error); return; }
 
-    FsResult r_read = fs_from_op_nz(cosmfs_op(CM_FS_READ, aout_name, r_buf.value, code_size, 0));
+    FsResult r_read = fs_from_op_nz(cosmfs_op(FS_OP_READ, aout_name, r_buf.value, code_size, 0));
     if (r_read.is_err != 0) { fs_print_error(r_read.error); return; }
 
     shell_set_color(0x00FFFFFF);

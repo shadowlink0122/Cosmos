@@ -12,13 +12,7 @@ import ../../drivers/debug_port;
 import ../../sys/loader;
 import ../../apps/bin/help_data;
 
-// CosmFS操作コード
-const ulong TL_FS_CREATE     = 1;
-const ulong TL_FS_WRITE      = 2;
-const ulong TL_FS_SIZE       = 3;
-const ulong TL_FS_FIND       = 5;
-const ulong TL_FS_READ       = 12;
-const ulong TL_FS_MEMCPY     = 10;
+// CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
 const ulong TL_NOT_FOUND     = 0xFFFFFFFFFFFFFFFF;
 const ulong TL_TYPE_FILE     = 0;
 
@@ -119,18 +113,18 @@ export void test_loader(TestRunner* runner, Heap* heap) {
     // ============================================================
 
     // --- Test 12: CosmFSにhelpファイルを登録 ---
-    cosmfs_op(TL_FS_MEMCPY, TL_FNAME_BUF, "help" as ulong, 5, 0);
+    cosmfs_op(FS_OP_MEMCPY, TL_FNAME_BUF, "help" as ulong, 5, 0);
     // capacityをhelp_sizeに合わせる（help_size > 4096のためWRITEが切り詰められていた）
-    cosmfs_op(TL_FS_CREATE, TL_FNAME_BUF, TL_DATA_BUF, help_size, TL_TYPE_FILE);
-    cosmfs_op(TL_FS_WRITE, TL_FNAME_BUF, TL_DATA_BUF, help_size, 0);
+    cosmfs_op(FS_OP_CREATE, TL_FNAME_BUF, TL_DATA_BUF, help_size, TL_TYPE_FILE);
+    cosmfs_op(FS_OP_WRITE, TL_FNAME_BUF, TL_DATA_BUF, help_size, 0);
 
-    ulong found = cosmfs_op(TL_FS_FIND, TL_FNAME_BUF, 0, 0, 0);
+    ulong found = cosmfs_op(FS_OP_FIND, TL_FNAME_BUF, 0, 0, 0);
     ulong found_ok = 0;
     if (found != TL_NOT_FOUND) { found_ok = 1; }
     runner->assert_true(found_ok, "Loader: CosmFS FIND help" as void*);
 
     // --- Test 13: CosmFSファイルサイズがembed_helpと一致 ---
-    ulong fs_size = cosmfs_op(TL_FS_SIZE, TL_FNAME_BUF, 0, 0, 0);
+    ulong fs_size = cosmfs_op(FS_OP_SIZE, TL_FNAME_BUF, 0, 0, 0);
     runner->assert_eq(fs_size, help_size, "Loader: CosmFS size match" as void*);
 
     // NOTE: loader_exec_buf(動的実行)テストは現時点ではスキップ。

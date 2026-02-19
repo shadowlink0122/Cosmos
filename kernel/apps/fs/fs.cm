@@ -20,21 +20,7 @@ import ../../config;
 import ../../fs/cosmfs;
 import ../../mm/heap;
 
-// ============================================================
-// CosmFS操作コード（cosmfs.cmと一致させる）
-// ============================================================
-
-const FsOpCode FS_OP_CREATE    = 1;
-const FsOpCode FS_OP_WRITE     = 2;
-const FsOpCode FS_OP_SIZE      = 3;
-const FsOpCode FS_OP_DELETE    = 4;
-const FsOpCode FS_OP_FIND      = 5;
-const FsOpCode FS_OP_GET_DATA  = 6;
-const FsOpCode FS_OP_COUNT     = 7;
-const FsOpCode FS_OP_ENTRY_RD  = 8;
-const FsOpCode FS_OP_STRLEN    = 9;
-const FsOpCode FS_OP_MEMCPY    = 10;
-const FsOpCode FS_OP_APPEND    = 11;
+// CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
 
 // ============================================================
 // 引数解析ヘルパー

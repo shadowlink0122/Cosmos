@@ -10,14 +10,6 @@ import ../drivers/serial;
 import ../drivers/debug_port;
 import ./syscall_table;
 
-// CosmFS操作コード（cosmfs.cm内部と一致）
-const FsOpCode COSMFS_OP_CREATE = 1;
-const FsOpCode COSMFS_OP_WRITE  = 2;
-const FsOpCode COSMFS_OP_SIZE   = 3;
-const FsOpCode COSMFS_OP_FIND   = 5;
-const FsOpCode COSMFS_OP_STRLEN = 9;
-const FsOpCode COSMFS_OP_MEMCPY = 10;
-const FsOpCode COSMFS_OP_READ   = 12;
 
 // ============================================================
 // ファイルI/O syscallハンドラ
@@ -26,41 +18,41 @@ const FsOpCode COSMFS_OP_READ   = 12;
 /// SYS_FS_OPEN — ファイルを開く（存在確認）
 /// arg1=path, arg2=path_len → ファイルサイズ（存在しなければ0）
 export ulong sys_fs_open(ulong path, ulong path_len) {
-    ulong size = cosmfs_op(COSMFS_OP_SIZE, path, 0, 0, 0);
+    ulong size = cosmfs_op(FS_OP_SIZE, path, 0, 0, 0);
     return size;
 }
 
 /// SYS_FS_READ — ファイル読み込み
 /// arg1=path, arg2=buf, arg3=max_len → 読み込みバイト数
 export ulong sys_fs_read(ulong path, ulong buf, ulong max_len) {
-    ulong bytes = cosmfs_op(COSMFS_OP_READ, path, buf, max_len, 0);
+    ulong bytes = cosmfs_op(FS_OP_READ, path, buf, max_len, 0);
     return bytes;
 }
 
 /// SYS_FS_WRITE — ファイル書き込み
 /// arg1=path, arg2=buf, arg3=len → 0（成功）
 export SyscallResult sys_fs_write(ulong path, ulong buf, ulong len) {
-    cosmfs_op(COSMFS_OP_WRITE, path, buf, len, 0);
+    cosmfs_op(FS_OP_WRITE, path, buf, len, 0);
     return SYSCALL_OK;
 }
 
 /// SYS_FS_CREATE — ファイル作成
 /// arg1=path, arg2=buf, arg3=capacity → 0（成功）
 export SyscallResult sys_fs_create(ulong path, ulong buf, ulong capacity) {
-    cosmfs_op(COSMFS_OP_CREATE, path, buf, capacity, 0);
+    cosmfs_op(FS_OP_CREATE, path, buf, capacity, 0);
     return SYSCALL_OK;
 }
 
 /// SYS_FS_SIZE — ファイルサイズ取得
 /// arg1=path → サイズ
 export ulong sys_fs_size(ulong path) {
-    ulong size = cosmfs_op(COSMFS_OP_SIZE, path, 0, 0, 0);
+    ulong size = cosmfs_op(FS_OP_SIZE, path, 0, 0, 0);
     return size;
 }
 
 /// SYS_FS_MEMCPY — メモリコピー（バイト単位）
 /// arg1=dst, arg2=src, arg3=len → 0
 export SyscallResult sys_fs_memcpy(ulong dst, ulong src, ulong len) {
-    cosmfs_op(COSMFS_OP_MEMCPY, dst, src, len, 0);
+    cosmfs_op(FS_OP_MEMCPY, dst, src, len, 0);
     return SYSCALL_OK;
 }

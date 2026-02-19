@@ -11,6 +11,7 @@
 
 import ../drivers/serial;
 import ../lib/print;
+import ../types;
 import ../config;
 import ./shell_io;
 
@@ -29,19 +30,19 @@ export struct FsResult {
 // エラーコード定数
 // ============================================================
 
-const ulong FS_ERR_NONE      = 0;   // エラーなし
-const ulong FS_ERR_NOT_FOUND = 1;   // ファイル未発見
-const ulong FS_ERR_ALLOC     = 2;   // メモリ割当失敗
-const ulong FS_ERR_EMPTY     = 3;   // ファイルが空
-const ulong FS_ERR_FULL      = 4;   // 容量不足
-const ulong FS_ERR_EXISTS    = 5;   // 既に存在
-const ulong FS_ERR_WRITE     = 6;   // 書込み失敗
-const ulong FS_ERR_READ      = 7;   // 読込み失敗
-const ulong FS_ERR_CREATE    = 8;   // ファイル作成失敗
-const ulong FS_ERR_NULL      = 9;   // NULLデータ
+const FsError FS_ERR_NONE      = 0;   // エラーなし
+const FsError FS_ERR_NOT_FOUND = 1;   // ファイル未発見
+const FsError FS_ERR_ALLOC     = 2;   // メモリ割当失敗
+const FsError FS_ERR_EMPTY     = 3;   // ファイルが空
+const FsError FS_ERR_FULL      = 4;   // 容量不足
+const FsError FS_ERR_EXISTS    = 5;   // 既に存在
+const FsError FS_ERR_WRITE     = 6;   // 書込み失敗
+const FsError FS_ERR_READ      = 7;   // 読込み失敗
+const FsError FS_ERR_CREATE    = 8;   // ファイル作成失敗
+const FsError FS_ERR_NULL      = 9;   // NULLデータ
 
-// CosmFSのエラーセンチネル値
-const ulong FS_SENTINEL = 0xFFFFFFFFFFFFFFFF;
+// CosmFSのエラーセンチネル値（types.cmのINVALID_VALUEを使用）
+const ulong FS_SENTINEL = INVALID_VALUE;
 
 // ============================================================
 // FsResult生成ヘルパー
