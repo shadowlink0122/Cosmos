@@ -21,59 +21,59 @@ import ../config;
 
 /// serial + FBConsole にメッセージを同時出力（改行付き）
 export void shell_println(void* msg) {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     serial.println(msg);
     con.println(msg);
 }
 
 /// serial + FBConsole にメッセージを同時出力（改行なし）
 export void shell_puts(void* msg) {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     serial.puts(msg);
     con.puts(msg);
 }
 
 /// serial + FBConsole に16進数値を同時出力
 export void shell_print_hex(ulong value) {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     serial.print_hex(value);
     con.print_hex(value);
 }
 
 /// serial + FBConsole に改行を出力
 export void shell_newline() {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     serial.println("" as void*);
     con.newline();
 }
 
 /// serial + FBConsole に1文字出力
 export void shell_putc(ulong ch) {
-    SerialPort serial(0x3F8);
-    FBConsole con();
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     serial.putc(ch);
     con.putc(ch);
 }
 
 /// FBConsole の色を設定
 export void shell_set_color(ulong color) {
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     con.set_color(color);
 }
 
 /// FBConsole の画面をクリアしカーソルをリセット
 export void shell_clear() {
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     con.clear();
 }
 
 /// FBConsole のカーソル位置を設定（文字単位）
 export void shell_set_cursor(ulong x, ulong y) {
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     ulong* px = (con.addr + 0x20) as ulong*;  // FB_OFF_CURSOR_X
     *px = x;
     ulong* py = (con.addr + 0x28) as ulong*;  // FB_OFF_CURSOR_Y
@@ -82,13 +82,13 @@ export void shell_set_cursor(ulong x, ulong y) {
 
 /// FBConsole の最大行数を返す
 export ulong shell_get_rows() {
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     return con.max_rows();
 }
 
 /// FBConsole の最大列数を返す
 export ulong shell_get_cols() {
-    FBConsole con();
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     return con.max_cols();
 }
 

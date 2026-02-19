@@ -172,7 +172,7 @@ export ulong syscall_dispatch(ulong nr, ulong arg1, ulong arg2, ulong arg3) {
 export ulong sys_write(ulong fd, ulong buf, ulong len) {
     if (fd == FD_STDOUT) {
         // FBConsole + シリアルに出力
-        FBConsole con();
+        FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
         SerialPort serial = {port: 0x3F8};
         ulong i = 0;
         while (i < len) {

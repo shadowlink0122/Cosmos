@@ -1,0 +1,145 @@
+//! platform: uefi
+// kernel::sys::screen - 画面I/O syscallハンドラ
+//
+// SYS_SCREEN_* syscall を処理する。
+// FBConsole + Serial への出力をカーネル側で管理し、
+// アプリケーションはsyscallのみで画面操作を行う。
+
+import ../drivers/serial;
+import ../lib/print;
+import ../config;
+import ./syscall_table;
+
+// ============================================================
+// 画面I/O syscallハンドラ
+// ============================================================
+
+/// SYS_SCREEN_CLEAR — 画面をクリア
+export ulong sys_screen_clear() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.clear();
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PUTC — 1文字出力（serial + FBConsole）
+export ulong sys_screen_putc(ulong ch) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.putc(ch);
+    con.putc(ch);
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PUTS — 文字列出力（buf=アドレス, len=長さ）
+export ulong sys_screen_puts(ulong buf, ulong len) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong i = 0;
+    while (i < len) {
+        ulong ch = 0;
+        ulong byte_addr = buf + i;
+        __asm__(`
+            movq ${r:byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        serial.putc(ch);
+        con.putc(ch);
+        i = i + 1;
+    }
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_SET_COLOR — 描画色を設定
+export ulong sys_screen_set_color(ulong color) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.set_color(color);
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_GET_SIZE — 画面サイズを返す（rows<<32 | cols）
+export ulong sys_screen_get_size() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong rows = con.max_rows();
+    ulong cols = con.max_cols();
+    // rows を上位32ビット、cols を下位32ビットにパック
+    ulong result = 0;
+    __asm__(`
+        movq ${r:rows}, %rax;
+        shlq $$32, %rax;
+        orq ${r:cols}, %rax;
+        movq %rax, ${=r:result}
+    `);
+    return result;
+}
+
+/// SYS_SCREEN_SET_CURSOR — カーソル位置を設定
+export ulong sys_screen_set_cursor(ulong x, ulong y) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* px = (con.addr + 0x20) as ulong*;  // FB_OFF_CURSOR_X
+    *px = x;
+    ulong* py = (con.addr + 0x28) as ulong*;  // FB_OFF_CURSOR_Y
+    *py = y;
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_NEWLINE — 改行出力
+export ulong sys_screen_newline() {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.println("" as void*);
+    con.newline();
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PRINT_NUM — 10進数出力
+export ulong sys_screen_print_num(ulong value) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    if (value == 0) {
+        serial.putc(0x30);
+        con.putc(0x30);
+        return SYSCALL_OK;
+    }
+    // 一時バッファ 0xCF0 を使用
+    ulong tmp_buf = 0xCF0;
+    ulong cnt = 0;
+    ulong n = value;
+    while (n > 0) {
+        ulong rem = n - ((n / 10) * 10);
+        ulong addr = tmp_buf + cnt;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:rem}, %rax;
+            addb $$0x30, %al;
+            movb %al, (%rdi)
+        `);
+        n = n / 10;
+        cnt = cnt + 1;
+    }
+    ulong i = cnt;
+    while (i > 0) {
+        i = i - 1;
+        ulong raddr = tmp_buf + i;
+        ulong ch = 0;
+        __asm__(`
+            movq ${r:raddr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        serial.putc(ch);
+        con.putc(ch);
+    }
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PRINT_HEX — 16進数出力
+export ulong sys_screen_print_hex(ulong value) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.print_hex(value);
+    con.print_hex(value);
+    return SYSCALL_OK;
+}
