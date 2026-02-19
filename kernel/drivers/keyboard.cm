@@ -39,6 +39,13 @@ const ulong KB_LAST_SCANCODE = 0xC58;  // 最後のスキャンコード
 const ulong KB_SHIFT_STATE   = 0xC60;  // Shiftキー状態
 const ulong KB_EXTENDED_FLAG = 0xC68;  // 0xE0拡張フラグ
 
+// キーボードレイアウト定数
+const ulong KB_LAYOUT_US  = 0;
+const ulong KB_LAYOUT_JIS = 1;
+
+// デフォルトレイアウト（Mac標準 = JIS）
+const ulong KB_LAYOUT = KB_LAYOUT_JIS;
+
 // 矢印キーの仮想キーコード
 const ulong VKEY_UP    = 0x80;
 const ulong VKEY_DOWN  = 0x81;
@@ -68,7 +75,11 @@ export ulong scancode_to_ascii(ulong scancode) {
     if (scancode == 0x0A) { return 0x39; }  // 9
     if (scancode == 0x0B) { return 0x30; }  // 0
     if (scancode == 0x0C) { return 0x2D; }  // -
-    if (scancode == 0x0D) { return 0x3D; }  // =
+    // レイアウト依存キー
+    if (scancode == 0x0D) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x5E; }  // JIS: ^
+        return 0x3D;  // US: =
+    }
     if (scancode == 0x0E) { return 0x08; }  // Backspace
 
     // Tabとアルファベット上段
@@ -83,8 +94,15 @@ export ulong scancode_to_ascii(ulong scancode) {
     if (scancode == 0x17) { return 0x69; }  // i
     if (scancode == 0x18) { return 0x6F; }  // o
     if (scancode == 0x19) { return 0x70; }  // p
-    if (scancode == 0x1A) { return 0x5B; }  // [
-    if (scancode == 0x1B) { return 0x5D; }  // ]
+    // レイアウト依存キー
+    if (scancode == 0x1A) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x40; }  // JIS: @
+        return 0x5B;  // US: [
+    }
+    if (scancode == 0x1B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x5B; }  // JIS: [
+        return 0x5D;  // US: ]
+    }
     if (scancode == 0x1C) { return 0x0A; }  // Enter (LF)
 
     // アルファベット中段
@@ -98,11 +116,19 @@ export ulong scancode_to_ascii(ulong scancode) {
     if (scancode == 0x25) { return 0x6B; }  // k
     if (scancode == 0x26) { return 0x6C; }  // l
     if (scancode == 0x27) { return 0x3B; }  // ;
-    if (scancode == 0x28) { return 0x27; }  // '
+    // レイアウト依存キー
+    if (scancode == 0x28) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x3A; }  // JIS: :
+        return 0x27;  // US: '
+    }
     if (scancode == 0x29) { return 0x60; }  // `
 
     // アルファベット下段
-    if (scancode == 0x2B) { return 0x5C; }  // backslash
+    // レイアウト依存キー
+    if (scancode == 0x2B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x5D; }  // JIS: ]
+        return 0x5C;  // US: backslash
+    }
     if (scancode == 0x2C) { return 0x7A; }  // z
     if (scancode == 0x2D) { return 0x78; }  // x
     if (scancode == 0x2E) { return 0x63; }  // c
@@ -127,17 +153,43 @@ export ulong scancode_to_ascii(ulong scancode) {
 export ulong scancode_to_ascii_shifted(ulong scancode) {
     // 数字行（Shift付き）
     if (scancode == 0x02) { return 0x21; }  // !
-    if (scancode == 0x03) { return 0x40; }  // @
+    // レイアウト依存キー
+    if (scancode == 0x03) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x22; }  // JIS: "
+        return 0x40;  // US: @
+    }
     if (scancode == 0x04) { return 0x23; }  // #
     if (scancode == 0x05) { return 0x24; }  // $
     if (scancode == 0x06) { return 0x25; }  // %
-    if (scancode == 0x07) { return 0x5E; }  // ^
-    if (scancode == 0x08) { return 0x26; }  // &
-    if (scancode == 0x09) { return 0x2A; }  // *
-    if (scancode == 0x0A) { return 0x28; }  // (
-    if (scancode == 0x0B) { return 0x29; }  // )
-    if (scancode == 0x0C) { return 0x5F; }  // _
-    if (scancode == 0x0D) { return 0x2B; }  // +
+    // レイアウト依存キー
+    if (scancode == 0x07) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x26; }  // JIS: &
+        return 0x5E;  // US: ^
+    }
+    if (scancode == 0x08) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x27; }  // JIS: '
+        return 0x26;  // US: &
+    }
+    if (scancode == 0x09) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x28; }  // JIS: (
+        return 0x2A;  // US: *
+    }
+    if (scancode == 0x0A) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x29; }  // JIS: )
+        return 0x28;  // US: (
+    }
+    if (scancode == 0x0B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0; }     // JIS: なし
+        return 0x29;  // US: )
+    }
+    if (scancode == 0x0C) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x3D; }  // JIS: =
+        return 0x5F;  // US: _
+    }
+    if (scancode == 0x0D) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x7E; }  // JIS: ~
+        return 0x2B;  // US: +
+    }
     if (scancode == 0x0E) { return 0x08; }  // Backspace
 
     // Tabとアルファベット上段（大文字）
@@ -152,8 +204,15 @@ export ulong scancode_to_ascii_shifted(ulong scancode) {
     if (scancode == 0x17) { return 0x49; }  // I
     if (scancode == 0x18) { return 0x4F; }  // O
     if (scancode == 0x19) { return 0x50; }  // P
-    if (scancode == 0x1A) { return 0x7B; }  // {
-    if (scancode == 0x1B) { return 0x7D; }  // }
+    // レイアウト依存キー
+    if (scancode == 0x1A) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x60; }  // JIS: `
+        return 0x7B;  // US: {
+    }
+    if (scancode == 0x1B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x7B; }  // JIS: {
+        return 0x7D;  // US: }
+    }
     if (scancode == 0x1C) { return 0x0A; }  // Enter
 
     // アルファベット中段（大文字）
@@ -166,12 +225,23 @@ export ulong scancode_to_ascii_shifted(ulong scancode) {
     if (scancode == 0x24) { return 0x4A; }  // J
     if (scancode == 0x25) { return 0x4B; }  // K
     if (scancode == 0x26) { return 0x4C; }  // L
-    if (scancode == 0x27) { return 0x3A; }  // :
-    if (scancode == 0x28) { return 0x22; }  // "
+    // レイアウト依存キー
+    if (scancode == 0x27) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x2B; }  // JIS: +
+        return 0x3A;  // US: :
+    }
+    if (scancode == 0x28) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x2A; }  // JIS: *
+        return 0x22;  // US: "
+    }
     if (scancode == 0x29) { return 0x7E; }  // ~
 
     // アルファベット下段（大文字）
-    if (scancode == 0x2B) { return 0x7C; }  // |
+    // レイアウト依存キー
+    if (scancode == 0x2B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x7D; }  // JIS: }
+        return 0x7C;  // US: |
+    }
     if (scancode == 0x2C) { return 0x5A; }  // Z
     if (scancode == 0x2D) { return 0x58; }  // X
     if (scancode == 0x2E) { return 0x43; }  // C
