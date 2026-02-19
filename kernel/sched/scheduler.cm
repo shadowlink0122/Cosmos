@@ -280,3 +280,58 @@ export void idle_loop() {
         }
     }
 }
+
+/// 指定タスクの終了を待つ
+///
+/// ターゲットタスクがTERMINATEDならすぐに返り、
+/// まだ実行中ならBLOCKED状態に遷移してスケジューラに制御を渡す。
+///
+/// target_id: 待機するタスクID
+///
+/// 戻り値: ターゲットタスクの終了コード
+export ulong sched_wait(TaskId target_id) {
+    DebugPort debug(0xE9);
+    TaskId current_id = sched_current_id();
+
+    // ターゲットタスクが既に終了しているかチェック
+    TaskState target_state = tcb_read(target_id, TCB_OFF_STATE);
+    if (target_state == TASK_TERMINATED) {
+        ulong exit_code = tcb_read(target_id, TCB_OFF_EXIT_CODE);
+        return exit_code;
+    }
+
+    // 現在のタスクをBLOCKEDに設定し、待機対象を記録
+    tcb_write(current_id, TCB_OFF_STATE, TASK_BLOCKED);
+    tcb_write(current_id, TCB_OFF_WAIT_FOR, target_id);
+
+    debug.puts("[SCHED] task " as void*);
+    debug.print_hex(current_id);
+    debug.puts(" waiting for task " as void*);
+    debug.print_hex(target_id);
+    debug.println("" as void*);
+
+    // スケジューラに制御を渡す（他のREADYタスクに切り替わる）
+    schedule();
+
+    // ウェイクアップ後：ターゲットの終了コードを返す
+    ulong exit_code = tcb_read(target_id, TCB_OFF_EXIT_CODE);
+    return exit_code;
+}
+
+/// 現在のタスクを終了し、idleタスクに切り替える
+///
+/// exit_code: 終了コード (0=正常終了)
+export void sched_exit_current(ulong exit_code) {
+    TaskId current_id = sched_current_id();
+
+    // タスクを終了状態にする（待機タスクのウェイクアップも行う）
+    task_exit(current_id, exit_code);
+
+    // idleタスクに強制切替
+    schedule();
+
+    // ここには到達しないはず（TERMINATEDタスクはスケジュールされない）
+    while (true) {
+        __asm__("hlt");
+    }
+}

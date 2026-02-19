@@ -41,11 +41,11 @@ const ByteOffset TCB_OFF_ENTRY      = 40;    // entry（エントリポイント
 const ByteOffset TCB_OFF_NEXT       = 48;    // next（次のTCB番号、循環リスト用）
 const ByteOffset TCB_OFF_TIMESLICE  = 56;    // タイムスライス残り（tick数）
 
-// 拡張フィールド (Phase 2: プロセスマネージャ)
 const ByteOffset TCB_OFF_PROCESS_TYPE = 64;  // プロセス種別 (0=kernel, 1=user)
 const ByteOffset TCB_OFF_PARENT_ID    = 72;  // 親タスクID
 const ByteOffset TCB_OFF_EXIT_CODE    = 80;  // 終了コード
 const ByteOffset TCB_OFF_WAIT_FOR     = 88;  // 待機対象タスクID (BLOCKEDのとき)
+const ByteOffset TCB_OFF_CR3          = 96;  // プロセス固有ページテーブル (0=カーネル共有)
 
 // ============================================================
 // TCBフィールドアクセス（ポインタ直接操作）
@@ -176,6 +176,7 @@ export ulong task_create(TaskId task_id, MemAddr entry_fn, PMM* pmm) {
     tcb_write(task_id, TCB_OFF_PARENT_ID, zero);
     tcb_write(task_id, TCB_OFF_EXIT_CODE, zero);
     tcb_write(task_id, TCB_OFF_WAIT_FOR, zero);
+    tcb_write(task_id, TCB_OFF_CR3, zero);  // カーネル共有ページテーブル
 
     debug.puts("[TASK] created id=" as void*);
     debug.print_hex(task_id);
@@ -210,4 +211,47 @@ export void task_create_idle() {
     tcb_write(zero, TCB_OFF_WAIT_FOR, zero);
 
     debug.println("[TASK] idle task (id=0) created" as void*);
+}
+
+/// タスクを終了する
+///
+/// 現在のタスクの状態をTERMINATEDに設定し、終了コードを保存。
+/// このタスクを待機(WAIT_FOR)しているタスクがあればREADYに戻す。
+///
+/// task_id:   終了するタスクID
+/// exit_code: 終了コード (0=正常終了)
+export void task_exit(TaskId task_id, ulong exit_code) {
+    DebugPort debug(0xE9);
+
+    // タスク状態をTERMINATEDに設定
+    tcb_write(task_id, TCB_OFF_STATE, TASK_TERMINATED);
+    tcb_write(task_id, TCB_OFF_EXIT_CODE, exit_code);
+
+    // このタスクを待っている他のタスクをウェイクアップ
+    TaskId i = 0;
+    while (i < MAX_TASKS) {
+        TaskState state = tcb_read(i, TCB_OFF_STATE);
+        if (state == TASK_BLOCKED) {
+            TaskId wait_target = tcb_read(i, TCB_OFF_WAIT_FOR);
+            if (wait_target == task_id) {
+                // 待機解除: READYに戻す
+                tcb_write(i, TCB_OFF_STATE, TASK_READY);
+                tcb_write(i, TCB_OFF_WAIT_FOR, 0);
+                tcb_write(i, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
+
+                debug.puts("[TASK] wake up task " as void*);
+                debug.print_hex(i);
+                debug.puts(" (was waiting for task " as void*);
+                debug.print_hex(task_id);
+                debug.println(")" as void*);
+            }
+        }
+        i = i + 1;
+    }
+
+    debug.puts("[TASK] exit id=" as void*);
+    debug.print_hex(task_id);
+    debug.puts(", code=" as void*);
+    debug.print_hex(exit_code);
+    debug.println("" as void*);
 }
