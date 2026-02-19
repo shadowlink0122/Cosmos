@@ -5,58 +5,72 @@
 // rax = syscall番号、rdi/rsi/rdx/r10 = 引数。
 
 // ============================================================
+// syscall型定義（typedef）
+// ============================================================
+
+/// Syscall番号型
+export typedef SyscallNr = ulong;
+
+/// Syscall戻り値型（成功=0、エラー=負値相当）
+export typedef SyscallResult = ulong;
+
+/// ファイルディスクリプタ型
+export typedef Fd = ulong;
+
+// ============================================================
 // syscall番号定数
 // ============================================================
 
-export const ulong SYS_EXIT    = 0;   // プロセス終了
-export const ulong SYS_WRITE   = 1;   // write(fd, buf, len) → bytes_written
-export const ulong SYS_READ    = 2;   // read(fd, buf, len) → bytes_read
-export const ulong SYS_OPEN    = 3;   // open(path, flags) → fd
-export const ulong SYS_CLOSE   = 4;   // close(fd) → 0
-export const ulong SYS_STAT    = 5;   // stat(path, buf) → 0
-export const ulong SYS_GETENV  = 6;   // getenv(name, buf, len) → len
-export const ulong SYS_GETCWD  = 7;   // getcwd(buf, len) → len
-export const ulong SYS_CHDIR   = 8;   // chdir(path) → 0
+export const SyscallNr SYS_EXIT    = 0;   // プロセス終了
+export const SyscallNr SYS_WRITE   = 1;   // write(fd, buf, len) → bytes_written
+export const SyscallNr SYS_READ    = 2;   // read(fd, buf, len) → bytes_read
+export const SyscallNr SYS_OPEN    = 3;   // open(path, flags) → fd
+export const SyscallNr SYS_CLOSE   = 4;   // close(fd) → 0
+export const SyscallNr SYS_STAT    = 5;   // stat(path, buf) → 0
+export const SyscallNr SYS_GETENV  = 6;   // getenv(name, buf, len) → len
+export const SyscallNr SYS_GETCWD  = 7;   // getcwd(buf, len) → len
+export const SyscallNr SYS_CHDIR   = 8;   // chdir(path) → 0
 
 // 画面I/O syscall (10-19)
-export const ulong SYS_SCREEN_CLEAR      = 10;  // 画面クリア
-export const ulong SYS_SCREEN_PUTC       = 11;  // putc(ch)
-export const ulong SYS_SCREEN_PUTS       = 12;  // puts(buf, len)
-export const ulong SYS_SCREEN_SET_COLOR  = 13;  // set_color(color)
-export const ulong SYS_SCREEN_GET_SIZE   = 14;  // → rows<<32 | cols
-export const ulong SYS_SCREEN_SET_CURSOR = 15;  // set_cursor(x, y)
-export const ulong SYS_SCREEN_NEWLINE    = 16;  // 改行
-export const ulong SYS_SCREEN_PRINT_NUM  = 17;  // print_num(value) 10進数出力
-export const ulong SYS_SCREEN_PRINT_HEX  = 18;  // print_hex(value) 16進数出力
+export const SyscallNr SYS_SCREEN_CLEAR      = 10;  // 画面クリア
+export const SyscallNr SYS_SCREEN_PUTC       = 11;  // putc(ch)
+export const SyscallNr SYS_SCREEN_PUTS       = 12;  // puts(buf, len)
+export const SyscallNr SYS_SCREEN_SET_COLOR  = 13;  // set_color(color)
+export const SyscallNr SYS_SCREEN_GET_SIZE   = 14;  // → rows<<32 | cols
+export const SyscallNr SYS_SCREEN_SET_CURSOR = 15;  // set_cursor(x, y)
+export const SyscallNr SYS_SCREEN_NEWLINE    = 16;  // 改行
+export const SyscallNr SYS_SCREEN_PRINT_NUM  = 17;  // print_num(value) 10進数出力
+export const SyscallNr SYS_SCREEN_PRINT_HEX  = 18;  // print_hex(value) 16進数出力
 
 // ファイルI/O syscall (20-29)
-export const ulong SYS_FS_OPEN   = 20;  // fs_open(path, path_len) → fd or size
-export const ulong SYS_FS_READ   = 21;  // fs_read(path, buf, len) → bytes
-export const ulong SYS_FS_WRITE  = 22;  // fs_write(path, buf, len) → 0
-export const ulong SYS_FS_CREATE = 23;  // fs_create(path, buf, capacity) → 0
-export const ulong SYS_FS_SIZE   = 24;  // fs_size(path) → size
-export const ulong SYS_FS_MEMCPY = 25;  // fs_memcpy(dst, src, len) → 0
+export const SyscallNr SYS_FS_OPEN   = 20;  // fs_open(path, path_len) → fd or size
+export const SyscallNr SYS_FS_READ   = 21;  // fs_read(path, buf, len) → bytes
+export const SyscallNr SYS_FS_WRITE  = 22;  // fs_write(path, buf, len) → 0
+export const SyscallNr SYS_FS_CREATE = 23;  // fs_create(path, buf, capacity) → 0
+export const SyscallNr SYS_FS_SIZE   = 24;  // fs_size(path) → size
+export const SyscallNr SYS_FS_MEMCPY = 25;  // fs_memcpy(dst, src, len) → 0
 
 // プロセスsyscall (30-35)
-export const ulong SYS_SPAWN  = 30;  // spawn(entry_fn) → pid
-export const ulong SYS_KILL   = 31;  // kill(pid) → 0
-export const ulong SYS_WAIT   = 34;  // wait(pid) → exit_code
-export const ulong SYS_GETPID = 35;  // getpid() → pid
+export const SyscallNr SYS_SPAWN  = 30;  // spawn(entry_fn) → pid
+export const SyscallNr SYS_KILL   = 31;  // kill(pid) → 0
+export const SyscallNr SYS_WAIT   = 34;  // wait(pid) → exit_code
+export const SyscallNr SYS_GETPID = 35;  // getpid() → pid
 
 // ============================================================
 // ファイルディスクリプタ定数
 // ============================================================
 
-export const ulong FD_STDIN  = 0;   // 標準入力
-export const ulong FD_STDOUT = 1;   // 標準出力
-export const ulong FD_STDERR = 2;   // 標準エラー出力
+export const Fd FD_STDIN  = 0;   // 標準入力
+export const Fd FD_STDOUT = 1;   // 標準出力
+export const Fd FD_STDERR = 2;   // 標準エラー出力
 
 // ============================================================
 // エラーコード
 // ============================================================
 
-export const ulong SYSCALL_OK       = 0;
-export const ulong SYSCALL_ERR      = 0xFFFFFFFFFFFFFFFF;  // 汎用エラー
-export const ulong SYSCALL_EBADF    = 0xFFFFFFFFFFFFFFF7;  // 不正なfd
-export const ulong SYSCALL_ENOSYS   = 0xFFFFFFFFFFFFFFF8;  // 未実装syscall
-export const ulong SYSCALL_EINVAL   = 0xFFFFFFFFFFFFFFF9;  // 不正な引数
+export const SyscallResult SYSCALL_OK       = 0;
+export const SyscallResult SYSCALL_ERR      = 0xFFFFFFFFFFFFFFFF;  // 汎用エラー
+export const SyscallResult SYSCALL_EBADF    = 0xFFFFFFFFFFFFFFF7;  // 不正なfd
+export const SyscallResult SYSCALL_ENOSYS   = 0xFFFFFFFFFFFFFFF8;  // 未実装syscall
+export const SyscallResult SYSCALL_EINVAL   = 0xFFFFFFFFFFFFFFF9;  // 不正な引数
+
