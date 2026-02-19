@@ -24,6 +24,7 @@ import ./sys/test_process;
 import ./sys/test_syscall;
 import ./integration/test_integration;
 import ./mm/test_vmm;
+import ./arch/test_usermode;
 
 /// カーネルコアテストスイートを実行
 export void test_kernel(TestRunner* runner, BootInfo* info, PMM* pmm, Heap* heap, PIT* pit, VMM* vmm) {
@@ -43,6 +44,7 @@ export void test_kernel(TestRunner* runner, BootInfo* info, PMM* pmm, Heap* heap
     test_loader(runner, heap);
     test_integration(runner, heap, pmm);
     test_vmm(runner, vmm, pmm);
+    test_usermode(runner);
 
     serial.println("[CosmOS] --- Kernel Core Tests Done ---" as void*);
 }
