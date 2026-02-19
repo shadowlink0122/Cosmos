@@ -39,7 +39,7 @@ export struct PMM {
     ulong* bitmap;       // ビットマップ配列（1ビット = 1ページ）
     PageCount total_pages;   // 管理対象の総ページ数
     PageCount free_pages;    // 空きページ数
-    ByteSize bitmap_size;   // ビットマップサイズ（バイト）
+    ByteSize bitmap_size;   // ビットマップのバイトサイズ（バイト）
     MemAddr max_phys_addr; // 検出された最大物理アドレス
 }
 

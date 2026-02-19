@@ -36,9 +36,9 @@ const ulong HEAP_USED_BIT = 0x8000000000000000;
 /// Bump + フリーリスト方式のカーネルヒープ
 export struct Heap {
     MemAddr base_addr;     // ヒープ領域の先頭物理アドレス
-    ulong size;          // ヒープ領域の総サイズ（バイト）
-    ulong offset;        // 現在のBump割当オフセット（次の割当位置）
-    ulong alloc_count;   // 割当回数
+    ByteSize size;         // ヒープ領域の総サイズ（バイト）
+    ByteSize offset;       // 現在のBump割当オフセット（次の割当位置）
+    Count alloc_count;     // 割当回数
 }
 
 // ============================================================

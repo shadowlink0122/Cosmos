@@ -10,6 +10,7 @@
 
 import ../drivers/serial;
 import ../drivers/debug_port;
+import ../types;
 import ../config;
 
 // ============================================================
@@ -18,8 +19,8 @@ import ../config;
 
 /// テスト実行結果を管理する構造体
 export struct TestRunner {
-    ulong pass_count;   // PASSしたテスト数
-    ulong fail_count;   // FAILしたテスト数
+    Count pass_count;   // PASSしたテスト数
+    Count fail_count;   // FAILしたテスト数
 }
 
 // ============================================================

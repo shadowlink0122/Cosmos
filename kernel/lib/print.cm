@@ -39,7 +39,7 @@ import ../config;
 ///   +0x48: cursor_tick     — 前回の点滅切替tick
 ///   +0x50: cursor_state    — 点滅状態 (0=非表示, 1=表示)
 export struct FBConsole {
-    MemAddr addr;    // 固定メモリアドレス（実データへのポインタ）
+    MemAddr addr;      // グローバルFBConsole状態のベースアドレス（実データへのポインタ）
 }
 
 // ============================================================

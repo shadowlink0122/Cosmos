@@ -5,9 +5,10 @@
 // OVMFのシリアル出力と干渉しないクリーンなデバッグチャネル。
 //
 // impl DebugPort { ... } パターンでメソッド呼び出しを提供:
-//   debug.println("msg" as void*);
+// impl DebugPort for OutputWriter で共通出力インターフェースを実装:
 
 import ./serial;  // outb関数を再利用
+import ./output_writer;
 import ../config;
 
 // ============================================================
@@ -30,16 +31,21 @@ impl DebugPort {
         self.port = port_addr;
     }
 
-    /// デバッグポートに1バイト出力
-    void putc(AsciiChar ch) {
+    // putc/puts/println/print_hex は impl DebugPort for OutputWriter で定義
+}
+
+// ============================================================
+// OutputWriter インターフェース実装
+// ============================================================
+
+impl DebugPort for OutputWriter {
+    void putc(ulong ch) {
         outb(self.port, ch);
     }
 
-    /// デバッグポートにNUL終端文字列を出力
     void puts(void* data) {
         MemAddr data_val = data as ulong;
         ulong i = 0;
-
         while (true) {
             AsciiChar byte_val = 0;
             MemAddr addr = data_val + i;
@@ -49,32 +55,26 @@ impl DebugPort {
                 movzbl (%r10), %eax;
                 movq %rax, ${=r:byte_val}
             `);
-            if (byte_val == 0) {
-                break;
-            }
+            if (byte_val == 0) { break; }
             outb(self.port, byte_val);
             i += 1;
         }
     }
 
-    /// デバッグポートに文字列を改行付きで出力
     void println(void* data) {
         self.puts(data);
-        outb(self.port, 13);  // CR
-        outb(self.port, 10);  // LF
+        outb(self.port, 13);
+        outb(self.port, 10);
     }
 
-    /// デバッグポートに16進数出力
     void print_hex(ulong value) {
-        outb(self.port, 48);   // '0'
-        outb(self.port, 120);  // 'x'
-
+        outb(self.port, 48);
+        outb(self.port, 120);
         ulong mask = 15;
         ulong char_0 = 48;
         ulong char_A = 65;
-        ulong max_digits = 16;
         ulong i = 0;
-        while (i < max_digits) {
+        while (i < 16) {
             ulong shift = (15 - i) * 4;
             ulong nibble = (value >> shift) & mask;
             ulong ten = 10;
