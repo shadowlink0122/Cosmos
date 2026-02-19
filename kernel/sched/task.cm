@@ -22,13 +22,13 @@ const TaskState TASK_BLOCKED    = 2;
 const TaskState TASK_TERMINATED = 3;
 
 // TCB配列の固定アドレスと制限
-const ulong TCB_BASE_ADDR   = 0x1000;   // TCB配列の先頭アドレス
+const MemAddr TCB_BASE_ADDR   = 0x1000;   // TCB配列の先頭アドレス
 const ulong TCB_SIZE        = 128;      // 1 TCB = 128バイト（16フィールド × 8バイト）
 const ulong MAX_TASKS       = 8;        // 最大タスク数
 const ulong TASK_STACK_PAGES = 1;       // タスクスタック = 1ページ(4KB)
 
 // デフォルトタイムスライス（tick数 = 100ms at 100Hz）
-const ulong DEFAULT_TIMESLICE = 10;
+const Tick DEFAULT_TIMESLICE = 10;
 
 // TCB内フィールドオフセット（各8バイト）
 const ulong TCB_OFF_ID         = 0;     // task_id
@@ -51,7 +51,7 @@ const ulong TCB_OFF_WAIT_FOR     = 88;  // 待機対象タスクID (BLOCKEDの�
 // ============================================================
 
 /// 指定タスクIDのTCBベースアドレスを取得
-export ulong tcb_addr(ulong task_id) {
+export MemAddr tcb_addr(ulong task_id) {
     return TCB_BASE_ADDR + (task_id * TCB_SIZE);
 }
 

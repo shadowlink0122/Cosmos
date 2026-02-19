@@ -95,7 +95,7 @@ impl PIC8259A {
     }
 
     /// 指定IRQ番号をアンマスク（有効化）する
-    void unmask(ulong irq) {
+    void unmask(IrqNr irq) {
         IoPort port = self.master_data;
         ulong irq_line = irq;
         if (irq >= 8) {
@@ -117,7 +117,7 @@ impl PIC8259A {
     }
 
     /// EOI（End Of Interrupt）を送信する
-    void send_eoi(ulong irq) {
+    void send_eoi(IrqNr irq) {
         if (irq >= 8) {
             outb(self.slave_cmd, PIC_EOI);
         }
