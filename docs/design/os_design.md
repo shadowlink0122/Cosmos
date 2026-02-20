@@ -86,8 +86,10 @@ UEFI Firmware
 | `0x900–0xBFF` | スケジューラ/PMM状態 | 768B |
 | `0xC00–0xCFF` | キーボードバッファ | 256B |
 | `0xD00–0xDFF` | シェル/リカバリ状態 | 256B |
-| `0xE00–0xFFF` | FBConsole状態 | 512B |
+| `0xE00–0xFFF` | FBConsole状態/Usermode | 512B |
 | `0x1000–0x1FFF` | TCB配列 | 4KB |
+| `0x3000–0x37FF` | IPCメッセージキュー | 2KB |
+| `0x3800–0x383F` | IPC通知ビットマスク | 64B |
 | `0x7E00000+` | PMM ビットマップ | 動的 |
 | `0x7E01000+` | カーネルヒープ | 256KB |
 
@@ -113,11 +115,93 @@ Offset  Size  Field
 | `RSI` | 第2引数 |
 | `RDX` | 第3引数 |
 
+### 基本 I/O (0-9)
+
 | 番号 | 名前 | 説明 |
 |------|------|------|
+| `0` | `SYS_EXIT` | `exit(code)` |
 | `1` | `SYS_WRITE` | `write(fd, buf, len)` |
 | `2` | `SYS_READ` | `read(fd, buf, len)` |
-| `3` | `SYS_EXIT` | `exit(code)` |
+| `3` | `SYS_OPEN` | `open(path, flags)` |
+| `4` | `SYS_CLOSE` | `close(fd)` |
+| `5` | `SYS_STAT` | `stat(path, buf)` |
+
+### 画面 I/O (10-19)
+
+| 番号 | 名前 | 説明 |
+|------|------|------|
+| `10` | `SYS_SCREEN_CLEAR` | 画面クリア |
+| `11-18` | `SYS_SCREEN_*` | putc/puts/color/cursor/newline/print |
+
+### ファイルシステム (20-29)
+
+| 番号 | 名前 | 説明 |
+|------|------|------|
+| `20-25` | `SYS_FS_*` | open/read/write/create/size/memcpy |
+
+### プロセス管理 (30-39)
+
+| 番号 | 名前 | 説明 |
+|------|------|------|
+| `30` | `SYS_SPAWN` | `spawn(entry)` → pid |
+| `31` | `SYS_KILL` | `kill(pid)` |
+| `34` | `SYS_WAIT` | `wait(pid)` → exit_code |
+| `35` | `SYS_GETPID` | `getpid()` → pid |
+
+### メモリ管理 (40-49)
+
+| 番号 | 名前 | 説明 |
+|------|------|------|
+| `40` | `SYS_SBRK` | `sbrk(increment)` → addr |
+| `45` | `SYS_MMAP` | `mmap(addr, len, prot)` → addr |
+| `46` | `SYS_MUNMAP` | `munmap(addr, len)` |
+
+### IPC メッセージパッシング (50-59)
+
+| 番号 | 名前 | 説明 |
+|------|------|------|
+| `50` | `SYS_SEND` | `send(pid, type, arg0, arg1)` |
+| `51` | `SYS_RECV` | `recv(pid_filter)` → msg |
+| `52` | `SYS_REPLY` | `reply(pid, result)` |
+| `53` | `SYS_NOTIFY` | `notify(pid, bits)` |
+| `54` | `SYS_GET_NOTIFY` | `get_notify()` → bits |
+| `55` | `SYS_PIPE` | `pipe(fds)` |
+| `56` | `SYS_DUP2` | `dup2(old, new)` → fd |
+
+## マイクロカーネル設計
+
+### カーネルコア（Ring 0）
+
+```mermaid
+graph TB
+    subgraph "Kernel Core"
+        SCHED["Scheduler"]
+        MM["Memory Manager"]
+        IPC["IPC Message Passing"]
+        INT["Interrupt Handler"]
+    end
+    subgraph "User Servers (将来)"
+        FS_SRV["FS Server"]
+        SCREEN_SRV["Screen Server"]
+        NET_SRV["Network Server"]
+    end
+    subgraph "User Applications"
+        APP1["App 1"]
+        APP2["App 2"]
+    end
+    APP1 -->|send/recv| IPC
+    APP2 -->|send/recv| IPC
+    IPC -->|dispatch| FS_SRV
+    IPC -->|dispatch| SCREEN_SRV
+    FS_SRV -->|syscall| MM
+```
+
+### IPC メッセージ構造
+
+```
+64バイト固定メッセージ:
+  sender(8) | receiver(8) | type(8) | arg0(8) | arg1(8) | arg2(8) | arg3(8) | status(8)
+```
 
 ## Cm言語固有の設計考慮
 

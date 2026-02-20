@@ -12,6 +12,7 @@ import ./libs/efi_text;
 import ./libs/efi_input;
 import ./libs/efi_memmap;
 import ./libs/efi_gop;
+import ./libs/efi_file;
 import ./util/menu;
 import ./util/memmap;
 import ./util/keyboard;
@@ -40,6 +41,7 @@ import ./fs/cosmfs;
 import ./fs/initramfs;
 import ./tasks/demo;
 import ./libs/boot_services;
+import ./arch/usermode;
 import ./sys/syscall;
 import ./sys/env;
 
@@ -86,7 +88,7 @@ void kernel_main(BootInfo* info) {
 
     // 物理メモリマネージャ初期化
     PMM pmm(info->mmap.map_buffer, info->mmap.map_size,
-            info->mmap.desc_size as ulong, info->mmap.entry_count as ulong);
+    info->mmap.desc_size as ulong, info->mmap.entry_count as ulong);
     pmm.print_stats();
     serial.println("[CosmOS] PMM initialized (bitmap physical memory manager)" as void*);
     debug.println("[BOOT] PMM initialized" as void*);
@@ -151,94 +153,103 @@ void kernel_main(BootInfo* info) {
 
     // 割り込み有効化（sti）
     __asm__(`sti`);
-    serial.println("[CosmOS] Interrupts enabled" as void*);
-    debug.println("[BOOT] interrupts enabled" as void*);
+        serial.println("[CosmOS] Interrupts enabled" as void*);
+        debug.println("[BOOT] interrupts enabled" as void*);
 
-    // TSS初期化（現在のRSPをカーネルスタックとして使用）
-    ulong current_rsp = 0;
+        // TSS初期化（現在のRSPをカーネルスタックとして使用）
+        ulong current_rsp = 0;
     __asm__(`
-        movq %rsp, ${=r:current_rsp}
+    movq %rsp, ${=r:current_rsp}
     `);
-    tss_init(current_rsp);
-    tss_install_gdt();
-    serial.println("[CosmOS] TSS initialized" as void*);
-    debug.println("[BOOT] TSS initialized" as void*);
+        tss_init(current_rsp);
+        tss_install_gdt();
+        serial.println("[CosmOS] TSS initialized" as void*);
+        debug.println("[BOOT] TSS initialized" as void*);
 
-    // キーボード初期化
-    keyboard_init(&pic, idt_table);
-    debug.println("[BOOT] keyboard initialized" as void*);
+        // syscall/sysret MSR初期化（高速パス有効化）
+        MemAddr fast_handler = fn_addr(syscall_entry_fast as void*);
+        usermode_init(fast_handler);
+        debug.println("[BOOT] syscall/sysret fast path enabled" as void*);
 
-    // syscallハンドラー初期化（int 0x80）
-    syscall_init(idt_table);
-    debug.println("[BOOT] syscall handler initialized" as void*);
+        // キーボード初期化
+        keyboard_init(&pic, idt_table);
+        debug.println("[BOOT] keyboard initialized" as void*);
 
-    // ============================================================
-    // デモタスク生成（マルチタスク動作確認用）
-    // ============================================================
-    serial.println("[CosmOS] Spawning demo tasks... (DISABLED for rendering check)" as void*);
-    // demo_spawn_tasks();
-    sched_enable();
-    serial.println("[CosmOS] Scheduler enabled" as void*);
+        // syscallハンドラー初期化（int 0x80）
+        syscall_init(idt_table);
+        debug.println("[BOOT] syscall handler initialized" as void*);
 
-    // デモタスクを開始（schedule呼出しで最初のタスクに切替）
-    schedule();
+        // IPC メッセージキュー初期化
+        ipc_init();
+        debug.println("[BOOT] IPC initialized" as void*);
 
-    // CosmFS初期化
-    cosmfs_init();
-    debug.println("[BOOT] CosmFS initialized" as void*);
+        // ============================================================
+        // デモタスク生成（マルチタスク動作確認用）
+        // ============================================================
+        serial.println("[CosmOS] Spawning demo tasks... (DISABLED for rendering check)" as void*);
+        // demo_spawn_tasks();
+        sched_enable();
+        serial.println("[CosmOS] Scheduler enabled" as void*);
 
-    // 環境変数初期化
-    env_init();
-    debug.println("[BOOT] environment variables initialized" as void*);
+        // デモタスクを開始（schedule呼出しで最初のタスクに切替）
+        schedule();
 
-    // グローバルHeapポインタを保存（シェルコマンドからアクセス用）
-    Heap* heap_ref = &heap;
-    ulong heap_addr_val = heap_ref as ulong;
-    ulong* global_heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
-    *global_heap_ptr = heap_addr_val;
+        // CosmFS初期化
+        cosmfs_init();
+        debug.println("[BOOT] CosmFS initialized" as void*);
 
-    // initramfs: サンプルファイルをCosmFSにロード
-    initramfs_load(&heap);
-    debug.println("[BOOT] initramfs loaded" as void*);
+        // 環境変数初期化
+        env_init();
+        debug.println("[BOOT] environment variables initialized" as void*);
 
-    // シェル初期化（デモタスク完了後にプロンプト表示）
-    shell_init();
-    debug.println("[BOOT] shell initialized" as void*);
+        // グローバルHeapポインタを保存（シェルコマンドからアクセス用）
+        Heap* heap_ref = &heap;
+        ulong heap_addr_val = heap_ref as ulong;
+        ulong* global_heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+        *global_heap_ptr = heap_addr_val;
 
-    // idleループ（タイマー割り込み+シェル+スケジューラ統合）
-    serial.println("[CosmOS] Entering idle loop with shell" as void*);
-    debug.println("[BOOT] entering idle loop" as void*);
+        // initramfs: サンプルファイルをCosmFSにロード
+        initramfs_load(&heap, info);
+        debug.println("[BOOT] initramfs loaded" as void*);
 
-    // リカバリーポイントを設定（例外発生時にここに復帰する）
-    // RSPを保存し、復帰先アドレス(1:ラベル)をRIPとして記録
-    // 初回: jmp 2f でスキップ → while loopへ
-    // 復帰時: 1:ラベルから実行 → shell_recover() → while loopへ
-    ulong recovery_rsp = 0;
-    ulong recovery_rip = 0;
-    ulong is_recovery = 0;
+        // シェル初期化（デモタスク完了後にプロンプト表示）
+        shell_init();
+        debug.println("[BOOT] shell initialized" as void*);
+
+        // idleループ（タイマー割り込み+シェル+スケジューラ統合）
+        serial.println("[CosmOS] Entering idle loop with shell" as void*);
+        debug.println("[BOOT] entering idle loop" as void*);
+
+        // リカバリーポイントを設定（例外発生時にここに復帰する）
+        // RSPを保存し、復帰先アドレス(1:ラベル)をRIPとして記録
+        // 初回: jmp 2f でスキップ → while loopへ
+        // 復帰時: 1:ラベルから実行 → shell_recover() → while loopへ
+        ulong recovery_rsp = 0;
+        ulong recovery_rip = 0;
+        ulong is_recovery = 0;
     __asm__(`
-        movq %rsp, ${=r:recovery_rsp};
-        leaq 1f(%rip), %rax;
-        movq %rax, ${=r:recovery_rip};
-        xorq %rcx, %rcx;
-        movq %rcx, ${=r:is_recovery};
-        jmp 2f;
+    movq %rsp, ${=r:recovery_rsp};
+    leaq 1f(%rip), %rax;
+    movq %rax, ${=r:recovery_rip};
+    xorq %rcx, %rcx;
+    movq %rcx, ${=r:is_recovery};
+    jmp 2f;
     1:;
-        movq $$1, ${=r:is_recovery};
+    movq $$1, ${=r:is_recovery};
     2:
     `);
-    // リカバリーポイントを固定メモリに保存
-    ulong* rsp_save = 0xD88 as ulong*;
-    ulong* rip_save = 0xD90 as ulong*;
-    *rsp_save = recovery_rsp;
-    *rip_save = recovery_rip;
+        // リカバリーポイントを固定メモリに保存
+        ulong* rsp_save = 0xD88 as ulong*;
+        ulong* rip_save = 0xD90 as ulong*;
+        *rsp_save = recovery_rsp;
+        *rip_save = recovery_rip;
 
-    // 例外から復帰した場合、シェルを復旧
-    if (is_recovery != 0) {
+        // 例外から復帰した場合、シェルを復旧
+        if (is_recovery != 0) {
         shell_recover();
-    }
+        }
 
-    while (true) {
+        while (true) {
         // 省電力待機（次のIRQで起床）
         __asm__("hlt");
 
@@ -252,97 +263,118 @@ void kernel_main(BootInfo* info) {
         // need_reschedフラグを確認
         ulong resched = pit_check_resched();
         if (resched != 0) {
-            // タイムスライスをデクリメント
-            sched_timer_tick();
-            ulong current_id = sched_current_id();
-            ulong remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
-            if (remaining == 0) {
-                schedule();
-            }
+        // タイムスライスをデクリメント
+        sched_timer_tick();
+        ulong current_id = sched_current_id();
+        ulong remaining = tcb_read(current_id, TCB_OFF_TIMESLICE);
+        if (remaining == 0) {
+        schedule();
         }
-    }
-}
+        }
+        }
+        }
 
-// ============================================================
-// UEFI メインエントリ
-// ============================================================
+        // ============================================================
+        // UEFI メインエントリ
+        // ============================================================
 
-ulong efi_main(void* image_handle, void* system_table) {
-    // デバッグ・シリアルポート初期化
-    DebugPort debug(0xE9);
-    debug.println("[BOOT] efi_main entered" as void*);
+        ulong efi_main(void* image_handle, void* system_table) {
+        // デバッグ・シリアルポート初期化
+        DebugPort debug(0xE9);
+        debug.println("[BOOT] efi_main entered" as void*);
 
-    SerialPort serial(0x3F8);
-    serial.println("[CosmOS] Serial console initialized" as void*);
-    serial.println("[CosmOS] UEFI boot started" as void*);
-    debug.println("[BOOT] serial_init completed" as void*);
+        SerialPort serial(0x3F8);
+        serial.println("[CosmOS] Serial console initialized" as void*);
+        serial.println("[CosmOS] UEFI boot started" as void*);
+        debug.println("[BOOT] serial_init completed" as void*);
 
-    efi_clear_screen(system_table);
+        efi_clear_screen(system_table);
 
-    // バナー表示
-    efi_println(system_table, "========================================" as void*);
-    efi_println(system_table, "  CosmOS v0.6.0" as void*);
-    efi_println(system_table, "========================================" as void*);
-    efi_println(system_table, "" as void*);
+        // バナー表示
+        efi_println(system_table, "========================================" as void*);
+        efi_println(system_table, "  CosmOS v0.6.0" as void*);
+        efi_println(system_table, "========================================" as void*);
+        efi_println(system_table, "" as void*);
 
-    // ============================================================
-    // Phase 1: BootInfo収集
-    // ============================================================
+        // ============================================================
+        // Phase 1: BootInfo収集
+        // ============================================================
 
-    efi_println(system_table, "[Phase 1] Collecting boot information..." as void*);
-    serial.println("[CosmOS] Phase 1: Collecting boot information" as void*);
+        efi_println(system_table, "[Phase 1] Collecting boot information..." as void*);
+        serial.println("[CosmOS] Phase 1: Collecting boot information" as void*);
 
-    // BootInfo構造体をスタック上に確保
-    BootInfo boot_info = {
+        // BootInfo構造体をスタック上に確保
+        BootInfo boot_info = {
         fb: {
-            base_addr: 0,
-            size: 0,
-            width: 0 as uint,
-            height: 0 as uint,
-            stride: 0 as uint,
-            pixel_format: 0 as uint
+        base_addr: 0,
+        size: 0,
+        width: 0 as uint,
+        height: 0 as uint,
+        stride: 0 as uint,
+        pixel_format: 0 as uint
         },
         mmap: {
-            map_buffer: 0 as void*,
-            map_size: 0, map_key: 0,
-            desc_size: 0,
-            desc_version: 0 as uint,
-            entry_count: 0 as uint
+        map_buffer: 0 as void*,
+        map_size: 0, map_key: 0,
+        desc_size: 0,
+        desc_version: 0 as uint,
+        entry_count: 0 as uint
         },
-        acpi_rsdp: 0
-    };
+        acpi_rsdp: 0,
+        initramfs_base: 0,
+        initramfs_size: 0
+        };
 
-    // GOP（フレームバッファ）情報の収集
-    efi_println(system_table, "  Initializing GOP..." as void*);
-    collect_fb_info(system_table, &boot_info);
+        // GOP（フレームバッファ）情報の収集
+        efi_println(system_table, "  Initializing GOP..." as void*);
+        collect_fb_info(system_table, &boot_info);
 
-    // メモリマップの収集
-    efi_println(system_table, "  Getting memory map..." as void*);
-    ulong mmap_status = collect_memory_map(system_table, &boot_info);
-    long signed_mmap_status = mmap_status as long;
-    if (signed_mmap_status < 0) {
+        // メモリマップの収集
+        efi_println(system_table, "  Getting memory map..." as void*);
+        ulong mmap_status = collect_memory_map(system_table, &boot_info);
+        long signed_mmap_status = mmap_status as long;
+        if (signed_mmap_status < 0) {
         efi_println(system_table, "  ERROR: Memory map collection failed!" as void*);
         efi_println(system_table, "  System halted." as void*);
         while (true) {
-            __asm__("hlt");
+        __asm__("hlt");
         }
-    }
+        }
 
-    efi_println(system_table, "  Boot information collected." as void*);
-    efi_println(system_table, "" as void*);
+        efi_println(system_table, "  Boot information collected." as void*);
+        efi_println(system_table, "" as void*);
 
-    // ============================================================
-    // Phase 1: ExitBootServices
-    // ============================================================
+        // initramfsロード: ESPからhelp.cosmexeを読み込み
+        efi_println(system_table, "  Loading initramfs from ESP..." as void*);
+        // UCS-2ファイル名を固定メモリ(0xCE0)に構築
+        efi_ascii_to_ucs2("\\help.cosmexe" as ulong, 0xCE0, 14);
+        ulong initramfs_buf = 0;
+        ulong initramfs_sz = 0;
+        ulong load_status = efi_load_file(system_table, 0xCE0, &initramfs_buf, &initramfs_sz);
+        long signed_load = load_status as long;
+        if (signed_load < 0) {
+        efi_println(system_table, "  WARNING: help.cosmexe not found on ESP" as void*);
+        serial.println("[CosmOS] WARNING: initramfs load failed" as void*);
+        }
+        if (signed_load >= 0) {
+        boot_info.initramfs_base = initramfs_buf;
+        boot_info.initramfs_size = initramfs_sz;
+        efi_println(system_table, "  initramfs loaded." as void*);
+        serial.println("[CosmOS] initramfs loaded from ESP" as void*);
+        }
 
-    efi_println(system_table, "[Phase 1] Calling ExitBootServices..." as void*);
-    serial.println("[CosmOS] Calling ExitBootServices..." as void*);
-    debug.println("[BOOT] calling ExitBootServices" as void*);
+        // ============================================================
+        // Phase 1: ExitBootServices
+        // ============================================================
 
-    ulong exit_status = efi_exit_boot_services(system_table, image_handle, boot_info.mmap.map_key);
-    long signed_exit = exit_status as long;
+        efi_println(system_table, "[Phase 1] Calling ExitBootServices..." as void*);
+        serial.println("[CosmOS] Calling ExitBootServices..." as void*);
+        debug.println("[BOOT] calling ExitBootServices" as void*);
 
-    if (signed_exit < 0) {
+        ulong exit_status = efi_exit_boot_services(system_table, image_handle, boot_info.mmap.map_key);
+        long signed_exit = exit_status as long;
+
+        if (signed_exit < 0) {
         serial.println("[CosmOS] ExitBootServices failed, retrying..." as void*);
 
         ulong retry_map_size = boot_info.mmap.map_size + 4096;
@@ -358,24 +390,24 @@ ulong efi_main(void* image_handle, void* system_table) {
         signed_exit = exit_status as long;
 
         if (signed_exit < 0) {
-            serial.println("[CosmOS] FATAL: ExitBootServices retry failed!" as void*);
-            debug.println("[BOOT] FATAL: ExitBootServices retry failed" as void*);
-            while (true) {
-                __asm__("hlt");
-            }
+        serial.println("[CosmOS] FATAL: ExitBootServices retry failed!" as void*);
+        debug.println("[BOOT] FATAL: ExitBootServices retry failed" as void*);
+        while (true) {
+        __asm__("hlt");
         }
-    }
+        }
+        }
 
-    // ============================================================
-    // ExitBootServices成功 — ここからはBoot Services使用不可
-    // ============================================================
+        // ============================================================
+        // ExitBootServices成功 — ここからはBoot Services使用不可
+        // ============================================================
 
-    serial.println("[CosmOS] ExitBootServices OK" as void*);
-    debug.println("[BOOT] ExitBootServices OK" as void*);
+        serial.println("[CosmOS] ExitBootServices OK" as void*);
+        debug.println("[BOOT] ExitBootServices OK" as void*);
 
-    // カーネルメインに制御を移す
-    kernel_main(&boot_info);
+        // カーネルメインに制御を移す
+        kernel_main(&boot_info);
 
-    // ここには到達しない
-    return 0;
-}
+        // ここには到達しない
+        return 0;
+        }

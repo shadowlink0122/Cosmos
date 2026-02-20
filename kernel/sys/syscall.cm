@@ -25,6 +25,8 @@ import ./env;
 import ./screen;
 import ./fs_syscall;
 import ./process;
+import ./sbrk;
+// IPC: Bug #14回避のため ipc.cm を独立モジュールにせず直接記述
 
 // ============================================================
 // syscallハンドラエントリポイント（アセンブリスタブ）
@@ -156,12 +158,135 @@ export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulon
         return sys_getpid();
     }
 
+    // メモリ管理syscall (40-49)
+    if (nr == SYS_SBRK) {
+        return sys_sbrk(arg1);
+    }
+
+    // IPC syscall (50-59)
+    if (nr == SYS_SEND) { return ipc_send(arg1, arg2, arg3); }
+    if (nr == SYS_RECV) { return ipc_recv(arg1); }
+    if (nr == SYS_REPLY) { return ipc_send(arg1, 0xFFFF, arg2); }
+    if (nr == SYS_NOTIFY) { return ipc_notify(arg1, arg2); }
+    if (nr == SYS_GET_NOTIFY) { return ipc_get_notify(); }
+
     // 未実装syscall
     DebugPort debug = {port: 0xE9};
     debug.puts("[SYSCALL] unknown nr=" as void*);
     debug.print_hex(nr);
     debug.println("" as void*);
     return SYSCALL_ENOSYS;
+}
+
+// ============================================================
+// IPC メッセージパッシング（インライン実装）
+// ============================================================
+// メモリレイアウト:
+//   0x3000: メッセージキュー (8タスク × 4エントリ × 64B = 2KB)
+//   0x3800: 通知ビットマスク (8 × 8B = 64B)
+
+const MemAddr IPC_BASE = 0x3000;
+const ulong IPC_MSG_SZ = 64;
+const ulong IPC_Q_SIZE = 4;
+const ulong IPC_TASK_SZ = 256;
+const ulong MSG_S_SENDER = 0;
+const ulong MSG_S_TYPE = 16;
+const ulong MSG_S_ARG0 = 24;
+const ulong MSG_S_ARG1 = 32;
+const ulong MSG_S_STATUS = 56;
+const MemAddr IPC_NOTIFY = 0x3800;
+const ulong IPC_ANY_PID = 0xFFFFFFFFFFFFFFFF;
+
+ulong ipc_rd(MemAddr a, ulong o) { ulong* p = (a + o) as ulong*; return *p; }
+void ipc_wr(MemAddr a, ulong o, ulong v) { ulong* p = (a + o) as ulong*; *p = v; }
+MemAddr ipc_slot(ulong tid, ulong s) { return IPC_BASE + tid * IPC_TASK_SZ + s * IPC_MSG_SZ; }
+
+export void ipc_init() {
+    ulong i = 0;
+    while (i < 2048) { ulong* p = (IPC_BASE + i) as ulong*; ulong z = 0; *p = z; i = i + 8; }
+    ulong j = 0;
+    while (j < 64) { ulong* p = (IPC_NOTIFY + j) as ulong*; ulong z = 0; *p = z; j = j + 8; }
+}
+
+SyscallResult ipc_send(ulong target, ulong mtype, ulong a0) {
+    TaskId sender = sched_current_id();
+    ulong count = sched_task_count();
+    if (target >= count) { return SYSCALL_EINVAL; }
+    ulong s = 0;
+    while (s < IPC_Q_SIZE) {
+        MemAddr ma = ipc_slot(target, s);
+        if (ipc_rd(ma, MSG_S_STATUS) == 0) {
+            ipc_wr(ma, MSG_S_SENDER, sender);
+            ipc_wr(ma, MSG_S_TYPE, mtype);
+            ipc_wr(ma, MSG_S_ARG0, a0);
+            ulong one = 1;
+            ipc_wr(ma, MSG_S_STATUS, one);
+            // 受信側がBLOCKEDなら起床
+            TaskState st = tcb_read(target, TCB_OFF_STATE);
+            if (st == TASK_BLOCKED) {
+                TaskId wf = tcb_read(target, TCB_OFF_WAIT_FOR);
+                if (wf == IPC_ANY_PID) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+                if (wf == sender) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+            }
+            return 0;
+        }
+        s = s + 1;
+    }
+    return SYSCALL_ERR;  // キュー満杠
+}
+
+SyscallResult ipc_scan(TaskId rcv, ulong filter) {
+    ulong s = 0;
+    while (s < IPC_Q_SIZE) {
+        MemAddr ma = ipc_slot(rcv, s);
+        if (ipc_rd(ma, MSG_S_STATUS) != 0) {
+            ulong sender = ipc_rd(ma, MSG_S_SENDER);
+            ulong ok = 0;
+            if (filter == IPC_ANY_PID) { ok = 1; }
+            if (filter == sender) { ok = 1; }
+            if (ok != 0) {
+                ulong mt = ipc_rd(ma, MSG_S_TYPE);
+                ulong a0 = ipc_rd(ma, MSG_S_ARG0);
+                ulong z = 0;
+                ipc_wr(ma, MSG_S_STATUS, z);
+                return mt * 0x100000000 + a0;
+            }
+        }
+        s = s + 1;
+    }
+    return SYSCALL_ERR;
+}
+
+SyscallResult ipc_recv(ulong filter) {
+    TaskId rcv = sched_current_id();
+    SyscallResult r = ipc_scan(rcv, filter);
+    if (r != SYSCALL_ERR) { return r; }
+    // BLOCKED
+    tcb_write(rcv, TCB_OFF_STATE, TASK_BLOCKED);
+    tcb_write(rcv, TCB_OFF_WAIT_FOR, filter);
+    schedule();
+    return ipc_scan(rcv, filter);
+}
+
+SyscallResult ipc_notify(ulong target, ulong bits) {
+    ulong count = sched_task_count();
+    if (target >= count) { return SYSCALL_EINVAL; }
+    ulong* np = (IPC_NOTIFY + target * 8) as ulong*;
+    ulong cur = *np;
+    ulong upd = cur | bits;
+    *np = upd;
+    TaskState st = tcb_read(target, TCB_OFF_STATE);
+    if (st == TASK_BLOCKED) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+    return 0;
+}
+
+SyscallResult ipc_get_notify() {
+    TaskId c = sched_current_id();
+    ulong* np = (IPC_NOTIFY + c * 8) as ulong*;
+    ulong b = *np;
+    ulong z = 0;
+    *np = z;
+    return b;
 }
 
 // ============================================================

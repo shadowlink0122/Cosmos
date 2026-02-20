@@ -25,7 +25,11 @@ const ulong LINUX_SYS_READ  = 0;
 const ulong LINUX_SYS_WRITE = 1;
 const ulong LINUX_SYS_OPEN  = 2;
 const ulong LINUX_SYS_CLOSE = 3;
+const ulong LINUX_SYS_MMAP  = 9;
+const ulong LINUX_SYS_MUNMAP = 11;
 const ulong LINUX_SYS_BRK   = 12;
+const ulong LINUX_SYS_PIPE  = 22;
+const ulong LINUX_SYS_DUP2  = 33;
 const ulong LINUX_SYS_EXIT  = 60;
 const ulong LINUX_SYS_EXIT_GROUP = 231;
 
@@ -41,6 +45,10 @@ export SyscallNr linux_to_cosmos_syscall(ulong linux_nr) {
     if (linux_nr == LINUX_SYS_BRK)   { return SYS_SBRK; }
     if (linux_nr == LINUX_SYS_EXIT)  { return SYS_EXIT; }
     if (linux_nr == LINUX_SYS_EXIT_GROUP) { return SYS_EXIT; }
+    if (linux_nr == LINUX_SYS_MMAP)  { return SYS_MMAP; }
+    if (linux_nr == LINUX_SYS_MUNMAP) { return SYS_MUNMAP; }
+    if (linux_nr == LINUX_SYS_PIPE)  { return SYS_PIPE; }
+    if (linux_nr == LINUX_SYS_DUP2)  { return SYS_DUP2; }
 
     // 未対応syscall
     DebugPort debug(0xE9);

@@ -10,15 +10,15 @@ import ../types;
 // syscall番号定数
 // ============================================================
 
-export const SyscallNr SYS_EXIT    = 0;   // プロセス終了
-export const SyscallNr SYS_WRITE   = 1;   // write(fd, buf, len) → bytes_written
-export const SyscallNr SYS_READ    = 2;   // read(fd, buf, len) → bytes_read
-export const SyscallNr SYS_OPEN    = 3;   // open(path, flags) → fd
-export const SyscallNr SYS_CLOSE   = 4;   // close(fd) → 0
-export const SyscallNr SYS_STAT    = 5;   // stat(path, buf) → 0
-export const SyscallNr SYS_GETENV  = 6;   // getenv(name, buf, len) → len
-export const SyscallNr SYS_GETCWD  = 7;   // getcwd(buf, len) → len
-export const SyscallNr SYS_CHDIR   = 8;   // chdir(path) → 0
+export const SyscallNr SYS_EXIT    = 0;  // プロセス終了
+export const SyscallNr SYS_WRITE   = 1;  // write(fd, buf, len) → bytes_written
+export const SyscallNr SYS_READ    = 2;  // read(fd, buf, len) → bytes_read
+export const SyscallNr SYS_OPEN    = 3;  // open(path, flags) → fd
+export const SyscallNr SYS_CLOSE   = 4;  // close(fd) → 0
+export const SyscallNr SYS_STAT    = 5;  // stat(path, buf) → 0
+export const SyscallNr SYS_GETENV  = 6;  // getenv(name, buf, len) → len
+export const SyscallNr SYS_GETCWD  = 7;  // getcwd(buf, len) → len
+export const SyscallNr SYS_CHDIR   = 8;  // chdir(path) → 0
 
 // 画面I/O syscall (10-19)
 export const SyscallNr SYS_SCREEN_CLEAR      = 10;  // 画面クリア
@@ -45,13 +45,29 @@ export const SyscallNr SYS_KILL   = 31;  // kill(pid) → 0
 export const SyscallNr SYS_WAIT   = 34;  // wait(pid) → exit_code
 export const SyscallNr SYS_GETPID = 35;  // getpid() → pid
 
+// メモリ管理 syscall (40-49)
+export const SyscallNr SYS_SBRK   = 40;  // sbrk(increment) → addr or INVALID_VALUE
+export const SyscallNr SYS_MMAP   = 45;  // mmap(addr, len, prot) → addr
+export const SyscallNr SYS_MUNMAP = 46;  // munmap(addr, len) → 0
+
+// IPC syscall (50-59)
+export const SyscallNr SYS_SEND       = 50;  // send(pid, type, arg0, arg1) → 0
+export const SyscallNr SYS_RECV       = 51;  // recv(pid_filter) → msg_value
+export const SyscallNr SYS_REPLY      = 52;  // reply(pid, result) → 0
+export const SyscallNr SYS_NOTIFY     = 53;  // notify(pid, bits) → 0
+export const SyscallNr SYS_GET_NOTIFY = 54;  // get_notify() → bits
+
+// パイプ/fd syscall (55-59)
+export const SyscallNr SYS_PIPE = 55;  // pipe(fds_ptr) → 0
+export const SyscallNr SYS_DUP2 = 56;  // dup2(old, new) → fd
+
 // ============================================================
 // ファイルディスクリプタ定数
 // ============================================================
 
-export const Fd FD_STDIN  = 0;   // 標準入力
-export const Fd FD_STDOUT = 1;   // 標準出力
-export const Fd FD_STDERR = 2;   // 標準エラー出力
+export const Fd FD_STDIN  = 0;  // 標準入力
+export const Fd FD_STDOUT = 1;  // 標準出力
+export const Fd FD_STDERR = 2;  // 標準エラー出力
 
 // ============================================================
 // エラーコード
@@ -62,4 +78,3 @@ export const SyscallResult SYSCALL_ERR      = 0xFFFFFFFFFFFFFFFF;  // 汎用エ�
 export const SyscallResult SYSCALL_EBADF    = 0xFFFFFFFFFFFFFFF7;  // 不正なfd
 export const SyscallResult SYSCALL_ENOSYS   = 0xFFFFFFFFFFFFFFF8;  // 未実装syscall
 export const SyscallResult SYSCALL_EINVAL   = 0xFFFFFFFFFFFFFFF9;  // 不正な引数
-
