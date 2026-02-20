@@ -2,9 +2,8 @@
 // kernel::arch::usermode - ユーザモード遷移とsyscall/sysret
 //
 // x86_64のsyscall/sysret命令を使用してRing 0↔Ring 3の遷移を実現する。
-//
-// MSR設定:
-//   MSR_EFER  (0xC0000080): SCE ビット有効化
+
+import ../sys/linux_syscall;
 //   MSR_STAR  (0xC0000081): カーネル/ユーザセグメントセレクタ
 //   MSR_LSTAR (0xC0000082): syscallエントリポイント
 //   MSR_SFMASK(0xC0000084): syscall時にマスクするRFLAGS
@@ -22,20 +21,20 @@
 //   CS  ← STAR[63:48] + 16 (User Code = 0x18 + 16 = 0x28... RPL=3 → 0x23)
 //   SS  ← STAR[63:48] + 8  (User Data = 0x18 + 8 = 0x20... RPL=3 → 0x1B)
 //
-// 注: STAR[63:48] = 0x18 → sysret は CS = 0x18+16=0x28|3=0x2B? 
+// 注: STAR[63:48] = 0x18 → sysret は CS = 0x18+16=0x28|3=0x2B?
 // いいえ: Intel仕様ではsysretq(64bit) は CS = STAR[63:48]+16, SS = STAR[63:48]+8
 // STAR[63:48] = 0x1B (User Data sel with RPL3)
-// → CS = (0x1B & ~3) + 16 | 3 = 0x18 + 16 | 3 = 0x28 | 3 = 0x2B... 
+// → CS = (0x1B & ~3) + 16 | 3 = 0x18 + 16 | 3 = 0x28 | 3 = 0x2B...
 // 修正: STAR sysret用フィールドは GDT_USER_DATA_SEL 基底(RPLなし)を設定
 // 実際: sysret64 では CS = STAR[63:48]+16, SS = STAR[63:48]+8 (RPL3は自動)
 // GDTレイアウト: User Data=0x18, User Code=0x20
-// → STAR[63:48] = 0x18 → SS = 0x18+8=0x20... UData=0x18なのでSS=UData? 
+// → STAR[63:48] = 0x18 → SS = 0x18+8=0x20... UData=0x18なのでSS=UData?
 //
 // AMD64 spec: For sysretq, CS.sel = IA32_STAR[63:48]+16, SS.sel = IA32_STAR[63:48]+8
 // GDT: UData=0x18, UCode=0x20
 // STAR[63:48] should be 0x18:
 //   CS = 0x18 + 16 = 0x28 ← 不正（TSS位置）
-// 
+//
 // 修正版: STAR[63:48] = 0x10 (実質 Kernel Data基底):
 //   SS = 0x10 + 8 = 0x18 (User Data) ✓
 //   CS = 0x10 + 16 = 0x20 (User Code) ✓ → RPL=3はCPUが自動設定
@@ -46,36 +45,42 @@ import ../config;
 import ../drivers/serial;
 import ../drivers/debug_port;
 import ../arch/gdt;
+import ../arch/tss;
 import ../sys/syscall;
 
 // ============================================================
 // MSR 定数
 // ============================================================
 
-const ulong MSR_EFER   = 0xC0000080;   // Extended Feature Enable Register
-const ulong MSR_STAR   = 0xC0000081;   // SYSCALL target address
-const ulong MSR_LSTAR  = 0xC0000082;   // Long mode SYSCALL target
-const ulong MSR_SFMASK = 0xC0000084;   // SYSCALL flag mask
+const ulong MSR_EFER   = 0xC0000080;  // Extended Feature Enable Register
+const ulong MSR_STAR   = 0xC0000081;  // SYSCALL target address
+const ulong MSR_LSTAR  = 0xC0000082;  // Long mode SYSCALL target
+const ulong MSR_SFMASK = 0xC0000084;  // SYSCALL flag mask
 
 // EFER ビット
 const ulong EFER_SCE = 1;  // System Call Extensions
 
 // RFLAGS ビット（SFMASK用）
-const ulong RFLAGS_IF = 0x200;   // Interrupt Flag
-const ulong RFLAGS_TF = 0x100;   // Trap Flag
-const ulong RFLAGS_DF = 0x400;   // Direction Flag
+const ulong RFLAGS_IF = 0x200;  // Interrupt Flag
+const ulong RFLAGS_TF = 0x100;  // Trap Flag
+const ulong RFLAGS_DF = 0x400;  // Direction Flag
 
 // 固定メモリ: ユーザRSP/カーネルRSP 保存領域
-const MemAddr USERMODE_KERNEL_RSP = 0xDB0;   // カーネルスタックポインタ保存
-const MemAddr USERMODE_USER_RSP   = 0xDB8;   // ユーザスタックポインタ保存
+const MemAddr USERMODE_KERNEL_RSP = 0xDB0;  // カーネルスタックポインタ保存
+const MemAddr USERMODE_USER_RSP   = 0xDB8;  // ユーザスタックポインタ保存
 
 // Ring 3 テストモード用固定メモリ
-const MemAddr USERMODE_TEST_FLAG      = 0xE08;  // テストモードフラグ (1=アクティブ)
-const MemAddr USERMODE_TEST_MAGIC     = 0xE10;  // Ring 3から書き込まれたマジック値
-const MemAddr USERMODE_TEST_CS        = 0xE18;  // Ring 3でのCS値
-const MemAddr USERMODE_TEST_SYSCALL   = 0xE20;  // syscall結果
-const MemAddr USERMODE_TEST_EXIT_CODE = 0xE28;  // 終了コード
-const MemAddr USERMODE_TEST_RETURN    = 0xE30;  // カーネル復帰先RIP
+const MemAddr USERMODE_TEST_FLAG      = 0xE08;   // テストモードフラグ (1=アクティブ)
+const MemAddr USERMODE_TEST_MAGIC     = 0xE10;   // Ring 3から書き込まれたマジック値
+const MemAddr USERMODE_TEST_CS        = 0xE18;   // Ring 3でのCS値
+const MemAddr USERMODE_TEST_SYSCALL   = 0xE20;   // syscall結果
+const MemAddr USERMODE_TEST_EXIT_CODE = 0xE28;   // 終了コード
+const MemAddr USERMODE_TEST_RETURN    = 0xE30;   // カーネル復帰先RIP
+const MemAddr USERMODE_TEST_KERNEL_CR3 = 0xE38;  // カーネルCR3保存
+
+// Linux互換モード用固定メモリ
+const MemAddr USERMODE_LINUX_MODE = 0xE40;    // Linuxモードフラグ (1=Linux ELF実行中)
+const MemAddr USERMODE_LINUX_RETURN = 0xE48;  // Linux ELF復帰先RIP
 
 // ============================================================
 // MSR読み書きヘルパー
@@ -209,6 +214,8 @@ export void syscall_entry_fast() {
             *exit_ptr = arg1;
             // カーネルコンテキスト復帰: iretq/sysretqではなく保存済みコンテキストに復帰
             __asm__(`
+                movq (0xE38), %rax;
+                movq %rax, %cr3;
                 movq (0xDD0), %rbx;
                 movq (0xDD8), %rbp;
                 movq (0xDE0), %r12;
@@ -218,6 +225,63 @@ export void syscall_entry_fast() {
                 movq (0xE00), %rsp;
                 movq (0xE30), %rax;
                 jmpq *%rax
+            `);
+        }
+    }
+
+    // Linux互換モード: syscall番号を変換
+    ulong* linux_flag = USERMODE_LINUX_MODE as ulong*;
+    if (*linux_flag == 1) {
+        // Linux SYS_EXIT (60) or SYS_EXIT_GROUP (231)
+        if (syscall_nr == 60) {
+            *linux_flag = 0;
+            ulong* exit_ptr = USERMODE_TEST_EXIT_CODE as ulong*;
+            *exit_ptr = arg1;
+            // カーネルコンテキスト復帰
+            __asm__(`
+                movq (0xE38), %rax;
+                movq %rax, %cr3;
+                movq (0xDD0), %rbx;
+                movq (0xDD8), %rbp;
+                movq (0xDE0), %r12;
+                movq (0xDE8), %r13;
+                movq (0xDF0), %r14;
+                movq (0xDF8), %r15;
+                movq (0xE00), %rsp;
+                movq (0xE48), %rax;
+                jmpq *%rax
+            `);
+        }
+        if (syscall_nr == 231) {
+            *linux_flag = 0;
+            ulong* exit_ptr = USERMODE_TEST_EXIT_CODE as ulong*;
+            *exit_ptr = arg1;
+            __asm__(`
+                movq (0xE38), %rax;
+                movq %rax, %cr3;
+                movq (0xDD0), %rbx;
+                movq (0xDD8), %rbp;
+                movq (0xDE0), %r12;
+                movq (0xDE8), %r13;
+                movq (0xDF0), %r14;
+                movq (0xDF8), %r15;
+                movq (0xE00), %rsp;
+                movq (0xE48), %rax;
+                jmpq *%rax
+            `);
+        }
+        // Linux番号→CosmOS番号に変換
+        syscall_nr = linux_to_cosmos_syscall(syscall_nr);
+        // 変換不可(0xFFFF)の場合はスキップ
+        if (syscall_nr == 0xFFFF) {
+            // エラーを返してsysretq
+            ulong err_result = 0xFFFFFFFFFFFFFFFF;
+            __asm__(`
+                movq ${r:err_result}, %rax;
+                popq %r15; popq %r14; popq %r13; popq %r12;
+                popq %rbp; popq %rbx; popq %r11; popq %rcx;
+                movq (0xDB8), %rsp;
+                sysretq
             `);
         }
     }
@@ -239,6 +303,24 @@ export void syscall_entry_fast() {
         movq (0xDB8), %rsp;
         sysretq
     `);
+}
+
+// ============================================================
+// カーネルスタック設定
+// ============================================================
+
+/// Ring 3遷移前にTSSのRSP0と固定メモリのカーネルRSPを設定する
+///
+/// Ring 3→Ring 0遷移は2つのパスがある:
+///   1. 割り込み/例外: CPUがTSS.RSP0を読み取る
+///   2. syscall命令: 固定メモリ(0xDB0)からカーネルRSPを読み取る
+/// 両方を同期的に更新する必要がある。
+export void usermode_set_kernel_stack(MemAddr kernel_rsp) {
+    // TSS RSP0 更新（割り込み/例外経路）
+    tss_set_rsp0(kernel_rsp);
+    // 固定メモリ更新（syscall経路）
+    ulong* krsp = USERMODE_KERNEL_RSP as ulong*;
+    *krsp = kernel_rsp;
 }
 
 // ============================================================
