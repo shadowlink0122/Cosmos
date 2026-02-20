@@ -73,6 +73,7 @@ export const MemAddr ADDR_FS_CWD           = 0x1E10;  // カレントディレ�
 
 // --- シェル用グローバル参照 ---
 export const MemAddr ADDR_GLOBAL_HEAP      = 0x1E18;  // Heap構造体アドレス
+export const MemAddr ADDR_GLOBAL_PMM       = 0x3400;  // PMM構造体アドレス（ユーザプロセス用）
 
 // --- 環境変数テーブル ---
 // 16変数 × 64B = 1024B (0x1E20-0x221F)

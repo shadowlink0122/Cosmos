@@ -18,6 +18,8 @@ import ../drivers/debug_port;
 import ../drivers/serial;
 import ../fs/cosmfs;
 import ../mm/heap;
+import ../mm/pmm;
+import ../mm/user_pgtable;
 import ../loader/elf_loader;
 import ../arch/usermode;
 import ../shell/shell_io;
@@ -288,3 +290,118 @@ export ulong loader_exec_elf(MemAddr name_addr) {
     // enter_usermode は戻らない（syscall exit で上の leaq 1f 地点に戻る）
     return 0;
 }
+
+// ============================================================
+// ユーザモードCosmEXE実行（Ring 3, 独立ページテーブル）
+// ============================================================
+
+/// CosmEXEバイナリをRing 3（ユーザモード）で実行する
+///
+/// 手順:
+///   1. ユーザCR3（独立PML4）を作成
+///   2. CosmEXEをユーザ空間(0x400000)にロード＆マッピング
+///   3. ユーザスタック(0x800000)を割り当て
+///   4. CR3を切替 → sysretqでRing 3に遷移
+///   5. SYS_EXITでカーネルに復帰 → ページテーブル解放
+///
+/// buf_addr: カーネル空間に読み込まれたCosmEXEバッファ
+/// buf_size: バッファサイズ
+///
+/// 戻り値: 終了コード
+export ulong loader_exec_usermode(MemAddr buf_addr, ulong buf_size) {
+    DebugPort debug(0xE9);
+    SerialPort serial = {port: 0x3F8};
+
+    debug.println("[LOADER] === User Mode Execution ===" as void*);
+    serial.println("[CosmOS] Starting Ring 3 process" as void*);
+
+    // CosmEXE マジック検証
+    ulong magic = loader_read_u64(buf_addr);
+    if (magic != COSMEXE_MAGIC) {
+        debug.println("[LOADER] ERROR: bad magic" as void*);
+        shell_set_color(0x00FF4444);
+        shell_println("Error: not a valid CosmEXE" as void*);
+        return 1;
+    }
+
+    // PMM取得（グローバルPMMポインタ経由）
+    ulong* pmm_ptr = ADDR_GLOBAL_PMM as ulong*;
+    MemAddr pmm_addr = *pmm_ptr;
+    PMM* pmm = pmm_addr as PMM*;
+
+    // Step 1: ユーザページテーブル作成
+    MemAddr user_cr3 = user_pgtable_create(pmm);
+    if (user_cr3 == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: cannot create user page table" as void*);
+        return 2;
+    }
+
+    // Step 2: CosmEXEをユーザ空間にロード
+    MemAddr user_entry = user_pgtable_load_cosmexe(user_cr3, buf_addr, buf_size, pmm);
+    if (user_entry == 0) {
+        user_pgtable_destroy(user_cr3, pmm);
+        shell_set_color(0x00FF4444);
+        shell_println("Error: cannot load program" as void*);
+        return 3;
+    }
+
+    MemAddr user_stack_top = USER_STACK_TOP;
+
+    // Step 3: カーネルコンテキスト保存（SYS_EXIT復帰用）
+    ulong* test_flag = USERMODE_TEST_FLAG as ulong*;
+    ulong one = 1;
+    *test_flag = one;
+
+    // カーネルCR3を保存
+    ulong kernel_cr3 = 0;
+    __asm__(` movq %cr3, %rax; movq %rax, ${=r:kernel_cr3} `);
+    ulong* kcr3_save = USERMODE_TEST_KERNEL_CR3 as ulong*;
+    *kcr3_save = kernel_cr3;
+
+    // callee-savedレジスタとRSPを保存
+    __asm__(`
+        movq %rbx, (0xDD0);
+        movq %rbp, (0xDD8);
+        movq %r12, (0xDE0);
+        movq %r13, (0xDE8);
+        movq %r14, (0xDF0);
+        movq %r15, (0xDF8);
+        movq %rsp, (0xE00);
+        leaq 1f(%rip), %rax;
+        movq %rax, (0xE30);
+        1:
+    `);
+
+    // SYS_EXITから復帰した場合
+    ulong* check_flag2 = USERMODE_TEST_FLAG as ulong*;
+    if (*check_flag2 == 0) {
+        ulong* exit_code_ptr = USERMODE_TEST_EXIT_CODE as ulong*;
+        ulong ec = *exit_code_ptr;
+
+        // ユーザページテーブルを解放
+        user_pgtable_destroy(user_cr3, pmm);
+
+        shell_set_color(0x0000FF88);
+        shell_puts("Process exited (Ring 3) code=" as void*);
+        shell_print_num(ec);
+        shell_newline();
+        return ec;
+    }
+
+    // Step 4: CR3をユーザ空間に切替
+    debug.puts("[LOADER] switching CR3 to 0x" as void*);
+    debug.print_hex(user_cr3);
+    debug.println("" as void*);
+    __asm__(`
+        movq ${r:user_cr3}, %rax;
+        movq %rax, %cr3
+    `);
+
+    // Step 5: Ring 3に遷移
+    enter_usermode(user_entry, user_stack_top);
+
+    // ここには到達しない
+    return 0;
+}
+

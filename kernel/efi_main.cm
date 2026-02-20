@@ -225,6 +225,12 @@ void kernel_main(BootInfo* info) {
         ulong* global_heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
         *global_heap_ptr = heap_addr_val;
 
+        // グローバルPMMポインタを保存（ユーザプロセス用）
+        PMM* pmm_ref = &pmm;
+        ulong pmm_addr_val = pmm_ref as ulong;
+        ulong* global_pmm_ptr = ADDR_GLOBAL_PMM as ulong*;
+        *global_pmm_ptr = pmm_addr_val;
+
         // initramfs: サンプルファイルをCosmFSにロード
         initramfs_load(&heap, info);
         debug.println("[BOOT] initramfs loaded" as void*);
