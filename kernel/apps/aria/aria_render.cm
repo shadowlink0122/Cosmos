@@ -49,6 +49,7 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
     // スクロールオフセット自動調整
     ulong* st_ptr = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
     ulong scroll_top = *st_ptr;
+    ulong old_scroll_top = scroll_top;  // スクロール変化検出用
     if (cur_y < scroll_top) {
         scroll_top = cur_y;
         *st_ptr = scroll_top;
@@ -59,96 +60,137 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
         *st_ptr = scroll_top;
     }
 
-    // カーソルを画面左上にリセット（全画面クリアしない — 上書き描画）
-    SyscallNr sc_setcur = SC_SCREEN_SET_CURSOR;
-    ulong zero_x = 0;
-    ulong zero_y = 0;
-    __asm__(` movq ${r:sc_setcur}, %rax; movq ${r:zero_x}, %rdi; movq ${r:zero_y}, %rsi; int $$0x80 `);
+    // ダーティフラグ確認
+    ulong* dirty_ptr = (ADDR_ARIA_STATE + OFF_DIRTY) as ulong*;
+    ulong dirty = *dirty_ptr;
+    ulong* pcyp = (ADDR_ARIA_STATE + OFF_PREV_CUR_Y) as ulong*;
+    ulong prev_cur_y = *pcyp;
 
-    // syscall定数（繰り返し使用）
-    SyscallNr sc_scol = SC_SCREEN_SET_COLOR;
-    SyscallNr sc_pc = SC_SCREEN_PUTC;
-    SyscallNr sc_nl = SC_SCREEN_NEWLINE;
-    Color hdr_color = COLOR_HEADER;
-    Color out_color = COLOR_OUTPUT;
-    AsciiChar ch_sp = 0x20;
-
-    // ================================================================
-    // ヘッダー行: " Aria: <filename> [+]"
-    // ================================================================
-    __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
-
-    // " Aria: "
-    ulong ch_A = 0x41; ulong ch_r = 0x72; ulong ch_ii = 0x69; ulong ch_aa = 0x61; ulong ch_colon = 0x3A;
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_A}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_r}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ii}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_aa}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_colon}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-
-    // ファイル名出力
-    ulong fn_idx = 0;
-    ulong* fn_len_p = (ADDR_ARIA_STATE + OFF_FNAME_LEN) as ulong*;
-    ulong fn_len = *fn_len_p;
-    while (fn_idx < fn_len) {
-        ulong fnch = 0;
-        ulong fna = ADDR_ARIA_FILENAME + fn_idx;
-        __asm__(` movq ${r:fna}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:fnch} `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:fnch}, %rdi; int $$0x80 `);
-        fn_idx = fn_idx + 1;
+    // スクロールが変化した場合はフル再描画に強制
+    if (scroll_top != old_scroll_top) {
+        dirty = DIRTY_FULL;
     }
 
-    // 変更フラグ
-    ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
-    ulong modified = *mod_ptr;
-    if (modified != 0) {
-        ulong ch_lb = 0x5B; ulong ch_plus = 0x2B; ulong ch_rb = 0x5D;
+    // カーソルを画面左上にリセット（全画面クリアしない — 上書き描画）
+    // DIRTY_CURSORの場合は各行描画時にSET_CURSORで位置指定するのでスキップ可
+    SyscallNr sc_setcur = SC_SCREEN_SET_CURSOR;
+    if (dirty != DIRTY_CURSOR) {
+        ulong zero_x = 0;
+        ulong zero_y = 0;
+        __asm__(` movq ${r:sc_setcur}, %rax; movq ${r:zero_x}, %rdi; movq ${r:zero_y}, %rsi; int $$0x80 `);
+            }
+
+            // syscall定数（繰り返し使用）
+            SyscallNr sc_scol = SC_SCREEN_SET_COLOR;
+            SyscallNr sc_pc = SC_SCREEN_PUTC;
+            SyscallNr sc_nl = SC_SCREEN_NEWLINE;
+            Color hdr_color = COLOR_HEADER;
+            Color out_color = COLOR_OUTPUT;
+            AsciiChar ch_sp = 0x20;
+
+            // ================================================================
+            // ヘッダー行: " Aria: <filename> [+]"
+            // ================================================================
+            if (dirty != DIRTY_CURSOR) {
+        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
+
+        // " Aria: "
+        ulong ch_A = 0x41;
+        ulong ch_r = 0x72;
+        ulong ch_ii = 0x69;
+        ulong ch_aa = 0x61;
+        ulong ch_colon = 0x3A;
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_A}, %rdi; int $$0x80 `);
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_r}, %rdi; int $$0x80 `);
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ii}, %rdi; int $$0x80 `);
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_aa}, %rdi; int $$0x80 `);
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_colon}, %rdi; int $$0x80 `);
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+
+            // ファイル名出力
+            ulong fn_idx = 0;
+            ulong* fn_len_p = (ADDR_ARIA_STATE + OFF_FNAME_LEN) as ulong*;
+            ulong fn_len = *fn_len_p;
+            while (fn_idx < fn_len) {
+            ulong fnch = 0;
+            ulong fna = ADDR_ARIA_FILENAME + fn_idx;
+        __asm__(` movq ${r:fna}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:fnch} `);
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:fnch}, %rdi; int $$0x80 `);
+            fn_idx = fn_idx + 1;
+            }
+
+            // 変更フラグ
+            ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+            ulong modified = *mod_ptr;
+            if (modified != 0) {
+            ulong ch_lb = 0x5B;
+            ulong ch_plus = 0x2B;
+            ulong ch_rb = 0x5D;
         __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
         __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_lb}, %rdi; int $$0x80 `);
         __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_plus}, %rdi; int $$0x80 `);
         __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_rb}, %rdi; int $$0x80 `);
-    }
-    // ヘッダー行末をスペースで埋める（古い文字を消去）
-    ulong hdr_col_used = 7 + fn_len;
-    if (modified != 0) { hdr_col_used = hdr_col_used + 4; }
-    while (hdr_col_used < screen_cols) {
+            }
+            // ヘッダー行末をスペースで埋める
+            ulong hdr_col_used = 7 + fn_len;
+            if (modified != 0) { hdr_col_used = hdr_col_used + 4; }
+            while (hdr_col_used < screen_cols) {
         __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
         hdr_col_used = hdr_col_used + 1;
     }
     __asm__(` movq ${r:sc_nl}, %rax; int $$0x80 `);
+        }  // end if (dirty != DIRTY_CURSOR)
 
-    // ================================================================
-    // テキスト領域
-    // ================================================================
-    ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
-    ulong buf_size = *bs;
+        // ================================================================
+        // テキスト領域
+        // ================================================================
+        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+        ulong buf_size = *bs;
 
-    ulong screen_line = 0;
-    while (screen_line < text_rows) {
+        ulong screen_line = 0;
+        while (screen_line < text_rows) {
         ulong file_line = scroll_top + screen_line;
         ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
         ulong num_lines = *nlp;
-        ulong col = 0;  // テキスト表示列数（行末スペース埋めに使用）
+        ulong col = 0;
 
-        if (file_line < num_lines) {
-            // 行の先頭バッファ位置を計算
-            ulong line_start = 0;
-            ulong cur_line = 0;
-            ulong fi = 0;
-            while (cur_line < file_line) {
-                if (fi >= buf_size) { cur_line = file_line; }
-                else {
-                    ulong ch = 0;
-                    ulong fa = ADDR_ARIA_BUFFER + fi;
-                    __asm__(` movq ${r:fa}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
-                    fi = fi + 1;
-                    if (ch == 0x0A) { cur_line = cur_line + 1; line_start = fi; }
+        // DIRTY_CURSOR: 前回カーソル行と新カーソル行のみ描画
+        ulong skip_line = 0;
+        if (dirty == DIRTY_CURSOR) {
+        if (file_line != prev_cur_y) {
+        if (file_line != cur_y) {
+        skip_line = 1;
+        }
+        }
+        }
+        if (skip_line != 0) {
+        screen_line = screen_line + 1;
+        } else {
+        // SET_CURSORで行位置指定（スキップ後の描画に必要）
+        if (dirty == DIRTY_CURSOR) {
+        ulong sc_y = screen_line + 1;  // +1 はヘッダー行分
+        ulong sc_x = 0;
+    __asm__(` movq ${r:sc_setcur}, %rax; movq ${r:sc_x}, %rdi; movq ${r:sc_y}, %rsi; int $$0x80 `);
+}
+
+if (file_line < num_lines) {
+    // 行の先頭バッファ位置を計算
+    ulong line_start = 0;
+    ulong cur_line = 0;
+    ulong fi = 0;
+    while (cur_line < file_line) {
+        if (fi >= buf_size) { cur_line = file_line; }
+        else {
+            ulong ch = 0;
+            ulong fa = ADDR_ARIA_BUFFER + fi;
+            __asm__(` movq ${r:fa}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+                fi = fi + 1;
+                if (ch == 0x0A) { cur_line = cur_line + 1; line_start = fi; }
                 }
-            }
+                }
 
-            // 行番号
+                // 行番号
             __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
             ulong display_num = file_line + 1;
             ulong sc_pnum = SC_SCREEN_PRINT_NUM;
@@ -157,39 +199,39 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
 
             // 行内容
             __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
-            ulong bi = line_start;
-            ulong line_done = 0;
-            while (line_done == 0) {
+                ulong bi = line_start;
+                ulong line_done = 0;
+                while (line_done == 0) {
                 if (bi >= buf_size) { line_done = 1; }
                 else {
-                    ulong ch = 0;
-                    ulong ba = ADDR_ARIA_BUFFER + bi;
-                    __asm__(` movq ${r:ba}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
-                    if (ch == 0x0A) { line_done = 1; }
-                    else {
-                        // カーソル位置ハイライト
-                        if (file_line == cur_y) {
-                            if (col == cur_x) {
-                                ulong cursor_color = COLOR_GREEN;
-                                __asm__(` movq ${r:sc_scol}, %rax; movq ${r:cursor_color}, %rdi; int $$0x80 `);
-                                __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch}, %rdi; int $$0x80 `);
-                                __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
+                ulong ch = 0;
+                ulong ba = ADDR_ARIA_BUFFER + bi;
+            __asm__(` movq ${r:ba}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+            if (ch == 0x0A) { line_done = 1; }
+            else {
+                // カーソル位置ハイライト
+                if (file_line == cur_y) {
+                    if (col == cur_x) {
+                        ulong cursor_color = COLOR_GREEN;
+                        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:cursor_color}, %rdi; int $$0x80 `);
+                        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch}, %rdi; int $$0x80 `);
+                        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
                             } else {
-                                __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch}, %rdi; int $$0x80 `);
-                            }
-                        } else {
-                            __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch}, %rdi; int $$0x80 `);
+                        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch}, %rdi; int $$0x80 `);
+                    }
+                } else {
+                    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch}, %rdi; int $$0x80 `);
                         }
                         col = col + 1;
                         bi = bi + 1;
-                    }
-                }
-            }
+                        }
+                        }
+                        }
 
-            // 行末ブロックカーソル
-            if (file_line == cur_y) {
-                if (cur_x >= col) {
-                    ulong cursor_color2 = COLOR_GREEN;
+                        // 行末ブロックカーソル
+                        if (file_line == cur_y) {
+                        if (cur_x >= col) {
+                        ulong cursor_color2 = COLOR_GREEN;
                     __asm__(` movq ${r:sc_scol}, %rax; movq ${r:cursor_color2}, %rdi; int $$0x80 `);
                     ulong ch_under = 0x5F;
                     __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_under}, %rdi; int $$0x80 `);
@@ -199,7 +241,7 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
         } else {
             // 空行
             __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
-            ulong ch_tilde = 0x7E;
+                ulong ch_tilde = 0x7E;
             __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tilde}, %rdi; int $$0x80 `);
             col = 0;  // 空行はテキスト0文字
         }
@@ -223,11 +265,12 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
         }
         while (col_used_val < screen_cols) {
             __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-            col_used_val = col_used_val + 1;
-        }
+                col_used_val = col_used_val + 1;
+                }
 
-        __asm__(` movq ${r:sc_nl}, %rax; int $$0x80 `);
-        screen_line = screen_line + 1;
+            __asm__(` movq ${r:sc_nl}, %rax; int $$0x80 `);
+            screen_line = screen_line + 1;
+        }  // end else (skip_line == 0)
     }
 
     // ================================================================
@@ -236,106 +279,124 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
     Color prompt_color = COLOR_PROMPT;
     __asm__(` movq ${r:sc_scol}, %rax; movq ${r:prompt_color}, %rdi; int $$0x80 `);
 
-    ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
-    ulong mode = *mp;
+        ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
+        ulong mode = *mp;
 
-    // --- モード表示 ---
-    if (mode == MODE_NORMAL) {
-        ulong ch_N = 0x4E; ulong ch_O = 0x4F; ulong ch_R = 0x52; ulong ch_M = 0x4D; ulong ch_LL = 0x4C;
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_N}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_O}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_R}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_M}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_A}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_LL}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-    }
-    if (mode == MODE_INSERT) {
-        ulong ch_I = 0x49; ulong ch_N2 = 0x4E; ulong ch_S = 0x53; ulong ch_E = 0x45;
-        ulong ch_R2 = 0x52; ulong ch_T = 0x54;
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_I}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_N2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_S}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_E}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_R2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_T}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-    }
-    if (mode == MODE_COMMAND) {
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_colon}, %rdi; int $$0x80 `);
+        // --- モード表示 ---
+        if (mode == MODE_NORMAL) {
+        ulong ch_N = 0x4E;
+        ulong ch_O = 0x4F;
+        ulong ch_R = 0x52;
+        ulong ch_M = 0x4D;
+        ulong ch_LL = 0x4C;
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_N}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_O}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_R}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_M}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_A}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_LL}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+        }
+        if (mode == MODE_INSERT) {
+        ulong ch_I = 0x49;
+        ulong ch_N2 = 0x4E;
+        ulong ch_S = 0x53;
+        ulong ch_E = 0x45;
+        ulong ch_R2 = 0x52;
+        ulong ch_T = 0x54;
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_I}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_N2}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_S}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_E}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_R2}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_T}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+        }
+        if (mode == MODE_COMMAND) {
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_colon}, %rdi; int $$0x80 `);
         ulong* clp = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
         ulong clen = *clp;
         ulong ci = 0;
         while (ci < clen) {
-            ulong cc = 0;
-            ulong ca = ADDR_ARIA_CMDLINE + ci;
-            __asm__(` movq ${r:ca}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:cc} `);
-            __asm__(` movq ${r:sc_pc}, %rax; movq ${r:cc}, %rdi; int $$0x80 `);
-            ci = ci + 1;
+        ulong cc = 0;
+        ulong ca = ADDR_ARIA_CMDLINE + ci;
+    __asm__(` movq ${r:ca}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:cc} `);
+    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:cc}, %rdi; int $$0x80 `);
+        ci = ci + 1;
         }
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-    }
-
-    // --- カーソル位置表示 ---
-    __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
-    ulong ch_L = 0x4C;
     __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_L}, %rdi; int $$0x80 `);
+}
+
+// --- カーソル位置表示 ---
+__asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
+    ulong ch_L = 0x4C;
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_L}, %rdi; int $$0x80 `);
     ulong disp_y = cur_y + 1;
     ulong sc_phex = SC_SCREEN_PRINT_HEX;
-    __asm__(` movq ${r:sc_phex}, %rax; movq ${r:disp_y}, %rdi; int $$0x80 `);
-    ulong ch_comma = 0x2C; ulong ch_C = 0x43;
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_comma}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_C}, %rdi; int $$0x80 `);
-    ulong disp_x = cur_x + 1;
-    __asm__(` movq ${r:sc_phex}, %rax; movq ${r:disp_x}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_phex}, %rax; movq ${r:disp_y}, %rdi; int $$0x80 `);
+ulong ch_comma = 0x2C;
+ulong ch_C = 0x43;
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_comma}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_C}, %rdi; int $$0x80 `);
+ulong disp_x = cur_x + 1;
+__asm__(` movq ${r:sc_phex}, %rax; movq ${r:disp_x}, %rdi; int $$0x80 `);
 
     // --- ステータスメッセージ ---
     ulong* sm_ptr = (ADDR_ARIA_STATE + OFF_STATUS_MSG) as ulong*;
     ulong smsg = *sm_ptr;
     if (smsg == 1) {
-        ulong green_c = COLOR_GREEN;
-        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:green_c}, %rdi; int $$0x80 `);
-        ulong ch_W = 0x57; ulong ch_rr = 0x72; ulong ch_it = 0x69;
-        ulong ch_tt = 0x74; ulong ch_ee = 0x65; ulong ch_nn = 0x6E;
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_W}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_rr}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_it}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tt}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tt}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ee}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_nn}, %rdi; int $$0x80 `);
-        ulong zero_s = 0;
-        *sm_ptr = zero_s;
+    ulong green_c = COLOR_GREEN;
+__asm__(` movq ${r:sc_scol}, %rax; movq ${r:green_c}, %rdi; int $$0x80 `);
+ulong ch_W = 0x57;
+ulong ch_rr = 0x72;
+ulong ch_it = 0x69;
+ulong ch_tt = 0x74;
+ulong ch_ee = 0x65;
+ulong ch_nn = 0x6E;
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_W}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_rr}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_it}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tt}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tt}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ee}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_nn}, %rdi; int $$0x80 `);
+    ulong zero_s = 0;
+    *sm_ptr = zero_s;
     }
     if (smsg == 2) {
-        ulong err_color = COLOR_ERROR;
-        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:err_color}, %rdi; int $$0x80 `);
-        ulong ch_W2 = 0x57; ulong ch_rr2 = 0x72; ulong ch_it2 = 0x69;
-        ulong ch_tt2 = 0x74; ulong ch_ee2 = 0x65;
-        ulong ch_ff = 0x66; ulong ch_ll = 0x6C; ulong ch_dd = 0x64;
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_W2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_rr2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_it2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tt2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ee2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ff}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_aa}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_it2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ll}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ee2}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_dd}, %rdi; int $$0x80 `);
-        ulong zero_s2 = 0;
-        *sm_ptr = zero_s2;
-    }
+    ulong err_color = COLOR_ERROR;
+__asm__(` movq ${r:sc_scol}, %rax; movq ${r:err_color}, %rdi; int $$0x80 `);
+ulong ch_W2 = 0x57;
+ulong ch_rr2 = 0x72;
+ulong ch_it2 = 0x69;
+ulong ch_tt2 = 0x74;
+ulong ch_ee2 = 0x65;
+ulong ch_ff = 0x66;
+ulong ch_ll = 0x6C;
+ulong ch_dd = 0x64;
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_W2}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_rr2}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_it2}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tt2}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ee2}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ff}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_aa}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_it2}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ll}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_ee2}, %rdi; int $$0x80 `);
+__asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_dd}, %rdi; int $$0x80 `);
+ulong zero_s2 = 0;
+*sm_ptr = zero_s2;
+}
 
-    return 0;
+return 0;
 }

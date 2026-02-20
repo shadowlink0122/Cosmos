@@ -44,6 +44,13 @@ export const ByteOffset OFF_FNAME_LEN  = 56;
 export const ByteOffset OFF_CMD_LEN    = 64;
 export const ByteOffset OFF_NUM_LINES  = 72;
 export const ByteOffset OFF_STATUS_MSG = 80;
+export const ByteOffset OFF_DIRTY      = 88;  // ダーティフラグ (0=none, 1=full, 2=cursor_only)
+export const ByteOffset OFF_PREV_CUR_Y = 96;  // 前回のカーソルY位置
+
+// ダーティフラグ値
+export const ulong DIRTY_NONE   = 0;
+export const ulong DIRTY_FULL   = 1;  // 全画面再描画
+export const ulong DIRTY_CURSOR = 2;  // カーソル行のみ再描画
 
 // ============================================================
 // メモリアドレス（config.cm相当 — アプリ自身が所有）
