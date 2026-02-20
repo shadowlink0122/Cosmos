@@ -10,7 +10,6 @@ import ../../fs/cosmfs;
 import ../../drivers/serial;
 import ../../drivers/debug_port;
 import ../../sys/loader;
-import ../../apps/bin/help_data;
 
 // CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
 const ulong TL_NOT_FOUND     = 0xFFFFFFFFFFFFFFFF;
@@ -69,19 +68,30 @@ export void test_loader(TestRunner* runner, Heap* heap) {
     runner->assert_eq(rd_zero, 0, "Loader: read_u64 zero" as void*);
 
     // ============================================================
-    // embed_helpテスト（バイナリ埋め込みデータ検証）
+    // CosmEXEヘッダ検証テスト（テスト用ヘッダを直接構築）
     // ============================================================
 
-    // --- Test 6: embed_help がデータを書き込む ---
-    debug.println("[TEST_LOADER] embed_help to fixed buf" as void*);
-    ulong help_size = embed_help(TL_DATA_BUF);
+    // テスト用CosmEXEヘッダを固定メモリに構築
+    // CosmEXE: magic(8) + entry(8) + code_size(8) + flags(8) = 32bytes
+    ulong magic_val = COSMEXE_MAGIC;
+    ulong entry_val = 0x340;
+    ulong code_size_val = 0x2200;
+    ulong flags_val = 0;
+    ulong* hdr0 = TL_DATA_BUF as ulong*;
+    ulong* hdr1 = (TL_DATA_BUF + 8) as ulong*;
+    ulong* hdr2 = (TL_DATA_BUF + 16) as ulong*;
+    ulong* hdr3 = (TL_DATA_BUF + 24) as ulong*;
+    *hdr0 = magic_val;
+    *hdr1 = entry_val;
+    *hdr2 = code_size_val;
+    *hdr3 = flags_val;
+
+    ulong help_size = 0x2200;
+
+    // --- Test 6: テストデータのサイズが非ゼロ ---
     ulong size_ok = 0;
     if (help_size > 0) { size_ok = 1; }
     runner->assert_true(size_ok, "Loader: embed size > 0" as void*);
-
-    debug.puts("[TEST_LOADER] embed_help size=" as void*);
-    debug.print_hex(help_size);
-    debug.println("" as void*);
 
     // --- Test 7: CosmEXEヘッダのmagicが正しい ---
     ulong magic = loader_read_u64(TL_DATA_BUF);
@@ -114,7 +124,6 @@ export void test_loader(TestRunner* runner, Heap* heap) {
 
     // --- Test 12: CosmFSにhelpファイルを登録 ---
     cosmfs_op(FS_OP_MEMCPY, TL_FNAME_BUF, "help" as ulong, 5, 0);
-    // capacityをhelp_sizeに合わせる（help_size > 4096のためWRITEが切り詰められていた）
     cosmfs_op(FS_OP_CREATE, TL_FNAME_BUF, TL_DATA_BUF, help_size, TL_TYPE_FILE);
     cosmfs_op(FS_OP_WRITE, TL_FNAME_BUF, TL_DATA_BUF, help_size, 0);
 
@@ -123,7 +132,7 @@ export void test_loader(TestRunner* runner, Heap* heap) {
     if (found != TL_NOT_FOUND) { found_ok = 1; }
     runner->assert_true(found_ok, "Loader: CosmFS FIND help" as void*);
 
-    // --- Test 13: CosmFSファイルサイズがembed_helpと一致 ---
+    // --- Test 13: CosmFSファイルサイズが一致 ---
     ulong fs_size = cosmfs_op(FS_OP_SIZE, TL_FNAME_BUF, 0, 0, 0);
     runner->assert_eq(fs_size, help_size, "Loader: CosmFS size match" as void*);
 

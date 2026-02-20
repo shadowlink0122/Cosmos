@@ -1,0 +1,355 @@
+//! platform: uefi
+// kernel::libs::efi_file - UEFI ファイルI/O
+//
+// EFI Simple File System Protocol を使って ESP (EFI System Partition) から
+// ファイルを読み込む。ExitBootServices 前にのみ使用可能。
+//
+// UEFI ファイルプロトコル:
+//   1. LocateProtocol(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID) → fs_protocol
+//   2. fs_protocol->OpenVolume() → root_dir
+//   3. root_dir->Open(filename) → file_handle
+//   4. file_handle->Read(&size, buffer) → data
+//   5. file_handle->Close()
+//
+// 使い方:
+//   efi_load_file(system_table, "\\help.cosmexe", &buf, &size) → status
+
+import ./efi_memmap;
+
+// ============================================================
+// EFI GUID 定義
+// ============================================================
+
+// EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID
+// {0964E5B22-6459-11D2-8E39-00A0C969723B}
+// リトルエンディアンでメモリに配置
+const ulong EFI_FS_GUID_LO  = 0x11D2645964E5B22;
+const ulong EFI_FS_GUID_HI  = 0x3B7269C9A0003980;
+
+// 注: UEFIのGUIDはData1(4byte)+Data2(2)+Data3(2)+Data4(8)の構造
+// {964E5B22-6459-11D2-8E39-00A0C969723B}
+// メモリ配置:
+//   offset 0: 22 5B 4E 96 (Data1 LE)
+//   offset 4: 59 64 (Data2 LE)
+//   offset 6: D2 11 (Data3 LE)
+//   offset 8: 8E 39 00 A0 C9 69 72 3B (Data4 BE)
+
+// EFI_FILE_INFO_GUID
+// {09576E92-6D3F-11D2-8E39-00A0C969723B}
+const ulong EFI_FINFO_GUID_LO = 0x11D26D3F09576E92;
+const ulong EFI_FINFO_GUID_HI = 0x3B7269C9A0003980;
+
+// ============================================================
+// UEFI File Protocol 関数オフセット
+// ============================================================
+
+// EFI_SIMPLE_FILE_SYSTEM_PROTOCOL:
+//   Revision  (offset 0x00)
+//   OpenVolume(offset 0x08) — OpenVolume(This, *Root)
+
+// EFI_FILE_PROTOCOL:
+//   Revision  (offset 0x00)
+//   Open      (offset 0x08) — Open(This, *NewHandle, FileName, OpenMode, Attributes)
+//   Close     (offset 0x10) — Close(This)
+//   Delete    (offset 0x18)
+//   Read      (offset 0x20) — Read(This, *BufferSize, Buffer)
+//   Write     (offset 0x28)
+//   GetPosition(offset 0x30)
+//   SetPosition(offset 0x38)
+//   GetInfo   (offset 0x40) — GetInfo(This, *InfoType, *BufferSize, Buffer)
+
+// EFI_FILE_MODE_READ
+const ulong EFI_FILE_MODE_READ = 0x01;
+
+// ============================================================
+// GUID をスタックに配置するヘルパー
+// ============================================================
+
+/// GUID構造体を固定メモリアドレスに書き込む
+/// UEFIのGUIDは16バイト: Data1(4)+Data2(2)+Data3(2)+Data4(8)
+export void efi_write_guid(ulong addr, ulong guid_d1, ulong guid_d2, ulong guid_d3, ulong guid_d4_hi) {
+    // Data1 (4 bytes) + Data2 (2) + Data3 (2) = 最初の8バイト
+    ulong lo = guid_d1 | (guid_d2 << 32) | (guid_d3 << 48);
+    // GUIDの後半は Data4 の部分 (NOT from the constant, but already computed)
+    // Actually, we write 16 bytes total from two u64s
+    ulong* lo_ptr = addr as ulong*;
+    *lo_ptr = lo;
+    ulong* hi_ptr = (addr + 8) as ulong*;
+    *hi_ptr = guid_d4_hi;
+}
+
+// ============================================================
+// メイン API
+// ============================================================
+
+/// ESP上のファイルを読み込み、AllocatePoolで確保したバッファに格納する
+///
+/// system_table: UEFI SystemTable
+/// filename:     UCS-2ファイル名のアドレス (NUL終端)
+/// out_buf:      読み込みバッファのアドレスを格納するポインタ
+/// out_size:     読み込みサイズを格納するポインタ
+///
+/// 戻り値: 0=成功, その他=EFIステータス
+export ulong efi_load_file(void* system_table, ulong filename_addr, ulong* out_buf, ulong* out_size) {
+    // BootServices取得
+    ulong* st = system_table as ulong*;
+    ulong bs_addr = *(st + 12);  // offset 0x60: BootServices
+    ulong* bs = bs_addr as ulong*;
+
+    // --- 1. GUID を固定メモリに配置 (0xCF0 一時領域) ---
+    // EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID:
+    // {964E5B22-6459-11D2-8E39-00A0C969723B}
+    ulong guid_addr = 0xCF0;
+    ulong* guid_lo = guid_addr as ulong*;
+    ulong* guid_hi = (guid_addr + 8) as ulong*;
+    // Data1=964E5B22, Data2=6459, Data3=11D2 → LE packed in first 8 bytes
+    *guid_lo = 0x11D26459964E5B22;
+    // Data4=8E39 00A0 C969 723B → big-endian bytes
+    *guid_hi = 0x3B7269C9A000398E;
+
+    // --- 2. LocateProtocol でファイルシステムプロトコル取得 ---
+    // BootServices->LocateProtocol (offset 0x140 = index 40)
+    ulong locate_fn = *(bs + 40);
+    ulong fs_handle = 0;
+    ulong fs_handle_addr = (&fs_handle) as ulong;
+
+    ulong result = 0;
+    __asm__(`
+        pushq ${r:locate_fn};
+        pushq ${r:guid_addr};
+        pushq ${r:fs_handle_addr};
+        popq %r8;
+        xorq %rdx, %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
+
+    // LocateProtocol 失敗チェック
+    long signed_result = result as long;
+    if (signed_result < 0) {
+        return result;
+    }
+
+    // --- 3. OpenVolume でルートディレクトリ取得 ---
+    // fs_protocol->OpenVolume (offset 0x08 = index 1)
+    ulong* fs_ptr = fs_handle as ulong*;
+    ulong open_vol_fn = *(fs_ptr + 1);  // offset 0x08
+    ulong root_handle = 0;
+    ulong root_addr = (&root_handle) as ulong;
+
+    __asm__(`
+        pushq ${r:open_vol_fn};
+        pushq ${r:fs_handle};
+        pushq ${r:root_addr};
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
+
+    signed_result = result as long;
+    if (signed_result < 0) {
+        return result;
+    }
+
+    // --- 4. Open でファイルを開く ---
+    // root->Open (offset 0x08 = index 1)
+    // Open(This, *NewHandle, FileName, OpenMode, Attributes)
+    ulong* root_ptr = root_handle as ulong*;
+    ulong open_fn = *(root_ptr + 1);  // offset 0x08
+    ulong file_handle = 0;
+    ulong file_addr = (&file_handle) as ulong;
+    ulong open_mode = EFI_FILE_MODE_READ;
+    ulong zero_attr = 0;
+
+    // 5引数: RCX=This, RDX=&NewHandle, R8=FileName, R9=OpenMode, stack=Attributes
+    __asm__(`
+        pushq ${r:open_fn};
+        pushq ${r:root_handle};
+        pushq ${r:file_addr};
+        pushq ${r:filename_addr};
+        pushq ${r:open_mode};
+        pushq ${r:zero_attr};
+        popq %r11;
+        popq %r9;
+        popq %r8;
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$48, %rsp;
+        movq %r11, 32(%rsp);
+        callq *%r10;
+        addq $$48, %rsp;
+        movq %rax, ${=r:result}
+    `);
+
+    signed_result = result as long;
+    if (signed_result < 0) {
+        return result;
+    }
+
+    // --- 5. GetInfo でファイルサイズ取得 ---
+    // file->GetInfo (offset 0x40 = index 8)
+    // GetInfo(This, *InfoType, *BufferSize, Buffer)
+    ulong* file_ptr = file_handle as ulong*;
+    ulong getinfo_fn = *(file_ptr + 8);  // offset 0x40
+
+    // EFI_FILE_INFO_GUID を固定メモリに配置 (0xD00)
+    ulong finfo_guid_addr = 0xD00;
+    ulong* finfo_lo = finfo_guid_addr as ulong*;
+    ulong* finfo_hi = (finfo_guid_addr + 8) as ulong*;
+    *finfo_lo = 0x11D26D3F09576E92;
+    *finfo_hi = 0x3B7269C9A000398E;
+
+    // GetInfo用一時バッファ (0xD10, 256バイト)
+    ulong info_buf_addr = 0xD10;
+    ulong info_buf_size_addr = 0xD08;
+    ulong info_buf_size = 256;
+    ulong* info_sz_ptr = info_buf_size_addr as ulong*;
+    *info_sz_ptr = info_buf_size;
+
+    // GetInfo(file_handle, &finfo_guid, &buf_size, buf)
+    __asm__(`
+        pushq ${r:getinfo_fn};
+        pushq ${r:file_handle};
+        pushq ${r:finfo_guid_addr};
+        pushq ${r:info_buf_size_addr};
+        pushq ${r:info_buf_addr};
+        popq %r9;
+        popq %r8;
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
+
+    signed_result = result as long;
+    if (signed_result < 0) {
+        return result;
+    }
+
+    // EFI_FILE_INFO構造体からファイルサイズを取得 (offset 8 = Size field)
+    ulong* file_size_ptr = (info_buf_addr + 8) as ulong*;
+    ulong file_size = *file_size_ptr;
+
+    // --- 6. AllocatePool でバッファ確保 ---
+    void* read_buf = 0 as void*;
+    ulong alloc_status = efi_alloc_pool(system_table, file_size, &read_buf);
+    long signed_alloc = alloc_status as long;
+    if (signed_alloc < 0) {
+        return alloc_status;
+    }
+
+    // --- 7. Read でファイル読み込み ---
+    // file->Read (offset 0x20 = index 4)
+    ulong read_fn = *(file_ptr + 4);  // offset 0x20
+    ulong read_size_addr = 0xD08;  // 再利用
+    ulong* read_sz_ptr = read_size_addr as ulong*;
+    *read_sz_ptr = file_size;
+    ulong read_buf_val = read_buf as ulong;
+
+    // Read(file_handle, &read_size, buffer)
+    __asm__(`
+        pushq ${r:read_fn};
+        pushq ${r:file_handle};
+        pushq ${r:read_size_addr};
+        pushq ${r:read_buf_val};
+        popq %r8;
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
+
+    signed_result = result as long;
+    if (signed_result < 0) {
+        return result;
+    }
+
+    // --- 8. Close ---
+    // file->Close (offset 0x10 = index 2)
+    ulong close_fn = *(file_ptr + 2);  // offset 0x10
+    __asm__(`
+        pushq ${r:close_fn};
+        pushq ${r:file_handle};
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp
+    `);
+
+    // ルートディレクトリも閉じる
+    ulong* root_p2 = root_handle as ulong*;
+    ulong root_close_fn = *(root_p2 + 2);
+    __asm__(`
+        pushq ${r:root_close_fn};
+        pushq ${r:root_handle};
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp
+    `);
+
+    // --- 9. 結果を返す ---
+    *out_buf = read_buf_val;
+    *out_size = file_size;
+    return 0;
+}
+
+// ============================================================
+// UCS-2 ファイル名変換ヘルパー
+// ============================================================
+
+/// ASCII文字列をUCS-2に変換して固定メモリに書き込む
+/// src: ASCII文字列のアドレス
+/// dst: UCS-2出力先アドレス
+/// len: ASCII文字列長（NUL含まず）
+/// UCS-2は各文字が2バイト。NUL終端(2バイト)も書き込む。
+export void efi_ascii_to_ucs2(ulong src, ulong dst, ulong len) {
+    ulong i = 0;
+    while (i < len) {
+        // 1バイト読み取り
+        ulong ch = 0;
+        ulong src_pos = src + i;
+        __asm__(`
+            movq ${r:src_pos}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+
+        // UCS-2として2バイト書き込み (LE: ch, 0x00)
+        ulong dst_pos = dst + (i * 2);
+        __asm__(`
+            movq ${r:dst_pos}, %rdi;
+            movq ${r:ch}, %rax;
+            movw %ax, (%rdi)
+        `);
+
+        i = i + 1;
+    }
+
+    // NUL終端 (2バイトの0x0000)
+    ulong nul_pos = dst + (len * 2);
+    ulong zero = 0;
+    __asm__(`
+        movq ${r:nul_pos}, %rdi;
+        movq ${r:zero}, %rax;
+        movw %ax, (%rdi)
+    `);
+}

@@ -2,7 +2,13 @@
 // kernel::apps::libcosm - CosmOS ユーザー空間ライブラリ
 //
 // 独立アプリケーションがカーネルと通信するための唯一のインターフェース。
-// int 0x80 syscallのみを使用し、カーネルモジュールを直接importしない。
+// syscall命令を使用し、カーネルモジュールを直接importしない。
+//
+// syscall ABI:
+//   RAX = syscall番号
+//   RDI = 引数1, RSI = 引数2, RDX = 引数3
+//   戻り値: RAX
+//   破壊レジスタ: RCX (復帰RIP), R11 (RFLAGS)
 //
 // API:
 //   cosm_exit(code)         — プロセス終了
@@ -12,6 +18,7 @@
 //   cosm_println(msg)       — 改行付き出力
 //   cosm_print_hex(val)     — 16進数出力
 //   cosm_getenv(key)        — 環境変数取得
+//   cosm_sbrk(increment)    — ヒープ領域拡張
 
 import ../../types;
 
@@ -22,6 +29,7 @@ import ../../types;
 const SyscallNr COSM_SYS_EXIT    = 0;
 const SyscallNr COSM_SYS_WRITE   = 1;
 const SyscallNr COSM_SYS_GETENV  = 6;
+const SyscallNr COSM_SYS_SBRK   = 40;
 
 const Fd COSM_FD_STDOUT   = 1;
 
@@ -29,7 +37,8 @@ const Fd COSM_FD_STDOUT   = 1;
 // 低レベルsyscall発行
 // ============================================================
 
-/// syscall発行: int 0x80 (rax=nr, rdi=a1, rsi=a2, rdx=a3)
+/// syscall発行: syscall命令 (rax=nr, rdi=a1, rsi=a2, rdx=a3)
+/// 注: syscall命令はRCXとR11を破壊する
 export SyscallResult cosm_syscall3(SyscallNr nr, ulong a1, ulong a2, ulong a3) {
     ulong ret = 0;
     __asm__(`
@@ -37,19 +46,19 @@ export SyscallResult cosm_syscall3(SyscallNr nr, ulong a1, ulong a2, ulong a3) {
         movq ${r:a1}, %rdi;
         movq ${r:a2}, %rsi;
         movq ${r:a3}, %rdx;
-        int $$0x80;
+        syscall;
         movq %rax, ${=r:ret}
     `);
     return ret;
 }
 
-/// syscall発行: int 0x80 (rax=nr, rdi=a1)
+/// syscall発行: syscall命令 (rax=nr, rdi=a1)
 export SyscallResult cosm_syscall1(SyscallNr nr, ulong a1) {
     ulong ret = 0;
     __asm__(`
         movq ${r:nr}, %rax;
         movq ${r:a1}, %rdi;
-        int $$0x80;
+        syscall;
         movq %rax, ${=r:ret}
     `);
     return ret;
@@ -154,4 +163,11 @@ export void cosm_print_hex(ulong value) {
 /// 環境変数取得
 export MemAddr cosm_getenv(MemAddr key) {
     return cosm_syscall1(COSM_SYS_GETENV, key);
+}
+
+/// ヒープ領域を拡張する
+/// increment: 確保するバイト数
+/// 戻り値: 確保されたメモリのアドレス（失敗時は INVALID_VALUE）
+export MemAddr cosm_sbrk(ulong increment) {
+    return cosm_syscall1(COSM_SYS_SBRK, increment);
 }

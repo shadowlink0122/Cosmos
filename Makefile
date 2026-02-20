@@ -100,18 +100,16 @@ APP_HELP_OBJ  = .tmp/build/apps/app_help.o
 APP_HELP_EFI  = .tmp/build/apps/app_help.efi
 APP_HELP_BIN  = .tmp/build/apps/help.bin
 APP_HELP_COSM = .tmp/build/apps/help.cosmexe
-APP_HELP_DATA = $(KERNEL_DIR)/apps/bin/help_data.cm
 
-# helpアプリの独立ビルド
-app-help: $(APP_HELP_DATA)
-$(APP_HELP_DATA): $(APP_HELP_SRC) $(shell find $(KERNEL_DIR)/apps/libcosm -name '*.cm' 2>/dev/null)
+# helpアプリの独立ビルド（CosmEXEをESPに配置する方式）
+app-help: $(APP_HELP_COSM)
+$(APP_HELP_COSM): $(APP_HELP_SRC) $(shell find $(KERNEL_DIR)/apps/libcosm -name '*.cm' 2>/dev/null)
 	@echo "=== helpアプリ独立ビルド ==="
 	@mkdir -p .tmp/build/apps
 	$(CM) compile --target=uefi -o $(APP_HELP_OBJ) $(APP_HELP_SRC)
 	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(APP_HELP_EFI) $(APP_HELP_OBJ)
 	python3 ./scripts/pe2cosmexe.py $(APP_HELP_EFI) $(APP_HELP_COSM)
-	./scripts/bin2cm.sh $(APP_HELP_COSM) $(APP_HELP_DATA) embed_help
-	@echo "✓ helpアプリビルド完了"
+	@echo "✓ helpアプリビルド完了 ($(APP_HELP_COSM))"
 
 # ============================================================
 # カーネルビルド
@@ -137,9 +135,10 @@ $(EFI): $(KERNEL_OBJ) $(CHKSTK_OBJ)
 	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(EFI) $(KERNEL_OBJ) $(CHKSTK_OBJ)
 
 # ESP (EFI System Partition) ディレクトリ構造を作成
-setup-esp: $(EFI)
+setup-esp: $(EFI) $(APP_HELP_COSM)
 	@mkdir -p $(ESP_BOOT)
 	@cp $(EFI) $(ESP_BOOT)/BOOTX64.EFI
+	@cp $(APP_HELP_COSM) $(ESP_DIR)/help.cosmexe
 
 # OVMFファームウェアをダウンロード
 download-ovmf:
@@ -226,6 +225,7 @@ test: download-ovmf
 	$(LLD) /subsystem:efi_application /entry:efi_main /out:$(TEST_KERNEL_EFI) $(TEST_KERNEL_OBJ) $(CHKSTK_OBJ)
 	@mkdir -p $(ESP_BOOT)
 	@cp $(TEST_KERNEL_EFI) $(ESP_BOOT)/BOOTX64.EFI
+	@if [ -f "$(APP_HELP_COSM)" ]; then cp $(APP_HELP_COSM) $(ESP_DIR)/help.cosmexe; fi
 	@rm -f $(DEBUG_LOG)
 	@QEMU_EXIT=0; \
 	$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) $(QEMU_TEST_OPTS) 2>/dev/null; \
@@ -254,9 +254,9 @@ test: download-ovmf
 		echo "✗ テスト失敗 (テスト結果なし)"; \
 		exit 1; \
 	elif [ $$QEMU_EXIT -eq 1 ]; then \
-		echo "✓ テスト完了（QEMU正常終了, $$PASS件PASS）"; \
+		echo "✓ テスト完了（QEMU正常終了, $$PASS PASS）"; \
 	else \
-		echo "✓ テスト完了（$$PASS件PASS, QEMU exit=$$QEMU_EXIT）"; \
+		echo "✓ テスト完了（$$PASS PASS, QEMU exit=$$QEMU_EXIT）"; \
 	fi
 
 # ============================================================

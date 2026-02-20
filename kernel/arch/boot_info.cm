@@ -35,5 +35,7 @@ export struct MemoryMapInfo {
 export struct BootInfo {
     FramebufferInfo fb;    // フレームバッファ情報
     MemoryMapInfo   mmap;  // メモリマップ情報
-    ulong           acpi_rsdp;  // ACPI RSDPアドレス（将来用）
+    ulong           acpi_rsdp;      // ACPI RSDPアドレス（将来用）
+    ulong           initramfs_base; // initramfsデータの先頭アドレス
+    ulong           initramfs_size; // initramfsデータのバイト数
 }

@@ -93,5 +93,34 @@ export void test_syscall(TestRunner* runner) {
     SyscallResult pid_result = syscall_dispatch(SYS_GETPID, 0, 0, 0);
     runner->assert_zero(pid_result, "Syscall: dispatch GETPID=0" as void*);
 
+    // ============================================================
+    // SYS_SBRK テスト
+    // ============================================================
+
+    // --- Test 14: SYS_SBRK(4096) は非ゼロアドレスを返す ---
+    SyscallResult sbrk_addr = syscall_dispatch(SYS_SBRK, 4096, 0, 0);
+    runner->assert_nonzero(sbrk_addr, "Syscall: sbrk(4096) returns addr" as void*);
+
+    // --- Test 15: sbrk で確保した領域に書き込み・読み取りできる ---
+    ulong* sbrk_ptr = sbrk_addr as ulong*;
+    ulong sbrk_magic = 0xDEADBEEF;
+    *sbrk_ptr = sbrk_magic;
+    ulong sbrk_read = *sbrk_ptr;
+    runner->assert_eq(sbrk_read, sbrk_magic, "Syscall: sbrk memory write/read" as void*);
+
+    // ============================================================
+    // ディスパッチ境界値 テスト
+    // ============================================================
+
+    // --- Test 16: カテゴリ5内の未使用番号(59)はENOSYSを返す ---
+    SyscallNr unused_ipc_nr = 59;
+    SyscallResult result59 = syscall_dispatch(unused_ipc_nr, 0, 0, 0);
+    runner->assert_eq(result59, SYSCALL_ENOSYS, "Syscall: unused nr=59 returns ENOSYS" as void*);
+
+    // --- Test 17: 非常に大きなsyscall番号(0xFFFF)はENOSYSを返す ---
+    SyscallNr huge_nr = 0xFFFF;
+    SyscallResult result_huge = syscall_dispatch(huge_nr, 0, 0, 0);
+    runner->assert_eq(result_huge, SYSCALL_ENOSYS, "Syscall: huge nr=0xFFFF returns ENOSYS" as void*);
+
     serial.println("[TEST] Syscall tests complete" as void*);
 }

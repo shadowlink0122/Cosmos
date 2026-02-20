@@ -1,19 +1,41 @@
 //! platform: uefi
 // kernel::sys::syscall - syscallディスパッチャ
 //
-// int 0x80 ソフトウェア割り込みを受け取り、raxのsyscall番号に基づいて
-// 適切なハンドラにディスパッチする。
+// CosmOS syscall の中核モジュール。2つの経路でsyscallを受け付ける:
+//   1. int 0x80 ソフトウェア割り込み（レガシーパス）
+//   2. syscall命令（高速パス、usermode.cm の syscall_entry_fast 経由）
 //
-// ABI規約:
+// 両パスとも最終的に syscall_dispatch() を呼び出す。
+//
+// ディスパッチ方式: カテゴリ別2段ディスパッチ
+//   syscall番号を10の位で6カテゴリに分類し、各カテゴリ関数内で
+//   個別ハンドラにディスパッチする（最悪16比較、平均8比較）。
+//
+//   カテゴリ0 (0-9):   基本     — exit, write, read, getenv
+//   カテゴリ1 (10-19):  画面I/O  — clear, putc, puts, color, cursor, newline, num, hex, batch
+//   カテゴリ2 (20-29):  ファイル — open, read, write, create, size, memcpy
+//   カテゴリ3 (30-39):  プロセス — spawn, kill, wait, getpid
+//   カテゴリ4 (40-49):  メモリ   — sbrk
+//   カテゴリ5 (50-59):  IPC      — send, recv, reply, notify, get_notify
+//
+// ABI規約 (x86_64 System V + CosmOS拡張):
 //   rax = syscall番号
-//   rdi = 引数1
-//   rsi = 引数2
-//   rdx = 引数3
-//   r10 = 引数4
-//   戻り値: rax
+//   rdi = 引数1 (fd, addr, pid, etc.)
+//   rsi = 引数2 (buf, len, etc.)
+//   rdx = 引数3 (len, flags, etc.)
+//   r10 = 引数4 (予約)
+//   戻り値: rax (SyscallResult)
+//
+// エラーコード:
+//   0                    = SYSCALL_OK (成功)
+//   0xFFFFFFFFFFFFFFF7   = SYSCALL_EBADF (不正なfd)
+//   0xFFFFFFFFFFFFFFF8   = SYSCALL_ENOSYS (未実装syscall)
+//   0xFFFFFFFFFFFFFFF9   = SYSCALL_EINVAL (不正な引数)
+//   0xFFFFFFFFFFFFFFFF   = SYSCALL_ERR (汎用エラー)
 //
 // 使用方法:
-//   syscall_init(idt_table) を呼んでベクタ0x80を登録
+//   syscall_init(idt_table) でベクタ0x80を登録（レガシーパス）
+//   usermode_init(handler) でMSR設定（高速パス）
 
 import ../arch/idt;
 import ../arch/isr;
@@ -76,26 +98,98 @@ export void syscall_entry() {
 }
 
 // ============================================================
-// syscallディスパッチャ
+// syscallディスパッチャ（カテゴリ別2段ディスパッチ）
+// ============================================================
+//
+// 設計:
+//   第1段: syscall番号を10で割ってカテゴリ(0-5)を決定 → O(6)
+//   第2段: カテゴリ内でハンドラを特定 → O(10)
+//   合計: 最悪O(16)、フラットif-else方式のO(30)から大幅改善
+//
+// syscall番号マップ:
+//   Nr  Name            Category     Handler
+//   --- --------------- ------------ -------------------
+//    0  SYS_EXIT        基本(0-9)    sys_exit
+//    1  SYS_WRITE       基本(0-9)    sys_write
+//    2  SYS_READ        基本(0-9)    sys_read
+//    6  SYS_GETENV      基本(0-9)    env_get
+//   10  SYS_SCREEN_*    画面(10-19)  sys_screen_*
+//   20  SYS_FS_*        FS(20-29)    sys_fs_*
+//   30  SYS_SPAWN       プロセス     sys_spawn
+//   31  SYS_KILL        プロセス     sys_kill
+//   34  SYS_WAIT        プロセス     sys_wait
+//   35  SYS_GETPID      プロセス     sys_getpid
+//   40  SYS_SBRK        メモリ       sys_sbrk
+//   50  SYS_SEND        IPC(50-59)   ipc_send
+//   51  SYS_RECV        IPC(50-59)   ipc_recv
+//   52  SYS_REPLY       IPC(50-59)   ipc_send(reply)
+//   53  SYS_NOTIFY      IPC(50-59)   ipc_notify
+//   54  SYS_GET_NOTIFY  IPC(50-59)   ipc_get_notify
+
+/// syscall番号に基づいてハンドラを呼び出す（カテゴリ別2段ディスパッチ）
+///
+/// nr:   syscall番号 (0-59が有効範囲)
+/// arg1: 第1引数 (rdi)
+/// arg2: 第2引数 (rsi)
+/// arg3: 第3引数 (rdx)
+/// 戻り値: ハンドラの結果、未実装ならSYSCALL_ENOSYS
+export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    // 第1段: カテゴリ分類（syscall番号の10の位で振り分け）
+    ulong category = nr / 10;
+
+    // カテゴリ0: 基本syscall (exit=0, write=1, read=2, getenv=6)
+    if (category == 0) {
+        return syscall_dispatch_basic(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ1: 画面I/O syscall (clear=10, putc=11, ..., batch=19)
+    if (category == 1) {
+        return syscall_dispatch_screen(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ2: ファイルI/O syscall (open=20, read=21, ..., memcpy=25)
+    if (category == 2) {
+        return syscall_dispatch_fs(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ3: プロセスsyscall (spawn=30, kill=31, wait=34, getpid=35)
+    if (category == 3) {
+        return syscall_dispatch_process(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ4: メモリ管理syscall (sbrk=40)
+    if (category == 4) {
+        return syscall_dispatch_memory(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ5: IPC syscall (send=50, recv=51, reply=52, notify=53/54)
+    if (category == 5) {
+        return syscall_dispatch_ipc(nr, arg1, arg2, arg3);
+    }
+
+    // カテゴリ6以上: 範囲外のsyscall番号
+    return syscall_unknown(nr);
+}
+
+// ============================================================
+// カテゴリ別ディスパッチ関数
 // ============================================================
 
-/// syscall番号に基づいてハンドラを呼び出す
-export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+/// 基本syscall (0-9): exit, write, read, getenv 等
+SyscallResult syscall_dispatch_basic(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_EXIT) {
+        sys_exit(arg1);
+        return 0;
+    }
     if (nr == SYS_WRITE) {
         return sys_write(arg1, arg2, arg3);
     }
     if (nr == SYS_READ) {
         return sys_read(arg1, arg2, arg3);
     }
-    if (nr == SYS_EXIT) {
-        sys_exit(arg1);
-        return 0;
-    }
     if (nr == SYS_GETENV) {
         return env_get(arg1);
     }
+    return syscall_unknown(nr);
+}
 
-    // 画面I/O syscall (10-18)
+/// 画面I/O syscall (10-19): clear, putc, puts, color, cursor 等
+SyscallResult syscall_dispatch_screen(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
     if (nr == SYS_SCREEN_CLEAR) {
         return sys_screen_clear();
     }
@@ -127,8 +221,11 @@ export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulon
         if (arg1 != 0) { return sys_screen_begin_batch(); }
         return sys_screen_end_batch();
     }
+    return syscall_unknown(nr);
+}
 
-    // ファイルI/O syscall (20-25)
+/// ファイルI/O syscall (20-29): open, read, write, create, size, memcpy
+SyscallResult syscall_dispatch_fs(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
     if (nr == SYS_FS_OPEN) {
         return sys_fs_open(arg1, arg2);
     }
@@ -147,8 +244,11 @@ export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulon
     if (nr == SYS_FS_MEMCPY) {
         return sys_fs_memcpy(arg1, arg2, arg3);
     }
+    return syscall_unknown(nr);
+}
 
-    // プロセスsyscall (30-35)
+/// プロセスsyscall (30-39): spawn, kill, wait, getpid
+SyscallResult syscall_dispatch_process(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
     if (nr == SYS_SPAWN) {
         return sys_spawn(arg1);
     }
@@ -161,24 +261,45 @@ export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulon
     if (nr == SYS_GETPID) {
         return sys_getpid();
     }
+    return syscall_unknown(nr);
+}
 
-    // メモリ管理syscall (40-49)
+/// メモリ管理syscall (40-49): sbrk
+SyscallResult syscall_dispatch_memory(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
     if (nr == SYS_SBRK) {
         return sys_sbrk(arg1);
     }
+    return syscall_unknown(nr);
+}
 
-    // IPC syscall (50-59)
+/// IPC syscall (50-59): send, recv, reply, notify, get_notify
+SyscallResult syscall_dispatch_ipc(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
     if (nr == SYS_SEND) { return ipc_send(arg1, arg2, arg3); }
     if (nr == SYS_RECV) { return ipc_recv(arg1); }
     if (nr == SYS_REPLY) { return ipc_send(arg1, 0xFFFF, arg2); }
     if (nr == SYS_NOTIFY) { return ipc_notify(arg1, arg2); }
     if (nr == SYS_GET_NOTIFY) { return ipc_get_notify(); }
+    return syscall_unknown(nr);
+}
 
-    // 未実装syscall
+/// 未知のsyscall番号のエラーハンドリング
+///
+/// 未登録・未実装のsyscall番号が呼ばれた際にデバッグ情報を出力し、
+/// SYSCALL_ENOSYS (0xFFFFFFFFFFFFFFF8) を返す。
+/// 本番では頻度が高い場合にログレート制限を検討。
+SyscallResult syscall_unknown(SyscallNr nr) {
     DebugPort debug = {port: 0xE9};
-    debug.puts("[SYSCALL] unknown nr=" as void*);
+    SerialPort serial = {port: 0x3F8};
+    ulong category = nr / 10;
+    debug.puts("[SYSCALL] ENOSYS: nr=" as void*);
     debug.print_hex(nr);
+    debug.puts(" (category=" as void*);
+    debug.print_hex(category);
+    debug.puts(")" as void*);
     debug.println("" as void*);
+    serial.puts("[SYSCALL] ENOSYS: nr=" as void*);
+    serial.print_hex(nr);
+    serial.println("" as void*);
     return SYSCALL_ENOSYS;
 }
 

@@ -1,621 +1,396 @@
 //! platform: uefi
 // kernel::apps::aria::aria_render - Aria画面描画
 //
-// ヘッダー行、テキスト領域、ステータスバーの描画を行う。
-// 全ての画面I/Oはsyscall（int $0x80）経由。
-// Bug #14回避のため、export関数は aria_render_op のみ。
+// OS標準コンソールAPI (lib/console.cm) を使用。
+// アプリ独自のレンダリング実装は不要になった。
 //
 // 最適化:
-//   - PUTS一括出力: 行バッファ(ADDR_ARIA_LINEBUF)に行全体を組み立て、
-//     SC_SCREEN_PUTS 1回で出力。PUTC(1文字1syscall)を排除。
-//   - バッチモード: SC_SCREEN_BATCH(1)でシリアルI/O抑制。
-//   - ダーティフラグ: カーソル移動時は2行のみ再描画。
+//   - バッチモード: con_begin_batch() でバックバッファ描画
+//   - ダーティフラグ: カーソル移動時は前回行+新行の2行のみ再描画
+//   - 増分行スキャン: scroll_top行目までの1回スキャン
+//   - con_batch_putc()で行単位の一括出力
 
 import ./aria_const;
+import ../../lib/console;
 
 // ============================================================
-// ヘルパー: 行バッファに1バイト書き込み
-// ============================================================
-// ADDR_ARIA_LINEBUF + pos に ch を書き込み、pos を返す
-
-// ============================================================
-// 画面描画ディスパッチャ
+// メモリ書込みヘルパー
 // ============================================================
 
-// op=1: RENDER（全画面再描画）
+/// 行バッファの指定位置に1バイト書き込む
+void lb_write(MemAddr base, ulong pos, ulong ch) {
+    MemAddr la = base + pos;
+    __asm__(`
+        movq ${r:la}, %rdi;
+        movq ${r:ch}, %rax;
+        movb %al, (%rdi)
+    `);
+}
+
+/// 行バッファの指定位置にスペースを書き込む
+void lb_write_space(MemAddr base, ulong pos) {
+    MemAddr la = base + pos;
+    __asm__(` movq ${r:la}, %rdi; movb $$0x20, (%rdi) `);
+}
+
+/// テキストバッファから1バイト読み取る
+ulong buf_read(ulong scan_pos) {
+    ulong ch = 0;
+    ulong ba = ADDR_ARIA_BUFFER + scan_pos;
+    __asm__(` movq ${r:ba}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+    return ch;
+}
+
+/// 行バッファから1バイト読み取る
+ulong lb_read(MemAddr base, ulong pos) {
+    ulong ch = 0;
+    MemAddr la = base + pos;
+    __asm__(` movq ${r:la}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+    return ch;
+}
+
+// ============================================================
+// 行バッファ一括出力（con_batch_putc使用）
+// ============================================================
+
+/// 行バッファの指定範囲をFBConsoleに出力（バッチモード中）
+void lb_puts(MemAddr base, ulong start, ulong len) {
+    ulong i = 0;
+    while (i < len) {
+        ulong ch = lb_read(base, start + i);
+        con_batch_putc(ch);
+        i = i + 1;
+    }
+}
+
+// ============================================================
+// 10進数 → 行バッファ書込み
+// ============================================================
+
+/// 数値を行バッファに10進数で書き込み、桁数を返す
+ulong lb_write_decimal(MemAddr base, ulong pos, ulong value) {
+    ulong n_tmp = value;
+    ulong d0 = 0; ulong d1 = 0; ulong d2 = 0; ulong d3 = 0;
+    ulong n_digits = 0;
+    d0 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 1;
+    if (n_tmp > 0) { d1 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 2; }
+    if (n_tmp > 0) { d2 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 3; }
+    if (n_tmp > 0) { d3 = n_tmp - ((n_tmp / 10) * 10); n_digits = 4; }
+
+    ulong p = pos;
+    if (n_digits >= 4) { lb_write(base, p, d3 + 0x30); p = p + 1; }
+    if (n_digits >= 3) { lb_write(base, p, d2 + 0x30); p = p + 1; }
+    if (n_digits >= 2) { lb_write(base, p, d1 + 0x30); p = p + 1; }
+    lb_write(base, p, d0 + 0x30); p = p + 1;
+    return n_digits;
+}
+
+// ============================================================
+// 画面描画
+// ============================================================
+
 export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
     if (op != 1) { return 0; }
 
-    // バッチモード開始（シリアル抑制）
-    SyscallNr sc_batch = SC_SCREEN_BATCH;
-    ulong batch_begin = 1;
-    __asm__(` movq ${r:sc_batch}, %rax; movq ${r:batch_begin}, %rdi; int $$0x80 `);
+    // バッチ描画開始（バックバッファ描画、シリアル出力抑制）
+    con_begin_batch();
 
-        // 画面サイズ取得
-        SyscallNr sc_gsz = SC_SCREEN_GET_SIZE;
-        ulong packed_size = 0;
-    __asm__(`
-    movq ${r:sc_gsz}, %rax;
-    int $$0x80;
-    movq %rax, ${=r:packed_size}
-    `);
-        ulong screen_rows = 0;
-        ulong screen_cols = 0;
-    __asm__(`
-    movq ${r:packed_size}, %rax;
-    shrq $$32, %rax;
-    movq %rax, ${=r:screen_rows}
-    `);
-    __asm__(`
-    movq ${r:packed_size}, %rax;
-    andl $$0xFFFFFFFF, %eax;
-    movq %rax, ${=r:screen_cols}
-    `);
+    // 画面サイズ取得（コンソールAPI）
+    ulong screen_rows = con_get_rows();
+    ulong screen_cols = con_get_cols();
+    ulong text_rows = screen_rows - 2;
+    if (text_rows > screen_rows) { text_rows = 1; }
 
-        // テキスト表示行数 = 画面行数 - 2
-        ulong text_rows = screen_rows - 2;
-        if (text_rows > screen_rows) { text_rows = 1; }
+    // カーソル・スクロール
+    ulong* cy_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+    ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+    ulong cur_y = *cy_ptr;
+    ulong cur_x = *cx_ptr;
+    ulong* st_ptr = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
+    ulong scroll_top = *st_ptr;
+    ulong old_scroll_top = scroll_top;
+    if (cur_y < scroll_top) { scroll_top = cur_y; *st_ptr = scroll_top; }
+    ulong scroll_bottom = scroll_top + text_rows;
+    if (cur_y >= scroll_bottom) { scroll_top = cur_y - text_rows + 1; *st_ptr = scroll_top; }
 
-        // カーソル位置
-        ulong* cy_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
-        ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
-        ulong cur_y = *cy_ptr;
-        ulong cur_x = *cx_ptr;
+    // ダーティフラグ
+    ulong* dirty_ptr = (ADDR_ARIA_STATE + OFF_DIRTY) as ulong*;
+    ulong dirty = *dirty_ptr;
+    ulong* pcyp = (ADDR_ARIA_STATE + OFF_PREV_CUR_Y) as ulong*;
+    ulong prev_cur_y = *pcyp;
+    if (scroll_top != old_scroll_top) { dirty = DIRTY_FULL; }
 
-        // スクロールオフセット自動調整
-        ulong* st_ptr = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
-        ulong scroll_top = *st_ptr;
-        ulong old_scroll_top = scroll_top;
-        if (cur_y < scroll_top) {
-        scroll_top = cur_y;
-        *st_ptr = scroll_top;
-        }
-        ulong scroll_bottom = scroll_top + text_rows;
-        if (cur_y >= scroll_bottom) {
-        scroll_top = cur_y - text_rows + 1;
-        *st_ptr = scroll_top;
-        }
+    // 定数
+    Color hdr_color = COLOR_HEADER;
+    Color out_color = COLOR_OUTPUT;
+    MemAddr lb_base = ADDR_ARIA_LINEBUF;
 
-        // ダーティフラグ
-        ulong* dirty_ptr = (ADDR_ARIA_STATE + OFF_DIRTY) as ulong*;
-        ulong dirty = *dirty_ptr;
-        ulong* pcyp = (ADDR_ARIA_STATE + OFF_PREV_CUR_Y) as ulong*;
-        ulong prev_cur_y = *pcyp;
-        if (scroll_top != old_scroll_top) { dirty = DIRTY_FULL; }
+    // カーソルリセット（フル描画時のみ）
+    if (dirty != DIRTY_CURSOR) {
+        con_set_cursor(0, 0);
+    }
 
-        // カーソルリセット
-        SyscallNr sc_setcur = SC_SCREEN_SET_CURSOR;
-        if (dirty != DIRTY_CURSOR) {
-        ulong zero_x = 0;
-        ulong zero_y = 0;
-    __asm__(` movq ${r:sc_setcur}, %rax; movq ${r:zero_x}, %rdi; movq ${r:zero_y}, %rsi; int $$0x80 `);
-}
-
-// syscall定数
-SyscallNr sc_scol = SC_SCREEN_SET_COLOR;
-SyscallNr sc_pc = SC_SCREEN_PUTC;
-SyscallNr sc_ps = SC_SCREEN_PUTS;
-SyscallNr sc_nl = SC_SCREEN_NEWLINE;
-Color hdr_color = COLOR_HEADER;
-Color out_color = COLOR_OUTPUT;
-MemAddr lb_base = ADDR_ARIA_LINEBUF;
-
-// ================================================================
-// ヘッダー行: " Aria: <filename> [+]" を行バッファで一括出力
-// ================================================================
-if (dirty != DIRTY_CURSOR) {
-    __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
-
-        // 行バッファに " Aria: " を書き込み
+    // ================================================================
+    // ヘッダー行
+    // ================================================================
+    if (dirty != DIRTY_CURSOR) {
+        con_set_color(hdr_color);
         ulong hp = 0;
-        ulong ha = 0;
-        ha = lb_base + hp;
-    __asm__(` movq ${r:ha}, %rdi; movb $$0x20, (%rdi) `);
-    hp = hp + 1;
-    ha = lb_base + hp;
-    __asm__(` movq ${r:ha}, %rdi; movb $$0x41, (%rdi) `);
-        hp = hp + 1;
-        ha = lb_base + hp;
-    __asm__(` movq ${r:ha}, %rdi; movb $$0x72, (%rdi) `);
-    hp = hp + 1;
-    ha = lb_base + hp;
-    __asm__(` movq ${r:ha}, %rdi; movb $$0x69, (%rdi) `);
-        hp = hp + 1;
-        ha = lb_base + hp;
-    __asm__(` movq ${r:ha}, %rdi; movb $$0x61, (%rdi) `);
-    hp = hp + 1;
-    ha = lb_base + hp;
-    __asm__(` movq ${r:ha}, %rdi; movb $$0x3A, (%rdi) `);
-        hp = hp + 1;
-        ha = lb_base + hp;
-    __asm__(` movq ${r:ha}, %rdi; movb $$0x20, (%rdi) `);
-    hp = hp + 1;
+        lb_write_space(lb_base, hp); hp = hp + 1;
+        lb_write(lb_base, hp, 0x41); hp = hp + 1;  // 'A'
+        lb_write(lb_base, hp, 0x72); hp = hp + 1;  // 'r'
+        lb_write(lb_base, hp, 0x69); hp = hp + 1;  // 'i'
+        lb_write(lb_base, hp, 0x61); hp = hp + 1;  // 'a'
+        lb_write(lb_base, hp, 0x3A); hp = hp + 1;  // ':'
+        lb_write_space(lb_base, hp); hp = hp + 1;
 
-    // ファイル名を行バッファにコピー
-    ulong* fn_len_p = (ADDR_ARIA_STATE + OFF_FNAME_LEN) as ulong*;
-    ulong fn_len = *fn_len_p;
-    ulong fn_idx = 0;
-    while (fn_idx < fn_len) {
-        ulong fnch = 0;
-        ulong fna = ADDR_ARIA_FILENAME + fn_idx;
-        __asm__(` movq ${r:fna}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:fnch} `);
-            ha = lb_base + hp;
-        __asm__(` movq ${r:ha}, %rdi; movq ${r:fnch}, %rax; movb %al, (%rdi) `);
-        hp = hp + 1;
-        fn_idx = fn_idx + 1;
+        // ファイル名
+        ulong* fn_len_p = (ADDR_ARIA_STATE + OFF_FNAME_LEN) as ulong*;
+        ulong fn_len = *fn_len_p;
+        ulong fn_idx = 0;
+        while (fn_idx < fn_len) {
+            ulong fnch = 0;
+            ulong fna = ADDR_ARIA_FILENAME + fn_idx;
+            __asm__(` movq ${r:fna}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:fnch} `);
+            lb_write(lb_base, hp, fnch);
+            hp = hp + 1;
+            fn_idx = fn_idx + 1;
+        }
+
+        // 変更フラグ " [+]"
+        ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+        ulong modified = *mod_ptr;
+        if (modified != 0) {
+            lb_write_space(lb_base, hp); hp = hp + 1;
+            lb_write(lb_base, hp, 0x5B); hp = hp + 1;
+            lb_write(lb_base, hp, 0x2B); hp = hp + 1;
+            lb_write(lb_base, hp, 0x5D); hp = hp + 1;
+        }
+
+        while (hp < screen_cols) {
+            lb_write_space(lb_base, hp); hp = hp + 1;
+        }
+        lb_puts(lb_base, 0, hp);
     }
 
-    // 変更フラグ " [+]"
-    ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
-    ulong modified = *mod_ptr;
-    if (modified != 0) {
-        ha = lb_base + hp;
-        __asm__(` movq ${r:ha}, %rdi; movb $$0x20, (%rdi) `);
-            hp = hp + 1;
-            ha = lb_base + hp;
-        __asm__(` movq ${r:ha}, %rdi; movb $$0x5B, (%rdi) `);
-        hp = hp + 1;
-        ha = lb_base + hp;
-        __asm__(` movq ${r:ha}, %rdi; movb $$0x2B, (%rdi) `);
-            hp = hp + 1;
-            ha = lb_base + hp;
-        __asm__(` movq ${r:ha}, %rdi; movb $$0x5D, (%rdi) `);
-        hp = hp + 1;
+    // ================================================================
+    // テキスト領域
+    // ================================================================
+    ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+    ulong buf_size = *bs;
+    ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+    ulong num_lines = *nlp;
+
+    // 増分行スキャン
+    ulong scan_pos = 0;
+    ulong scan_line = 0;
+    while (scan_line < scroll_top) {
+        if (scan_pos >= buf_size) { scan_line = scroll_top; }
+        else {
+            ulong sch = buf_read(scan_pos);
+            scan_pos = scan_pos + 1;
+            if (sch == 0x0A) { scan_line = scan_line + 1; }
+        }
     }
 
-    // スペース埋め
-    while (hp < screen_cols) {
-        ha = lb_base + hp;
-        __asm__(` movq ${r:ha}, %rdi; movb $$0x20, (%rdi) `);
-            hp = hp + 1;
-            }
+    ulong screen_line = 0;
+    while (screen_line < text_rows) {
+        ulong file_line = scroll_top + screen_line;
 
-            // PUTS一括出力
-        __asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:hp}, %rsi; int $$0x80 `);
-        __asm__(` movq ${r:sc_nl}, %rax; int $$0x80 `);
-            }
-
-            // ================================================================
-            // テキスト領域
-            // ================================================================
-            ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
-            ulong buf_size = *bs;
-
-            ulong screen_line = 0;
-            while (screen_line < text_rows) {
-            ulong file_line = scroll_top + screen_line;
-            ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
-            ulong num_lines = *nlp;
-
-            // DIRTY_CURSOR: 前回カーソル行と新カーソル行のみ描画
-            ulong skip_line = 0;
-            if (dirty == DIRTY_CURSOR) {
+        // ダーティスキップ
+        ulong skip_line = 0;
+        if (dirty == DIRTY_CURSOR) {
             if (file_line != prev_cur_y) {
-            if (file_line != cur_y) {
-            skip_line = 1;
+                if (file_line != cur_y) { skip_line = 1; }
             }
-            }
-            }
-            if (skip_line != 0) {
-            screen_line = screen_line + 1;
-            } else {
-            // SET_CURSORで行位置指定
-            if (dirty == DIRTY_CURSOR) {
-            ulong sc_y = screen_line + 1;
-            ulong sc_x = 0;
-        __asm__(` movq ${r:sc_setcur}, %rax; movq ${r:sc_x}, %rdi; movq ${r:sc_y}, %rsi; int $$0x80 `);
-    }
+        }
 
-    ulong lp = 0;  // 行バッファ位置
-    ulong la = 0;  // 一時アドレス
-
-    if (file_line < num_lines) {
-        // ========================================
-        // テキスト行
-        // ========================================
-
-        // 行の先頭バッファ位置を計算
-        ulong line_start = 0;
-        ulong cur_line = 0;
-        ulong fi = 0;
-        while (cur_line < file_line) {
-            if (fi >= buf_size) { cur_line = file_line; }
-            else {
-                ulong ch = 0;
-                ulong fa = ADDR_ARIA_BUFFER + fi;
-                __asm__(` movq ${r:fa}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
-                    fi = fi + 1;
-                    if (ch == 0x0A) { cur_line = cur_line + 1; line_start = fi; }
-                    }
-                    }
-
-                    // --- (1) 行番号を行バッファに書き込み ---
-                    lp = 0;
-                    ulong display_num = file_line + 1;
-                    ulong n_tmp = display_num;
-                    ulong d0 = 0;
-                    ulong d1 = 0;
-                    ulong d2 = 0;
-                    ulong d3 = 0;
-                    ulong n_digits = 0;
-                    d0 = n_tmp - ((n_tmp / 10) * 10);
-                    n_tmp = n_tmp / 10;
-                    n_digits = 1;
-                    if (n_tmp > 0) { d1 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 2; }
-                    if (n_tmp > 0) { d2 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 3; }
-                    if (n_tmp > 0) { d3 = n_tmp - ((n_tmp / 10) * 10); n_digits = 4; }
-                if (n_digits >= 4) { ulong c4 = d3 + 0x30; la = lb_base + lp; __asm__(` movq ${r:la}, %rdi; movq ${r:c4}, %rax; movb %al, (%rdi) `); lp = lp + 1; }
-            if (n_digits >= 3) { ulong c3 = d2 + 0x30; la = lb_base + lp; __asm__(` movq ${r:la}, %rdi; movq ${r:c3}, %rax; movb %al, (%rdi) `); lp = lp + 1; }
-                if (n_digits >= 2) { ulong c2 = d1 + 0x30; la = lb_base + lp; __asm__(` movq ${r:la}, %rdi; movq ${r:c2}, %rax; movb %al, (%rdi) `); lp = lp + 1; }
-            ulong c1 = d0 + 0x30;
-            la = lb_base + lp;
-            __asm__(` movq ${r:la}, %rdi; movq ${r:c1}, %rax; movb %al, (%rdi) `);
-                lp = lp + 1;
-                // スペース区切り
-                la = lb_base + lp;
-            __asm__(` movq ${r:la}, %rdi; movb $$0x20, (%rdi) `);
-            lp = lp + 1;
-
-            // 行番号PUTS出力
-            __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
-            __asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:lp}, %rsi; int $$0x80 `);
-
-            ulong linenum_len = lp;
-
-            // --- (2) テキスト部分を行バッファに書き込み ---
-            lp = 0;
-            ulong bi = line_start;
-            ulong col = 0;
-            ulong line_done = 0;
-            ulong cursor_col = 0xFFFFFFFF;  // カーソル位置（無効値=なし）
-            while (line_done == 0) {
-                if (bi >= buf_size) { line_done = 1; }
-                else {
-                    ulong ch = 0;
-                    ulong ba = ADDR_ARIA_BUFFER + bi;
-                    __asm__(` movq ${r:ba}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
-                        if (ch == 0x0A) { line_done = 1; }
-                        else {
-                        if (file_line == cur_y) {
-                        if (col == cur_x) { cursor_col = lp; }
-                        }
-                        la = lb_base + lp;
-                    __asm__(` movq ${r:la}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi) `);
-                    col = col + 1;
-                    lp = lp + 1;
-                    bi = bi + 1;
+        if (skip_line != 0) {
+            if (file_line < num_lines) {
+                while (scan_pos < buf_size) {
+                    ulong skch = buf_read(scan_pos);
+                    scan_pos = scan_pos + 1;
+                    if (skch == 0x0A) { break; }
                 }
             }
-        }
-
-        ulong text_len = lp;
-
-        // テキストPUTS出力（カーソル位置で分割）
-        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
-
-            if (cursor_col != 0xFFFFFFFF) {
-            // カーソル前のテキスト
-            if (cursor_col > 0) {
-        __asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:cursor_col}, %rsi; int $$0x80 `);
-    }
-    // カーソル文字（ハイライト）
-    ulong cursor_ch = 0;
-    ulong cca = lb_base + cursor_col;
-    __asm__(` movq ${r:cca}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:cursor_ch} `);
-        ulong cursor_color = COLOR_GREEN;
-    __asm__(` movq ${r:sc_scol}, %rax; movq ${r:cursor_color}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_pc}, %rax; movq ${r:cursor_ch}, %rdi; int $$0x80 `);
-    __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
-    // カーソル後のテキスト
-    ulong after_pos = cursor_col + 1;
-    if (after_pos < text_len) {
-        ulong after_len = text_len - after_pos;
-        ulong after_addr = lb_base + after_pos;
-        __asm__(` movq ${r:sc_ps}, %rax; movq ${r:after_addr}, %rdi; movq ${r:after_len}, %rsi; int $$0x80 `);
-            }
-            } else {
-            // カーソルなし: テキスト一括出力
-            if (text_len > 0) {
-        __asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:text_len}, %rsi; int $$0x80 `);
-    }
-}
-
-// 行末ブロックカーソル
-if (file_line == cur_y) {
-    if (cur_x >= col) {
-        ulong cursor_color2 = COLOR_GREEN;
-        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:cursor_color2}, %rdi; int $$0x80 `);
-            ulong ch_under = 0x5F;
-        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_under}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
-            text_len = text_len + 1;
-            }
-            }
-
-            // --- (3) スペース埋めをPUTS一括出力 ---
-            ulong total_used = linenum_len + text_len;
-            if (total_used < screen_cols) {
-            ulong pad_len = screen_cols - total_used;
-            ulong pi = 0;
-            while (pi < pad_len) {
-            la = lb_base + pi;
-        __asm__(` movq ${r:la}, %rdi; movb $$0x20, (%rdi) `);
-        pi = pi + 1;
-    }
-    __asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:pad_len}, %rsi; int $$0x80 `);
-        }
-
+            screen_line = screen_line + 1;
         } else {
-        // ========================================
-        // 空行: "~" + スペース埋めをPUTS一括出力
-        // ========================================
-        lp = 0;
-        la = lb_base + lp;
-    __asm__(` movq ${r:la}, %rdi; movb $$0x7E, (%rdi) `);
-    lp = lp + 1;
-    while (lp < screen_cols) {
-        la = lb_base + lp;
-        __asm__(` movq ${r:la}, %rdi; movb $$0x20, (%rdi) `);
-            lp = lp + 1;
-            }
-        __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
-        __asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:lp}, %rsi; int $$0x80 `);
+            if (dirty == DIRTY_CURSOR) {
+                ulong sc_y = screen_line + 1;
+                con_set_cursor(0, sc_y);
             }
 
-        __asm__(` movq ${r:sc_nl}, %rax; int $$0x80 `);
-        screen_line = screen_line + 1;
+            ulong lp = 0;
+
+            if (file_line < num_lines) {
+                // テキスト行: 行番号
+                ulong display_num = file_line + 1;
+                ulong n_digits = lb_write_decimal(lb_base, 0, display_num);
+                lp = n_digits;
+                lb_write_space(lb_base, lp); lp = lp + 1;
+
+                // テキスト内容
+                ulong col = 0;
+                ulong cursor_col = 0xFFFFFFFF;
+                ulong line_done = 0;
+                while (line_done == 0) {
+                    if (scan_pos >= buf_size) { line_done = 1; }
+                    else {
+                        ulong ch = buf_read(scan_pos);
+                        if (ch == 0x0A) { scan_pos = scan_pos + 1; line_done = 1; }
+                        else {
+                            if (file_line == cur_y) {
+                                if (col == cur_x) { cursor_col = lp; }
+                            }
+                            lb_write(lb_base, lp, ch);
+                            col = col + 1;
+                            lp = lp + 1;
+                            scan_pos = scan_pos + 1;
+                        }
+                    }
+                }
+
+                // 行末カーソル
+                if (file_line == cur_y) {
+                    if (cur_x >= col) {
+                        cursor_col = lp;
+                        lb_write(lb_base, lp, 0x5F);
+                        lp = lp + 1;
+                    }
+                }
+
+                // スペース埋め
+                while (lp < screen_cols) {
+                    lb_write_space(lb_base, lp); lp = lp + 1;
+                }
+
+                // 色分割出力
+                ulong linenum_len = n_digits + 1;
+                if (cursor_col != 0xFFFFFFFF) {
+                    con_set_color(hdr_color);
+                    lb_puts(lb_base, 0, linenum_len);
+
+                    con_set_color(out_color);
+                    if (cursor_col > linenum_len) {
+                        ulong before_len = cursor_col - linenum_len;
+                        lb_puts(lb_base, linenum_len, before_len);
+                    }
+
+                    ulong cursor_ch = lb_read(lb_base, cursor_col);
+                    con_set_color(COLOR_GREEN);
+                    con_batch_putc(cursor_ch);
+
+                    con_set_color(out_color);
+                    ulong after_start = cursor_col + 1;
+                    ulong after_len = screen_cols - after_start;
+                    if (after_len > 0) {
+                        lb_puts(lb_base, after_start, after_len);
+                    }
+                } else {
+                    con_set_color(hdr_color);
+                    lb_puts(lb_base, 0, linenum_len);
+                    con_set_color(out_color);
+                    ulong rest_len = screen_cols - linenum_len;
+                    lb_puts(lb_base, linenum_len, rest_len);
+                }
+
+            } else {
+                // 空行: "~"
+                lb_write(lb_base, 0, 0x7E); lp = 1;
+                while (lp < screen_cols) {
+                    lb_write_space(lb_base, lp); lp = lp + 1;
+                }
+                con_set_color(hdr_color);
+                lb_puts(lb_base, 0, lp);
+            }
+
+            screen_line = screen_line + 1;
+        }
     }
-}
 
-// ================================================================
-// ステータスバー: 行バッファに組み立ててPUTS一括出力
-// ================================================================
-Color prompt_color = COLOR_PROMPT;
-__asm__(` movq ${r:sc_scol}, %rax; movq ${r:prompt_color}, %rdi; int $$0x80 `);
+    // ================================================================
+    // ステータスバー
+    // ================================================================
+    Color prompt_color = COLOR_PROMPT;
+    con_set_color(prompt_color);
 
     ulong sp = 0;
-    ulong sa = 0;
-
     ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
     ulong mode = *mp;
 
-    // モード文字列を行バッファに書き込み
     if (mode == MODE_NORMAL) {
-    // " NORMAL "
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x4E, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x4F, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x52, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x4D, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x41, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x4C, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-    sp = sp + 1;
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4E); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4F); sp = sp + 1;
+        lb_write(lb_base, sp, 0x52); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4D); sp = sp + 1;
+        lb_write(lb_base, sp, 0x41); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4C); sp = sp + 1;
+        lb_write_space(lb_base, sp); sp = sp + 1;
     }
     if (mode == MODE_INSERT) {
-    // " INSERT "
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x49, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x4E, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x53, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x45, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x52, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x54, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-    sp = sp + 1;
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x49); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4E); sp = sp + 1;
+        lb_write(lb_base, sp, 0x53); sp = sp + 1;
+        lb_write(lb_base, sp, 0x45); sp = sp + 1;
+        lb_write(lb_base, sp, 0x52); sp = sp + 1;
+        lb_write(lb_base, sp, 0x54); sp = sp + 1;
+        lb_write_space(lb_base, sp); sp = sp + 1;
     }
     if (mode == MODE_COMMAND) {
-    // " :"
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x3A, (%rdi) `);
-    sp = sp + 1;
-    // コマンドラインの内容
-    ulong* clp = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
-    ulong clen = *clp;
-    ulong ci = 0;
-    while (ci < clen) {
-    ulong cc = 0;
-    ulong ca = ADDR_ARIA_CMDLINE + ci;
-__asm__(` movq ${r:ca}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:cc} `);
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movq ${r:cc}, %rax; movb %al, (%rdi) `);
-    sp = sp + 1;
-    ci = ci + 1;
-    }
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-sp = sp + 1;
-}
-
-// モード文字列をPUTS出力
-if (sp > 0) {
-    __asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:sp}, %rsi; int $$0x80 `);
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x3A); sp = sp + 1;
+        ulong* clp = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
+        ulong clen = *clp;
+        ulong ci = 0;
+        while (ci < clen) {
+            ulong cc = 0;
+            ulong ca = ADDR_ARIA_CMDLINE + ci;
+            __asm__(` movq ${r:ca}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:cc} `);
+            lb_write(lb_base, sp, cc);
+            sp = sp + 1; ci = ci + 1;
         }
+        lb_write_space(lb_base, sp); sp = sp + 1;
+    }
 
-        // カーソル位置表示 " L<num>,C<num>"
-    __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
-    sp = 0;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x4C, (%rdi) `);
-    sp = sp + 1;
-    // 行番号を10進数で書き込み
-    ulong disp_y = cur_y + 1;
-    ulong dy_tmp = disp_y;
-    ulong dy_d0 = 0;
-    ulong dy_d1 = 0;
-    ulong dy_d2 = 0;
-    ulong dy_d3 = 0;
-    ulong dy_d4 = 0;
-    ulong dy_digits = 0;
-    dy_d0 = dy_tmp - ((dy_tmp / 10) * 10);
-    dy_tmp = dy_tmp / 10;
-    dy_digits = 1;
-    if (dy_tmp > 0) { dy_d1 = dy_tmp - ((dy_tmp / 10) * 10); dy_tmp = dy_tmp / 10; dy_digits = 2; }
-    if (dy_tmp > 0) { dy_d2 = dy_tmp - ((dy_tmp / 10) * 10); dy_tmp = dy_tmp / 10; dy_digits = 3; }
-    if (dy_tmp > 0) { dy_d3 = dy_tmp - ((dy_tmp / 10) * 10); dy_tmp = dy_tmp / 10; dy_digits = 4; }
-    if (dy_tmp > 0) { dy_d4 = dy_tmp - ((dy_tmp / 10) * 10); dy_digits = 5; }
-    if (dy_digits >= 5) { ulong v5 = dy_d4 + 0x30; sa = lb_base + sp; __asm__(` movq ${r:sa}, %rdi; movq ${r:v5}, %rax; movb %al, (%rdi) `); sp = sp + 1; }
-        if (dy_digits >= 4) { ulong v4 = dy_d3 + 0x30; sa = lb_base + sp; __asm__(` movq ${r:sa}, %rdi; movq ${r:v4}, %rax; movb %al, (%rdi) `); sp = sp + 1; }
-    if (dy_digits >= 3) { ulong v3 = dy_d2 + 0x30; sa = lb_base + sp; __asm__(` movq ${r:sa}, %rdi; movq ${r:v3}, %rax; movb %al, (%rdi) `); sp = sp + 1; }
-        if (dy_digits >= 2) { ulong v2 = dy_d1 + 0x30; sa = lb_base + sp; __asm__(` movq ${r:sa}, %rdi; movq ${r:v2}, %rax; movb %al, (%rdi) `); sp = sp + 1; }
-    ulong v1y = dy_d0 + 0x30;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movq ${r:v1y}, %rax; movb %al, (%rdi) `);
-        sp = sp + 1;
-        // ",C"
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x2C, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x43, (%rdi) `);
-        sp = sp + 1;
-        // 列番号を10進数で書き込み
-        ulong disp_x = cur_x + 1;
-        ulong dx_tmp = disp_x;
-        ulong dx_d0 = 0;
-        ulong dx_d1 = 0;
-        ulong dx_d2 = 0;
-        ulong dx_d3 = 0;
-        ulong dx_digits = 0;
-        dx_d0 = dx_tmp - ((dx_tmp / 10) * 10);
-        dx_tmp = dx_tmp / 10;
-        dx_digits = 1;
-        if (dx_tmp > 0) { dx_d1 = dx_tmp - ((dx_tmp / 10) * 10); dx_tmp = dx_tmp / 10; dx_digits = 2; }
-        if (dx_tmp > 0) { dx_d2 = dx_tmp - ((dx_tmp / 10) * 10); dx_tmp = dx_tmp / 10; dx_digits = 3; }
-        if (dx_tmp > 0) { dx_d3 = dx_tmp - ((dx_tmp / 10) * 10); dx_digits = 4; }
-    if (dx_digits >= 4) { ulong xv4 = dx_d3 + 0x30; sa = lb_base + sp; __asm__(` movq ${r:sa}, %rdi; movq ${r:xv4}, %rax; movb %al, (%rdi) `); sp = sp + 1; }
-if (dx_digits >= 3) { ulong xv3 = dx_d2 + 0x30; sa = lb_base + sp; __asm__(` movq ${r:sa}, %rdi; movq ${r:xv3}, %rax; movb %al, (%rdi) `); sp = sp + 1; }
-    if (dx_digits >= 2) { ulong xv2 = dx_d1 + 0x30; sa = lb_base + sp; __asm__(` movq ${r:sa}, %rdi; movq ${r:xv2}, %rax; movb %al, (%rdi) `); sp = sp + 1; }
-ulong xv1 = dx_d0 + 0x30;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movq ${r:xv1}, %rax; movb %al, (%rdi) `);
-    sp = sp + 1;
+    // カーソル位置
+    lb_write_space(lb_base, sp); sp = sp + 1;
+    lb_write(lb_base, sp, 0x4C); sp = sp + 1;
+    ulong dy = lb_write_decimal(lb_base, sp, cur_y + 1);
+    sp = sp + dy;
+    lb_write(lb_base, sp, 0x2C); sp = sp + 1;
+    lb_write(lb_base, sp, 0x43); sp = sp + 1;
+    ulong dx = lb_write_decimal(lb_base, sp, cur_x + 1);
+    sp = sp + dx;
 
     // ステータスメッセージ
     ulong* sm_ptr = (ADDR_ARIA_STATE + OFF_STATUS_MSG) as ulong*;
     ulong smsg = *sm_ptr;
     if (smsg == 1) {
-    // " Written"
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x57, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x72, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x69, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x74, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x74, (%rdi) `);
-sp = sp + 1;
-sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x65, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-__asm__(` movq ${r:sa}, %rdi; movb $$0x6E, (%rdi) `);
-sp = sp + 1;
-ulong zero_s = 0;
-*sm_ptr = zero_s;
-}
-if (smsg == 2) {
-    // " Write failed"
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x57, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x72, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x69, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x74, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x65, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x20, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x66, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x61, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x69, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x6C, (%rdi) `);
-    sp = sp + 1;
-    sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x65, (%rdi) `);
-        sp = sp + 1;
-        sa = lb_base + sp;
-    __asm__(` movq ${r:sa}, %rdi; movb $$0x64, (%rdi) `);
-    sp = sp + 1;
-    ulong zero_s2 = 0;
-    *sm_ptr = zero_s2;
-}
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x57); sp = sp + 1;
+        lb_write(lb_base, sp, 0x72); sp = sp + 1;
+        lb_write(lb_base, sp, 0x69); sp = sp + 1;
+        lb_write(lb_base, sp, 0x74); sp = sp + 1;
+        lb_write(lb_base, sp, 0x74); sp = sp + 1;
+        lb_write(lb_base, sp, 0x65); sp = sp + 1;
+        lb_write(lb_base, sp, 0x6E); sp = sp + 1;
+        ulong zero_s = 0; *sm_ptr = zero_s;
+    }
+    if (smsg == 2) {
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x46); sp = sp + 1;
+        lb_write(lb_base, sp, 0x61); sp = sp + 1;
+        lb_write(lb_base, sp, 0x69); sp = sp + 1;
+        lb_write(lb_base, sp, 0x6C); sp = sp + 1;
+        ulong zero_s2 = 0; *sm_ptr = zero_s2;
+    }
 
-// カーソル位置+メッセージをPUTS一括出力
-__asm__(` movq ${r:sc_ps}, %rax; movq ${r:lb_base}, %rdi; movq ${r:sp}, %rsi; int $$0x80 `);
+    lb_puts(lb_base, 0, sp);
 
-    // バッチモード終了
-    ulong batch_end = 0;
-__asm__(` movq ${r:sc_batch}, %rax; movq ${r:batch_end}, %rdi; int $$0x80 `);
+    // バッチ終了 → VRAM一括転送
+    con_end_batch();
 
-return 0;
+    return 0;
 }

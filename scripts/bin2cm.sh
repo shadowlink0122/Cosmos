@@ -1,8 +1,8 @@
 #!/bin/sh
-# bin2cm.sh - バイナリファイルをCm言語の埋め込みデータ関数に変換する
+# bin2cm.sh - バイナリファイルをCm言語の埋め込みデータに変換する
 #
-# movq命令でu64単位にメモリ書き込み。NULバイト安全。
-# Cmパーサーのブロック反復上限を回避するため1関数あたり最大30チャンクに分割。
+# データ配列+ループ方式: 固定メモリにデータを書き込み、ループでdstにコピー。
+# Cmパーサーのブロック反復上限を回避するため1サブ関数あたり最大30チャンクに分割。
 #
 # 使い方: ./scripts/bin2cm.sh input.cosmexe output.cm func_name
 
@@ -27,20 +27,34 @@ xxd -p -c 8 "$INPUT" > "$TMPFILE"
 
 TOTAL_LINES=$(wc -l < "$TMPFILE" | tr -d ' ')
 
+# 8バイト境界にパディング
+PADDED_SIZE=$(( (SIZE + 7) / 8 * 8 ))
+TOTAL_U64=$TOTAL_LINES
+
 # ヘッダ出力
 cat > "$OUTPUT" << 'HEADER'
 //! platform: uefi
 // 自動生成ファイル — 手動で編集しないでください
+//
+// データ配列+ループ方式:
+//   1. サブ関数がスクラッチ領域にデータを書き込む
+//   2. embed_help() がループでdstにコピー
 
-/// 8バイト書き込みヘルパー
 HEADER
+
+echo "/// 8バイト書き込みヘルパー" >> "$OUTPUT"
 echo "export void ${FUNC}_w8(ulong addr, ulong val) {" >> "$OUTPUT"
-# Cm inline asmのエスケープ: ${r:val}をそのまま出力
 printf '    __asm__(` movq ${r:val}, %%rax; movq ${r:addr}, %%rdi; movq %%rax, (%%rdi) `);\n' >> "$OUTPUT"
 echo "}" >> "$OUTPUT"
 echo "" >> "$OUTPUT"
 
-# メイン処理: 一時ファイルから読み取り
+# スクラッチ領域アドレス (高位の未使用領域)
+SCRATCH="0x20000"
+echo "// スクラッチ領域: ${SCRATCH} (${PADDED_SIZE} bytes)" >> "$OUTPUT"
+echo "const ulong EMBED_SCRATCH = ${SCRATCH};" >> "$OUTPUT"
+echo "" >> "$OUTPUT"
+
+# サブ関数生成: スクラッチ領域にデータを直接書き込む
 n=0
 sub=0
 in_func=0
@@ -60,13 +74,13 @@ while IFS= read -r hex; do
             echo "}" >> "$OUTPUT"
             echo "" >> "$OUTPUT"
         fi
-        echo "export void ${FUNC}_p${sub}(ulong dst) {" >> "$OUTPUT"
+        echo "export void ${FUNC}_p${sub}() {" >> "$OUTPUT"
         in_func=1
         sub=$((sub + 1))
     fi
 
     offset=$((n * 8))
-    echo "    ${FUNC}_w8(dst + ${offset}, ${val});" >> "$OUTPUT"
+    echo "    ${FUNC}_w8(EMBED_SCRATCH + ${offset}, ${val});" >> "$OUTPUT"
     n=$((n + 1))
 done < "$TMPFILE"
 
@@ -76,17 +90,30 @@ if [ $in_func -eq 1 ]; then
     echo "" >> "$OUTPUT"
 fi
 
-# メイン関数
+# メイン関数: サブ関数でスクラッチ領域にデータを配置 → ループでdstにコピー
 echo "/// 埋め込みバイナリをdstにコピー" >> "$OUTPUT"
 echo "/// 戻り値: バイト数" >> "$OUTPUT"
 echo "export ulong ${FUNC}(ulong dst) {" >> "$OUTPUT"
+echo "    // スクラッチ領域にデータを配置" >> "$OUTPUT"
 
 i=0
 while [ $i -lt $sub ]; do
-    echo "    ${FUNC}_p${i}(dst);" >> "$OUTPUT"
+    echo "    ${FUNC}_p${i}();" >> "$OUTPUT"
     i=$((i + 1))
 done
 
+echo "" >> "$OUTPUT"
+echo "    // ループでdstにコピー" >> "$OUTPUT"
+echo "    ulong i = 0;" >> "$OUTPUT"
+echo "    ulong count = ${TOTAL_U64};" >> "$OUTPUT"
+echo "    while (i < count) {" >> "$OUTPUT"
+echo "        ulong offset = i * 8;" >> "$OUTPUT"
+echo "        ulong src_addr = EMBED_SCRATCH + offset;" >> "$OUTPUT"
+echo "        ulong* src = src_addr as ulong*;" >> "$OUTPUT"
+echo "        ulong val = *src;" >> "$OUTPUT"
+echo "        ${FUNC}_w8(dst + offset, val);" >> "$OUTPUT"
+echo "        i = i + 1;" >> "$OUTPUT"
+echo "    }" >> "$OUTPUT"
 echo "    return ${SIZE};" >> "$OUTPUT"
 echo "}" >> "$OUTPUT"
 

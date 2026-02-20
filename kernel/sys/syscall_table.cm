@@ -1,8 +1,25 @@
 //! platform: uefi
-// kernel::sys::syscall_table - syscall番号定義
+// kernel::sys::syscall_table - syscall番号・定数定義
 //
-// int 0x80 によるソフトウェア割り込みで使用するsyscall番号。
-// rax = syscall番号、rdi/rsi/rdx/r10 = 引数。
+// CosmOS のsyscallインターフェース定義。
+// ユーザ空間プログラムとカーネル間のsyscall ABI契約を規定する。
+//
+// syscall番号はカテゴリ別に10の倍数で区切られている:
+//   0-9:   基本 (exit, write, read, open, close, stat, getenv, getcwd, chdir)
+//   10-19: 画面I/O (clear, putc, puts, set_color, get_size, set_cursor, newline, print_num, print_hex, batch)
+//   20-29: ファイルI/O (fs_open, fs_read, fs_write, fs_create, fs_size, fs_memcpy)
+//   30-39: プロセス (spawn, kill, wait, getpid)
+//   40-49: メモリ管理 (sbrk, mmap, munmap)
+//   50-59: IPC (send, recv, reply, notify, get_notify, pipe, dup2)
+//
+// ABI規約:
+//   int 0x80 または syscall命令で発行。
+//   rax=syscall番号, rdi=arg1, rsi=arg2, rdx=arg3, r10=arg4
+//   戻り値: rax (0=成功, 負値=エラー)
+//
+// 使用例 (Cm):
+//   SyscallResult result = syscall_dispatch(SYS_WRITE, FD_STDOUT, buf_addr, len);
+
 
 import ../types;
 

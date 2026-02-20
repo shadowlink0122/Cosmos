@@ -12,7 +12,6 @@ import ../../mm/pmm;
 import ../../fs/cosmfs;
 import ../../config;
 import ../../sys/loader;
-import ../../apps/bin/help_data;
 import ../test_runner;
 
 // CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
@@ -123,12 +122,20 @@ export void test_integration(TestRunner* runner, Heap* heap, PMM* pmm) {
     // テスト群4: CosmEXE埋め込み + ヘッダ検証（ローダー結合テスト）
     // ============================================================
 
-    // テスト16: embed_helpのデータサイズが非ゼロ
+    // テスト16: ヒープからCosmEXEテストデータ用バッファ確保
     ulong help_buf = heap->alloc(4096);
     runner->assert_nonzero(help_buf, "Integ: heap alloc for help data" as void*);
 
-    // テスト17: embed_helpでヒープバッファに書込み
-    ulong help_size = embed_help(help_buf);
+    // テスト17: テスト用CosmEXEヘッダをヒープバッファに構築
+    ulong* h0 = help_buf as ulong*;
+    ulong* h1 = (help_buf + 8) as ulong*;
+    ulong* h2 = (help_buf + 16) as ulong*;
+    ulong* h3 = (help_buf + 24) as ulong*;
+    *h0 = COSMEXE_MAGIC;
+    *h1 = 0x340;
+    *h2 = 0x2200;
+    *h3 = 0;
+    ulong help_size = 0x2200;
     ulong sz_ok = 0;
     if (help_size > 0) { sz_ok = 1; }
     runner->assert_true(sz_ok, "Integ: embed_help size > 0" as void*);

@@ -11,9 +11,11 @@ import ../drivers/serial;
 import ../drivers/debug_port;
 import ../drivers/keyboard;
 import ../lib/print;
+import ../lib/console;
 import ../config;
 import ../mm/heap;
 import ../apps/aria/aria;
+import ../apps/aria/aria_edit;
 import ../sys/exec;
 import ./shell_io;
 
@@ -264,6 +266,44 @@ export void shell_exec(MemAddr buf_addr, ulong buf_len) {
 }
 
 // ============================================================
+// Ariaテキストバッファ読取りヘルパー
+// ============================================================
+
+/// テキストバッファの指定(行,列)位置の文字を読み取る
+/// 行末・バッファ終端では '_' (0x5F) を返す
+ulong aria_buf_char_at(MemAddr buf_addr, ulong buf_size, ulong target_line, ulong target_col) {
+    // target_line行目の先頭まで走査
+    ulong pos = 0;
+    ulong line = 0;
+    while (line < target_line) {
+        if (pos >= buf_size) { return 0x5F; }
+        ulong ch = 0;
+        ulong addr = buf_addr + pos;
+        __asm__(` movq ${r:addr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+        if (ch == 0x0A) { line = line + 1; }
+        pos = pos + 1;
+    }
+    // target_col文字目まで進む
+    ulong col = 0;
+    while (col < target_col) {
+        if (pos >= buf_size) { return 0x5F; }
+        ulong ch = 0;
+        ulong addr = buf_addr + pos;
+        __asm__(` movq ${r:addr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+        if (ch == 0x0A) { return 0x5F; }
+        col = col + 1;
+        pos = pos + 1;
+    }
+    // 対象文字を読み取り
+    if (pos >= buf_size) { return 0x5F; }
+    ulong result = 0;
+    ulong raddr = buf_addr + pos;
+    __asm__(` movq ${r:raddr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:result} `);
+    if (result == 0x0A) { return 0x5F; }
+    return result;
+}
+
+// ============================================================
 // 入力処理
 // ============================================================
 
@@ -279,15 +319,114 @@ export void shell_process_input() {
         if (ch == 0) {
             return;
         }
-        // キー入力をAriaに転送
+
+        // ============================================================
+        // Aria高速パス: 全操作で直接VRAM描画
+        // ============================================================
+        // バッチモード(begin/end_batch)を使わず直接VRAMに描画。
+        // end_batch()の3MBフレームバッファmemcpyを完全回避。
+        //
+        // 高速パス対象:
+        //   - INSERTモード通常文字: draw_char×2（文字+カーソル）
+        //   - INSERTモードBackspace: draw_char×3
+        //   - カーソル移動(DIRTY_CURSOR): draw_char×2（旧/新カーソル）
+        //   - フォールバック: aria_render_op()（構造変更時のみ）
+
+        MemAddr aria_state = 0x2230;  // ADDR_ARIA_STATE
+        MemAddr aria_buf = 0x2330;    // ADDR_ARIA_BUFFER
+        ulong* mode_p = (aria_state + 0) as ulong*;     // OFF_MODE
+        ulong* cx_p = (aria_state + 8) as ulong*;       // OFF_CURSOR_X
+        ulong* cy_p = (aria_state + 16) as ulong*;      // OFF_CURSOR_Y
+        ulong* bsz_p = (aria_state + 24) as ulong*;     // OFF_BUF_SIZE
+        ulong* scroll_p = (aria_state + 32) as ulong*;  // OFF_SCROLL_TOP
+        ulong* dirty_p = (aria_state + 88) as ulong*;   // OFF_DIRTY
+
+        // 入力前のカーソル位置を保存（全高速パスで使用）
+        ulong pre_cx = *cx_p;
+        ulong pre_cy = *cy_p;
+        ulong pre_scroll = *scroll_p;
+        ulong aria_mode = *mode_p;
+
+        // ============================================================
+        // INSERT高速パス: 通常文字 (0x20-0x7E)
+        // ============================================================
+        if (aria_mode == 1) {  // MODE_INSERT
+            if (ch >= 0x20) {
+                if (ch < 0x7F) {
+                    aria_edit_op(1, ch, 0, 0, 0);  // INSERT_CHAR
+                    ulong post_cx = *cx_p;
+                    ulong post_cy = *cy_p;
+
+                    if (post_cy == pre_cy) {
+                        ulong screen_y = pre_cy - pre_scroll + 1;
+                        ulong dn = pre_cy + 1;
+                        ulong lnw = 1;
+                        if (dn >= 10) { lnw = 2; }
+                        if (dn >= 100) { lnw = 3; }
+                        if (dn >= 1000) { lnw = 4; }
+                        ulong toff = lnw + 1;
+                        ulong py = screen_y * 16;
+
+                        // 直接VRAM描画（バッチモード不使用 → 3MB memcpy回避）
+                        con_set_color(0x00FFFFFF as Color);
+                        con_draw_char_at((toff + pre_cx) * 8, py, ch);
+                        con_set_color(0x0000FF00 as Color);
+                        con_draw_char_at((toff + post_cx) * 8, py, 0x5F);
+                        return;
+                    }
+                    aria_op(3, 0, 0, 0, 0);  // フォールバック
+                    return;
+                }
+            }
+
+            // ============================================================
+            // INSERT高速パス: Backspace
+            // ============================================================
+            if (ch == 0x08) {
+                if (pre_cx == 0) {
+                    // 行頭Backspace → 行結合 → フルレンダリング
+                    aria_op(2, ch, 0, 0, 0);
+                    ulong sr = aria_op(4, 0, 0, 0, 0);
+                    if (sr != 0) { aria_op(3, 0, 0, 0, 0); }
+                    return;
+                }
+                aria_edit_op(2, 0, 0, 0, 0);  // DELETE_CHAR
+                ulong post_cx_bs = *cx_p;
+                ulong post_cy_bs = *cy_p;
+                if (post_cy_bs == pre_cy) {
+                    ulong screen_y_bs = pre_cy - pre_scroll + 1;
+                    ulong dn_bs = pre_cy + 1;
+                    ulong lnw_bs = 1;
+                    if (dn_bs >= 10) { lnw_bs = 2; }
+                    if (dn_bs >= 100) { lnw_bs = 3; }
+                    if (dn_bs >= 1000) { lnw_bs = 4; }
+                    ulong toff_bs = lnw_bs + 1;
+                    ulong py_bs = screen_y_bs * 16;
+
+                    // 直接VRAM描画
+                    con_set_color(0x00FFFFFF as Color);
+                    con_draw_char_at((toff_bs + pre_cx) * 8, py_bs, 0x20);
+                    con_draw_char_at((toff_bs + pre_cx - 1) * 8, py_bs, 0x20);
+                    con_set_color(0x0000FF00 as Color);
+                    con_draw_char_at((toff_bs + post_cx_bs) * 8, py_bs, 0x5F);
+
+                    ulong dirty_full = 1;
+                    *dirty_p = dirty_full;
+                    return;
+                }
+                aria_op(3, 0, 0, 0, 0);  // フォールバック
+                return;
+            }
+        }
+
+        // ============================================================
+        // 通常パス: キー入力処理
+        // ============================================================
         aria_op(2, ch, 0, 0, 0);  // KEY_INPUT
-        // まだ実行中か確認
+
         ulong still_running = aria_op(4, 0, 0, 0, 0);
-        if (still_running != 0) {
-            // 再描画
-            aria_op(3, 0, 0, 0, 0);  // RENDER
-        } else {
-            // Aria終了 — シェルに復帰（画面クリア）
+        if (still_running == 0) {
+            // Aria終了 — シェルに復帰
             shell_clear();
             shell_set_color(SHELL_COLOR_OUTPUT);
             shell_println("[Aria closed]" as void*);
@@ -295,7 +434,57 @@ export void shell_process_input() {
             con.set_color(SHELL_COLOR_PROMPT);
             con.puts("CosmOS > " as void*);
             con.set_color(SHELL_COLOR_INPUT);
+            return;
         }
+
+        // ============================================================
+        // カーソル移動高速パス: DIRTY_CURSOR時
+        // ============================================================
+        ulong post_dirty = *dirty_p;
+        ulong post_scroll = *scroll_p;
+        ulong post_cx2 = *cx_p;
+        ulong post_cy2 = *cy_p;
+
+        // DIRTY_CURSOR(=2) かつスクロールなし → draw_char×2で済ませる
+        if (post_dirty == 2) {
+            if (post_scroll == pre_scroll) {
+                // --- 旧カーソル位置: 元の文字を白で描画 ---
+                ulong old_dn = pre_cy + 1;
+                ulong old_lnw = 1;
+                if (old_dn >= 10) { old_lnw = 2; }
+                if (old_dn >= 100) { old_lnw = 3; }
+                if (old_dn >= 1000) { old_lnw = 4; }
+                ulong old_toff = old_lnw + 1;
+                ulong old_screen_y = pre_cy - pre_scroll + 1;
+                ulong old_px = (old_toff + pre_cx) * 8;
+                ulong old_py = old_screen_y * 16;
+
+                // テキストバッファから旧カーソル位置の文字を読取り
+                ulong old_ch = aria_buf_char_at(aria_buf, *bsz_p, pre_cy, pre_cx);
+                con_set_color(0x00FFFFFF as Color);
+                con_draw_char_at(old_px, old_py, old_ch);
+
+                // --- 新カーソル位置: 文字を緑で描画 ---
+                ulong new_dn = post_cy2 + 1;
+                ulong new_lnw = 1;
+                if (new_dn >= 10) { new_lnw = 2; }
+                if (new_dn >= 100) { new_lnw = 3; }
+                if (new_dn >= 1000) { new_lnw = 4; }
+                ulong new_toff = new_lnw + 1;
+                ulong new_screen_y = post_cy2 - post_scroll + 1;
+                ulong new_px = (new_toff + post_cx2) * 8;
+                ulong new_py = new_screen_y * 16;
+
+                ulong new_ch = aria_buf_char_at(aria_buf, *bsz_p, post_cy2, post_cx2);
+                con_set_color(0x0000FF00 as Color);
+                con_draw_char_at(new_px, new_py, new_ch);
+
+                return;
+            }
+        }
+
+        // フルレンダリング
+        aria_op(3, 0, 0, 0, 0);
         return;
     }
 
