@@ -117,6 +117,23 @@ void kernel_main(BootInfo* info) {
         // グローバルFBConsoleを固定アドレスに初期化
         fb_init_global(fb, fb_w, fb_h, fb_stride);
 
+        // バックバッファ確保（ダブルバッファリング用）
+        // 固定アドレス 0x200000 (2MB) に配置。PMM reserved 0-1MB 以降の利用可能領域。
+        ulong bb_bytes = fb_stride * fb_h * 4;
+        MemAddr bb = 0x200000;
+        // バックバッファを黒で初期化（REP STOSQ使用）
+        ulong bb_qwords = bb_bytes / 8;
+        ulong zero_val = 0;
+        __asm__(`
+            movq ${r:bb}, %rdi;
+            movq ${r:zero_val}, %rax;
+            movq ${r:bb_qwords}, %rcx;
+            cld;
+            rep stosq
+        `);
+        fb_set_backbuffer(bb);
+        serial.println("[CosmOS] Backbuffer at 0x200000 for double-buffering" as void*);
+
         // implラッパー経由で操作
         FBConsole gcon();
         gcon.clear();

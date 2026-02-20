@@ -123,6 +123,10 @@ export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulon
     if (nr == SYS_SCREEN_PRINT_HEX) {
         return sys_screen_print_hex(arg1);
     }
+    if (nr == SYS_SCREEN_BATCH) {
+        if (arg1 != 0) { return sys_screen_begin_batch(); }
+        return sys_screen_end_batch();
+    }
 
     // ファイルI/O syscall (20-25)
     if (nr == SYS_FS_OPEN) {

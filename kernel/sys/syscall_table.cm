@@ -30,6 +30,7 @@ export const SyscallNr SYS_SCREEN_SET_CURSOR = 15;  // set_cursor(x, y)
 export const SyscallNr SYS_SCREEN_NEWLINE    = 16;  // 改行
 export const SyscallNr SYS_SCREEN_PRINT_NUM  = 17;  // print_num(value) 10進数出力
 export const SyscallNr SYS_SCREEN_PRINT_HEX  = 18;  // print_hex(value) 16進数出力
+export const SyscallNr SYS_SCREEN_BATCH      = 19;  // batch(1=begin, 0=end+flush)
 
 // ファイルI/O syscall (20-29)
 export const SyscallNr SYS_FS_OPEN   = 20;  // fs_open(path, path_len) → fd or size

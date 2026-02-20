@@ -39,7 +39,7 @@ import ../config;
 ///   +0x48: cursor_tick     — 前回の点滅切替tick
 ///   +0x50: cursor_state    — 点滅状態 (0=非表示, 1=表示)
 export struct FBConsole {
-    MemAddr addr;      // グローバルFBConsole状態のベースアドレス（実データへのポインタ）
+    MemAddr addr;  // グローバルFBConsole状態のベースアドレス（実データへのポインタ）
 }
 
 // ============================================================
@@ -57,6 +57,8 @@ const ByteOffset FB_OFF_BG_COLOR       = 0x38;
 const ByteOffset FB_OFF_CURSOR_ENABLED = 0x40;
 const ByteOffset FB_OFF_CURSOR_TICK    = 0x48;
 const ByteOffset FB_OFF_CURSOR_STATE   = 0x50;
+const ByteOffset FB_OFF_BACKBUF        = 0x58;  // バックバッファアドレス (0=無効)
+const ByteOffset FB_OFF_BATCH_MODE     = 0x60;  // バッチモードフラグ (1=バックバッファに描画)
 
 // カーソル点滅間隔（PIT tick数、100Hz基準で50tick = 500ms）
 const Tick CURSOR_BLINK_INTERVAL = 50;
@@ -135,12 +137,27 @@ impl FBConsole {
     }
 
     // --------------------------------------------------------
+    // 描画先アドレス取得（バッチモード対応）
+    // --------------------------------------------------------
+
+    /// バッチモード中はバックバッファ、それ以外はVRAMアドレスを返す
+    ulong active_fb() {
+        ulong fb = self._read(FB_OFF_ADDR);
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch != 0) {
+            ulong bb = self._read(FB_OFF_BACKBUF);
+            if (bb != 0) { fb = bb; }
+        }
+        return fb;
+    }
+
+    // --------------------------------------------------------
     // 文字描画（内部用）
     // --------------------------------------------------------
 
     /// 指定ピクセル座標に1文字を描画
     void draw_char(ulong px, ulong py, ulong ch) {
-        ulong fb = self._read(FB_OFF_ADDR);
+        ulong fb = self.active_fb();
         ulong screen_w = self._read(FB_OFF_WIDTH);
         ulong screen_h = self._read(FB_OFF_HEIGHT);
         ulong stride = self._read(FB_OFF_STRIDE);
@@ -157,13 +174,11 @@ impl FBConsole {
                 ulong sx = px + col;
                 ulong sy = py + row;
 
-                // 画面外チェック
                 if (sx < screen_w) {
                     if (sy < screen_h) {
                         ulong offset = (sy * stride + sx) * 4;
                         uint* pixel = (fb + offset) as uint*;
 
-                        // ビットパターンのMSBが左端
                         ulong bit_pos = 7 - col;
                         ulong mask = 1 << bit_pos;
                         if ((bits & mask) != 0) {
@@ -179,20 +194,53 @@ impl FBConsole {
         }
     }
 
+    /// バッチ描画モード開始（シリアル出力を抑制し描画を高速化）
+    void begin_batch() {
+        ulong one = 1;
+        self._write(FB_OFF_BATCH_MODE, one);
+    }
+
+    /// バッチ描画モード終了 + バックバッファ→VRAM一括転送
+    void end_batch() {
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch == 0) { return; }
+
+        // バッチモード解除（先にクリアしてactive_fb()がVRAMに戻るようにする）
+        ulong zero = 0;
+        self._write(FB_OFF_BATCH_MODE, zero);
+
+        // バックバッファ→VRAM一括コピー
+        ulong bb = self._read(FB_OFF_BACKBUF);
+        ulong fb = self._read(FB_OFF_ADDR);
+        if (bb == 0) { return; }
+        if (fb == 0) { return; }
+
+        ulong stride = self._read(FB_OFF_STRIDE);
+        ulong height = self._read(FB_OFF_HEIGHT);
+        ulong total_bytes = stride * height * 4;
+        ulong qword_count = total_bytes / 8;
+        __asm__(`
+            movq ${r:bb}, %rsi;
+            movq ${r:fb}, %rdi;
+            movq ${r:qword_count}, %rcx;
+            cld;
+            rep movsq
+        `);
+    }
+
     // --------------------------------------------------------
     // 画面操作
     // --------------------------------------------------------
 
     /// 画面を背景色でクリアする
     void clear() {
-        ulong fb = self._read(FB_OFF_ADDR);
+        ulong fb = self.active_fb();
         ulong stride = self._read(FB_OFF_STRIDE);
         ulong height = self._read(FB_OFF_HEIGHT);
         ulong bg = self._read(FB_OFF_BG_COLOR);
 
         if (fb == 0) { return; }
 
-        // 1行ずつ塗りつぶし
         ulong y = 0;
         while (y < height) {
             ulong x = 0;
@@ -205,14 +253,13 @@ impl FBConsole {
             y += 1;
         }
 
-        // カーソルをリセット
         self._write(FB_OFF_CURSOR_X, 0);
         self._write(FB_OFF_CURSOR_Y, 0);
     }
 
     /// 画面を1行分上にスクロールする
     void scroll_up() {
-        ulong fb = self._read(FB_OFF_ADDR);
+        ulong fb = self.active_fb();
         ulong stride = self._read(FB_OFF_STRIDE);
         ulong height = self._read(FB_OFF_HEIGHT);
         ulong bg = self._read(FB_OFF_BG_COLOR);
@@ -439,7 +486,7 @@ impl FBConsole {
     /// アンダーラインカーソルバーを描画/消去する
     /// フォントセル下部2ピクセル行にfg_color(show=1)またはbg_color(show=0)のバーを描画
     void draw_cursor_bar(ulong px, ulong py, ulong show) {
-        ulong fb = self._read(FB_OFF_ADDR);
+        ulong fb = self.active_fb();
         ulong stride = self._read(FB_OFF_STRIDE);
         ulong screen_w = self._read(FB_OFF_WIDTH);
         ulong screen_h = self._read(FB_OFF_HEIGHT);
@@ -481,4 +528,26 @@ impl FBConsole {
 export void fb_init_global(MemAddr fb_addr, ulong width, ulong height, ulong stride) {
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
     con.init(fb_addr, width, height, stride);
+    // バックバッファは efi_main.cm で PMM 経由で割り当てる
+    ulong z = 0;
+    con._write(FB_OFF_BACKBUF, z);
+    con._write(FB_OFF_BATCH_MODE, z);
+}
+
+/// バックバッファを設定する（外部からPMMで割当済みアドレスを渡す）
+export void fb_set_backbuffer(MemAddr backbuf) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con._write(FB_OFF_BACKBUF, backbuf);
+}
+
+/// バッチモード開始（バックバッファに描画、シリアル抑制）
+export void fb_begin_batch() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.begin_batch();
+}
+
+/// バッチモード終了（バックバッファ→VRAMフラッシュ）
+export void fb_end_batch() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.end_batch();
 }

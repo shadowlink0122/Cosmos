@@ -21,7 +21,8 @@ const ulong SCREEN_HEIGHT   = 0x10;
 const ulong SCREEN_STRIDE   = 0x18;
 const ulong SCREEN_CURSOR_X = 0x20;
 const ulong SCREEN_CURSOR_Y = 0x28;
-const ulong SCREEN_FG_COLOR = 0x30;
+const ulong SCREEN_FG_COLOR    = 0x30;
+const ulong SCREEN_BATCH_MODE  = 0x60;  // バッチモードフラグ (print.cm の FB_OFF_BATCH_MODE と一致)
 
 // ============================================================
 // 画面I/O syscallハンドラ
@@ -36,17 +37,23 @@ export SyscallResult sys_screen_clear() {
 
 /// SYS_SCREEN_PUTC — 1文字出力（serial + FBConsole）
 export SyscallResult sys_screen_putc(AsciiChar ch) {
-    SerialPort serial = {port: 0x3F8};
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
-    serial.putc(ch);
+    // バッチモード中はシリアル出力を抑制
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    if (*batch_p == 0) {
+        SerialPort serial = {port: 0x3F8};
+        serial.putc(ch);
+    }
     con.putc(ch);
     return SYSCALL_OK;
 }
 
 /// SYS_SCREEN_PUTS — 文字列出力（buf=アドレス, len=長さ）
 export SyscallResult sys_screen_puts(MemAddr buf, ulong len) {
-    SerialPort serial = {port: 0x3F8};
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    ulong in_batch = *batch_p;
+    SerialPort serial = {port: 0x3F8};
     ulong i = 0;
     while (i < len) {
         AsciiChar ch = 0;
@@ -57,7 +64,7 @@ export SyscallResult sys_screen_puts(MemAddr buf, ulong len) {
             movb (%rdi), %al;
             movq %rax, ${=r:ch}
         `);
-        serial.putc(ch);
+        if (in_batch == 0) { serial.putc(ch); }
         con.putc(ch);
         i = i + 1;
     }
@@ -99,19 +106,25 @@ export SyscallResult sys_screen_set_cursor(ulong x, ulong y) {
 
 /// SYS_SCREEN_NEWLINE — 改行出力
 export SyscallResult sys_screen_newline() {
-    SerialPort serial = {port: 0x3F8};
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
-    serial.println("" as void*);
+    // バッチモード中はシリアル出力を抑制
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    if (*batch_p == 0) {
+        SerialPort serial = {port: 0x3F8};
+        serial.println("" as void*);
+    }
     con.newline();
     return SYSCALL_OK;
 }
 
 /// SYS_SCREEN_PRINT_NUM — 10進数出力
 export SyscallResult sys_screen_print_num(ulong value) {
-    SerialPort serial = {port: 0x3F8};
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    ulong in_batch = *batch_p;
+    SerialPort serial = {port: 0x3F8};
     if (value == 0) {
-        serial.putc(0x30);
+        if (in_batch == 0) { serial.putc(0x30); }
         con.putc(0x30);
         return SYSCALL_OK;
     }
@@ -142,7 +155,7 @@ export SyscallResult sys_screen_print_num(ulong value) {
             movb (%rdi), %al;
             movq %rax, ${=r:ch}
         `);
-        serial.putc(ch);
+        if (in_batch == 0) { serial.putc(ch); }
         con.putc(ch);
     }
     return SYSCALL_OK;
@@ -150,10 +163,24 @@ export SyscallResult sys_screen_print_num(ulong value) {
 
 /// SYS_SCREEN_PRINT_HEX — 16進数出力
 export SyscallResult sys_screen_print_hex(ulong value) {
-    SerialPort serial = {port: 0x3F8};
     FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
-    serial.print_hex(value);
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    if (*batch_p == 0) {
+        SerialPort serial = {port: 0x3F8};
+        serial.print_hex(value);
+    }
     con.print_hex(value);
     return SYSCALL_OK;
 }
 
+/// SYS_SCREEN_BEGIN_BATCH — バッチ描画開始
+export SyscallResult sys_screen_begin_batch() {
+    fb_begin_batch();
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_END_BATCH — バッチ描画終了+フラッシュ
+export SyscallResult sys_screen_end_batch() {
+    fb_end_batch();
+    return SYSCALL_OK;
+}
