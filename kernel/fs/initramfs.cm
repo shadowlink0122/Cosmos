@@ -17,7 +17,7 @@ import ./cosmfs;
 import ../mm/heap;
 import ../drivers/debug_port;
 import ../shell/shell_io;
-import ../apps/bin/help_data;
+import ../arch/boot_info;
 
 // CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
 
@@ -42,7 +42,7 @@ export FileIndex initramfs_mkdir(MemAddr name, ByteSize name_len, Heap* heap) {
 }
 
 /// initramfsからCosmFSにファイルとディレクトリをロードする
-export void initramfs_load(Heap* heap) {
+export void initramfs_load(Heap* heap, BootInfo* info) {
     DebugPort debug(0xE9);
 
     // ============================================================
@@ -56,28 +56,42 @@ export void initramfs_load(Heap* heap) {
         debug.println("[INITRAMFS] created: /bin" as void*);
     }
 
-    // /bin/help — CosmEXEバイナリ
+    // /bin/help — CosmEXEバイナリ（ESPからロード済み）
     ulong help_name_buf = heap->alloc(5);
     if (help_name_buf != 0) {
         cosmfs_op(FS_OP_MEMCPY, help_name_buf, "help" as ulong, 5, 0);
-        // CosmEXEはVA配置でサイズが増大するため十分なバッファを確保
-        ulong help_data_buf = heap->alloc(12288);
-        if (help_data_buf != 0) {
-            // CosmEXEバイナリをヒープに書き込み
-            ulong help_size = embed_help(help_data_buf);
+        ulong help_size = info->initramfs_size;
+        if (help_size != 0) {
+            // CosmEXEはVA配置でサイズが増大するため十分なバッファを確保
+            ulong alloc_size = help_size + 4096;
+            ulong help_data_buf = heap->alloc(alloc_size);
+            if (help_data_buf != 0) {
+                // initramfsメモリからループでコピー
+                ulong src_base = info->initramfs_base;
+                ulong copy_i = 0;
+                while (copy_i < help_size) {
+                    ulong* src_p = (src_base + copy_i) as ulong*;
+                    ulong* dst_p = (help_data_buf + copy_i) as ulong*;
+                    *dst_p = *src_p;
+                    copy_i = copy_i + 8;
+                }
 
-            // CosmFSにファイル作成 — サイズは実際のバイナリサイズを使用
-            cosmfs_op(FS_OP_CREATE, help_name_buf, help_data_buf, help_size, CM_TYPE_FILE);
-            cosmfs_op(FS_OP_WRITE, help_name_buf, help_data_buf, help_size, 0);
+                // CosmFSにファイル作成
+                cosmfs_op(FS_OP_CREATE, help_name_buf, help_data_buf, help_size, CM_TYPE_FILE);
+                cosmfs_op(FS_OP_WRITE, help_name_buf, help_data_buf, help_size, 0);
 
-            // /bin の子に設定
-            ulong* cnt_help = ADDR_FS_FILE_COUNT as ulong*;
-            if (bin_idx != CM_ROOT) {
-                cosmfs_op(FS_OP_SET_PARENT, *cnt_help - 1, bin_idx, 0, 0);
+                // /bin の子に設定
+                ulong* cnt_help = ADDR_FS_FILE_COUNT as ulong*;
+                if (bin_idx != CM_ROOT) {
+                    cosmfs_op(FS_OP_SET_PARENT, *cnt_help - 1, bin_idx, 0, 0);
+                }
+                debug.puts("[INITRAMFS] loaded: /bin/help (" as void*);
+                debug.print_hex(help_size);
+                debug.println(" bytes, from ESP)" as void*);
             }
-            debug.puts("[INITRAMFS] loaded: /bin/help (" as void*);
-            debug.print_hex(help_size);
-            debug.println(" bytes)" as void*);
+        }
+        if (help_size == 0) {
+            debug.println("[INITRAMFS] skip: help.cosmexe (not in initramfs)" as void*);
         }
     }
 
@@ -107,8 +121,8 @@ export void initramfs_load(Heap* heap) {
         if (rd_buf != 0) {
             cosmfs_op(FS_OP_CREATE, rn_buf, rd_buf, 4096, CM_TYPE_FILE);
             cosmfs_op(FS_OP_WRITE, rn_buf,
-                "CosmOS v0.7.0 - Cm言語で書かれた実験的OS\nCommands: help, ls, cat, touch, rm, write, append, aria" as ulong,
-                93, 0);
+            "CosmOS v0.7.0 - Cm言語で書かれた実験的OS\nCommands: help, ls, cat, touch, rm, write, append, aria" as ulong,
+            93, 0);
             // ルートに配置
             ulong* cnt1 = ADDR_FS_FILE_COUNT as ulong*;
             cosmfs_op(FS_OP_SET_PARENT, *cnt1 - 1, CM_ROOT, 0, 0);
@@ -124,8 +138,8 @@ export void initramfs_load(Heap* heap) {
         if (hd_buf != 0) {
             cosmfs_op(FS_OP_CREATE, hn_buf, hd_buf, 4096, CM_TYPE_FILE);
             cosmfs_op(FS_OP_WRITE, hn_buf,
-                "// hello.cm - CosmOS sample program\nexport void main() {\n    print(42);\n}" as ulong,
-                76, 0);
+            "// hello.cm\nprint(42);\n" as ulong,
+            21, 0);
             ulong* cnt2 = ADDR_FS_FILE_COUNT as ulong*;
             cosmfs_op(FS_OP_SET_PARENT, *cnt2 - 1, CM_ROOT, 0, 0);
             debug.println("[INITRAMFS] loaded: hello.cm" as void*);

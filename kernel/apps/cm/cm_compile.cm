@@ -1,0 +1,600 @@
+//! platform: uefi
+// kernel::apps::cm::cm_compile - Cm コンパイラパイプライン（統合版）
+//
+// Tokenizer → Parser(AST) → Codegen(VMIR) を1ファイルに統合。
+// Cm言語制約（前方宣言・相互再帰不可）に対応した設計。
+
+import ../fs/fs;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// トークン種類
+const ulong TK_EOF = 0;
+const ulong TK_INT_LIT = 1;
+const ulong TK_STR_LIT = 2;
+const ulong TK_IDENT = 3;
+const ulong TK_KW_INT = 4;
+const ulong TK_KW_IF = 5;
+const ulong TK_KW_WHILE = 6;
+const ulong TK_KW_PRINT = 7;
+const ulong TK_PLUS = 10;
+const ulong TK_MINUS = 11;
+const ulong TK_STAR = 12;
+const ulong TK_SLASH = 13;
+const ulong TK_EQ = 14;
+const ulong TK_EQEQ = 15;
+const ulong TK_NEQ = 16;
+const ulong TK_LT = 17;
+const ulong TK_GT = 18;
+const ulong TK_LTEQ = 19;
+const ulong TK_GTEQ = 20;
+const ulong TK_LPAREN = 21;
+const ulong TK_RPAREN = 22;
+const ulong TK_LBRACE = 23;
+const ulong TK_RBRACE = 24;
+const ulong TK_SEMI = 25;
+
+// VM命令
+export const ulong VM_HALT = 0;
+export const ulong VM_PUSH = 1;
+export const ulong VM_POP = 2;
+export const ulong VM_LOAD = 3;
+export const ulong VM_STORE = 4;
+export const ulong VM_ADD = 5;
+export const ulong VM_SUB = 6;
+export const ulong VM_MUL = 7;
+export const ulong VM_DIV = 8;
+export const ulong VM_CMP_EQ = 9;
+export const ulong VM_CMP_NEQ = 10;
+export const ulong VM_CMP_LT = 11;
+export const ulong VM_CMP_GT = 12;
+export const ulong VM_CMP_LTEQ = 13;
+export const ulong VM_CMP_GTEQ = 14;
+export const ulong VM_JUMP = 15;
+export const ulong VM_JUMP_FALSE = 16;
+export const ulong VM_PRINT_NUM = 17;
+export const ulong VM_PRINT_STR = 18;
+
+export const ulong VM_INSTR_SIZE = 16;
+
+// サイズ定数
+const ulong TOKEN_SIZE = 16;
+const ulong MAX_TOKENS = 128;
+const ulong IDENT_ENTRY = 16;
+const ulong MAX_IDENTS = 16;
+
+// パーサ/コード生成の状態を固定アドレスに保持
+const MemAddr ST_PARSER_POS = 0xCE0;
+const MemAddr ST_CG_COUNT   = 0xCF0;
+
+// ============================================================
+// Tokenizer
+// ============================================================
+
+void tok_w(MemAddr tb, ulong i, ulong k, ulong v) {
+    ulong* kp = (tb + i * TOKEN_SIZE) as ulong*;
+    *kp = k;
+    ulong* vp = (tb + i * TOKEN_SIZE + 8) as ulong*;
+    *vp = v;
+}
+ulong tok_k(MemAddr tb, ulong i) { ulong* p = (tb + i * TOKEN_SIZE) as ulong*; return *p; }
+ulong tok_v(MemAddr tb, ulong i) { ulong* p = (tb + i * TOKEN_SIZE + 8) as ulong*; return *p; }
+
+ulong is_id_char(ulong c) {
+    if (c >= 0x61) { if (c <= 0x7A) { return 1; } }
+    if (c >= 0x41) { if (c <= 0x5A) { return 1; } }
+    if (c >= 0x30) { if (c <= 0x39) { return 1; } }
+    if (c == 0x5F) { return 1; }
+    return 0;
+}
+ulong is_id_start(ulong c) {
+    if (c >= 0x61) { if (c <= 0x7A) { return 1; } }
+    if (c >= 0x41) { if (c <= 0x5A) { return 1; } }
+    if (c == 0x5F) { return 1; }
+    return 0;
+}
+
+ulong id_reg(MemAddr ib, ulong* ic, MemAddr src, ulong start, ulong len) {
+    ulong count = *ic;
+    ulong i = 0;
+    while (i < count) {
+        ulong* ep = (ib + i * IDENT_ENTRY) as ulong*;
+        ulong es = *ep;
+        ulong* lp = (ib + i * IDENT_ENTRY + 8) as ulong*;
+        ulong el = *lp;
+        if (el == len) {
+            ulong m = 1;
+            ulong j = 0;
+            while (j < len) {
+                ulong ca = cmd_read_byte(src + start + j);
+                ulong cb = cmd_read_byte(src + es + j);
+                if (ca != cb) { m = 0; }
+                j = j + 1;
+            }
+            if (m != 0) { return i; }
+        }
+        i = i + 1;
+    }
+    if (count >= MAX_IDENTS) { return 0; }
+    ulong* ep = (ib + count * IDENT_ENTRY) as ulong*;
+    *ep = start;
+    ulong* lp = (ib + count * IDENT_ENTRY + 8) as ulong*;
+    *lp = len;
+    count = count + 1;
+    *ic = count;
+    return count - 1;
+}
+
+ulong tokenize(MemAddr src, ulong slen, MemAddr tb, MemAddr ib, ulong* ic) {
+    ulong pos = 0;
+    ulong ti = 0;
+    ulong mx = MAX_TOKENS - 1;
+    while (pos < slen) {
+        if (ti >= mx) { pos = slen; }
+        else {
+            ulong ch = cmd_read_byte(src + pos);
+            if (ch == 0x20) { pos = pos + 1; }
+            else if (ch == 0x0A) { pos = pos + 1; }
+            else if (ch == 0x0D) { pos = pos + 1; }
+            else if (ch == 0x09) { pos = pos + 1; }
+            // コメント or 除算
+            else if (ch == 0x2F) {
+                ulong nx = 0;
+                if (pos + 1 < slen) { nx = cmd_read_byte(src + pos + 1); }
+                if (nx == 0x2F) {
+                    pos = pos + 2;
+                    ulong in_comment = 1;
+                    while (in_comment != 0) {
+                        if (pos >= slen) { in_comment = 0; }
+                        else if (cmd_read_byte(src + pos) == 0x0A) { pos = pos + 1; in_comment = 0; }
+                        else { pos = pos + 1; }
+                    }
+                } else { tok_w(tb, ti, TK_SLASH, 0);
+                    ti = ti + 1;
+                    pos = pos + 1;
+                }
+            }
+            // 数値リテラル
+            else if (ch >= 0x30) {
+                if (ch <= 0x39) {
+                    ulong num = 0;
+                    ulong in_num = 1;
+                    while (in_num != 0) {
+                        if (pos >= slen) { in_num = 0; }
+                        else {
+                            ulong d = cmd_read_byte(src + pos);
+                            if (d >= 0x30) {
+                                if (d <= 0x39) { num = num * 10 + (d - 0x30); pos = pos + 1; }
+                                else { in_num = 0; }
+                            } else { in_num = 0;
+                            }
+                        }
+                    }
+                    tok_w(tb, ti, TK_INT_LIT, num);
+                    ti = ti + 1;
+                }
+                else if (is_id_start(ch) != 0) {
+                    ulong ids = pos;
+                    ulong in_id = 1;
+                    while (in_id != 0) {
+                        if (pos >= slen) { in_id = 0; }
+                        else if (is_id_char(cmd_read_byte(src + pos)) != 0) { pos = pos + 1; }
+                        else { in_id = 0; }
+                    }
+                    ulong idl = pos - ids;
+                    ulong kw = TK_IDENT;
+                    if (idl == 2) {
+                        if (cmd_read_byte(src+ids)==0x69) { if (cmd_read_byte(src+ids+1)==0x66) { kw = TK_KW_IF; } }
+                    }
+                    if (idl == 3) {
+                        if (cmd_read_byte(src+ids)==0x69) { if (cmd_read_byte(src+ids+1)==0x6E) { if (cmd_read_byte(src+ids+2)==0x74) { kw = TK_KW_INT; } } }
+                    }
+                    if (idl == 5) {
+                        ulong k0=cmd_read_byte(src+ids);
+                        ulong k1=cmd_read_byte(src+ids+1);
+                        ulong k2=cmd_read_byte(src+ids+2);
+                        ulong k3=cmd_read_byte(src+ids+3);
+                        ulong k4=cmd_read_byte(src+ids+4);
+                        if (k0==0x77) { if (k1==0x68) { if (k2==0x69) { if (k3==0x6C) { if (k4==0x65) { kw = TK_KW_WHILE; } } } } }
+                        if (k0==0x70) { if (k1==0x72) { if (k2==0x69) { if (k3==0x6E) { if (k4==0x74) { kw = TK_KW_PRINT; } } } } }
+                    }
+                    if (kw != TK_IDENT) { tok_w(tb, ti, kw, 0); }
+                    else { ulong ii = id_reg(ib, ic, src, ids, idl); tok_w(tb, ti, TK_IDENT, ii); }
+                    ti = ti + 1;
+                } else { pos = pos + 1;
+                }
+            }
+            // 識別子
+            else if (is_id_start(ch) != 0) {
+                ulong ids = pos;
+                ulong in_id = 1;
+                while (in_id != 0) {
+                    if (pos >= slen) { in_id = 0; }
+                    else if (is_id_char(cmd_read_byte(src + pos)) != 0) { pos = pos + 1; }
+                    else { in_id = 0; }
+                }
+                ulong idl = pos - ids;
+                ulong kw = TK_IDENT;
+                if (idl == 2) {
+                    if (cmd_read_byte(src+ids)==0x69) { if (cmd_read_byte(src+ids+1)==0x66) { kw = TK_KW_IF; } }
+                }
+                if (idl == 3) {
+                    if (cmd_read_byte(src+ids)==0x69) { if (cmd_read_byte(src+ids+1)==0x6E) { if (cmd_read_byte(src+ids+2)==0x74) { kw = TK_KW_INT; } } }
+                }
+                if (idl == 5) {
+                    ulong k0=cmd_read_byte(src+ids);
+                    ulong k1=cmd_read_byte(src+ids+1);
+                    ulong k2=cmd_read_byte(src+ids+2);
+                    ulong k3=cmd_read_byte(src+ids+3);
+                    ulong k4=cmd_read_byte(src+ids+4);
+                    if (k0==0x77) { if (k1==0x68) { if (k2==0x69) { if (k3==0x6C) { if (k4==0x65) { kw = TK_KW_WHILE; } } } } }
+                    if (k0==0x70) { if (k1==0x72) { if (k2==0x69) { if (k3==0x6E) { if (k4==0x74) { kw = TK_KW_PRINT; } } } } }
+                }
+                if (kw != TK_IDENT) { tok_w(tb, ti, kw, 0); }
+                else { ulong ii = id_reg(ib, ic, src, ids, idl); tok_w(tb, ti, TK_IDENT, ii); }
+                ti = ti + 1;
+            }
+            // 文字列リテラル
+            else if (ch == 0x22) {
+                ulong ss = pos + 1;
+                pos = ss;
+                ulong in_str = 1;
+                while (in_str != 0) {
+                    if (pos >= slen) { in_str = 0; }
+                    else if (cmd_read_byte(src + pos) == 0x22) { in_str = 0; }
+                    else { pos = pos + 1; }
+                }
+                ulong sl = pos - ss;
+                tok_w(tb, ti, TK_STR_LIT, src + ss);
+                ti = ti + 1;
+                tok_w(tb, ti, sl, 0);
+                ti = ti + 1;
+                if (pos < slen) { pos = pos + 1; }
+            }
+            // 記号
+            else if (ch == 0x2B) { tok_w(tb, ti, TK_PLUS, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x2D) { tok_w(tb, ti, TK_MINUS, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x2A) { tok_w(tb, ti, TK_STAR, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x28) { tok_w(tb, ti, TK_LPAREN, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x29) { tok_w(tb, ti, TK_RPAREN, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x7B) { tok_w(tb, ti, TK_LBRACE, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x7D) { tok_w(tb, ti, TK_RBRACE, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x3B) { tok_w(tb, ti, TK_SEMI, 0); ti = ti + 1; pos = pos + 1; }
+            else if (ch == 0x3D) {
+                ulong nx = 0;
+                if (pos+1<slen) { nx = cmd_read_byte(src+pos+1); }
+                if (nx==0x3D) { tok_w(tb, ti, TK_EQEQ, 0); ti=ti+1; pos=pos+2; }
+                else { tok_w(tb, ti, TK_EQ, 0); ti=ti+1; pos=pos+1; }
+            }
+            else if (ch == 0x21) {
+                ulong nx = 0;
+                if (pos+1<slen) { nx = cmd_read_byte(src+pos+1); }
+                if (nx==0x3D) { tok_w(tb, ti, TK_NEQ, 0); ti=ti+1; pos=pos+2; }
+                else { pos=pos+1; }
+            }
+            else if (ch == 0x3C) {
+                ulong nx = 0;
+                if (pos+1<slen) { nx = cmd_read_byte(src+pos+1); }
+                if (nx==0x3D) { tok_w(tb, ti, TK_LTEQ, 0); ti=ti+1; pos=pos+2; }
+                else { tok_w(tb, ti, TK_LT, 0); ti=ti+1; pos=pos+1; }
+            }
+            else if (ch == 0x3E) {
+                ulong nx = 0;
+                if (pos+1<slen) { nx = cmd_read_byte(src+pos+1); }
+                if (nx==0x3D) { tok_w(tb, ti, TK_GTEQ, 0); ti=ti+1; pos=pos+2; }
+                else { tok_w(tb, ti, TK_GT, 0); ti=ti+1; pos=pos+1; }
+            }
+            else { pos = pos + 1; }
+        }
+    }
+    tok_w(tb, ti, TK_EOF, 0);
+    ti = ti + 1;
+    return ti;
+}
+
+// ============================================================
+// 直接コンパイル方式: Token → VM bytecode（AST をスキップ）
+//
+// Cm言語では前方宣言・相互再帰が不可。
+// そのため AST 生成をスキップし、トークン列から直接バイトコードを生成する
+// 「ワンパスコンパイル」方式を採用。
+// ============================================================
+
+ulong p_pos() { ulong* p = ST_PARSER_POS as ulong*; return *p; }
+void p_set(ulong v) { ulong* p = ST_PARSER_POS as ulong*; *p = v; }
+ulong p_peek(MemAddr tb) { return tok_k(tb, p_pos()); }
+ulong p_peekv(MemAddr tb) { return tok_v(tb, p_pos()); }
+void p_adv() { p_set(p_pos() + 1); }
+void p_expect(MemAddr tb, ulong e) { if (p_peek(tb)==e) { p_adv(); } }
+
+ulong cg_emit(MemAddr cb, ulong op, ulong arg) {
+    ulong* cnt = ST_CG_COUNT as ulong*;
+    ulong i = *cnt;
+    ulong* op1 = (cb + i * VM_INSTR_SIZE) as ulong*;
+    *op1 = op;
+    ulong* op2 = (cb + i * VM_INSTR_SIZE + 8) as ulong*;
+    *op2 = arg;
+    *cnt = i + 1;
+    return i;
+}
+ulong cg_cnt() { ulong* p = ST_CG_COUNT as ulong*; return *p; }
+void cg_patch(MemAddr cb, ulong i, ulong v) {
+    ulong* p = (cb + i * VM_INSTR_SIZE + 8) as ulong*;
+    *p = v;
+}
+
+// --- 式の直接コード生成（再帰降下） ---
+
+// primary: 数値 | 識別子 | '(' expr ')'
+void compile_primary(MemAddr tb, MemAddr cb) {
+    ulong k = p_peek(tb);
+    if (k == TK_INT_LIT) {
+        ulong v = p_peekv(tb);
+        p_adv();
+        cg_emit(cb, VM_PUSH, v);
+        return;
+    }
+    if (k == TK_IDENT) {
+        ulong v = p_peekv(tb);
+        p_adv();
+        cg_emit(cb, VM_LOAD, v);
+        return;
+    }
+    if (k == TK_LPAREN) {
+        p_adv();
+        compile_expr(tb, cb);
+        p_expect(tb, TK_RPAREN);
+        return;
+    }
+    // エラー: ダミー値
+    cg_emit(cb, VM_PUSH, 0);
+}
+
+// term: primary (* | /) primary
+void compile_term(MemAddr tb, MemAddr cb) {
+    compile_primary(tb, cb);
+    ulong cont = 1;
+    while (cont != 0) {
+        ulong op = p_peek(tb);
+        if (op == TK_STAR) { p_adv(); compile_primary(tb, cb); cg_emit(cb, VM_MUL, 0); }
+        else if (op == TK_SLASH) { p_adv(); compile_primary(tb, cb); cg_emit(cb, VM_DIV, 0); }
+        else { cont = 0; }
+    }
+}
+
+// additive: term (+ | -) term
+void compile_additive(MemAddr tb, MemAddr cb) {
+    compile_term(tb, cb);
+    ulong cont = 1;
+    while (cont != 0) {
+        ulong op = p_peek(tb);
+        if (op == TK_PLUS) { p_adv(); compile_term(tb, cb); cg_emit(cb, VM_ADD, 0); }
+        else if (op == TK_MINUS) { p_adv(); compile_term(tb, cb); cg_emit(cb, VM_SUB, 0); }
+        else { cont = 0; }
+    }
+}
+
+// comparison: additive (== | != | < | > | <= | >=) additive
+void compile_expr(MemAddr tb, MemAddr cb) {
+    compile_additive(tb, cb);
+    ulong op = p_peek(tb);
+    if (op == TK_EQEQ) { p_adv(); compile_additive(tb, cb); cg_emit(cb, VM_CMP_EQ, 0); }
+    else if (op == TK_NEQ) { p_adv(); compile_additive(tb, cb); cg_emit(cb, VM_CMP_NEQ, 0); }
+    else if (op == TK_LT) { p_adv(); compile_additive(tb, cb); cg_emit(cb, VM_CMP_LT, 0); }
+    else if (op == TK_GT) { p_adv(); compile_additive(tb, cb); cg_emit(cb, VM_CMP_GT, 0); }
+    else if (op == TK_LTEQ) { p_adv(); compile_additive(tb, cb); cg_emit(cb, VM_CMP_LTEQ, 0); }
+    else if (op == TK_GTEQ) { p_adv(); compile_additive(tb, cb); cg_emit(cb, VM_CMP_GTEQ, 0); }
+}
+
+// --- 文の直接コード生成 ---
+// block と stmt の相互再帰を回避するため、ネスト上限2段でインライン展開
+
+// ネスト内の文を1つコンパイル（ネスト深度1 — if/while 内の if/while は不可）
+void compile_stmt_inner(MemAddr tb, MemAddr cb) {
+    ulong k = p_peek(tb);
+    // int x = expr;
+    if (k == TK_KW_INT) {
+        p_adv();
+        ulong name = p_peekv(tb);
+        p_expect(tb, TK_IDENT);
+        p_expect(tb, TK_EQ);
+        compile_expr(tb, cb);
+        p_expect(tb, TK_SEMI);
+        cg_emit(cb, VM_STORE, name);
+        return;
+    }
+    // print
+    if (k == TK_KW_PRINT) {
+        p_adv();
+        p_expect(tb, TK_LPAREN);
+        if (p_peek(tb) == TK_STR_LIT) {
+            ulong sa = p_peekv(tb);
+            p_adv();
+            ulong sl = tok_k(tb, p_pos());
+            p_adv();
+            p_expect(tb, TK_RPAREN);
+            p_expect(tb, TK_SEMI);
+            cg_emit(cb, VM_PRINT_STR, sa);
+            cg_emit(cb, sl, 0);
+        } else {
+            compile_expr(tb, cb);
+            p_expect(tb, TK_RPAREN);
+            p_expect(tb, TK_SEMI);
+            cg_emit(cb, VM_PRINT_NUM, 0);
+        }
+        return;
+    }
+    // x = expr;
+    if (k == TK_IDENT) {
+        ulong name = p_peekv(tb);
+        p_adv();
+        if (p_peek(tb) == TK_EQ) {
+            p_adv();
+            compile_expr(tb, cb);
+            p_expect(tb, TK_SEMI);
+            cg_emit(cb, VM_STORE, name);
+        }
+        return;
+    }
+    // 不明 → スキップ
+    p_adv();
+}
+
+// トップレベルの文を1つコンパイル（ネスト深度0 — if/while 対応）
+void compile_stmt(MemAddr tb, MemAddr cb) {
+    ulong k = p_peek(tb);
+
+    // if (cond) { ... }
+    if (k == TK_KW_IF) {
+        p_adv();
+        p_expect(tb, TK_LPAREN);
+        compile_expr(tb, cb);
+        p_expect(tb, TK_RPAREN);
+        ulong pi = cg_emit(cb, VM_JUMP_FALSE, 0);
+        // ブロック本体をインライン展開
+        p_expect(tb, TK_LBRACE);
+        ulong cont = 1;
+        while (cont != 0) {
+            ulong bk = p_peek(tb);
+            if (bk == TK_RBRACE) { cont = 0; }
+            else if (bk == TK_EOF) { cont = 0; }
+            else {
+                // ネスト内でも if/while をサポート（深度1）
+                ulong nk = p_peek(tb);
+                if (nk == TK_KW_IF) {
+                    p_adv();
+                    p_expect(tb, TK_LPAREN);
+                    compile_expr(tb, cb);
+                    p_expect(tb, TK_RPAREN);
+                    ulong pi2 = cg_emit(cb, VM_JUMP_FALSE, 0);
+                    p_expect(tb, TK_LBRACE);
+                    ulong cont2 = 1;
+                    while (cont2 != 0) {
+                        ulong bk2 = p_peek(tb);
+                        if (bk2 == TK_RBRACE) { cont2 = 0; }
+                        else if (bk2 == TK_EOF) { cont2 = 0; }
+                        else { compile_stmt_inner(tb, cb); }
+                    }
+                    p_expect(tb, TK_RBRACE);
+                    cg_patch(cb, pi2, cg_cnt());
+                }
+                else if (nk == TK_KW_WHILE) {
+                    p_adv();
+                    p_expect(tb, TK_LPAREN);
+                    ulong ls2 = cg_cnt();
+                    compile_expr(tb, cb);
+                    p_expect(tb, TK_RPAREN);
+                    ulong pi2 = cg_emit(cb, VM_JUMP_FALSE, 0);
+                    p_expect(tb, TK_LBRACE);
+                    ulong cont2 = 1;
+                    while (cont2 != 0) {
+                        ulong bk2 = p_peek(tb);
+                        if (bk2 == TK_RBRACE) { cont2 = 0; }
+                        else if (bk2 == TK_EOF) { cont2 = 0; }
+                        else { compile_stmt_inner(tb, cb); }
+                    }
+                    p_expect(tb, TK_RBRACE);
+                    cg_emit(cb, VM_JUMP, ls2);
+                    cg_patch(cb, pi2, cg_cnt());
+                }
+                else { compile_stmt_inner(tb, cb); }
+            }
+        }
+        p_expect(tb, TK_RBRACE);
+        cg_patch(cb, pi, cg_cnt());
+        return;
+    }
+
+    // while (cond) { ... }
+    if (k == TK_KW_WHILE) {
+        p_adv();
+        p_expect(tb, TK_LPAREN);
+        ulong ls = cg_cnt();
+        compile_expr(tb, cb);
+        p_expect(tb, TK_RPAREN);
+        ulong pi = cg_emit(cb, VM_JUMP_FALSE, 0);
+        // ブロック本体
+        p_expect(tb, TK_LBRACE);
+        ulong cont = 1;
+        while (cont != 0) {
+            ulong bk = p_peek(tb);
+            if (bk == TK_RBRACE) { cont = 0; }
+            else if (bk == TK_EOF) { cont = 0; }
+            else {
+                ulong nk = p_peek(tb);
+                if (nk == TK_KW_IF) {
+                    p_adv();
+                    p_expect(tb, TK_LPAREN);
+                    compile_expr(tb, cb);
+                    p_expect(tb, TK_RPAREN);
+                    ulong pi2 = cg_emit(cb, VM_JUMP_FALSE, 0);
+                    p_expect(tb, TK_LBRACE);
+                    ulong cont2 = 1;
+                    while (cont2 != 0) {
+                        ulong bk2 = p_peek(tb);
+                        if (bk2 == TK_RBRACE) { cont2 = 0; }
+                        else if (bk2 == TK_EOF) { cont2 = 0; }
+                        else { compile_stmt_inner(tb, cb); }
+                    }
+                    p_expect(tb, TK_RBRACE);
+                    cg_patch(cb, pi2, cg_cnt());
+                }
+                else if (nk == TK_KW_WHILE) {
+                    p_adv();
+                    p_expect(tb, TK_LPAREN);
+                    ulong ls2 = cg_cnt();
+                    compile_expr(tb, cb);
+                    p_expect(tb, TK_RPAREN);
+                    ulong pi2 = cg_emit(cb, VM_JUMP_FALSE, 0);
+                    p_expect(tb, TK_LBRACE);
+                    ulong cont2 = 1;
+                    while (cont2 != 0) {
+                        ulong bk2 = p_peek(tb);
+                        if (bk2 == TK_RBRACE) { cont2 = 0; }
+                        else if (bk2 == TK_EOF) { cont2 = 0; }
+                        else { compile_stmt_inner(tb, cb); }
+                    }
+                    p_expect(tb, TK_RBRACE);
+                    cg_emit(cb, VM_JUMP, ls2);
+                    cg_patch(cb, pi2, cg_cnt());
+                }
+                else { compile_stmt_inner(tb, cb); }
+            }
+        }
+        p_expect(tb, TK_RBRACE);
+        cg_emit(cb, VM_JUMP, ls);
+        cg_patch(cb, pi, cg_cnt());
+        return;
+    }
+
+    // その他の文（代入、変数宣言、print）
+    compile_stmt_inner(tb, cb);
+}
+
+// ============================================================
+// パブリックAPI
+// ============================================================
+
+/// ソースコードをコンパイルしてVMバイトコードを生成
+export ulong cm_full_compile(MemAddr src, ulong slen, MemAddr cb, MemAddr tb, MemAddr ab, MemAddr ib, ulong* ic, ulong* tco) {
+    // Stage 1: Tokenize
+    ulong tc = tokenize(src, slen, tb, ib, ic);
+    *tco = tc;
+
+    // Stage 2+3: 直接コンパイル（Token → VM bytecode）
+    p_set(0);
+    ulong* cgc = ST_CG_COUNT as ulong*;
+    ulong z = 0;
+    *cgc = z;
+
+    ulong cont = 1;
+    while (cont != 0) {
+        if (p_peek(tb) == TK_EOF) { cont = 0; }
+        else { compile_stmt(tb, cb); }
+    }
+
+    cg_emit(cb, VM_HALT, 0);
+    return cg_cnt() * VM_INSTR_SIZE;
+}

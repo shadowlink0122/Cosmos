@@ -15,8 +15,12 @@
 
 import ../config;
 import ../drivers/debug_port;
+import ../drivers/serial;
 import ../fs/cosmfs;
 import ../mm/heap;
+import ../loader/elf_loader;
+import ../arch/usermode;
+import ../shell/shell_io;
 
 // CosmFS操作コード
 const ulong LDR_FS_FIND    = 5;
@@ -148,3 +152,102 @@ export ulong loader_exec(MemAddr name_addr) {
     return loader_exec_buf(load_addr, size);
 }
 
+// ============================================================
+// ELF64ローダー
+// ============================================================
+
+/// ELF64バイナリをCosmFSからロードしRing 3で実行する
+/// name_addr: ファイル名のアドレス（NUL終端）
+/// 戻り値: 0=成功, 1=ファイル未発見, 2=読み込み失敗, 7=ELFエラー
+export ulong loader_exec_elf(MemAddr name_addr) {
+    DebugPort debug(0xE9);
+    SerialPort serial = {port: 0x3F8};
+
+    debug.puts("[ELF-LOADER] loading: " as void*);
+    debug.puts(name_addr as void*);
+    debug.println("" as void*);
+
+    // 1. CosmFSでファイル検索
+    ulong find_result = cosmfs_op(LDR_FS_FIND, name_addr, 0, 0, 0);
+    if (find_result == LDR_NOT_FOUND) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: file not found" as void*);
+        return 1;
+    }
+
+    // 2. ファイルサイズ取得
+    ulong size = cosmfs_op(LDR_FS_SIZE, name_addr, 0, 0, 0);
+    if (size == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: empty file" as void*);
+        return 2;
+    }
+
+    // 3. ヒープにバッファ確保して読み込み
+    ulong* heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+    MemAddr heap_addr = *heap_ptr;
+    Heap* heap = heap_addr as Heap*;
+
+    MemAddr elf_buf = heap->alloc(size);
+    if (elf_buf == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: heap alloc failed" as void*);
+        return 2;
+    }
+
+    ulong read_result = cosmfs_op(LDR_FS_READ, name_addr, elf_buf, size, 0);
+    if (read_result == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: read failed" as void*);
+        return 2;
+    }
+
+    // 4. ELF64ロード
+    MemAddr entry_mem = heap->alloc(8);
+    if (entry_mem == 0) { return 2; }
+    ulong* entry_ptr = entry_mem as ulong*;
+    ulong elf_err = elf_load(elf_buf, size, entry_ptr);
+    if (elf_err != 0) {
+        shell_set_color(0x00FF4444);
+        shell_puts("ELF error: " as void*);
+        shell_print_num(elf_err);
+        shell_newline();
+        return 7;
+    }
+
+    ulong entry = *entry_ptr;
+
+    // 5. ユーザスタック確保（8KB）
+    ulong user_stack_size = 8192;
+    MemAddr user_stack_base = heap->alloc(user_stack_size);
+    if (user_stack_base == 0) {
+        shell_set_color(0x00FF4444);
+        shell_println("Error: stack alloc failed" as void*);
+        return 2;
+    }
+    MemAddr user_stack_top = user_stack_base + user_stack_size;
+
+    // 6. Ring 3でELFエントリポイントに遷移
+    shell_set_color(0x0000FF88);
+    shell_puts("Executing ELF at 0x" as void*);
+    serial.puts("[ELF] entry=0x" as void*);
+    serial.print_hex(entry);
+    serial.println("" as void*);
+
+    debug.puts("[ELF-LOADER] entering usermode: entry=0x" as void*);
+    debug.print_hex(entry);
+    debug.puts(", stack=0x" as void*);
+    debug.print_hex(user_stack_top);
+    debug.println("" as void*);
+
+    // カーネルスタック設定 + Ring 3遷移
+    // カーネルスタック用のメモリ確保（8KB）
+    MemAddr kern_stack = heap->alloc(8192);
+    if (kern_stack != 0) {
+        usermode_set_kernel_stack(kern_stack + 8192);
+    }
+    enter_usermode(entry, user_stack_top);
+
+    // enter_usermode は戻らない（syscall exit で戻る）
+    return 0;
+}

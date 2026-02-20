@@ -1,0 +1,51 @@
+//! platform: uefi
+// kernel::sys::linux_syscall - Linux syscall 番号マッピング
+//
+// Linux x86_64 の syscall 番号を CosmOS の内部 syscall 番号に変換する。
+// syscall 命令（Ring 3）経由で到達した際に使用。
+//
+// Linux ABI:
+//   RAX = syscall番号
+//   RDI = arg1, RSI = arg2, RDX = arg3, R10 = arg4
+//
+// 対応表（Phase 1: 最小セット）:
+//   Linux 0  (read)   → CosmOS SYS_READ (2)
+//   Linux 1  (write)  → CosmOS SYS_WRITE (1)
+//   Linux 12 (brk)    → CosmOS SYS_SBRK (40)
+//   Linux 60 (exit)   → CosmOS SYS_EXIT (0)
+
+import ../drivers/debug_port;
+import ./syscall_table;
+
+// ============================================================
+// Linux syscall番号定数
+// ============================================================
+
+const ulong LINUX_SYS_READ  = 0;
+const ulong LINUX_SYS_WRITE = 1;
+const ulong LINUX_SYS_OPEN  = 2;
+const ulong LINUX_SYS_CLOSE = 3;
+const ulong LINUX_SYS_BRK   = 12;
+const ulong LINUX_SYS_EXIT  = 60;
+const ulong LINUX_SYS_EXIT_GROUP = 231;
+
+// ============================================================
+// Linux → CosmOS syscall 変換
+// ============================================================
+
+/// Linux syscall番号をCosmOS syscall番号に変換する
+/// 戻り値: CosmOS syscall番号（変換不可なら 0xFFFF）
+export SyscallNr linux_to_cosmos_syscall(ulong linux_nr) {
+    if (linux_nr == LINUX_SYS_READ)  { return SYS_READ; }
+    if (linux_nr == LINUX_SYS_WRITE) { return SYS_WRITE; }
+    if (linux_nr == LINUX_SYS_BRK)   { return SYS_SBRK; }
+    if (linux_nr == LINUX_SYS_EXIT)  { return SYS_EXIT; }
+    if (linux_nr == LINUX_SYS_EXIT_GROUP) { return SYS_EXIT; }
+
+    // 未対応syscall
+    DebugPort debug(0xE9);
+    debug.puts("[LINUX] unhandled syscall: " as void*);
+    debug.print_hex(linux_nr);
+    debug.println("" as void*);
+    return 0xFFFF;
+}

@@ -149,6 +149,31 @@ export AsciiChar shell_buf_read(ulong pos) {
     return val;
 }
 
+/// シリアルポートに10進数を出力する（ESCシーケンス用）
+void serial_put_decimal(SerialPort serial, ulong num) {
+    if (num == 0) { serial.putc(0x30); return; }
+    // 最大5桁分のバッファ（スタック上）
+    ulong d0 = 0;
+    ulong d1 = 0;
+    ulong d2 = 0;
+    ulong d3 = 0;
+    ulong d4 = 0;
+    ulong cnt = 0;
+    ulong n = num;
+    // 下位桁から格納
+    if (n > 0) { d0 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 1; }
+    if (n > 0) { d1 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 2; }
+    if (n > 0) { d2 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 3; }
+    if (n > 0) { d3 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 4; }
+    if (n > 0) { d4 = (n - (n / 10) * 10) + 0x30; cnt = 5; }
+    // 上位桁から出力
+    if (cnt >= 5) { serial.putc(d4); }
+    if (cnt >= 4) { serial.putc(d3); }
+    if (cnt >= 3) { serial.putc(d2); }
+    if (cnt >= 2) { serial.putc(d1); }
+    if (cnt >= 1) { serial.putc(d0); }
+}
+
 /// カーソル位置以降のバッファ内容を再描画する（FBConsole）
 /// prompt_len: プロンプト文字列の長さ（"CosmOS > " = 9文字）
 export void shell_redraw_from(ulong cursor, ulong len) {
@@ -163,9 +188,9 @@ export void shell_redraw_from(ulong cursor, ulong len) {
     ulong i = cursor;
     while (i < len) {
         AsciiChar ch = shell_buf_read(i);
-        ulong px = (prompt_len + i) * 8;   // FONT_WIDTH
-        ulong cy = con._read(0x28);        // FB_OFF_CURSOR_Y
-        ulong py = cy * 16;                // FONT_HEIGHT
+        ulong px = (prompt_len + i) * 8;  // FONT_WIDTH
+        ulong cy = con._read(0x28);       // FB_OFF_CURSOR_Y
+        ulong py = cy * 16;               // FONT_HEIGHT
         con.set_color(SHELL_COLOR_INPUT);
         con.draw_char(px, py, ch);
         i = i + 1;
@@ -192,16 +217,12 @@ export void shell_redraw_from(ulong cursor, ulong len) {
         j = j + 1;
     }
     serial.putc(0x20);  // 末尾クリア
-    // カーソルをcursor位置に移動（ESC[nG）
-    serial.putc(0x0D);
-    ulong k = 0;
-    ulong target = prompt_len + cursor;
-    while (k < target) {
-        serial.putc(0x1B);
-        serial.putc(0x5B);  // [
-        serial.putc(0x43);  // C (right)
-        k = k + 1;
-    }
+    // カーソルをcursor位置に移動 — ESC[nG（絶対カラム位置, 1-indexed）
+    ulong col = prompt_len + cursor + 1;
+    serial.putc(0x1B);  // ESC
+    serial.putc(0x5B);  // [
+    serial_put_decimal(serial, col);
+    serial.putc(0x47);  // G
 }
 
 /// コマンドを実行する
@@ -291,6 +312,7 @@ export void shell_process_input() {
     // ← 左矢印 (VKEY_LEFT = 0x82)
     if (ch == 0x82) {
         if (cursor > 0) {
+            con.cursor_hide();
             cursor = cursor - 1;
             *cur_ptr = cursor;
             // シリアル: カーソル左移動
@@ -307,6 +329,7 @@ export void shell_process_input() {
     // → 右矢印 (VKEY_RIGHT = 0x83)
     if (ch == 0x83) {
         if (cursor < pos) {
+            con.cursor_hide();
             cursor = cursor + 1;
             *cur_ptr = cursor;
             // シリアル: カーソル右移動
@@ -341,20 +364,36 @@ export void shell_process_input() {
     ulong backspace = 0x08;
     if (ch == backspace) {
         if (cursor > 0) {
-            // cursor位置の前の文字を削除
-            // cursor以降を左に1バイトシフト
-            ulong shift_i = cursor - 1;
-            while (shift_i < pos - 1) {
-                AsciiChar next_ch = shell_buf_read(shift_i + 1);
-                shell_buf_write(shift_i, next_ch);
-                shift_i = shift_i + 1;
+            con.cursor_hide();
+            if (cursor == pos) {
+                // 末尾削除: 1文字クリアのみ（フルリドロー不要）
+                pos = pos - 1;
+                cursor = cursor - 1;
+                *pos_ptr = pos;
+                *cur_ptr = cursor;
+                // 削除された文字を空白で上書き
+                ulong clear_px = (9 + pos) * 8;
+                ulong cy_bs = con._read(0x28);
+                ulong py_bs = cy_bs * 16;
+                con.draw_char(clear_px, py_bs, 0x20);
+                // シリアル: BS + Space + BS
+                serial.putc(0x08);
+                serial.putc(0x20);
+                serial.putc(0x08);
+            } else {
+                // 中間削除: cursor以降を左にシフト + フルリドロー
+                ulong shift_i = cursor - 1;
+                while (shift_i < pos - 1) {
+                    AsciiChar next_ch = shell_buf_read(shift_i + 1);
+                    shell_buf_write(shift_i, next_ch);
+                    shift_i = shift_i + 1;
+                }
+                pos = pos - 1;
+                cursor = cursor - 1;
+                *pos_ptr = pos;
+                *cur_ptr = cursor;
+                shell_redraw_from(cursor, pos);
             }
-            pos = pos - 1;
-            cursor = cursor - 1;
-            *pos_ptr = pos;
-            *cur_ptr = cursor;
-            // 再描画
-            shell_redraw_from(cursor, pos);
             // FBConsoleカーソルをedit cursor位置に合わせる
             con._write(0x20, 9 + cursor);
         }
@@ -366,20 +405,37 @@ export void shell_process_input() {
         if (ch < 0x7F) {
             ulong max_pos = SHELL_BUF_SIZE - 1;
             if (pos < max_pos) {
-                // cursor位置に挿入（cursor以降を右に1バイトシフト）
-                ulong shift_j = pos;
-                while (shift_j > cursor) {
-                    AsciiChar prev_ch = shell_buf_read(shift_j - 1);
-                    shell_buf_write(shift_j, prev_ch);
-                    shift_j = shift_j - 1;
+                con.cursor_hide();
+                if (cursor == pos) {
+                    // 末尾追加: 1文字だけ描画（フルリドロー不要）
+                    shell_buf_write(cursor, ch);
+                    pos = pos + 1;
+                    cursor = cursor + 1;
+                    *pos_ptr = pos;
+                    *cur_ptr = cursor;
+                    // FBConsole: 新しい文字を1文字描画
+                    ulong char_px = (9 + cursor - 1) * 8;
+                    ulong cy_ch = con._read(0x28);
+                    ulong py_ch = cy_ch * 16;
+                    con.set_color(SHELL_COLOR_INPUT);
+                    con.draw_char(char_px, py_ch, ch);
+                    // シリアル: 1文字出力
+                    serial.putc(ch);
+                } else {
+                    // 中間挿入: cursor以降を右にシフト + フルリドロー
+                    ulong shift_j = pos;
+                    while (shift_j > cursor) {
+                        AsciiChar prev_ch = shell_buf_read(shift_j - 1);
+                        shell_buf_write(shift_j, prev_ch);
+                        shift_j = shift_j - 1;
+                    }
+                    shell_buf_write(cursor, ch);
+                    pos = pos + 1;
+                    cursor = cursor + 1;
+                    *pos_ptr = pos;
+                    *cur_ptr = cursor;
+                    shell_redraw_from(cursor - 1, pos);
                 }
-                shell_buf_write(cursor, ch);
-                pos = pos + 1;
-                cursor = cursor + 1;
-                *pos_ptr = pos;
-                *cur_ptr = cursor;
-                // 再描画
-                shell_redraw_from(cursor - 1, pos);
                 // FBConsoleカーソルをedit cursor位置に合わせる
                 con._write(0x20, 9 + cursor);
             }

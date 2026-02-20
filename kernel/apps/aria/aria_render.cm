@@ -59,9 +59,11 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
         *st_ptr = scroll_top;
     }
 
-    // 画面クリア (syscall)
-    SyscallNr sc_clr = SC_SCREEN_CLEAR;
-    __asm__(` movq ${r:sc_clr}, %rax; int $$0x80 `);
+    // カーソルを画面左上にリセット（全画面クリアしない — 上書き描画）
+    SyscallNr sc_setcur = SC_SCREEN_SET_CURSOR;
+    ulong zero_x = 0;
+    ulong zero_y = 0;
+    __asm__(` movq ${r:sc_setcur}, %rax; movq ${r:zero_x}, %rdi; movq ${r:zero_y}, %rsi; int $$0x80 `);
 
     // syscall定数（繰り返し使用）
     SyscallNr sc_scol = SC_SCREEN_SET_COLOR;
@@ -108,6 +110,13 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
         __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_plus}, %rdi; int $$0x80 `);
         __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_rb}, %rdi; int $$0x80 `);
     }
+    // ヘッダー行末をスペースで埋める（古い文字を消去）
+    ulong hdr_col_used = 7 + fn_len;
+    if (modified != 0) { hdr_col_used = hdr_col_used + 4; }
+    while (hdr_col_used < screen_cols) {
+        __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+        hdr_col_used = hdr_col_used + 1;
+    }
     __asm__(` movq ${r:sc_nl}, %rax; int $$0x80 `);
 
     // ================================================================
@@ -121,6 +130,7 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
         ulong file_line = scroll_top + screen_line;
         ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
         ulong num_lines = *nlp;
+        ulong col = 0;  // テキスト表示列数（行末スペース埋めに使用）
 
         if (file_line < num_lines) {
             // 行の先頭バッファ位置を計算
@@ -147,7 +157,6 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
 
             // 行内容
             __asm__(` movq ${r:sc_scol}, %rax; movq ${r:out_color}, %rdi; int $$0x80 `);
-            ulong col = 0;
             ulong bi = line_start;
             ulong line_done = 0;
             while (line_done == 0) {
@@ -192,6 +201,29 @@ export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulo
             __asm__(` movq ${r:sc_scol}, %rax; movq ${r:hdr_color}, %rdi; int $$0x80 `);
             ulong ch_tilde = 0x7E;
             __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_tilde}, %rdi; int $$0x80 `);
+            col = 0;  // 空行はテキスト0文字
+        }
+
+        // 行末をスペースで埋める（古い文字を消去）
+        ulong col_used_val = 0;
+        if (file_line < num_lines) {
+            // テキスト行: 行番号桁数 + space + テキスト文字数
+            ulong ln = file_line + 1;
+            ulong digits = 1;
+            if (ln >= 10) { digits = 2; }
+            if (ln >= 100) { digits = 3; }
+            if (ln >= 1000) { digits = 4; }
+            col_used_val = digits + 1 + col;
+            if (file_line == cur_y) {
+                if (cur_x >= col) { col_used_val = col_used_val + 1; }
+            }
+        } else {
+            // 空行: '~' の1文字分
+            col_used_val = 1;
+        }
+        while (col_used_val < screen_cols) {
+            __asm__(` movq ${r:sc_pc}, %rax; movq ${r:ch_sp}, %rdi; int $$0x80 `);
+            col_used_val = col_used_val + 1;
         }
 
         __asm__(` movq ${r:sc_nl}, %rax; int $$0x80 `);

@@ -18,7 +18,7 @@ import ../fs/cosmfs;
 import ./loader;
 
 // アプリケーションモジュール（apps/ディレクトリ）
-// help — CosmEXE独立バイナリ（loader経由で実行）
+import ../apps/help/help_builtin;
 import ../apps/ps/ps;
 import ../apps/mem/mem;
 import ../apps/uptime/uptime;
@@ -120,7 +120,7 @@ export ulong exec_command(MemAddr buf_addr, ulong buf_len) {
 
     // === 完全一致コマンド（引数なし） → app_xxx(0, 0) ===
     if (exec_streq(buf_addr, buf_len, "help" as ulong) != 0) {
-        loader_exec("help" as ulong);
+        app_help(0, 0);
         return 0;
     }
     if (exec_streq(buf_addr, buf_len, "ps" as ulong) != 0) {
@@ -189,6 +189,21 @@ export ulong exec_command(MemAddr buf_addr, ulong buf_len) {
         cmd_cm(buf_addr, buf_len, heap);
         return 0;
     }
+    if (exec_starts_with(buf_addr, buf_len, "exec " as ulong, 5) != 0) {
+        // ELF64バイナリを実行
+        ulong fname_start = 5;
+        ulong fname_len = buf_len - fname_start;
+        // ファイル名をNUL終端でコピー
+        MemAddr fname_buf = heap->alloc(fname_len + 1);
+        if (fname_buf != 0) {
+            cosmfs_op(25, fname_buf, buf_addr + fname_start, fname_len, 0);
+            // NUL終端
+            ulong nul_pos = fname_buf + fname_len;
+            __asm__(` movq ${r:nul_pos}, %rdi; movb $$0, (%rdi) `);
+                loader_exec_elf(fname_buf);
+                }
+                return 0;
+                }
 
-    return 1;  // コマンド未発見
-}
+                return 1;  // コマンド未発見
+                }
