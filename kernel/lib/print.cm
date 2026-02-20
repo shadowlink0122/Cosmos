@@ -59,6 +59,8 @@ const ByteOffset FB_OFF_CURSOR_TICK    = 0x48;
 const ByteOffset FB_OFF_CURSOR_STATE   = 0x50;
 const ByteOffset FB_OFF_BACKBUF        = 0x58;  // バックバッファアドレス (0=無効)
 const ByteOffset FB_OFF_BATCH_MODE     = 0x60;  // バッチモードフラグ (1=バックバッファに描画)
+const ByteOffset FB_OFF_DIRTY_MIN_Y    = 0x68;  // ダーティ領域: 最小ピクセルY座標
+const ByteOffset FB_OFF_DIRTY_MAX_Y    = 0x70;  // ダーティ領域: 最大ピクセルY座標
 
 // カーソル点滅間隔（PIT tick数、100Hz基準で50tick = 500ms）
 const Tick CURSOR_BLINK_INTERVAL = 50;
@@ -166,6 +168,16 @@ impl FBConsole {
 
         if (fb == 0) { return; }
 
+        // ダーティ範囲更新（バッチモード中のみ）
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch != 0) {
+            ulong cur_min = self._read(FB_OFF_DIRTY_MIN_Y);
+            if (py < cur_min) { self._write(FB_OFF_DIRTY_MIN_Y, py); }
+            ulong py_end = py + FONT_HEIGHT;
+            ulong cur_max = self._read(FB_OFF_DIRTY_MAX_Y);
+            if (py_end > cur_max) { self._write(FB_OFF_DIRTY_MAX_Y, py_end); }
+        }
+
         ulong row = 0;
         while (row < FONT_HEIGHT) {
             ulong bits = font_get_row(ch, row);
@@ -198,18 +210,24 @@ impl FBConsole {
     void begin_batch() {
         ulong one = 1;
         self._write(FB_OFF_BATCH_MODE, one);
+        // ダーティ範囲をリセット（min=最大値, max=0 → 変更なし状態）
+        ulong max_val = 0xFFFFFFFF;
+        self._write(FB_OFF_DIRTY_MIN_Y, max_val);
+        ulong zero = 0;
+        self._write(FB_OFF_DIRTY_MAX_Y, zero);
     }
 
-    /// バッチ描画モード終了 + バックバッファ→VRAM一括転送
+    /// バッチ描画モード終了 + バックバッファ→VRAM部分転送
+    /// ダーティ行トラッキング: 変更されたピクセル行のみVRAMにコピー
     void end_batch() {
         ulong batch = self._read(FB_OFF_BATCH_MODE);
         if (batch == 0) { return; }
 
-        // バッチモード解除（先にクリアしてactive_fb()がVRAMに戻るようにする）
+        // バッチモード解除
         ulong zero = 0;
         self._write(FB_OFF_BATCH_MODE, zero);
 
-        // バックバッファ→VRAM一括コピー
+        // バックバッファ→VRAM コピー
         ulong bb = self._read(FB_OFF_BACKBUF);
         ulong fb = self._read(FB_OFF_ADDR);
         if (bb == 0) { return; }
@@ -217,11 +235,25 @@ impl FBConsole {
 
         ulong stride = self._read(FB_OFF_STRIDE);
         ulong height = self._read(FB_OFF_HEIGHT);
-        ulong total_bytes = stride * height * 4;
-        ulong qword_count = total_bytes / 8;
+
+        // ダーティ範囲を取得
+        ulong min_y = self._read(FB_OFF_DIRTY_MIN_Y);
+        ulong max_y = self._read(FB_OFF_DIRTY_MAX_Y);
+
+        // ダーティ範囲が無効（変更なし）→ コピー不要
+        if (min_y >= max_y) { return; }
+        // 範囲クランプ
+        if (max_y > height) { max_y = height; }
+
+        // ダーティ範囲のみコピー（stride × (max_y - min_y) × 4 バイト）
+        ulong offset_bytes = stride * min_y * 4;
+        ulong copy_bytes = stride * (max_y - min_y) * 4;
+        ulong qword_count = copy_bytes / 8;
+        ulong src = bb + offset_bytes;
+        ulong dst = fb + offset_bytes;
         __asm__(`
-            movq ${r:bb}, %rsi;
-            movq ${r:fb}, %rdi;
+            movq ${r:src}, %rsi;
+            movq ${r:dst}, %rdi;
             movq ${r:qword_count}, %rcx;
             cld;
             rep movsq
@@ -255,6 +287,14 @@ impl FBConsole {
 
         self._write(FB_OFF_CURSOR_X, 0);
         self._write(FB_OFF_CURSOR_Y, 0);
+
+        // ダーティ範囲: 全画面
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch != 0) {
+            ulong zero = 0;
+            self._write(FB_OFF_DIRTY_MIN_Y, zero);
+            self._write(FB_OFF_DIRTY_MAX_Y, height);
+        }
     }
 
     /// 画面を1行分上にスクロールする
