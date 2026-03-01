@@ -1,0 +1,34 @@
+//! platform: baremetal
+// cosmo-linux::include::errno - Linuxエラーコード定数
+//
+// Linux互換エラーコード。syscallの戻り値として負値で返される。
+// 参照: linux/include/uapi/asm-generic/errno-base.h
+
+export const long EPERM   = 1;   // 操作不許可
+export const long ENOENT  = 2;   // ファイル/ディレクトリなし
+export const long ESRCH   = 3;   // プロセスなし
+export const long EINTR   = 4;   // 割り込み
+export const long EIO     = 5;   // I/Oエラー
+export const long ENXIO   = 6;   // デバイス/アドレスなし
+export const long ENOEXEC = 8;   // 実行形式エラー
+export const long EBADF   = 9;   // 不正なfd
+export const long ECHILD  = 10;  // 子プロセスなし
+export const long EAGAIN  = 11;  // リソース一時不可
+export const long ENOMEM  = 12;  // メモリ不足
+export const long EACCES  = 13;  // 権限なし
+export const long EFAULT  = 14;  // 不正アドレス
+export const long EBUSY   = 16;  // ビジー
+export const long EEXIST  = 17;  // ファイル存在
+export const long ENODEV  = 19;  // デバイスなし
+export const long ENOTDIR = 20;  // ディレクトリでない
+export const long EISDIR  = 21;  // ディレクトリ
+export const long EINVAL  = 22;  // 無効な引数
+export const long ENFILE  = 23;  // ファイルテーブル満杯
+export const long EMFILE  = 24;  // 開きすぎ
+export const long ENOSPC  = 28;  // 空き領域なし
+export const long EROFS   = 30;  // 読み取り専用FS
+export const long EPIPE   = 32;  // パイプ破損
+export const long ERANGE  = 34;  // 範囲外
+export const long ENOSYS  = 38;  // 未実装
+export const long ENOTEMPTY = 39; // ディレクトリ空でない
+export const long EOVERFLOW = 75; // オーバーフロー

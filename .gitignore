@@ -15,3 +15,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Cosmo Linux ビルド成果物
+*.elf
+*.iso

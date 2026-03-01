@@ -1,0 +1,111 @@
+//! platform: baremetal
+// cosmo-linux::boot::entry - カーネルエントリポイント
+//
+// header.S → start_kernel() → 各サブシステム初期化 → idle loop
+// 参照: linux/init/main.c
+
+import ../include/types;
+import ../include/config;
+import ../drivers/serial;
+import ../lib/string;
+import ../lib/printk;
+import ../arch/x86_64/cpu;
+import ../arch/x86_64/gdt;
+import ../arch/x86_64/idt;
+import ./multiboot2;
+
+// ============================================================
+// カーネルバナー
+// ============================================================
+
+void print_banner(SerialPort* w) {
+    w->println("" as void*);
+    w->println("========================================" as void*);
+    w->println("  Cosmo Linux v0.1.0" as void*);
+    w->println("  Written in Cm — A Linux reimagined" as void*);
+    w->println("========================================" as void*);
+    w->println("" as void*);
+}
+
+void print_system_info(SerialPort* w, BootInfo* info) {
+    w->puts("  Memory: " as void*);
+    print_dec(w, info->total_memory / 1048576);
+    w->puts(" MiB" as void*);
+    w->println("" as void*);
+
+    if (info->fb_addr != 0) {
+        w->puts("  Framebuffer: " as void*);
+        print_dec(w, info->fb_width);
+        w->putc(120 as utiny);
+        print_dec(w, info->fb_height);
+        w->println("" as void*);
+    }
+
+    cpu_print_vendor(w);
+}
+
+// ============================================================
+// start_kernel — エントリポイント
+// ============================================================
+
+/// header.Sから呼び出されるカーネルメインエントリ
+export void start_kernel(ulong mb2_info, ulong mb2_magic) {
+    // === 1. シリアルコンソール確立 ===
+    SerialPort serial(COM1);
+    DebugPort debug(DEBUGCON);
+
+    print_banner(&serial);
+    pr_info(&serial, "start_kernel() entered" as void*);
+    debug.println("[BOOT] start_kernel entered" as void*);
+
+    // === 2. Multiboot2マジック検証 ===
+    if (mb2_magic != MB2_MAGIC) {
+        pr_err(&serial, "Invalid Multiboot2 magic!" as void*);
+        serial.puts("  Expected: " as void*);
+        serial.print_hex(MB2_MAGIC);
+        serial.println("" as void*);
+        serial.puts("  Got:      " as void*);
+        serial.print_hex(mb2_magic);
+        serial.println("" as void*);
+    }
+
+    // === 3. ブート情報解析 ===
+    BootInfo boot_info = {
+        mmap_addr: 0,
+        mmap_entry_size: 0,
+        mmap_count: 0,
+        fb_addr: 0,
+        fb_width: 0,
+        fb_height: 0,
+        fb_pitch: 0,
+        fb_bpp: 0,
+        total_memory: 0
+    };
+
+    if (mb2_magic == MB2_MAGIC) {
+        mb2_parse(mb2_info, &boot_info, &serial);
+    }
+
+    // === 4. アーキテクチャ初期化 ===
+    pr_info(&serial, "Initializing architecture..." as void*);
+    gdt_init(&serial);
+    idt_init(&serial);
+    debug.println("[BOOT] arch initialized" as void*);
+
+    // === 5. システム情報出力 ===
+    print_system_info(&serial, &boot_info);
+
+    // === 6. 初期化完了 ===
+    serial.println("" as void*);
+    pr_info(&serial, "Kernel initialization complete" as void*);
+    pr_info(&serial, "Entering idle loop..." as void*);
+    debug.println("[BOOT] entering idle loop" as void*);
+
+    // QEMUテスト用: isa-debug-exit で正常終了
+    outb(QEMU_EXIT_PORT, 0 as utiny);
+
+    // idle loop
+    while (true) {
+        hlt();
+    }
+}

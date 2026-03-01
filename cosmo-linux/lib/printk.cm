@@ -1,0 +1,115 @@
+//! platform: baremetal
+// cosmo-linux::lib::printk - カーネルログ出力
+//
+// Linux printk() 互換のログ出力。
+// Writer インターフェースを通じてシリアルに出力する。
+//
+// 使用例:
+//   SerialPort serial(COM1);
+//   printk_info(&serial, "Hello" as void*);
+//
+// 参照: linux/kernel/printk/printk.c
+
+import ../include/types;
+import ../include/writer;
+
+// ============================================================
+// ログレベル定数
+// ============================================================
+
+export const ulong LOG_EMERG   = 0;
+export const ulong LOG_ALERT   = 1;
+export const ulong LOG_CRIT    = 2;
+export const ulong LOG_ERR     = 3;
+export const ulong LOG_WARN    = 4;
+export const ulong LOG_NOTICE  = 5;
+export const ulong LOG_INFO    = 6;
+export const ulong LOG_DEBUG   = 7;
+
+// ============================================================
+// printk 関数群
+// ============================================================
+
+/// ログレベル付きメッセージ出力
+export void printk(SerialPort* w, ulong level, void* msg) {
+    w->putc(91);  // '['
+
+    if (level == LOG_EMERG)  { w->puts("EMERG" as void*); }
+    if (level == LOG_ALERT)  { w->puts("ALERT" as void*); }
+    if (level == LOG_CRIT)   { w->puts("CRIT" as void*); }
+    if (level == LOG_ERR)    { w->puts("ERROR" as void*); }
+    if (level == LOG_WARN)   { w->puts("WARN" as void*); }
+    if (level == LOG_NOTICE) { w->puts("NOTE" as void*); }
+    if (level == LOG_INFO)   { w->puts("INFO" as void*); }
+    if (level == LOG_DEBUG)  { w->puts("DEBUG" as void*); }
+
+    w->putc(93);  // ']'
+    w->putc(32);  // ' '
+    w->println(msg);
+}
+
+/// 情報メッセージ出力
+export void pr_info(SerialPort* w, void* msg) {
+    printk(w, LOG_INFO, msg);
+}
+
+/// エラーメッセージ出力
+export void pr_err(SerialPort* w, void* msg) {
+    printk(w, LOG_ERR, msg);
+}
+
+/// 警告メッセージ出力
+export void pr_warn(SerialPort* w, void* msg) {
+    printk(w, LOG_WARN, msg);
+}
+
+/// デバッグメッセージ出力
+export void pr_debug(SerialPort* w, void* msg) {
+    printk(w, LOG_DEBUG, msg);
+}
+
+/// 10進数出力ヘルパー
+export void print_dec(SerialPort* w, ulong value) {
+    if (value == 0) {
+        w->putc(48);  // '0'
+        return;
+    }
+    // 各桁を逆順に格納
+    ulong buf0 = 0; ulong buf1 = 0; ulong buf2 = 0; ulong buf3 = 0;
+    ulong buf4 = 0; ulong buf5 = 0; ulong buf6 = 0; ulong buf7 = 0;
+    ulong buf8 = 0; ulong buf9 = 0;
+    ulong count = 0;
+    ulong tmp = value;
+    while (tmp != 0) {
+        ulong digit = tmp % 10;
+        if (count == 0) { buf0 = digit; }
+        if (count == 1) { buf1 = digit; }
+        if (count == 2) { buf2 = digit; }
+        if (count == 3) { buf3 = digit; }
+        if (count == 4) { buf4 = digit; }
+        if (count == 5) { buf5 = digit; }
+        if (count == 6) { buf6 = digit; }
+        if (count == 7) { buf7 = digit; }
+        if (count == 8) { buf8 = digit; }
+        if (count == 9) { buf9 = digit; }
+        tmp = tmp / 10;
+        count = count + 1;
+    }
+    // 逆順出力
+    ulong i = count;
+    while (i != 0) {
+        i = i - 1;
+        ulong d = 0;
+        if (i == 0) { d = buf0; }
+        if (i == 1) { d = buf1; }
+        if (i == 2) { d = buf2; }
+        if (i == 3) { d = buf3; }
+        if (i == 4) { d = buf4; }
+        if (i == 5) { d = buf5; }
+        if (i == 6) { d = buf6; }
+        if (i == 7) { d = buf7; }
+        if (i == 8) { d = buf8; }
+        if (i == 9) { d = buf9; }
+        w->putc(d + 48);
+    }
+}

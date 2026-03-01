@@ -1,0 +1,64 @@
+//! platform: baremetal
+// cosmo-linux::include::config - カーネル設定定数
+//
+// 全カーネルモジュールが参照する定数を一元管理する。
+
+import ./types;
+
+// ============================================================
+// カーネルバージョン
+// ============================================================
+
+export const ulong VERSION_MAJOR = 0;
+export const ulong VERSION_MINOR = 1;
+export const ulong VERSION_PATCH = 0;
+
+// ============================================================
+// I/Oポート定数（IoPort = ushort）
+// ============================================================
+
+/// COM1 シリアルポート
+export const IoPort COM1 = 0x3F8 as ushort;
+
+/// QEMUデバッグコンソール
+export const IoPort DEBUGCON = 0xE9 as ushort;
+
+/// QEMU isa-debug-exit ポート
+export const IoPort QEMU_EXIT_PORT = 0xF4 as ushort;
+
+// ============================================================
+// PIC (8259A) 定数
+// ============================================================
+
+export const IoPort PIC1_CMD  = 0x20 as ushort;
+export const IoPort PIC1_DATA = 0x21 as ushort;
+export const IoPort PIC2_CMD  = 0xA0 as ushort;
+export const IoPort PIC2_DATA = 0xA1 as ushort;
+
+/// IRQリマップ先ベクタ
+export const Vector IRQ_BASE = 32;
+
+// ============================================================
+// PIT (8254) 定数
+// ============================================================
+
+export const IoPort PIT_CH0 = 0x40 as ushort;
+export const IoPort PIT_CMD = 0x43 as ushort;
+export const ulong PIT_FREQ = 1193182;
+export const ulong PIT_HZ   = 100;
+
+// ============================================================
+// メモリレイアウト定数
+// ============================================================
+
+/// GDTテーブル配置アドレス
+export const PhysAddr GDT_ADDR = 0x80000;
+
+/// IDTテーブル配置アドレス
+export const PhysAddr IDT_ADDR = 0x81000;
+
+/// IDTRアドレス（IDT直後: 0x81000 + 256*16 = 0x82000）
+export const PhysAddr IDTR_ADDR = 0x82000;
+
+/// カーネルスタックサイズ
+export const Size KERNEL_STACK_SIZE = 16384;

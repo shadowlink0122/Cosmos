@@ -1,0 +1,148 @@
+//! platform: baremetal
+// cosmo-linux::lib::string - メモリ・文字列操作ユーティリティ
+//
+// memcpy, memset, strlen 等の基本関数。
+// 参照: linux/lib/string.c
+
+import ../include/types;
+
+// ============================================================
+// メモリ操作
+// ============================================================
+
+/// メモリ領域をコピー（重複非対応）
+export void* memcpy(void* dest, void* src, Size n) {
+    ulong d = dest as ulong;
+    ulong s = src as ulong;
+
+    // 8バイト単位の高速コピー
+    Size qwords = n / 8;
+    Size j = 0;
+    while (j < qwords) {
+        ulong* dp = (d + j * 8) as ulong*;
+        ulong* sp = (s + j * 8) as ulong*;
+        *dp = *sp;
+        j = j + 1;
+    }
+
+    // 残りのバイト単位コピー
+    Size i = qwords * 8;
+    while (i < n) {
+        ulong src_byte = 0;
+        ulong sa = s + i;
+        ulong da = d + i;
+        __asm__(`
+            movq ${r:sa}, %rsi;
+            xorq %rax, %rax;
+            movb (%rsi), %al;
+            movq %rax, ${=r:src_byte}
+        `);
+        __asm__(`
+            movq ${r:da}, %rdi;
+            movq ${r:src_byte}, %rax;
+            movb %al, (%rdi)
+        `);
+        i = i + 1;
+    }
+    return dest;
+}
+
+/// メモリ領域を指定値で埋める
+export void* memset(void* dest, ulong c, Size n) {
+    ulong d = dest as ulong;
+    ulong byte_val = c & 0xFF;
+
+    // 1バイトパターンを8バイトに拡張
+    ulong fill = byte_val;
+    fill = fill | (fill << 8);
+    fill = fill | (fill << 16);
+    fill = fill | (fill << 32);
+
+    // 8バイト単位の高速フィル
+    Size qwords = n / 8;
+    Size j = 0;
+    while (j < qwords) {
+        ulong* dp = (d + j * 8) as ulong*;
+        *dp = fill;
+        j = j + 1;
+    }
+
+    // 残りのバイト単位フィル
+    Size i = qwords * 8;
+    while (i < n) {
+        ulong da = d + i;
+        __asm__(`
+            movq ${r:da}, %rdi;
+            movq ${r:byte_val}, %rax;
+            movb %al, (%rdi)
+        `);
+        i = i + 1;
+    }
+    return dest;
+}
+
+/// メモリ領域をゼロクリア
+export void memzero(void* dest, Size n) {
+    memset(dest, 0, n);
+}
+
+// ============================================================
+// 文字列操作
+// ============================================================
+
+/// NULL終端文字列の長さを返す
+export Size strlen(void* str) {
+    ulong addr = str as ulong;
+    Size len = 0;
+    AsciiChar ch = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:ch}
+    `);
+    while (ch != 0) {
+        len = len + 1;
+        ulong next = addr + len;
+        __asm__(`
+            movq ${r:next}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+    }
+    return len;
+}
+
+/// 文字列比較（同じなら0）
+export long strcmp(void* s1, void* s2) {
+    ulong a1 = s1 as ulong;
+    ulong a2 = s2 as ulong;
+    ulong i = 0;
+    while (true) {
+        AsciiChar c1 = 0;
+        AsciiChar c2 = 0;
+        ulong addr1 = a1 + i;
+        ulong addr2 = a2 + i;
+        __asm__(`
+            movq ${r:addr1}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:c1}
+        `);
+        __asm__(`
+            movq ${r:addr2}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:c2}
+        `);
+        if (c1 != c2) {
+            long v1 = c1 as long;
+            long v2 = c2 as long;
+            return v1 - v2;
+        }
+        if (c1 == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}

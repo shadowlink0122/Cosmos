@@ -1,0 +1,213 @@
+//! platform: baremetal
+// cosmo-linux::drivers::serial - UART 16550A シリアルドライバ
+//
+// COM1 (0x3F8) シリアルポートを操作する。
+// struct SerialPort + impl SerialPort + impl SerialPort for Writer
+//
+// 使用例:
+//   SerialPort serial(COM1);
+//   serial.println("Hello" as void*);
+//
+// 参照: linux/drivers/tty/serial/8250/
+
+import ../include/types;
+import ../include/config;
+import ../include/writer;
+
+// ============================================================
+// I/O ポート操作（フリー関数）
+// ============================================================
+
+/// I/Oポートにバイトを出力
+export void outb(IoPort port, utiny value) {
+    ulong p = port as ulong;
+    ulong v = value as ulong;
+    __asm__(`
+        movq ${r:v}, %rax;
+        movq ${r:p}, %rdx;
+        outb %al, %dx
+    `);
+}
+
+/// I/Oポートからバイトを入力
+export utiny inb(IoPort port) {
+    ulong p = port as ulong;
+    ulong result = 0;
+    __asm__(`
+        movq ${r:p}, %rdx;
+        xorq %rax, %rax;
+        inb %dx, %al;
+        movq %rax, ${=r:result}
+    `);
+    return result as utiny;
+}
+
+// ============================================================
+// SerialPort 構造体
+// ============================================================
+
+/// UART 16550A シリアルポート
+export struct SerialPort {
+    IoPort port;    // ベースI/Oポートアドレス
+}
+
+// ============================================================
+// impl SerialPort — 固有メソッド
+// ============================================================
+
+impl SerialPort {
+    /// コンストラクタ: ポート初期化（115200bps, 8N1, FIFO有効）
+    overload self(IoPort port_addr) {
+        self.port = port_addr;
+
+        // 割り込み無効化
+        outb(port_addr + 1 as ushort, 0x00 as utiny);
+        // DLAB設定 → ボーレート除数設定
+        outb(port_addr + 3 as ushort, 0x80 as utiny);
+        outb(port_addr, 0x01 as utiny);       // 除数低位 (115200bps)
+        outb(port_addr + 1 as ushort, 0x00 as utiny);   // 除数高位
+        // 8N1: 8ビット, パリティなし, 1ストップビット
+        outb(port_addr + 3 as ushort, 0x03 as utiny);
+        // FIFO有効化（14バイトトリガ）
+        outb(port_addr + 2 as ushort, 0xC7 as utiny);
+        // DTR + RTS + OUT2
+        outb(port_addr + 4 as ushort, 0x0B as utiny);
+        // ループバックテスト
+        outb(port_addr + 4 as ushort, 0x1E as utiny);
+        outb(port_addr, 0xAE as utiny);
+        utiny test_val = inb(port_addr);
+        // 通常モードに戻す
+        outb(port_addr + 4 as ushort, 0x0F as utiny);
+    }
+
+    /// 送信バッファが空になるまで待機
+    void wait_ready() {
+        IoPort lsr = self.port + 5 as ushort;
+        utiny status = inb(lsr);
+        ulong ready = (status as ulong) & 0x20;
+        while (ready == 0) {
+            status = inb(lsr);
+            ready = (status as ulong) & 0x20;
+        }
+    }
+}
+
+// ============================================================
+// impl SerialPort for Writer — Writer インターフェース実装
+// ============================================================
+
+impl SerialPort for Writer {
+    /// 1文字出力
+    void putc(AsciiChar ch) {
+        self.wait_ready();
+        outb(self.port, ch);
+    }
+
+    /// NULL終端文字列出力
+    void puts(void* data) {
+        ulong addr = data as ulong;
+        ulong i = 0;
+        while (true) {
+            AsciiChar byte_val = 0 as utiny;
+            ulong cur = addr + i;
+            __asm__(`
+                movq ${r:cur}, %r10;
+                xorq %rax, %rax;
+                movzbl (%r10), %eax;
+                movq %rax, ${=r:byte_val}
+            `);
+            if (byte_val == 0 as utiny) { break; }
+            // LFの前にCRを挿入
+            if (byte_val == 10 as utiny) { self.putc(13 as utiny); }
+            self.putc(byte_val);
+            i += 1;
+        }
+    }
+
+    /// 文字列 + 改行出力
+    void println(void* data) {
+        self.puts(data);
+        self.putc(13 as utiny);  // CR
+        self.putc(10 as utiny);  // LF
+    }
+
+    /// 64ビット値の16進数出力
+    void print_hex(ulong value) {
+        self.putc(48 as utiny);   // '0'
+        self.putc(120 as utiny);  // 'x'
+        ulong i = 0;
+        while (i < 16) {
+            ulong shift = (15 - i) * 4;
+            ulong nibble = (value >> shift) & 0x0F;
+            if (nibble < 10) {
+                self.putc((48 + nibble) as utiny);
+            } else {
+                self.putc((65 + nibble - 10) as utiny);
+            }
+            i += 1;
+        }
+    }
+}
+
+// ============================================================
+// DebugPort 構造体（QEMUデバッグコンソール）
+// ============================================================
+
+/// QEMU debugcon (isa-debugcon, ポート0xE9)
+export struct DebugPort {
+    IoPort port;
+}
+
+impl DebugPort {
+    /// コンストラクタ
+    overload self(IoPort port_addr) {
+        self.port = port_addr;
+    }
+}
+
+/// DebugPort の Writer インターフェース実装
+impl DebugPort for Writer {
+    void putc(AsciiChar ch) {
+        outb(self.port, ch);
+    }
+
+    void puts(void* data) {
+        ulong addr = data as ulong;
+        ulong i = 0;
+        while (true) {
+            AsciiChar byte_val = 0 as utiny;
+            ulong cur = addr + i;
+            __asm__(`
+                movq ${r:cur}, %r10;
+                xorq %rax, %rax;
+                movzbl (%r10), %eax;
+                movq %rax, ${=r:byte_val}
+            `);
+            if (byte_val == 0 as utiny) { break; }
+            self.putc(byte_val);
+            i += 1;
+        }
+    }
+
+    void println(void* data) {
+        self.puts(data);
+        self.putc(13 as utiny);
+        self.putc(10 as utiny);
+    }
+
+    void print_hex(ulong value) {
+        self.putc(48 as utiny);
+        self.putc(120 as utiny);
+        ulong i = 0;
+        while (i < 16) {
+            ulong shift = (15 - i) * 4;
+            ulong nibble = (value >> shift) & 0x0F;
+            if (nibble < 10) {
+                self.putc((48 + nibble) as utiny);
+            } else {
+                self.putc((65 + nibble - 10) as utiny);
+            }
+            i += 1;
+        }
+    }
+}

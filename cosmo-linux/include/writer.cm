@@ -1,0 +1,29 @@
+//! platform: baremetal
+// cosmo-linux::include::writer - テキスト出力 共通インターフェース
+//
+// シリアルポート、デバッグポート等の出力デバイスが
+// 共通で実装するテキスト出力APIを定義する。
+//
+// 使用パターン:
+//   impl SerialPort for Writer { ... }
+//   impl DebugPort for Writer { ... }
+
+import ./types;
+
+// ============================================================
+// Writer インターフェース
+// ============================================================
+
+/// テキスト出力デバイスの共通インターフェース
+///
+/// 全出力デバイスは以下の4メソッドを実装する:
+///   putc     — 1文字出力
+///   puts     — NULL終端文字列出力
+///   println  — 文字列 + 改行出力
+///   print_hex — 64ビット値の16進数出力
+export interface Writer {
+    void putc(AsciiChar ch);
+    void puts(void* data);
+    void println(void* data);
+    void print_hex(ulong value);
+}

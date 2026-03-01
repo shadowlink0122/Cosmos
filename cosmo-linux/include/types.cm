@@ -1,0 +1,126 @@
+//! platform: baremetal
+// cosmo-linux::include::types - Linux互換型定義
+//
+// Cm の typedef でカーネル全体の型を一元定義する。
+// Cm の組み込み型:
+//   utiny  (8bit符号なし)  / tiny  (8bit符号付き)
+//   ushort (16bit符号なし) / short (16bit符号付き)
+//   uint   (32bit符号なし) / int   (32bit符号付き)
+//   ulong  (64bit符号なし) / long  (64bit符号付き)
+//
+// 参照: linux/include/linux/types.h
+
+// ============================================================
+// メモリ・アドレス型
+// ============================================================
+
+/// 物理アドレス型（64ビット）
+export typedef PhysAddr = ulong;
+
+/// 仮想アドレス型（64ビット）
+export typedef VirtAddr = ulong;
+
+/// メモリサイズ型（バイト数、64ビット）
+export typedef Size = ulong;
+
+/// 符号付きサイズ型（エラー戻り値兼用）
+export typedef SSize = long;
+
+/// ポインタ幅整数型
+export typedef UIntPtr = ulong;
+
+// ============================================================
+// 固定幅整数型（Cmネイティブ型を使用）
+// ============================================================
+
+/// 符号なし8ビット整数
+export typedef U8 = utiny;
+
+/// 符号付き8ビット整数
+export typedef S8 = tiny;
+
+/// 符号なし16ビット整数
+export typedef U16 = ushort;
+
+/// 符号付き16ビット整数
+export typedef S16 = short;
+
+/// 符号なし32ビット整数
+export typedef U32 = uint;
+
+/// 符号付き32ビット整数
+export typedef S32 = int;
+
+/// 符号なし64ビット整数
+export typedef U64 = ulong;
+
+/// 符号付き64ビット整数
+export typedef S64 = long;
+
+// ============================================================
+// I/O関連型
+// ============================================================
+
+/// I/Oポート番号（16ビット: 0x0000〜0xFFFF）
+export typedef IoPort = ushort;
+
+/// ASCII文字コード（8ビット）
+export typedef AsciiChar = utiny;
+
+// ============================================================
+// プロセス関連型
+// ============================================================
+
+/// プロセスID（Linux互換、符号付き32bit相当）
+export typedef Pid = long;
+
+/// ユーザID
+export typedef Uid = ulong;
+
+/// グループID
+export typedef Gid = ulong;
+
+// ============================================================
+// ファイルシステム関連型
+// ============================================================
+
+/// ファイルオフセット
+export typedef Off = long;
+
+/// iノード番号
+export typedef Ino = ulong;
+
+/// デバイス番号
+export typedef Dev = ulong;
+
+/// ファイルモード（パーミッション）
+export typedef Mode = ulong;
+
+/// ファイルディスクリプタ
+export typedef Fd = long;
+
+// ============================================================
+// 割り込み・ハードウェア関連型
+// ============================================================
+
+/// 割り込みベクタ番号（0-255、8ビットで十分だがulong維持）
+export typedef Vector = ulong;
+
+/// IRQ番号
+export typedef Irq = ulong;
+
+/// GDTセレクタ値
+export typedef Selector = ushort;
+
+// ============================================================
+// 定数
+// ============================================================
+
+/// ページサイズ（4KiB）
+export const ulong PAGE_SIZE = 4096;
+
+/// ページシフト
+export const ulong PAGE_SHIFT = 12;
+
+/// NULL
+export const ulong NULL_ADDR = 0;
