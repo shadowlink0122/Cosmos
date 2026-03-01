@@ -307,7 +307,11 @@ impl BuddyAllocator for PageAllocator {
 // PMM初期化
 // ============================================================
 
-/// PMMをMultiboot2メモリマップで初期化
+/// PMMをMultiboot1メモリマップで初期化
+/// Multiboot1 mmapエントリ形式:
+///   [size:u32][base_addr:u64][length:u64][type:u32]
+///   offset: 0      4              12          20
+///   各エントリの合計バイト = size + 4 (sizeフィールド自体を含まない)
 export void pmm_init(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size count, SerialPort* w) {
     pr_info(w, "Initializing PMM (Buddy System)..." as void*);
 
@@ -315,20 +319,30 @@ export void pmm_init(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size
     memzero(pmm->bitmap_base as void*, MAX_PAGES);
 
     // 利用可能メモリ領域を登録
+    // Multiboot1 mmapは可変長エントリ: 各エントリの先頭u32がサイズ
     ulong e = mmap_addr;
     ulong idx = 0;
     while (idx < count) {
+        // Multiboot1 mmapエントリ読み取り
+        // offset 0: size (u32) — エントリサイズ（このフィールド自体を除く）
+        // offset 4: base_addr (u64)
+        // offset 12: length (u64)
+        // offset 20: type (u32)
+        ulong entry_sz = 0;
         ulong base = 0;
         ulong length = 0;
         ulong mtype = 0;
         __asm__(`
             movq ${r:e}, %rdi;
-            movq (%rdi), %rax;
+            xorq %rax, %rax;
+            movl (%rdi), %eax;
+            movq %rax, ${=r:entry_sz};
+            movq 4(%rdi), %rax;
             movq %rax, ${=r:base};
-            movq 8(%rdi), %rax;
+            movq 12(%rdi), %rax;
             movq %rax, ${=r:length};
             xorq %rax, %rax;
-            movl 16(%rdi), %eax;
+            movl 20(%rdi), %eax;
             movq %rax, ${=r:mtype}
         `);
 
@@ -337,7 +351,8 @@ export void pmm_init(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size
             pmm->add_region(base, length, w);
         }
 
-        e = e + entry_size;
+        // 次のエントリ: size + 4（sizeフィールド自体の4バイトを加算）
+        e = e + entry_sz + 4;
         idx = idx + 1;
     }
 
@@ -349,3 +364,4 @@ export void pmm_init(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size
     w->println("" as void*);
     pr_info(w, "PMM initialized" as void*);
 }
+
