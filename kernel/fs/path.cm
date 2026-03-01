@@ -1,0 +1,170 @@
+//! platform: uefi
+// kernel::fs::path - パス解析ユーティリティ
+//
+// Unix風パス文字列を解析し、CosmFSのエントリを検索する。
+//
+// API:
+//   path_resolve(path_addr) → エントリインデックス or 0xFFFF...
+//   path_basename(path_addr) → ファイル名部分の先頭アドレス
+//   path_parent(path_addr, heap) → 親ディレクトリのインデックス
+
+import ../config;
+import ../types;
+import ./cosmfs;
+import ../mm/heap;
+
+// ============================================================
+// パス解析
+// ============================================================
+
+/// パス文字列の長さを取得
+export ByteSize path_strlen(MemAddr addr) {
+    ulong len = 0;
+    ulong max_len = 256;
+    while (len < max_len) {
+        ulong ch = 0;
+        ulong byte_addr = addr + len;
+        __asm__(`
+            movq ${r:byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        if (ch == 0) {
+            return len;
+        }
+        len = len + 1;
+    }
+    return len;
+}
+
+/// パス文字列から1バイト読み取る
+ulong path_read_byte(MemAddr addr) {
+    ulong ch = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:ch}
+    `);
+    return ch;
+}
+
+/// パス文字列の最後のスラッシュの後ろ（ベースネーム）のオフセットを返す
+export ByteOffset path_basename_offset(MemAddr path_addr) {
+    ulong len = path_strlen(path_addr);
+    if (len == 0) { return 0; }
+
+    // 末尾から逆順にスラッシュを探す
+    ulong i = len;
+    while (i > 0) {
+        i = i - 1;
+        ulong ch = path_read_byte(path_addr + i);
+        if (ch == 0x2F) {  // '/'
+            return i + 1;
+        }
+    }
+    return 0;  // スラッシュなし → 先頭がベースネーム
+}
+
+/// パスを解決してCosmFSエントリインデックスを返す
+/// "/" → FS_ROOT_PARENT
+/// "/bin" → binディレクトリのインデックス
+/// "/bin/ls" → binディレクトリ内のlsのインデックス
+export ulong path_resolve(MemAddr path_addr, Heap* heap) {
+    ulong len = path_strlen(path_addr);
+    if (len == 0) { return FS_ROOT_PARENT; }
+
+    // 先頭が'/'かチェック
+    ulong first = path_read_byte(path_addr);
+    ulong pos = 0;
+    ulong current_parent = FS_ROOT_PARENT;
+
+    if (first == 0x2F) {  // '/'
+        pos = 1;
+        if (len == 1) { return FS_ROOT_PARENT; }
+    }
+
+    // パスを'/'で分割して各コンポーネントを順に検索
+    while (pos < len) {
+        // 次の'/'またはNULまでのコンポーネントを抽出
+        ulong comp_start = pos;
+        while (pos < len) {
+            ulong ch = path_read_byte(path_addr + pos);
+            if (ch == 0x2F) {  // '/'
+                pos = len + 1;  // ループ終了
+            }
+            if (ch != 0x2F) {
+                pos = pos + 1;
+            }
+        }
+        // posが len + 1 の場合、'/'が見つかったので元に戻す
+        ulong comp_end = 0;
+        if (pos > len) {
+            comp_end = pos - len + comp_start - 1;
+            // 実際のcomp_end計算
+            pos = comp_start;
+            while (pos < len) {
+                ulong ch2 = path_read_byte(path_addr + pos);
+                if (ch2 == 0x2F) {
+                    comp_end = pos;
+                    pos = pos + 1;  // '/'をスキップ
+                    // ここでbreakしたい
+                    comp_end = comp_end;
+                    // ループを抜ける
+                    ulong dummy = len;
+                    pos = len + 1;
+                }
+                if (ch2 != 0x2F) {
+                    pos = pos + 1;
+                }
+            }
+            if (pos == len + 1) {
+                // '/'が見つかった — posを'/'の次に設定
+                pos = comp_end + 1;
+            } else {
+                comp_end = len;
+            }
+        } else {
+            comp_end = len;
+        }
+
+        // コンポーネントの長さ
+        ulong comp_len = comp_end - comp_start;
+        if (comp_len == 0) {
+            // 連続した'/' — スキップ
+            continue;
+        }
+
+        // コンポーネント文字列をヒープにコピー（NUL終端）
+        ulong comp_buf = heap->alloc(comp_len + 1);
+        if (comp_buf == 0) { return 0xFFFFFFFFFFFFFFFF; }
+        ulong ci = 0;
+        while (ci < comp_len) {
+            ulong ch3 = path_read_byte(path_addr + comp_start + ci);
+            ulong dst = comp_buf + ci;
+            __asm__(`
+                movq ${r:dst}, %rdi;
+                movq ${r:ch3}, %rax;
+                movb %al, (%rdi)
+            `);
+            ci = ci + 1;
+        }
+        // NUL終端
+        ulong nul_addr = comp_buf + comp_len;
+        __asm__(`
+            movq ${r:nul_addr}, %rdi;
+            xorq %rax, %rax;
+            movb %al, (%rdi)
+        `);
+
+        // FIND_IN_DIR で検索
+        ulong found = cosmfs_op(13, comp_buf, current_parent, 0, 0);
+        if (found == 0xFFFFFFFFFFFFFFFF) {
+            return 0xFFFFFFFFFFFFFFFF;  // 見つからない
+        }
+        current_parent = found;
+    }
+
+    return current_parent;
+}

@@ -1,0 +1,97 @@
+//! platform: uefi
+// kernel::tests::apps::test_exec - コマンド実行エンジンテスト
+//
+// exec.cmのヘルパー関数（streq/cmd_len/starts_with）の単体テスト。
+// コマンドバッファ操作のエッジケースを検証。
+
+import ../test_runner;
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../sys/exec;
+import ../../fs/cosmfs;
+
+// テスト用バッファ（固定アドレス）
+const ulong EX_BUF_ADDR = 0xCC00;
+
+// CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
+
+/// コマンド実行エンジンテストを実行
+export void test_exec(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === Exec Engine Tests ===" as void*);
+
+    // ============================================================
+    // exec_streq テスト
+    // ============================================================
+
+    // --- Test 1: 完全一致 "help" ---
+    cosmfs_op(FS_OP_MEMCPY, EX_BUF_ADDR, "help" as ulong, 4, 0);
+    ulong eq1 = exec_streq(EX_BUF_ADDR, 4, "help" as ulong);
+    ulong one = 1;
+    runner->assert_eq(eq1, one, "Exec: streq 'help'=='help'" as void*);
+
+    // --- Test 2: 不一致 "help" vs "mem" ---
+    ulong eq2 = exec_streq(EX_BUF_ADDR, 4, "mem" as ulong);
+    runner->assert_zero(eq2, "Exec: streq 'help'!='mem'" as void*);
+
+    // --- Test 3: 長さ不一致 "help"(4) vs "helpx"(5) ---
+    ulong eq3 = exec_streq(EX_BUF_ADDR, 4, "helpx" as ulong);
+    runner->assert_zero(eq3, "Exec: streq len mismatch" as void*);
+
+    // --- Test 4: 空バッファ ---
+    ulong eq4 = exec_streq(EX_BUF_ADDR, 0, "help" as ulong);
+    runner->assert_zero(eq4, "Exec: streq empty buf != 'help'" as void*);
+
+    // ============================================================
+    // exec_cmd_len テスト
+    // ============================================================
+
+    // --- Test 5: "cat file.txt" → cmd_len=3 ---
+    cosmfs_op(FS_OP_MEMCPY, EX_BUF_ADDR, "cat file.txt" as ulong, 12, 0);
+    ulong cl1 = exec_cmd_len(EX_BUF_ADDR, 12);
+    ulong three = 3;
+    runner->assert_eq(cl1, three, "Exec: cmd_len('cat file.txt')=3" as void*);
+
+    // --- Test 6: "help" → cmd_len=4 (スペースなし=全体) ---
+    cosmfs_op(FS_OP_MEMCPY, EX_BUF_ADDR, "help" as ulong, 4, 0);
+    ulong cl2 = exec_cmd_len(EX_BUF_ADDR, 4);
+    ulong four = 4;
+    runner->assert_eq(cl2, four, "Exec: cmd_len('help')=4 (no space)" as void*);
+
+    // --- Test 7: "rm a" → cmd_len=2 ---
+    cosmfs_op(FS_OP_MEMCPY, EX_BUF_ADDR, "rm a" as ulong, 4, 0);
+    ulong cl3 = exec_cmd_len(EX_BUF_ADDR, 4);
+    ulong two = 2;
+    runner->assert_eq(cl3, two, "Exec: cmd_len('rm a')=2" as void*);
+
+    // ============================================================
+    // exec_starts_with テスト
+    // ============================================================
+
+    // --- Test 8: "cat file" starts_with "cat " ---
+    cosmfs_op(FS_OP_MEMCPY, EX_BUF_ADDR, "cat file" as ulong, 8, 0);
+    ulong sw1 = exec_starts_with(EX_BUF_ADDR, 8, "cat " as ulong, 4);
+    runner->assert_eq(sw1, one, "Exec: starts_with 'cat '" as void*);
+
+    // --- Test 9: "cat file" starts_with "rm " → false ---
+    ulong sw2 = exec_starts_with(EX_BUF_ADDR, 8, "rm " as ulong, 3);
+    runner->assert_zero(sw2, "Exec: not starts_with 'rm '" as void*);
+
+    // --- Test 10: "a" starts_with "abcd"(4) → false (buf shorter) ---
+    cosmfs_op(FS_OP_MEMCPY, EX_BUF_ADDR, "a" as ulong, 1, 0);
+    ulong sw3 = exec_starts_with(EX_BUF_ADDR, 1, "abcd" as ulong, 4);
+    runner->assert_zero(sw3, "Exec: short buf not starts_with" as void*);
+
+    // ============================================================
+    // exec_read_byte テスト
+    // ============================================================
+
+    // --- Test 11: exec_read_byte 読み取り ---
+    cosmfs_op(FS_OP_MEMCPY, EX_BUF_ADDR, "A" as ulong, 1, 0);
+    ulong byte_a = exec_read_byte(EX_BUF_ADDR);
+    ulong expected_a = 0x41;  // 'A'
+    runner->assert_eq(byte_a, expected_a, "Exec: read_byte 'A'=0x41" as void*);
+
+    serial.println("[TEST] Exec engine tests complete" as void*);
+}

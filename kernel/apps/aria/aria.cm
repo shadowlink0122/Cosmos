@@ -1,0 +1,122 @@
+//! platform: uefi
+// kernel::apps::aria - Aria テキストエディタ（ディスパッチャ）
+//
+// vim風モーダルテキストエディタ。CosmFS上のファイルを編集可能。
+// このファイルはエントリポイントとして動作し、各サブモジュールに委譲する。
+//
+// ディレクトリ構成:
+//     aria.cm         — ディスパッチャ（このファイル）
+//     aria_const.cm   — 定数定義
+//     aria_file.cm    — ファイルI/O（OPEN / SAVE）
+//     aria_render.cm  — 画面描画
+//     aria_input.cm   — キー入力処理
+//     aria_edit.cm    — テキスト編集操作
+//
+// API:
+//     aria_init()  — 初期化
+//     aria_op(op, arg1, arg2, arg3, arg4) — 操作実行
+//         op=1:  OPEN   arg1=filename_addr, arg2=filename_len
+//         op=2:  KEY_INPUT  arg1=keycode
+//         op=3:  RENDER
+//         op=4:  IS_RUNNING → 0/1
+//         op=5:  SAVE
+//         op=6:  GET_MODE → mode
+//         op=7:  INSERT_CHAR arg1=char
+//         op=8:  DELETE_CHAR
+//         op=9:  CURSOR_MOVE arg1=direction(0=上,1=下,2=左,3=右)
+//         op=10: NEWLINE
+//
+// 注意: カーネルモジュールをimportしない。全I/Oはsyscall経由。
+
+import ./aria_const;
+import ./aria_file;
+import ./aria_render;
+import ./aria_input;
+import ./aria_edit;
+
+// ============================================================
+// 初期化
+// ============================================================
+
+export void aria_init() {
+    // 初期化はaria_file_op(OPEN)で行うため、ここでは何もしない
+}
+
+// ============================================================
+// 統合操作ディスパッチャ
+// ============================================================
+
+export ulong aria_op(ulong op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+
+    // IS_RUNNING
+    if (op == ARIA_OP_IS_RUNNING) {
+        ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
+        return *rp;
+    }
+
+    // GET_MODE
+    if (op == ARIA_OP_GET_MODE) {
+        ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
+        return *mp;
+    }
+
+    // OPEN → aria_file_op(1, ...)
+    if (op == ARIA_OP_OPEN) {
+        return aria_file_op(1, arg1, arg2, arg3, arg4);
+    }
+
+    // RENDER → aria_render_op(1, ...)
+    if (op == ARIA_OP_RENDER) {
+        return aria_render_op(1, arg1, arg2, arg3, arg4);
+    }
+
+    // KEY_INPUT → aria_input_op(1, ...)
+    // 戻り値の特殊コードを処理（SAVE要求など）
+    if (op == ARIA_OP_KEY_INPUT) {
+        ulong result = aria_input_op(1, arg1, arg2, arg3, arg4);
+        // 0xFE01 = :w (SAVE要求)
+        if (result == 0xFE01) {
+            aria_file_op(2, 0, 0, 0, 0);
+            ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
+            ulong normal_mode = MODE_NORMAL;
+            *mp = normal_mode;
+            return 0;
+        }
+        // 0xFE02 = :wq (SAVE+QUIT要求)
+        if (result == 0xFE02) {
+            aria_file_op(2, 0, 0, 0, 0);
+            ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
+            ulong zero = 0;
+            *rp = zero;
+            return 0;
+        }
+        return result;
+    }
+
+    // SAVE → aria_file_op(2, ...)
+    if (op == ARIA_OP_SAVE) {
+        return aria_file_op(2, arg1, arg2, arg3, arg4);
+    }
+
+    // INSERT_CHAR → aria_edit_op(1, ...)
+    if (op == ARIA_OP_INSERT_CHAR) {
+        return aria_edit_op(1, arg1, arg2, arg3, arg4);
+    }
+
+    // DELETE_CHAR → aria_edit_op(2, ...)
+    if (op == ARIA_OP_DELETE_CHAR) {
+        return aria_edit_op(2, arg1, arg2, arg3, arg4);
+    }
+
+    // CURSOR_MOVE → aria_edit_op(3, ...)
+    if (op == ARIA_OP_CURSOR_MOVE) {
+        return aria_edit_op(3, arg1, arg2, arg3, arg4);
+    }
+
+    // NEWLINE → aria_edit_op(4, ...)
+    if (op == ARIA_OP_NEWLINE) {
+        return aria_edit_op(4, arg1, arg2, arg3, arg4);
+    }
+
+    return 0;
+}

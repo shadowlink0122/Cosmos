@@ -1,0 +1,89 @@
+//! platform: uefi
+// kernel::tests::apps::test_aria_basic - Aria基本テスト
+//
+// 初期化、ファイルオープン、モード遷移を検証。
+
+import ../../drivers/serial;
+import ../../fs/cosmfs;
+import ../../apps/aria/aria;
+import ../../apps/aria/aria_const;
+import ../../config;
+import ../test_runner;
+
+// テスト用固定メモリ領域
+const ulong T_A_FNAME_BUF = 0x6000;
+const ulong T_A_DATA_BUF  = 0x6100;
+const ulong T_A_WRITE_BUF = 0x7100;
+
+/// Aria基本テスト（初期化・モード遷移）— 11テスト
+export void test_aria_basic(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[TEST] === Aria Basic Tests ===" as void*);
+
+    // --- テスト前準備: CosmFSにテストファイルを作成 ---
+    // "AB\nCD" (5バイト, 2行)
+    cosmfs_op(FS_OP_MEMCPY, T_A_FNAME_BUF, "a.txt" as ulong, 6, 0);
+    cosmfs_op(FS_OP_CREATE, T_A_FNAME_BUF, T_A_DATA_BUF, 4096, 0);
+    cosmfs_op(FS_OP_MEMCPY, T_A_WRITE_BUF, "AB\nCD" as ulong, 5, 0);
+    cosmfs_op(FS_OP_WRITE, T_A_FNAME_BUF, T_A_WRITE_BUF, 5, 0);
+
+    // テスト1: aria_init
+    aria_init();
+    runner->assert_true(1, "Aria: init completes" as void*);
+
+    // テスト2: 初期状態でIS_RUNNING=0
+    ulong r0 = aria_op(ARIA_OP_IS_RUNNING, 0, 0, 0, 0);
+    runner->assert_eq(r0, 0, "Aria: initially not running" as void*);
+
+    // テスト3: OPEN でファイルを開く
+    aria_op(ARIA_OP_OPEN, T_A_FNAME_BUF, 5, 0, 0);
+    ulong r1 = aria_op(ARIA_OP_IS_RUNNING, 0, 0, 0, 0);
+    runner->assert_eq(r1, 1, "Aria: running after OPEN" as void*);
+
+    // テスト4: OPEN後のモードはNORMAL
+    ulong m0 = aria_op(ARIA_OP_GET_MODE, 0, 0, 0, 0);
+    runner->assert_eq(m0, MODE_NORMAL, "Aria: NORMAL after OPEN" as void*);
+
+    // テスト5: バッファにデータがロードされた
+    ulong* bs_ptr = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+    ulong bs = *bs_ptr;
+    runner->assert_eq(bs, 5, "Aria: buffer loaded 5 bytes" as void*);
+
+    // テスト6: 行数カウント（2行）
+    ulong* nl_ptr = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+    ulong nlines = *nl_ptr;
+    runner->assert_eq(nlines, 2, "Aria: num_lines=2" as void*);
+
+    // === モード遷移テスト ===
+
+    // テスト7: 'i' でINSERTモード
+    aria_op(ARIA_OP_KEY_INPUT, KEY_i, 0, 0, 0);
+    ulong m1 = aria_op(ARIA_OP_GET_MODE, 0, 0, 0, 0);
+    runner->assert_eq(m1, MODE_INSERT, "Aria: 'i' -> INSERT" as void*);
+
+    // テスト8: ESC でNORMAL復帰
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ESC, 0, 0, 0);
+    ulong m2 = aria_op(ARIA_OP_GET_MODE, 0, 0, 0, 0);
+    runner->assert_eq(m2, MODE_NORMAL, "Aria: ESC -> NORMAL" as void*);
+
+    // テスト9: 'a' でINSERTモード + カーソルx+1
+    ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+    ulong cx_before_a = *cx_ptr;
+    aria_op(ARIA_OP_KEY_INPUT, KEY_a, 0, 0, 0);
+    ulong m_a = aria_op(ARIA_OP_GET_MODE, 0, 0, 0, 0);
+    ulong cx_after_a = *cx_ptr;
+    runner->assert_eq(m_a, MODE_INSERT, "Aria: 'a' -> INSERT" as void*);
+    ulong a_expected = cx_before_a + 1;
+    runner->assert_eq(cx_after_a, a_expected, "Aria: 'a' cursor_x+1" as void*);
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ESC, 0, 0, 0);
+
+    // テスト10: ':' でCOMMANDモード
+    aria_op(ARIA_OP_KEY_INPUT, KEY_COLON, 0, 0, 0);
+    ulong m3 = aria_op(ARIA_OP_GET_MODE, 0, 0, 0, 0);
+    runner->assert_eq(m3, MODE_COMMAND, "Aria: ':' -> COMMAND" as void*);
+
+    // テスト11: ESC でCOMMAND→NORMAL
+    aria_op(ARIA_OP_KEY_INPUT, KEY_ESC, 0, 0, 0);
+    ulong m4 = aria_op(ARIA_OP_GET_MODE, 0, 0, 0, 0);
+    runner->assert_eq(m4, MODE_NORMAL, "Aria: ESC COMMAND -> NORMAL" as void*);
+}

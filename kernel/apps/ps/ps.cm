@@ -1,0 +1,44 @@
+//! platform: uefi
+// kernel::apps::ps - psコマンド（タスク一覧表示）
+
+import ../../shell/shell_io;
+import ../../config;
+import ../../sched/task;
+import ../../sched/scheduler;
+
+/// psコマンド: タスク一覧を表示
+export ulong app_ps(ulong argc, ulong argv) {
+    shell_set_color(SHELL_COLOR_HEADER);
+    shell_println("  ID  STATE       TIMESLICE" as void*);
+    shell_set_color(SHELL_COLOR_OUTPUT);
+    shell_println("  --  ----------  ---------" as void*);
+
+    ulong count = sched_task_count();
+    ulong i = 0;
+    while (i < count) {
+        shell_puts("  " as void*);
+        shell_print_hex(i);
+
+        ulong state = tcb_read(i, TCB_OFF_STATE);
+        if (state == TASK_READY) {
+            shell_puts("  READY       " as void*);
+        }
+        if (state == TASK_RUNNING) {
+            shell_puts("  RUNNING     " as void*);
+        }
+        if (state == TASK_TERMINATED) {
+            shell_puts("  TERMINATED  " as void*);
+        }
+
+        ulong ts = tcb_read(i, TCB_OFF_TIMESLICE);
+        shell_print_hex(ts);
+        shell_newline();
+
+        i = i + 1;
+    }
+
+    shell_puts("Total: " as void*);
+    shell_print_hex(count);
+    shell_println(" tasks" as void*);
+    return 0;
+}

@@ -1,0 +1,250 @@
+//! platform: uefi
+// kernel::lib::buffer - 可変長バッファ（Gap Buffer）
+//
+// テキストエディタ等で使用するGap Buffer方式の可変長バッファ。
+// カーソル位置（gap）の前後にテキストを保持し、
+// 挿入・削除をO(1)で実行する。
+//
+// メモリレイアウト:
+//   [text_before_gap | ...GAP... | text_after_gap]
+//
+// Gap Buffer状態は固定メモリアドレスに格納:
+//   +0x00: buf_addr    — バッファ先頭アドレス
+//   +0x08: capacity    — バッファ総容量
+//   +0x10: gap_start   — gap先頭位置（バッファ先頭からのオフセット）
+//   +0x18: gap_end     — gap末尾位置（バッファ先頭からのオフセット）
+
+import ../types;
+import ./string;  // k_read_byte, k_write_byte, k_memcpy
+
+// ============================================================
+// 定数
+// ============================================================
+
+const ulong GAP_INITIAL_SIZE = 256;   // 初期gap サイズ
+const ulong GAP_GROW_SIZE    = 256;   // gap拡張時の追加サイズ
+
+// Gap Buffer状態オフセット
+const ByteOffset GBUF_OFF_ADDR      = 0;    // +0x00
+const ByteOffset GBUF_OFF_CAPACITY  = 8;    // +0x08
+const ByteOffset GBUF_OFF_GAP_START = 16;   // +0x10
+const ByteOffset GBUF_OFF_GAP_END   = 24;   // +0x18
+const ByteSize GBUF_STATE_SIZE   = 32;   // 状態全体のサイズ
+
+// ============================================================
+// Gap Buffer操作（状態アドレスを引数として渡す方式）
+// ============================================================
+
+/// Gap Buffer状態の読み取り
+export ulong gbuf_read(MemAddr state_addr, ByteOffset offset) {
+    ulong addr = state_addr + offset;
+    ulong* ptr = addr as ulong*;
+    return *ptr;
+}
+
+/// Gap Buffer状態の書き込み
+export void gbuf_write(MemAddr state_addr, ByteOffset offset, ulong value) {
+    ulong addr = state_addr + offset;
+    ulong* ptr = addr as ulong*;
+    *ptr = value;
+}
+
+/// Gap Bufferを初期化する
+/// state_addr: 状態を格納するアドレス（32バイト必要）
+/// buf_addr:   データバッファのアドレス
+/// capacity:   バッファの総容量
+export void gbuf_init(MemAddr state_addr, MemAddr buf_addr, ByteSize capacity) {
+    gbuf_write(state_addr, GBUF_OFF_ADDR, buf_addr);
+    gbuf_write(state_addr, GBUF_OFF_CAPACITY, capacity);
+    gbuf_write(state_addr, GBUF_OFF_GAP_START, 0);
+    gbuf_write(state_addr, GBUF_OFF_GAP_END, capacity);
+}
+
+/// テキストの論理的な長さを返す（gap部分を除いた実データ長）
+export ByteSize gbuf_length(MemAddr state_addr) {
+    ulong cap = gbuf_read(state_addr, GBUF_OFF_CAPACITY);
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+    ulong gap_size = ge - gs;
+    return cap - gap_size;
+}
+
+/// カーソル位置（= gap_start）を返す
+export ByteOffset gbuf_cursor(MemAddr state_addr) {
+    return gbuf_read(state_addr, GBUF_OFF_GAP_START);
+}
+
+/// 論理位置posの文字を取得する
+/// gap部分をスキップして正しいバッファ位置から読み取る
+export AsciiChar gbuf_char_at(MemAddr state_addr, ByteOffset pos) {
+    ulong buf = gbuf_read(state_addr, GBUF_OFF_ADDR);
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+
+    ulong real_pos = pos;
+    if (pos >= gs) {
+        // gap以降の位置はgapサイズ分オフセット
+        ulong gap_size = ge - gs;
+        real_pos = pos + gap_size;
+    }
+    return k_read_byte(buf + real_pos);
+}
+
+/// カーソルを1つ右に移動する
+export void gbuf_move_right(MemAddr state_addr) {
+    ulong buf = gbuf_read(state_addr, GBUF_OFF_ADDR);
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+    ulong cap = gbuf_read(state_addr, GBUF_OFF_CAPACITY);
+
+    if (ge >= cap) {
+        return;  // すでに末尾
+    }
+
+    // gap末尾の文字をgap先頭にコピー
+    ulong ch = k_read_byte(buf + ge);
+    k_write_byte(buf + gs, ch);
+
+    gbuf_write(state_addr, GBUF_OFF_GAP_START, gs + 1);
+    gbuf_write(state_addr, GBUF_OFF_GAP_END, ge + 1);
+}
+
+/// カーソルを1つ左に移動する
+export void gbuf_move_left(MemAddr state_addr) {
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    if (gs == 0) {
+        return;  // すでに先頭
+    }
+
+    ulong buf = gbuf_read(state_addr, GBUF_OFF_ADDR);
+    ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+
+    // gap先頭の直前の文字をgap末尾の直前にコピー
+    ulong ch = k_read_byte(buf + gs - 1);
+    k_write_byte(buf + ge - 1, ch);
+
+    gbuf_write(state_addr, GBUF_OFF_GAP_START, gs - 1);
+    gbuf_write(state_addr, GBUF_OFF_GAP_END, ge - 1);
+}
+
+/// カーソル位置を指定位置に移動する
+export void gbuf_move_to(MemAddr state_addr, ByteOffset target) {
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+
+    while (gs < target) {
+        ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+        ulong cap = gbuf_read(state_addr, GBUF_OFF_CAPACITY);
+        if (ge >= cap) {
+            return;  // 末尾に到達
+        }
+        gbuf_move_right(state_addr);
+        gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    }
+    while (gs > target) {
+        gbuf_move_left(state_addr);
+        gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    }
+}
+
+/// カーソル位置に1文字挿入する
+/// gap_start == gap_end（gapが空）の場合は挿入不可
+export ulong gbuf_insert(MemAddr state_addr, AsciiChar ch) {
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+
+    if (gs >= ge) {
+        return 0;  // gapが空 — バッファフル
+    }
+
+    ulong buf = gbuf_read(state_addr, GBUF_OFF_ADDR);
+    k_write_byte(buf + gs, ch);
+    gbuf_write(state_addr, GBUF_OFF_GAP_START, gs + 1);
+
+    return 1;  // 成功
+}
+
+/// カーソル直前の1文字を削除する（Backspace）
+export ulong gbuf_delete_back(MemAddr state_addr) {
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    if (gs == 0) {
+        return 0;  // 先頭に到達 — 削除不可
+    }
+    gbuf_write(state_addr, GBUF_OFF_GAP_START, gs - 1);
+    return 1;
+}
+
+/// カーソル位置の文字を削除する（Delete）
+export ulong gbuf_delete(MemAddr state_addr) {
+    ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+    ulong cap = gbuf_read(state_addr, GBUF_OFF_CAPACITY);
+    if (ge >= cap) {
+        return 0;  // 末尾に到達 — 削除不可
+    }
+    gbuf_write(state_addr, GBUF_OFF_GAP_END, ge + 1);
+    return 1;
+}
+
+/// 指定行の先頭位置（論理位置）を返す
+/// line: 0-indexed行番号
+export ByteOffset gbuf_line_start(MemAddr state_addr, Count line) {
+    if (line == 0) {
+        return 0;
+    }
+
+    ulong total = gbuf_length(state_addr);
+    ulong pos = 0;
+    ulong current_line = 0;
+
+    while (pos < total) {
+        ulong ch = gbuf_char_at(state_addr, pos);
+        pos = pos + 1;
+        if (ch == 0x0A) {  // LF
+            current_line = current_line + 1;
+            if (current_line == line) {
+                return pos;
+            }
+        }
+    }
+    return pos;  // 指定行が存在しない場合は末尾
+}
+
+/// 総行数を返す
+export Count gbuf_count_lines(MemAddr state_addr) {
+    ulong total = gbuf_length(state_addr);
+    if (total == 0) {
+        return 1;  // 空バッファでも1行
+    }
+
+    ulong lines = 1;
+    ulong pos = 0;
+    while (pos < total) {
+        ulong ch = gbuf_char_at(state_addr, pos);
+        if (ch == 0x0A) {
+            lines = lines + 1;
+        }
+        pos = pos + 1;
+    }
+    return lines;
+}
+
+/// バッファの内容を指定アドレスにコピーする（gap除外）
+/// 戻り値: コピーしたバイト数
+export ByteSize gbuf_copy_to(MemAddr state_addr, MemAddr dst) {
+    ulong buf = gbuf_read(state_addr, GBUF_OFF_ADDR);
+    ulong gs = gbuf_read(state_addr, GBUF_OFF_GAP_START);
+    ulong ge = gbuf_read(state_addr, GBUF_OFF_GAP_END);
+    ulong cap = gbuf_read(state_addr, GBUF_OFF_CAPACITY);
+
+    // gap前のデータをコピー
+    if (gs > 0) {
+        k_memcpy(dst, buf, gs);
+    }
+
+    // gap後のデータをコピー
+    ulong after_len = cap - ge;
+    if (after_len > 0) {
+        k_memcpy(dst + gs, buf + ge, after_len);
+    }
+
+    return gs + after_len;
+}

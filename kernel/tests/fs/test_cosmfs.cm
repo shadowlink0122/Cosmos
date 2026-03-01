@@ -1,0 +1,110 @@
+//! platform: uefi
+// kernel::tests::fs::test_cosmfs - CosmFSファイルシステムテスト
+//
+// CosmFSのCRUD操作とデータ整合性を検証する。
+// ヒープを使わず固定メモリアドレスにバッファを配置。
+// 文字列リテラル + FS_OP_MEMCPY でデータを設定。
+
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../fs/cosmfs;
+import ../../config;
+import ../test_runner;
+
+// CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
+
+const ulong T_NOT_FOUND = 0xFFFFFFFFFFFFFFFF;
+
+// テスト用固定メモリ領域（0x4000以降、他と衝突しない）
+const ulong T_FNAME_BUF  = 0x4000;   // ファイル名バッファ 64B
+const ulong T_DATA_BUF   = 0x4100;   // データバッファ 4KB
+const ulong T_WRITE_BUF  = 0x5100;   // 書き込みバッファ 64B
+const ulong T_READ_BUF   = 0x5200;   // 読み込みバッファ 64B
+const ulong T_FNAME2_BUF = 0x5300;   // ファイル名2バッファ 64B
+
+/// CosmFSテストを実行する
+export void test_cosmfs(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[TEST] === CosmFS Tests ===" as void*);
+
+    // CosmFS初期化
+    cosmfs_init();
+
+    // --- テスト1: 初期状態でファイル数が0 ---
+    ulong count0 = cosmfs_op(FS_OP_COUNT, 0, 0, 0, 0);
+    runner->assert_eq(count0, 0, "CosmFS: initial file count is 0" as void*);
+
+    // --- テスト2: ファイル作成（CREATE） ---
+    // 文字列リテラルでファイル名を設定
+    cosmfs_op(FS_OP_MEMCPY, T_FNAME_BUF, "test.txt" as ulong, 9, 0);
+    ulong cr = cosmfs_op(FS_OP_CREATE, T_FNAME_BUF, T_DATA_BUF, 4096, 0);
+    runner->assert_eq(cr, 0, "CosmFS: CREATE returns 0" as void*);
+
+    // --- テスト3: ファイル数が1に増加 ---
+    ulong count1 = cosmfs_op(FS_OP_COUNT, 0, 0, 0, 0);
+    runner->assert_eq(count1, 1, "CosmFS: count is 1 after CREATE" as void*);
+
+    // --- テスト4: FIND で作成したファイルが見つかる ---
+    ulong idx = cosmfs_op(FS_OP_FIND, T_FNAME_BUF, 0, 0, 0);
+    ulong found_ok = 0;
+    if (idx != T_NOT_FOUND) {
+        found_ok = 1;
+    }
+    runner->assert_true(found_ok, "CosmFS: FIND locates file" as void*);
+
+    // --- テスト5: 初期サイズが0 ---
+    ulong size0 = cosmfs_op(FS_OP_SIZE, T_FNAME_BUF, 0, 0, 0);
+    runner->assert_eq(size0, 0, "CosmFS: initial size is 0" as void*);
+
+    // --- テスト6: WRITE でデータを書き込み ---
+    cosmfs_op(FS_OP_MEMCPY, T_WRITE_BUF, "Hello" as ulong, 5, 0);
+    ulong wr = cosmfs_op(FS_OP_WRITE, T_FNAME_BUF, T_WRITE_BUF, 5, 0);
+    runner->assert_eq(wr, 5, "CosmFS: WRITE returns 5" as void*);
+
+    // --- テスト7: WRITE後のサイズが5 ---
+    ulong size5 = cosmfs_op(FS_OP_SIZE, T_FNAME_BUF, 0, 0, 0);
+    runner->assert_eq(size5, 5, "CosmFS: size is 5 after WRITE" as void*);
+
+    // --- テスト8: READ でデータを読み込み ---
+    ulong rr = cosmfs_op(FS_OP_READ, T_FNAME_BUF, T_READ_BUF, 64, 0);
+    runner->assert_eq(rr, 5, "CosmFS: READ returns 5" as void*);
+
+    // --- テスト9: READ 内容の検証（先頭バイト='H'） ---
+    ulong rb0 = 0;
+    ulong rb_a = T_READ_BUF;
+    __asm__(`
+        movq ${r:rb_a}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:rb0}
+    `);
+    runner->assert_eq(rb0, 0x48, "CosmFS: READ data[0] == 'H'" as void*);
+
+    // --- テスト10: APPEND でデータ追加 ---
+    cosmfs_op(FS_OP_MEMCPY, T_WRITE_BUF, "!" as ulong, 1, 0);
+    ulong ar = cosmfs_op(FS_OP_APPEND, T_FNAME_BUF, T_WRITE_BUF, 1, 0);
+    runner->assert_eq(ar, 1, "CosmFS: APPEND returns 1" as void*);
+
+    // --- テスト11: APPEND後のサイズが6 ---
+    ulong size6 = cosmfs_op(FS_OP_SIZE, T_FNAME_BUF, 0, 0, 0);
+    runner->assert_eq(size6, 6, "CosmFS: size is 6 after APPEND" as void*);
+
+    // --- テスト12: 存在しないファイルのFINDは NOT_FOUND ---
+    cosmfs_op(FS_OP_MEMCPY, T_FNAME2_BUF, "no" as ulong, 3, 0);
+    ulong nf = cosmfs_op(FS_OP_FIND, T_FNAME2_BUF, 0, 0, 0);
+    runner->assert_eq(nf, T_NOT_FOUND, "CosmFS: FIND non-existent = NOT_FOUND" as void*);
+
+    // --- テスト13: DELETE ---
+    ulong dr = cosmfs_op(FS_OP_DELETE, T_FNAME_BUF, 0, 0, 0);
+    runner->assert_eq(dr, 0, "CosmFS: DELETE returns 0" as void*);
+
+    // --- テスト14: DELETE後のファイル数が0 ---
+    ulong count_del = cosmfs_op(FS_OP_COUNT, 0, 0, 0, 0);
+    runner->assert_eq(count_del, 0, "CosmFS: count is 0 after DELETE" as void*);
+
+    // --- テスト15: 削除済みファイルのFINDは NOT_FOUND ---
+    ulong df = cosmfs_op(FS_OP_FIND, T_FNAME_BUF, 0, 0, 0);
+    runner->assert_eq(df, T_NOT_FOUND, "CosmFS: FIND deleted = NOT_FOUND" as void*);
+
+    serial.println("[TEST] CosmFS tests complete" as void*);
+}

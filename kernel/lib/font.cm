@@ -1,0 +1,295 @@
+//! platform: uefi
+// kernel::lib::font - 8x16 ビットマップフォント（VGA標準）
+//
+// ASCII印字可能文字（0x20〜0x7E = 95文字）の標準VGA 8x16フォント。
+// 各文字は16行、1行あたり8ビット。MSBが左端。
+//
+// データ格納: 1文字=2つのulong、各ulongに8行分を上位バイトから格納。
+// Cmコンパイラの64bitリテラル切り捨てバグ回避のため、32bit分割で構築。
+// ___chkstk_ms回避のため、グループ分割関数方式を採用。
+
+// ============================================================
+// フォント定数
+// ============================================================
+
+export const ulong FONT_WIDTH = 8;
+export const ulong FONT_HEIGHT = 16;
+
+const ulong FONT_FIRST_CHAR = 0x20;
+const ulong FONT_LAST_CHAR = 0x7E;
+
+// ============================================================
+// Font 構造体
+// ============================================================
+
+/// 8x16ビットマップフォント
+export struct Font {
+    ulong first_char;   // 最初の文字コード（0x20）
+    ulong last_char;    // 最後の文字コード（0x7E）
+}
+
+// ============================================================
+// Font メソッド実装
+// ============================================================
+
+impl Font {
+    /// 指定した文字の指定した行のビットパターンを返す
+    ulong get_row(ulong ch, ulong row) {
+        if (ch < self.first_char) { return 0; }
+        if (ch > self.last_char) { return 0; }
+        if (row >= FONT_HEIGHT) { return 0; }
+
+        ulong char_index = ch - self.first_char;
+        ulong data_index = char_index * 2;
+
+        ulong packed = 0;
+        if (row < 8) {
+            packed = font_data(data_index);
+        } else {
+            packed = font_data(data_index + 1);
+        }
+
+        ulong sub_row = row;
+        if (row >= 8) {
+            sub_row = row - 8;
+        }
+        ulong shift = (7 - sub_row) * 8;
+        ulong byte_val = (packed >> shift) & 0xFF;
+        return byte_val;
+    }
+}
+
+/// font_get_row互換ラッパー（他モジュールから呼び出し用）
+export ulong font_get_row(ulong ch, ulong row) {
+    Font f = {first_char: FONT_FIRST_CHAR, last_char: FONT_LAST_CHAR};
+    return f.get_row(ch, row);
+}
+
+// ============================================================
+// フォントデータ（グループ分割方式）
+// ============================================================
+
+/// フォントデータグループ 0（インデックス 0-39）
+export ulong font_data_g0(ulong index) {
+    if (index == 0) { return 0; }
+    if (index == 1) { return 0; }
+    if (index == 2) { return ((0x183C as ulong) << (32 as ulong)) | (0x3C3C1818 as ulong); }
+    if (index == 3) { return ((0x18001818 as ulong) << (32 as ulong)); }
+    if (index == 4) { return ((0x666666 as ulong) << (32 as ulong)) | (0x24000000 as ulong); }
+    if (index == 5) { return 0; }
+    if (index == 6) { return ((0x6C as ulong) << (32 as ulong)) | (0x6CFE6C6C as ulong); }
+    if (index == 7) { return ((0x6CFE6C6C as ulong) << (32 as ulong)); }
+    if (index == 8) { return ((0x18187CC6 as ulong) << (32 as ulong)) | ((0x61603E03 as ulong) << (1 as ulong)); }
+    if (index == 9) { return ((0x686C67C as ulong) << (32 as ulong)) | (0x18180000 as ulong); }
+    if (index == 10) { return ((0x6163060C as ulong) << (1 as ulong)); }
+    if (index == 11) { return ((0x3060C686 as ulong) << (32 as ulong)); }
+    if (index == 12) { return ((0x386C as ulong) << (32 as ulong)) | (0x6C3876DC as ulong); }
+    if (index == 13) { return (((0x6666663B as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 14) { return ((0x303030 as ulong) << (32 as ulong)) | (0x60000000 as ulong); }
+    if (index == 15) { return 0; }
+    if (index == 16) { return ((0xC18 as ulong) << (32 as ulong)) | (0x30303030 as ulong); }
+    if (index == 17) { return ((0x3030180C as ulong) << (32 as ulong)); }
+    if (index == 18) { return ((0x3018 as ulong) << (32 as ulong)) | (0xC0C0C0C as ulong); }
+    if (index == 19) { return ((0xC0C1830 as ulong) << (32 as ulong)); }
+    if (index == 20) { return 0x663CFF; }
+    if (index == 21) { return ((0x3C660000 as ulong) << (32 as ulong)); }
+    if (index == 22) { return 0x18187E; }
+    if (index == 23) { return ((0x18180000 as ulong) << (32 as ulong)); }
+    if (index == 24) { return 0; }
+    if (index == 25) { return ((0x181818 as ulong) << (32 as ulong)) | (0x30000000 as ulong); }
+    if (index == 26) { return 0xFE; }
+    if (index == 27) { return 0; }
+    if (index == 28) { return 0; }
+    if (index == 29) { return ((0x1818 as ulong) << (32 as ulong)); }
+    if (index == 30) { return 0x2060C18; }
+    if (index == 31) { return ((0x3060C080 as ulong) << (32 as ulong)); }
+    if (index == 32) { return ((0x3C66 as ulong) << (32 as ulong)) | (((0x61E1EDED as ulong) << (1 as ulong)) | (1 as ulong)); }
+    if (index == 33) { return (((0x61E1B31E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 34) { return ((0x1838 as ulong) << (32 as ulong)) | (0x78181818 as ulong); }
+    if (index == 35) { return ((0x1818187E as ulong) << (32 as ulong)); }
+    if (index == 36) { return ((0x7CC6 as ulong) << (32 as ulong)) | (0x60C1830 as ulong); }
+    if (index == 37) { return ((0x60C0C6FE as ulong) << (32 as ulong)); }
+    if (index == 38) { return ((0x7CC6 as ulong) << (32 as ulong)) | (0x6063C06 as ulong); }
+    if (index == 39) { return ((0x606C67C as ulong) << (32 as ulong)); }
+    return 0;
+}
+
+/// フォントデータグループ 1（インデックス 40-79）
+export ulong font_data_g1(ulong index) {
+    if (index == 40) { return ((0xC1C as ulong) << (32 as ulong)) | (0x3C6CCCFE as ulong); }
+    if (index == 41) { return ((0xC0C0C1E as ulong) << (32 as ulong)); }
+    if (index == 42) { return ((0xFEC0 as ulong) << (32 as ulong)) | ((0x60607E03 as ulong) << (1 as ulong)); }
+    if (index == 43) { return ((0x606C67C as ulong) << (32 as ulong)); }
+    if (index == 44) { return ((0x3860 as ulong) << (32 as ulong)) | ((0x60607E63 as ulong) << (1 as ulong)); }
+    if (index == 45) { return (((0x6363633E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 46) { return ((0xFEC6 as ulong) << (32 as ulong)) | (0x6060C18 as ulong); }
+    if (index == 47) { return ((0x30303030 as ulong) << (32 as ulong)); }
+    if (index == 48) { return ((0x7CC6 as ulong) << (32 as ulong)) | ((0x63633E63 as ulong) << (1 as ulong)); }
+    if (index == 49) { return (((0x6363633E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 50) { return ((0x7CC6 as ulong) << (32 as ulong)) | ((0x63633F03 as ulong) << (1 as ulong)); }
+    if (index == 51) { return ((0x6060C78 as ulong) << (32 as ulong)); }
+    if (index == 52) { return 0x18180000; }
+    if (index == 53) { return ((0x181800 as ulong) << (32 as ulong)); }
+    if (index == 54) { return 0x18180000; }
+    if (index == 55) { return ((0x181830 as ulong) << (32 as ulong)); }
+    if (index == 56) { return ((0x6 as ulong) << (32 as ulong)) | (0xC183060 as ulong); }
+    if (index == 57) { return ((0x30180C06 as ulong) << (32 as ulong)); }
+    if (index == 58) { return 0x7E0000; }
+    if (index == 59) { return ((0x7E000000 as ulong) << (32 as ulong)); }
+    if (index == 60) { return ((0x60 as ulong) << (32 as ulong)) | (0x30180C06 as ulong); }
+    if (index == 61) { return ((0xC183060 as ulong) << (32 as ulong)); }
+    if (index == 62) { return ((0x7CC6 as ulong) << (32 as ulong)) | ((0x63060C0C as ulong) << (1 as ulong)); }
+    if (index == 63) { return ((0x18001818 as ulong) << (32 as ulong)); }
+    if (index == 64) { return ((0x7C as ulong) << (32 as ulong)) | ((0x63636F6F as ulong) << (1 as ulong)); }
+    if (index == 65) { return (((0x6F6E603E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 66) { return ((0x1038 as ulong) << (32 as ulong)) | (0x6CC6C6FE as ulong); }
+    if (index == 67) { return (((0x63636363 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 68) { return ((0xFC66 as ulong) << (32 as ulong)) | (0x66667C66 as ulong); }
+    if (index == 69) { return ((0x666666FC as ulong) << (32 as ulong)); }
+    if (index == 70) { return ((0x3C66 as ulong) << (32 as ulong)) | ((0x61606060 as ulong) << (1 as ulong)); }
+    if (index == 71) { return (((0x6061331E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 72) { return ((0xF86C as ulong) << (32 as ulong)) | (0x66666666 as ulong); }
+    if (index == 73) { return ((0x66666CF8 as ulong) << (32 as ulong)); }
+    if (index == 74) { return ((0xFE66 as ulong) << (32 as ulong)) | (0x62687868 as ulong); }
+    if (index == 75) { return ((0x606266FE as ulong) << (32 as ulong)); }
+    if (index == 76) { return ((0xFE66 as ulong) << (32 as ulong)) | (0x62687868 as ulong); }
+    if (index == 77) { return ((0x606060F0 as ulong) << (32 as ulong)); }
+    if (index == 78) { return ((0x3C66 as ulong) << (32 as ulong)) | ((0x6160606F as ulong) << (1 as ulong)); }
+    if (index == 79) { return (((0x6363331D as ulong) << (1 as ulong)) << (32 as ulong)); }
+    return 0;
+}
+
+/// フォントデータグループ 2（インデックス 80-119）
+export ulong font_data_g2(ulong index) {
+    if (index == 80) { return ((0xC6C6 as ulong) << (32 as ulong)) | ((0x63637F63 as ulong) << (1 as ulong)); }
+    if (index == 81) { return (((0x63636363 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 82) { return ((0x3C18 as ulong) << (32 as ulong)) | (0x18181818 as ulong); }
+    if (index == 83) { return ((0x1818183C as ulong) << (32 as ulong)); }
+    if (index == 84) { return ((0x1E0C as ulong) << (32 as ulong)) | (0xC0C0C0C as ulong); }
+    if (index == 85) { return (((0x6666663C as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 86) { return ((0xE666 as ulong) << (32 as ulong)) | (0x666C7878 as ulong); }
+    if (index == 87) { return ((0x6C6666E6 as ulong) << (32 as ulong)); }
+    if (index == 88) { return ((0xF060 as ulong) << (32 as ulong)) | (0x60606060 as ulong); }
+    if (index == 89) { return ((0x606266FE as ulong) << (32 as ulong)); }
+    if (index == 90) { return ((0xC6EE as ulong) << (32 as ulong)) | ((0x7F7F6B63 as ulong) << (1 as ulong)); }
+    if (index == 91) { return (((0x63636363 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 92) { return ((0xC6E6 as ulong) << (32 as ulong)) | ((0x7B7F6F67 as ulong) << (1 as ulong)); }
+    if (index == 93) { return (((0x63636363 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 94) { return ((0x7CC6 as ulong) << (32 as ulong)) | ((0x63636363 as ulong) << (1 as ulong)); }
+    if (index == 95) { return (((0x6363633E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 96) { return ((0xFC66 as ulong) << (32 as ulong)) | (0x66667C60 as ulong); }
+    if (index == 97) { return ((0x606060F0 as ulong) << (32 as ulong)); }
+    if (index == 98) { return ((0x7CC6 as ulong) << (32 as ulong)) | ((0x63636363 as ulong) << (1 as ulong)); }
+    if (index == 99) { return (((0x636B6F3E as ulong) << (1 as ulong)) << (32 as ulong)) | (0xC0E0000 as ulong); }
+    if (index == 100) { return ((0xFC66 as ulong) << (32 as ulong)) | (0x66667C6C as ulong); }
+    if (index == 101) { return ((0x666666E6 as ulong) << (32 as ulong)); }
+    if (index == 102) { return ((0x7CC6 as ulong) << (32 as ulong)) | ((0x63301C06 as ulong) << (1 as ulong)); }
+    if (index == 103) { return ((0x6C6C67C as ulong) << (32 as ulong)); }
+    if (index == 104) { return ((0xFFDB as ulong) << (32 as ulong)) | ((0x4C8C0C0C as ulong) << (1 as ulong)); }
+    if (index == 105) { return ((0x1818183C as ulong) << (32 as ulong)); }
+    if (index == 106) { return ((0xC6C6 as ulong) << (32 as ulong)) | ((0x63636363 as ulong) << (1 as ulong)); }
+    if (index == 107) { return (((0x6363633E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 108) { return ((0xC6C6 as ulong) << (32 as ulong)) | ((0x63636363 as ulong) << (1 as ulong)); }
+    if (index == 109) { return (((0x63361C08 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 110) { return ((0xC6C6 as ulong) << (32 as ulong)) | ((0x63636B6B as ulong) << (1 as ulong)); }
+    if (index == 111) { return (((0x6B7F7736 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 112) { return ((0xC6C6 as ulong) << (32 as ulong)) | (0x6C7C3838 as ulong); }
+    if (index == 113) { return ((0x7C6CC6C6 as ulong) << (32 as ulong)); }
+    if (index == 114) { return ((0xC6C6 as ulong) << (32 as ulong)) | ((0x63361C0C as ulong) << (1 as ulong)); }
+    if (index == 115) { return ((0x1818183C as ulong) << (32 as ulong)); }
+    if (index == 116) { return ((0xFEC6 as ulong) << (32 as ulong)) | ((0x43060C18 as ulong) << (1 as ulong)); }
+    if (index == 117) { return ((0x60C2C6FE as ulong) << (32 as ulong)); }
+    if (index == 118) { return ((0x3C30 as ulong) << (32 as ulong)) | (0x30303030 as ulong); }
+    if (index == 119) { return ((0x3030303C as ulong) << (32 as ulong)); }
+    return 0;
+}
+
+/// フォントデータグループ 3（インデックス 120-159）
+export ulong font_data_g3(ulong index) {
+    if (index == 120) { return ((0x80 as ulong) << (32 as ulong)) | ((0x6070381C as ulong) << (1 as ulong)); }
+    if (index == 121) { return ((0x1C0E0602 as ulong) << (32 as ulong)); }
+    if (index == 122) { return ((0x3C0C as ulong) << (32 as ulong)) | (0xC0C0C0C as ulong); }
+    if (index == 123) { return ((0xC0C0C3C as ulong) << (32 as ulong)); }
+    if (index == 124) { return ((0x10386CC6 as ulong) << (32 as ulong)); }
+    if (index == 125) { return 0; }
+    if (index == 126) { return 0; }
+    if (index == 127) { return 0xFF0000; }
+    if (index == 128) { return ((0x30301800 as ulong) << (32 as ulong)); }
+    if (index == 129) { return 0; }
+    if (index == 130) { return 0x780C7C; }
+    if (index == 131) { return (((0x6666663B as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 132) { return ((0xE060 as ulong) << (32 as ulong)) | (0x60786C66 as ulong); }
+    if (index == 133) { return ((0x6666667C as ulong) << (32 as ulong)); }
+    if (index == 134) { return 0x7CC6C0; }
+    if (index == 135) { return (((0x6060633E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 136) { return ((0x1C0C as ulong) << (32 as ulong)) | (0xC3C6CCC as ulong); }
+    if (index == 137) { return (((0x6666663B as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 138) { return 0x7CC6FE; }
+    if (index == 139) { return (((0x6060633E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 140) { return ((0x386C as ulong) << (32 as ulong)) | (0x6460F060 as ulong); }
+    if (index == 141) { return ((0x606060F0 as ulong) << (32 as ulong)); }
+    if (index == 142) { return 0x76CCCC; }
+    if (index == 143) { return (((0x6666663E as ulong) << (1 as ulong)) << (32 as ulong)) | (0xCCC7800 as ulong); }
+    if (index == 144) { return ((0xE060 as ulong) << (32 as ulong)) | (0x606C7666 as ulong); }
+    if (index == 145) { return ((0x666666E6 as ulong) << (32 as ulong)); }
+    if (index == 146) { return ((0x1818 as ulong) << (32 as ulong)) | (0x381818 as ulong); }
+    if (index == 147) { return ((0x1818183C as ulong) << (32 as ulong)); }
+    if (index == 148) { return ((0x606 as ulong) << (32 as ulong)) | (0xE0606 as ulong); }
+    if (index == 149) { return ((0x6060606 as ulong) << (32 as ulong)) | (0x66663C00 as ulong); }
+    if (index == 150) { return ((0xE060 as ulong) << (32 as ulong)) | (0x60666C78 as ulong); }
+    if (index == 151) { return ((0x786C66E6 as ulong) << (32 as ulong)); }
+    if (index == 152) { return ((0x3818 as ulong) << (32 as ulong)) | (0x18181818 as ulong); }
+    if (index == 153) { return ((0x1818183C as ulong) << (32 as ulong)); }
+    if (index == 154) { return 0xECFED6; }
+    if (index == 155) { return (((0x6B6B6B63 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 156) { return 0xDC6666; }
+    if (index == 157) { return ((0x66666666 as ulong) << (32 as ulong)); }
+    if (index == 158) { return 0x7CC6C6; }
+    if (index == 159) { return (((0x6363633E as ulong) << (1 as ulong)) << (32 as ulong)); }
+    return 0;
+}
+
+/// フォントデータグループ 4（インデックス 160-189）
+export ulong font_data_g4(ulong index) {
+    if (index == 160) { return 0xDC6666; }
+    if (index == 161) { return ((0x6666667C as ulong) << (32 as ulong)) | (0x6060F000 as ulong); }
+    if (index == 162) { return 0x76CCCC; }
+    if (index == 163) { return (((0x6666663E as ulong) << (1 as ulong)) << (32 as ulong)) | (0xC0C1E00 as ulong); }
+    if (index == 164) { return 0xDC7666; }
+    if (index == 165) { return ((0x606060F0 as ulong) << (32 as ulong)); }
+    if (index == 166) { return 0x7CC660; }
+    if (index == 167) { return ((0x380CC67C as ulong) << (32 as ulong)); }
+    if (index == 168) { return ((0x1030 as ulong) << (32 as ulong)) | (0x30FC3030 as ulong); }
+    if (index == 169) { return ((0x3030361C as ulong) << (32 as ulong)); }
+    if (index == 170) { return 0xCCCCCC; }
+    if (index == 171) { return (((0x6666663B as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 172) { return 0xC6C6C6; }
+    if (index == 173) { return (((0x6363361C as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 174) { return 0xC6C6D6; }
+    if (index == 175) { return (((0x6B6B7F36 as ulong) << (1 as ulong)) << (32 as ulong)); }
+    if (index == 176) { return 0xC66C38; }
+    if (index == 177) { return ((0x38386CC6 as ulong) << (32 as ulong)); }
+    if (index == 178) { return 0xC6C6C6; }
+    if (index == 179) { return (((0x6363633F as ulong) << (1 as ulong)) << (32 as ulong)) | (0x60CF800 as ulong); }
+    if (index == 180) { return 0xFECC18; }
+    if (index == 181) { return ((0x3060C6FE as ulong) << (32 as ulong)); }
+    if (index == 182) { return ((0xE18 as ulong) << (32 as ulong)) | (0x18187018 as ulong); }
+    if (index == 183) { return ((0x1818180E as ulong) << (32 as ulong)); }
+    if (index == 184) { return ((0x1818 as ulong) << (32 as ulong)) | (0x18180018 as ulong); }
+    if (index == 185) { return ((0x18181818 as ulong) << (32 as ulong)); }
+    if (index == 186) { return ((0x7018 as ulong) << (32 as ulong)) | (0x18180E18 as ulong); }
+    if (index == 187) { return ((0x18181870 as ulong) << (32 as ulong)); }
+    if (index == 188) { return ((0x76DC as ulong) << (32 as ulong)); }
+    if (index == 189) { return 0; }
+    return 0;
+}
+
+/// メインディスパッチ関数
+export ulong font_data(ulong index) {
+    if (index < 40) { return font_data_g0(index); }
+    if (index < 80) { return font_data_g1(index); }
+    if (index < 120) { return font_data_g2(index); }
+    if (index < 160) { return font_data_g3(index); }
+    if (index < 190) { return font_data_g4(index); }
+    return 0;
+}

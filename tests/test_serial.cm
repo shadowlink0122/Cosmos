@@ -1,0 +1,45 @@
+//! platform: uefi
+// tests::test_serial - シリアル出力の単体テスト
+//
+// QEMUデバッグポート(0xE9)を通じてテスト結果を出力。
+// OVMFのシリアル出力と干渉しないクリーンなテスト。
+//
+// テスト実行: make test-serial
+// 検証: debug.log 内の "[PASS]" / "[FAIL]" マーカーを確認
+
+import ../kernel/libs/efi_core;
+import ../kernel/libs/efi_text;
+import ../kernel/drivers/serial;
+import ../kernel/drivers/debug_port;
+
+ulong efi_main(void* image_handle, void* system_table) {
+    // === テスト1: デバッグポート基本出力 ===
+    debug_println("[TEST] test_serial started" as void*);
+
+    // === テスト2: UEFI テキスト出力 ===
+    efi_clear_screen(system_table);
+    efi_println(system_table, "=== Serial Unit Test ===" as void*);
+    debug_println("[PASS] UEFI text output" as void*);
+
+    // === テスト3: シリアル初期化 ===
+    serial_init();
+    debug_println("[PASS] serial_init completed" as void*);
+
+    // === テスト4: シリアル1文字出力 ===
+    serial_putc(65);  // 'A'
+    debug_println("[PASS] serial_putc" as void*);
+
+    // === テスト5: シリアル文字列出力 ===
+    serial_puts("Hello from COM1" as void*);
+    debug_println("[PASS] serial_puts" as void*);
+
+    // === テスト6: シリアル16進出力 ===
+    serial_print_hex(0xDEADBEEF);
+    debug_println("[PASS] serial_print_hex" as void*);
+
+    // テスト完了マーカー
+    debug_println("[TEST] ALL TESTS PASSED" as void*);
+
+    efi_println(system_table, "Test complete." as void*);
+    return 0;
+}

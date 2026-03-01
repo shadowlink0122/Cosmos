@@ -1,0 +1,328 @@
+//! platform: uefi
+// kernel::mm::heap - カーネルヒープアロケータ
+//
+// Bump Allocator + フリーリスト方式のハイブリッドヒープ管理。
+// 初回割当はBump方式で高速に、free()されたブロックは
+// フリーリストに返却し再利用する。
+//
+// ブロックレイアウト:
+//   [header: 8B] [data ...]
+//   header bit63 = 1: 使用中, 0: フリー
+//   header bit0-62: ブロック合計サイズ（ヘッダ含む）
+//
+// フリーリスト:
+//   フリーブロックのデータ領域先頭8Bに次のフリーブロックアドレスを格納。
+//   alloc()はフリーリストをfirst-fitで検索し、見つからなければBump割当。
+//   free()はフリーリスト先頭に追加（LIFO）。
+//
+// 使用例:
+//   Heap heap(&pmm, 64);          // 64ページ(256KB)のヒープ確保
+//   ulong ptr = heap.alloc(1024); // 1024バイト割当
+//   heap.free(ptr);               // 解放（フリーリストに返却）
+//   ulong ptr2 = heap.alloc(512); // フリーリストから再利用
+
+import ../config;
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ./pmm;
+
+// ============================================================
+// 定数
+// ============================================================
+
+const ulong HEAP_PAGE_SIZE = 4096;
+const ulong HEAP_ALIGN = 8;  // 8バイトアラインメント
+
+// ブロックヘッダ: 割当ブロックの直前に8バイトのサイズ情報を格納
+// [size: 8B] [data ...]
+//   size bit63 = 1: 使用中, 0: フリー
+//   size bit0-62: ブロックサイズ（ヘッダ含む）
+const ulong HEAP_HEADER_SIZE = 8;
+const ulong HEAP_USED_BIT = 0x8000000000000000;
+const ulong HEAP_SIZE_MASK = 0x7FFFFFFFFFFFFFFF;
+
+// フリーリストの最小ブロックサイズ（ヘッダ8B + nextポインタ8B = 16B）
+const ulong HEAP_MIN_BLOCK_SIZE = 16;
+
+// ============================================================
+// Heap 構造体
+// ============================================================
+
+/// Bump + フリーリスト方式のカーネルヒープ
+export struct Heap {
+    MemAddr base_addr;      // ヒープ領域の先頭物理アドレス
+    ByteSize size;          // ヒープ領域の総サイズ（バイト）
+    ByteSize offset;        // 現在のBump割当オフセット（次の割当位置）
+    Count alloc_count;      // 割当回数
+    MemAddr free_list_head; // フリーリスト先頭のブロックアドレス（0=空）
+    Count free_count;       // フリーリスト内のブロック数
+}
+
+// ============================================================
+// ヘルパー関数: メモリ読み書き（ASM経由）
+// ============================================================
+
+/// 指定アドレスから8バイト値を読み取る
+ulong mem_read64(MemAddr addr) {
+    ulong result = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        movq (%rdi), %rax;
+        movq %rax, ${=r:result}
+    `);
+    return result;
+}
+
+/// 指定アドレスに8バイト値を書き込む
+void mem_write64(MemAddr addr, ulong value) {
+    ulong dummy = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        movq ${r:value}, %rax;
+        movq %rax, (%rdi);
+        movq %rax, ${=r:dummy}
+    `);
+}
+
+// ============================================================
+// Heap メソッド実装
+// ============================================================
+
+impl Heap {
+    /// コンストラクタ: PMMからヒープ用ページを割当
+    ///
+    /// pmm:        物理メモリマネージャ
+    /// num_pages:  ヒープに割り当てるページ数
+    overload self(PMM* pmm, ulong num_pages) {
+        DebugPort debug(0xE9);
+
+        // PMMから連続ページを割当
+        ulong base = pmm->alloc_pages(num_pages);
+        if (base == 0) {
+            debug.println("[HEAP] ERROR: cannot alloc heap pages" as void*);
+            self.base_addr = 0;
+            self.size = 0;
+            self.offset = 0;
+            self.alloc_count = 0;
+            self.free_list_head = 0;
+            self.free_count = 0;
+            return;
+        }
+
+        self.base_addr = base;
+        self.size = num_pages * HEAP_PAGE_SIZE;
+        self.offset = 0;
+        self.alloc_count = 0;
+        self.free_list_head = 0;
+        self.free_count = 0;
+
+        debug.puts("[HEAP] base=0x" as void*);
+        debug.print_hex(base);
+        debug.puts(", size=" as void*);
+        debug.print_hex(self.size);
+        debug.println("" as void*);
+    }
+
+    /// メモリ割当（フリーリスト優先 + Bump方式フォールバック、8バイトアラインメント）
+    /// size: 割り当てるバイト数
+    /// 戻り値: 割り当てた領域のアドレス（失敗時は0）
+    MemAddr alloc(ulong size) {
+        if (self.base_addr == 0) {
+            return 0;
+        }
+
+        // 8バイトアラインメントに切り上げ
+        ulong align_mask = HEAP_ALIGN - 1;  // 7
+        ulong all_ones = 0xFFFFFFFFFFFFFFFF;
+        ulong inv_mask = align_mask ^ all_ones;  // ~7 in ulong
+        ulong aligned_size = (size + align_mask) & inv_mask;
+
+        // ヘッダ付きの合計サイズ（最小ブロックサイズを保証）
+        ulong total_needed = aligned_size + HEAP_HEADER_SIZE;
+        if (total_needed < HEAP_MIN_BLOCK_SIZE) {
+            total_needed = HEAP_MIN_BLOCK_SIZE;
+        }
+
+        // ============================================================
+        // Step 1: フリーリストからfirst-fit検索
+        // ============================================================
+        MemAddr found = self.alloc_from_freelist(total_needed);
+        if (found != 0) {
+            self.alloc_count = self.alloc_count + 1;
+            return found;
+        }
+
+        // ============================================================
+        // Step 2: Bump割当（フリーリストに適合ブロックなし）
+        // ============================================================
+        ulong remaining = self.size - self.offset;
+        if (total_needed > remaining) {
+            return 0;  // ヒープ不足
+        }
+
+        // 現在のオフセット位置にヘッダ+データを配置
+        ulong block_addr = self.base_addr + self.offset;
+
+        // ヘッダにサイズ（使用中ビット付き）を書き込む
+        ulong header_val = total_needed | HEAP_USED_BIT;
+        mem_write64(block_addr, header_val);
+
+        self.offset = self.offset + total_needed;
+        self.alloc_count = self.alloc_count + 1;
+
+        // データ部分のアドレスを返す（ヘッダの直後）
+        return block_addr + HEAP_HEADER_SIZE;
+    }
+
+    /// フリーリストからfirst-fit検索して割当
+    /// total_needed: 必要な合計サイズ（ヘッダ含む）
+    /// 戻り値: データ領域のアドレス（見つからなければ0）
+    MemAddr alloc_from_freelist(ulong total_needed) {
+        if (self.free_list_head == 0) {
+            return 0;
+        }
+
+        // フリーリストを走査: first-fit
+        MemAddr prev_block = 0;
+        MemAddr current_block = self.free_list_head;
+        ulong max_search = 256;  // 無限ループ防止
+        ulong searched = 0;
+
+        while (current_block != 0) {
+            if (searched >= max_search) {
+                return 0;  // 検索上限到達
+            }
+            searched = searched + 1;
+
+            // ヘッダからブロックサイズを読み取り
+            ulong header = mem_read64(current_block);
+            ulong block_size = header & HEAP_SIZE_MASK;
+
+            if (block_size >= total_needed) {
+                // ============================================================
+                // 適合ブロック発見！フリーリストから外す
+                // ============================================================
+
+                // 次のフリーブロックアドレスを取得（データ領域先頭の8B）
+                MemAddr data_addr = current_block + HEAP_HEADER_SIZE;
+                MemAddr next_free = mem_read64(data_addr);
+
+                // リンクリスト更新
+                if (prev_block == 0) {
+                    // 先頭ブロックを使用
+                    self.free_list_head = next_free;
+                } else {
+                    // 前のブロックのnextポインタを更新
+                    MemAddr prev_data = prev_block + HEAP_HEADER_SIZE;
+                    mem_write64(prev_data, next_free);
+                }
+
+                // ブロック分割: 残りスペースが最小ブロックサイズ以上なら分割
+                ulong leftover = block_size - total_needed;
+                if (leftover >= HEAP_MIN_BLOCK_SIZE) {
+                    // 残りを新しいフリーブロックとしてリストに追加
+                    MemAddr split_block = current_block + total_needed;
+                    ulong split_header = leftover;  // フリー（used bit = 0）
+                    mem_write64(split_block, split_header);
+
+                    // 分割ブロックをフリーリスト先頭に追加
+                    MemAddr split_data = split_block + HEAP_HEADER_SIZE;
+                    mem_write64(split_data, self.free_list_head);
+                    self.free_list_head = split_block;
+                    // free_count は変わらない（1つ外して1つ追加）
+
+                    // 元ブロックのサイズを更新
+                    ulong new_header = total_needed | HEAP_USED_BIT;
+                    mem_write64(current_block, new_header);
+                } else {
+                    // 分割しない: ブロック全体を使用（internal fragmentation）
+                    ulong used_header = block_size | HEAP_USED_BIT;
+                    mem_write64(current_block, used_header);
+                    self.free_count = self.free_count - 1;
+                }
+
+                return data_addr;
+            }
+
+            // 次のフリーブロックへ
+            prev_block = current_block;
+            MemAddr data = current_block + HEAP_HEADER_SIZE;
+            current_block = mem_read64(data);
+        }
+
+        return 0;  // 適合ブロックなし
+    }
+
+    /// メモリ解放: フリーリスト先頭に追加（LIFO）
+    /// addr: alloc()で返されたアドレス
+    void free(MemAddr addr) {
+        if (addr == 0) {
+            return;
+        }
+
+        // ヘッダアドレスを計算
+        MemAddr block = addr - HEAP_HEADER_SIZE;
+
+        // ヘッダを読み取り、使用中ビットをクリア
+        ulong header = mem_read64(block);
+        ulong block_size = header & HEAP_SIZE_MASK;
+        mem_write64(block, block_size);  // used bit = 0
+
+        // データ領域の先頭8Bに現在のフリーリスト先頭を格納
+        mem_write64(addr, self.free_list_head);
+
+        // このブロックをフリーリスト先頭にする
+        self.free_list_head = block;
+        self.free_count = self.free_count + 1;
+
+        if (self.alloc_count > 0) {
+            self.alloc_count = self.alloc_count - 1;
+        }
+    }
+
+    /// ヒープ全体をリセット（全メモリを再利用可能にする）
+    void reset_all() {
+        self.offset = 0;
+        self.alloc_count = 0;
+        self.free_list_head = 0;
+        self.free_count = 0;
+    }
+
+    /// 使用中のバイト数を返す
+    ulong used() {
+        return self.offset;
+    }
+
+    /// 空きバイト数を返す
+    ulong free_bytes() {
+        return self.size - self.offset;
+    }
+
+    /// 統計情報出力
+    void print_stats() {
+        SerialPort serial = {port: 0x3F8};
+        DebugPort debug(0xE9);
+
+        serial.puts("[HEAP] base=0x" as void*);
+        serial.print_hex(self.base_addr);
+        serial.puts(", total=" as void*);
+        serial.print_hex(self.size);
+        serial.puts(", used=" as void*);
+        serial.print_hex(self.offset);
+        serial.puts(", free=" as void*);
+        serial.print_hex(self.free_bytes());
+        serial.puts(", allocs=" as void*);
+        serial.print_hex(self.alloc_count);
+        serial.puts(", freelist=" as void*);
+        serial.print_hex(self.free_count);
+        serial.putc(10);
+
+        debug.puts("[HEAP] used=" as void*);
+        debug.print_hex(self.offset);
+        debug.puts(", free=" as void*);
+        debug.print_hex(self.free_bytes());
+        debug.puts(", freelist=" as void*);
+        debug.print_hex(self.free_count);
+        debug.println("" as void*);
+    }
+}

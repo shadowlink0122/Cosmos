@@ -1,0 +1,72 @@
+//! platform: uefi
+// kernel::shell::shell_io - シェル出力ヘルパー（console.cmラッパー）
+//
+// OS標準コンソールAPI (lib/console.cm) への薄いラッパー。
+// 既存のshell_*関数の互換性を維持しつつ、実装はconsole.cmに委譲。
+//
+// 使用例:
+//   shell_println("Available commands:" as void*);
+//   shell_puts("  Total: " as void*);
+//   shell_print_hex(value);
+//   shell_newline();
+
+import ../lib/console;
+
+// ============================================================
+// 統合出力関数（console.cmへの委譲）
+// ============================================================
+
+/// serial + FBConsole にメッセージを同時出力（改行付き）
+export void shell_println(void* msg) {
+    con_println(msg);
+}
+
+/// serial + FBConsole にメッセージを同時出力（改行なし）
+export void shell_puts(void* msg) {
+    con_puts(msg);
+}
+
+/// serial + FBConsole に16進数値を同時出力
+export void shell_print_hex(ulong value) {
+    con_print_hex(value);
+}
+
+/// serial + FBConsole に改行を出力
+export void shell_newline() {
+    con_newline();
+}
+
+/// serial + FBConsole に1文字出力
+export void shell_putc(AsciiChar ch) {
+    con_putc(ch);
+}
+
+/// FBConsole の色を設定
+export void shell_set_color(Color color) {
+    con_set_color(color);
+}
+
+/// FBConsole の画面をクリアしカーソルをリセット
+export void shell_clear() {
+    con_clear();
+}
+
+/// FBConsole のカーソル位置を設定（文字単位）
+export void shell_set_cursor(ulong x, ulong y) {
+    con_set_cursor(x, y);
+}
+
+/// FBConsole の最大行数を返す
+export ulong shell_get_rows() {
+    return con_get_rows();
+}
+
+/// FBConsole の最大列数を返す
+export ulong shell_get_cols() {
+    return con_get_cols();
+}
+
+/// serial + FBConsole に10進数値を出力
+export void shell_print_num(ulong value) {
+    con_print_num(value);
+}

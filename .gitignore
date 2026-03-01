@@ -1,0 +1,23 @@
+# 一時ファイル・ビルド成果物
+.tmp/
+
+# ビルド成果物
+build/
+*.o
+*.out
+*.efi
+*.EFI
+*.lib
+*.wasm
+
+# ESP ディレクトリ（QEMU用）
+esp/
+
+# OS固有
+.DS_Store
+Thumbs.db
+
+# エディタ
+*.swp
+*.swo
+*~

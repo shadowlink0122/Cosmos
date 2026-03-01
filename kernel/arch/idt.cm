@@ -1,0 +1,127 @@
+//! platform: uefi
+// kernel::idt - IDT（割り込みディスクリプタテーブル）設定
+//
+// x86_64 Long Mode用のIDT。256エントリ、各16バイト。
+// CPU例外（ベクタ0-31）およびハードウェア割り込み（ベクタ32+）を処理。
+//
+// impl IDT { ... } パターンでメソッド呼び出しを提供:
+//   idt.init();
+//   idt.set_gate(0, handler_addr, IDT_INTERRUPT_GATE);
+//   idt.load();
+
+import ../types;
+import ../config;
+import ../drivers/serial;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// IDTエントリ数
+const ulong IDT_ENTRIES = 256;
+
+// セレクタ: カーネルコードセグメント（GDT[1] = 0x08）
+const ulong IDT_CS = 0x08;
+
+// ゲートタイプ
+export const ulong IDT_INTERRUPT_GATE = 0x8E;  // P=1, DPL=0, Interrupt Gate
+export const ulong IDT_TRAP_GATE      = 0x8F;  // P=1, DPL=0, Trap Gate
+
+// ============================================================
+// IDT 構造体
+// ============================================================
+
+/// 割り込みディスクリプタテーブル
+export struct IDT {
+    uint* table;    // IDTテーブルのベースアドレス（256エントリ × 16バイト）
+}
+
+// ============================================================
+// デフォルトハンドラ（フリー関数 — fn_addrで参照するため）
+// ============================================================
+
+/// 未登録ベクタのデフォルトハンドラ（iretqで即リターン）
+/// 純ASM関数のためnaked属性が自動適用され、prologue/epilogueなしで生成される
+export void idt_default_handler() {
+    __asm__(`iretq`);
+}
+
+// ============================================================
+// IDT メソッド実装
+// ============================================================
+
+impl IDT {
+    /// 引数付きコンストラクタ: テーブルポインタ設定 + 全エントリ初期化 + ロード
+    /// 使用例: IDT idt(table_ptr);
+    overload self(uint* table_ptr) {
+        self.table = table_ptr;
+        self.init();
+    }
+
+    /// IDTテーブルの指定ベクタにゲートディスクリプタを設定する
+    void set_gate(IdtVector vector, MemAddr handler, ulong type_attr) {
+        // 各エントリは4つのuint（16バイト）
+        ulong idx = vector * 4;
+
+        // ハンドラアドレスの分割
+        ulong offset_low  = handler & 0xFFFF;
+        ulong offset_mid  = (handler >> 16) & 0xFFFF;
+        ulong offset_high = handler >> 32;
+
+        // selector = KERNEL_CS(0x08)
+        ulong selector = IDT_CS;
+
+        // [0] offset_low(16) | selector(16)
+        ulong entry0 = (selector << 16) | offset_low;
+
+        // [1] IST(0) | reserved(0) | type_attr(8) | offset_mid(16)
+        ulong entry1 = (offset_mid << 16) | (type_attr << 8);
+
+        // ポインタ演算でエントリの各uintにアクセス
+        MemAddr base_addr = self.table as ulong;
+        ulong byte_offset = idx * 4;  // sizeof(uint) = 4
+
+        uint* p0 = (base_addr + byte_offset) as uint*;
+        uint* p1 = (base_addr + byte_offset + 4) as uint*;
+        uint* p2 = (base_addr + byte_offset + 8) as uint*;
+        uint* p3 = (base_addr + byte_offset + 12) as uint*;
+
+        *p0 = entry0 as uint;
+        *p1 = entry1 as uint;
+        *p2 = offset_high as uint;
+        *p3 = 0 as uint;
+    }
+
+    /// IDTRを構築し、lidt命令でIDTをCPUにロードする
+    void load() {
+        MemAddr idt_addr = self.table as ulong;
+        ulong idt_limit = 4095;  // 256 * 16 - 1
+
+        __asm__(`
+            subq $$16, %rsp;
+            movq ${r:idt_limit}, %rax;
+            movw %ax, (%rsp);
+            movq ${r:idt_addr}, %rax;
+            movq %rax, 2(%rsp);
+            lidt (%rsp);
+            addq $$16, %rsp
+        `);
+    }
+
+    /// IDTを初期化してCPUにロードする
+    void init() {
+        // デフォルトハンドラのアドレスを取得
+        void* handler_ptr = idt_default_handler as void*;
+        MemAddr default_addr = handler_ptr as ulong;
+
+        // 全256エントリをデフォルトハンドラで初期化
+        ulong i = 0;
+        while (i < IDT_ENTRIES) {
+            self.set_gate(i, default_addr, IDT_INTERRUPT_GATE);
+            i = i + 1;
+        }
+
+        // IDTをCPUにロード
+        self.load();
+    }
+}

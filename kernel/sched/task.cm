@@ -1,0 +1,257 @@
+//! platform: uefi
+// kernel::sched::task - タスク制御ブロック（TCB）
+//
+// カーネルタスクの状態を管理する構造体と操作関数。
+// TCBは固定アドレス0x1000に配列として配置（最大8タスク）。
+//
+// Cmのselfコピー問題はv0.14.1で修正済みだが、
+// 固定アドレスTCB設計に適したフリー関数+ポインタ方式を維持。
+
+import ../config;
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../mm/pmm;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// タスク状態
+const TaskState TASK_READY      = 0;
+const TaskState TASK_RUNNING    = 1;
+const TaskState TASK_BLOCKED    = 2;
+const TaskState TASK_TERMINATED = 3;
+
+// TCB配列の固定アドレスと制限
+const MemAddr TCB_BASE_ADDR   = 0x1000;   // TCB配列の先頭アドレス
+const ByteSize TCB_SIZE     = 128;      // 1 TCB = 128バイト（16フィールド × 8バイト）
+const Count MAX_TASKS       = 8;        // 最大タスク数
+const PageCount TASK_STACK_PAGES = 1;   // タスクスタック = 1ページ(4KB)
+
+// デフォルトタイムスライス（tick数 = 100ms at 100Hz）
+const Tick DEFAULT_TIMESLICE = 10;
+
+// TCB内フィールドオフセット（各8バイト）
+const ByteOffset TCB_OFF_ID         = 0;     // task_id
+const ByteOffset TCB_OFF_STATE      = 8;     // state
+const ByteOffset TCB_OFF_RSP        = 16;    // rsp（保存されたスタックポインタ）
+const ByteOffset TCB_OFF_STACK_BASE = 24;    // stack_base
+const ByteOffset TCB_OFF_STACK_SIZE = 32;    // stack_size
+const ByteOffset TCB_OFF_ENTRY      = 40;    // entry（エントリポイント関数アドレス）
+const ByteOffset TCB_OFF_NEXT       = 48;    // next（次のTCB番号、循環リスト用）
+const ByteOffset TCB_OFF_TIMESLICE  = 56;    // タイムスライス残り（tick数）
+
+const ByteOffset TCB_OFF_PROCESS_TYPE = 64;  // プロセス種別 (0=kernel, 1=user)
+const ByteOffset TCB_OFF_PARENT_ID    = 72;  // 親タスクID
+const ByteOffset TCB_OFF_EXIT_CODE    = 80;  // 終了コード
+const ByteOffset TCB_OFF_WAIT_FOR     = 88;  // 待機対象タスクID (BLOCKEDのとき)
+const ByteOffset TCB_OFF_CR3          = 96;  // プロセス固有ページテーブル (0=カーネル共有)
+
+// ============================================================
+// TCBフィールドアクセス（ポインタ直接操作）
+// ============================================================
+
+/// 指定タスクIDのTCBベースアドレスを取得
+export MemAddr tcb_addr(TaskId task_id) {
+    return TCB_BASE_ADDR + (task_id * TCB_SIZE);
+}
+
+/// TCBフィールドを読取
+export ulong tcb_read(TaskId task_id, ByteOffset offset) {
+    MemAddr addr = tcb_addr(task_id) + offset;
+    ulong* ptr = addr as ulong*;
+    return *ptr;
+}
+
+/// TCBフィールドを書込
+export void tcb_write(TaskId task_id, ByteOffset offset, ulong value) {
+    MemAddr addr = tcb_addr(task_id) + offset;
+    ulong* ptr = addr as ulong*;
+    *ptr = value;
+}
+
+// ============================================================
+// タスク操作関数
+// ============================================================
+
+/// タスクを生成する
+///
+/// task_id:   タスク番号（0〜MAX_TASKS-1）
+/// entry_fn:  タスクのエントリポイント関数アドレス
+/// pmm:       PMMへのポインタ（スタック割当用）
+///
+/// 戻り値: 成功=1, 失敗=0
+export ulong task_create(TaskId task_id, MemAddr entry_fn, PMM* pmm) {
+    DebugPort debug(0xE9);
+
+    // IDチェック
+    if (task_id >= MAX_TASKS) {
+        debug.println("[TASK] ERROR: task_id out of range" as void*);
+        return 0;
+    }
+
+    // PMMからスタック割当（4ページ = 16KB）
+    // FBConsole呼出しチェーン(fb_puts→draw_char→font_get_row→font_data)の
+    // 深い呼出し深度に対応するため、1ページでは不足
+    PageCount stack_pages = 4;
+    MemAddr stack_base = pmm->alloc_pages(stack_pages);
+    if (stack_base == 0) {
+        debug.println("[TASK] ERROR: cannot alloc stack" as void*);
+        return 0;
+    }
+
+    // スタックサイズ
+    ulong stack_size = 4096 * stack_pages;
+
+    // スタックトップ（x86_64はスタックが下方に伸びる）
+    MemAddr stack_top = stack_base + stack_size;
+
+    // 初期コンテキストをスタック上に構築
+    // switch_to()のpop順序に合わせる:
+    //   pop r15, pop r14, pop r13, pop r12, pop rbp, pop rbx, ret
+    //
+    // x86_64 ABI: 関数エントリ時のRSP = 16n + 8
+    //   (callがreturn addressをpushした直後の状態)
+    // そのため、entry_fnの上にダミーのreturn addressを配置する:
+    //
+    // スタック上（下方向に成長）:
+    //   [stack_top - 8]  = 0 (アラインメントパッド: 疑似return addr)
+    //   [stack_top - 16] = entry_fn (retで飛ぶアドレス)
+    //   [stack_top - 24] = 0 (rbx)
+    //   [stack_top - 32] = 0 (rbp)
+    //   [stack_top - 40] = 0 (r12)
+    //   [stack_top - 48] = 0 (r13)
+    //   [stack_top - 56] = 0 (r14)
+    //   [stack_top - 64] = 0 (r15)
+    ulong zero = 0;
+
+    // アラインメントパッド（疑似return address）
+    MemAddr addr_pad = stack_top - 8;
+    ulong* ptr_pad = addr_pad as ulong*;
+    *ptr_pad = zero;
+
+    MemAddr addr_ret = stack_top - 16;
+    ulong* ptr_ret = addr_ret as ulong*;
+    *ptr_ret = entry_fn;
+
+    MemAddr addr_rbx = stack_top - 24;
+    ulong* ptr_rbx = addr_rbx as ulong*;
+    *ptr_rbx = zero;
+
+    MemAddr addr_rbp = stack_top - 32;
+    ulong* ptr_rbp = addr_rbp as ulong*;
+    *ptr_rbp = zero;
+
+    MemAddr addr_r12 = stack_top - 40;
+    ulong* ptr_r12 = addr_r12 as ulong*;
+    *ptr_r12 = zero;
+
+    MemAddr addr_r13 = stack_top - 48;
+    ulong* ptr_r13 = addr_r13 as ulong*;
+    *ptr_r13 = zero;
+
+    MemAddr addr_r14 = stack_top - 56;
+    ulong* ptr_r14 = addr_r14 as ulong*;
+    *ptr_r14 = zero;
+
+    MemAddr addr_r15 = stack_top - 64;
+    ulong* ptr_r15 = addr_r15 as ulong*;
+    *ptr_r15 = zero;
+
+    // 初期RSP = 8つのエントリをpushした位置
+    MemAddr initial_rsp = stack_top - 64;
+
+    // TCBフィールドを書込
+    tcb_write(task_id, TCB_OFF_ID, task_id);
+    tcb_write(task_id, TCB_OFF_STATE, TASK_READY);
+    tcb_write(task_id, TCB_OFF_RSP, initial_rsp);
+    tcb_write(task_id, TCB_OFF_STACK_BASE, stack_base);
+    tcb_write(task_id, TCB_OFF_STACK_SIZE, stack_size);
+    tcb_write(task_id, TCB_OFF_ENTRY, entry_fn);
+    tcb_write(task_id, TCB_OFF_NEXT, zero);  // スケジューラが後で設定
+    tcb_write(task_id, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
+
+    // 拡張フィールド初期化
+    tcb_write(task_id, TCB_OFF_PROCESS_TYPE, zero);
+    tcb_write(task_id, TCB_OFF_PARENT_ID, zero);
+    tcb_write(task_id, TCB_OFF_EXIT_CODE, zero);
+    tcb_write(task_id, TCB_OFF_WAIT_FOR, zero);
+    tcb_write(task_id, TCB_OFF_CR3, zero);  // カーネル共有ページテーブル
+
+    debug.puts("[TASK] created id=" as void*);
+    debug.print_hex(task_id);
+    debug.puts(", stack=0x" as void*);
+    debug.print_hex(stack_base);
+    debug.puts(", entry=0x" as void*);
+    debug.print_hex(entry_fn);
+    debug.println("" as void*);
+
+    return 1;
+}
+
+/// idleタスク（タスクID=0）を初期化する
+/// idleタスクはスタック割当不要（現在のカーネルスタックを使用）
+export void task_create_idle() {
+    DebugPort debug(0xE9);
+    ulong zero = 0;
+
+    tcb_write(zero, TCB_OFF_ID, zero);
+    tcb_write(zero, TCB_OFF_STATE, TASK_RUNNING);
+    tcb_write(zero, TCB_OFF_RSP, zero);      // 実行中なのでRSP保存不要
+    tcb_write(zero, TCB_OFF_STACK_BASE, zero);
+    tcb_write(zero, TCB_OFF_STACK_SIZE, zero);
+    tcb_write(zero, TCB_OFF_ENTRY, zero);
+    tcb_write(zero, TCB_OFF_NEXT, zero);
+    tcb_write(zero, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
+
+    // 拡張フィールド初期化
+    tcb_write(zero, TCB_OFF_PROCESS_TYPE, zero);
+    tcb_write(zero, TCB_OFF_PARENT_ID, zero);
+    tcb_write(zero, TCB_OFF_EXIT_CODE, zero);
+    tcb_write(zero, TCB_OFF_WAIT_FOR, zero);
+
+    debug.println("[TASK] idle task (id=0) created" as void*);
+}
+
+/// タスクを終了する
+///
+/// 現在のタスクの状態をTERMINATEDに設定し、終了コードを保存。
+/// このタスクを待機(WAIT_FOR)しているタスクがあればREADYに戻す。
+///
+/// task_id:   終了するタスクID
+/// exit_code: 終了コード (0=正常終了)
+export void task_exit(TaskId task_id, ulong exit_code) {
+    DebugPort debug(0xE9);
+
+    // タスク状態をTERMINATEDに設定
+    tcb_write(task_id, TCB_OFF_STATE, TASK_TERMINATED);
+    tcb_write(task_id, TCB_OFF_EXIT_CODE, exit_code);
+
+    // このタスクを待っている他のタスクをウェイクアップ
+    TaskId i = 0;
+    while (i < MAX_TASKS) {
+        TaskState state = tcb_read(i, TCB_OFF_STATE);
+        if (state == TASK_BLOCKED) {
+            TaskId wait_target = tcb_read(i, TCB_OFF_WAIT_FOR);
+            if (wait_target == task_id) {
+                // 待機解除: READYに戻す
+                tcb_write(i, TCB_OFF_STATE, TASK_READY);
+                tcb_write(i, TCB_OFF_WAIT_FOR, 0);
+                tcb_write(i, TCB_OFF_TIMESLICE, DEFAULT_TIMESLICE);
+
+                debug.puts("[TASK] wake up task " as void*);
+                debug.print_hex(i);
+                debug.puts(" (was waiting for task " as void*);
+                debug.print_hex(task_id);
+                debug.println(")" as void*);
+            }
+        }
+        i = i + 1;
+    }
+
+    debug.puts("[TASK] exit id=" as void*);
+    debug.print_hex(task_id);
+    debug.puts(", code=" as void*);
+    debug.print_hex(exit_code);
+    debug.println("" as void*);
+}

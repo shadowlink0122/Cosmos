@@ -1,0 +1,192 @@
+//! platform: uefi
+// kernel::apps::aria::aria_file - Ariaファイル操作
+//
+// OPEN / SAVE をsyscall経由で処理する。
+// Bug #14回避のため、export関数は aria_file_op のみ。
+
+import ./aria_const;
+
+// ============================================================
+// ファイル操作ディスパッチャ
+// ============================================================
+
+// op=1: OPEN, op=2: SAVE
+export ulong aria_file_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+
+    // ----- OPEN (arg1=filename_addr, arg2=filename_len) -----
+    if (op == 1) {
+        // ファイル名をコピー (syscall: SC_FS_MEMCPY)
+        SyscallNr sc_memcpy = SC_FS_MEMCPY;
+        MemAddr memcpy_dst = ADDR_ARIA_FILENAME;
+        __asm__(`
+            movq ${r:sc_memcpy}, %rax;
+            movq ${r:memcpy_dst}, %rdi;
+            movq ${r:arg1}, %rsi;
+            movq ${r:arg2}, %rdx;
+            int $$0x80
+        `);
+        // NUL終端
+        MemAddr nul_addr = ADDR_ARIA_FILENAME + arg2;
+        __asm__(`
+            movq ${r:nul_addr}, %rdi;
+            xorq %rax, %rax;
+            movb %al, (%rdi)
+        `);
+        // ファイル名長保存
+        ulong* fl = (ADDR_ARIA_STATE + OFF_FNAME_LEN) as ulong*;
+        *fl = arg2;
+
+        // ファイルサイズ取得 (syscall: SC_FS_SIZE)
+        SyscallNr sc_size = SC_FS_SIZE;
+        MemAddr fname_addr = ADDR_ARIA_FILENAME;
+        ByteSize fsize = 0;
+        __asm__(`
+            movq ${r:sc_size}, %rax;
+            movq ${r:fname_addr}, %rdi;
+            int $$0x80;
+            movq %rax, ${=r:fsize}
+        `);
+
+        // ファイル読み込み or 作成
+        ByteSize loaded = 0;
+        if (fsize != 0xFFFFFFFFFFFFFFFF) {
+            if (fsize > 0) {
+                SyscallNr sc_read = SC_FS_READ;
+                MemAddr buf_addr = ADDR_ARIA_BUFFER;
+                ByteSize buf_cap = ARIA_BUF_SIZE;
+                __asm__(`
+                    movq ${r:sc_read}, %rax;
+                    movq ${r:fname_addr}, %rdi;
+                    movq ${r:buf_addr}, %rsi;
+                    movq ${r:buf_cap}, %rdx;
+                    int $$0x80;
+                    movq %rax, ${=r:loaded}
+                `);
+            }
+        } else {
+            // ファイルが存在しない場合は自動作成
+            SyscallNr sc_create = SC_FS_CREATE;
+            MemAddr create_buf = ADDR_ARIA_BUFFER;
+            ByteSize create_cap = ARIA_BUF_SIZE;
+            __asm__(`
+                movq ${r:sc_create}, %rax;
+                movq ${r:fname_addr}, %rdi;
+                movq ${r:create_buf}, %rsi;
+                movq ${r:create_cap}, %rdx;
+                int $$0x80
+            `);
+        }
+
+        // バッファサイズ設定
+        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+        *bs = loaded;
+
+        // 行数カウント
+        Count lines = 1;
+        ulong li = 0;
+        while (li < loaded) {
+            AsciiChar ch = 0;
+            MemAddr la = ADDR_ARIA_BUFFER + li;
+            __asm__(`
+                movq ${r:la}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            if (ch == 0x0A) {
+                lines = lines + 1;
+            }
+            li = li + 1;
+        }
+        ulong* nl = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+        *nl = lines;
+
+        // 初期状態設定
+        ulong* mode = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
+        ulong zero = 0;
+        *mode = zero;
+        ulong* cx = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+        *cx = zero;
+        ulong* cy = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+        *cy = zero;
+        ulong* st = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
+        *st = zero;
+        ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+        *mod = zero;
+        ulong* cl = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
+        *cl = zero;
+
+        // ダーティフラグ、ステータスメッセージ、前回カーソル位置を初期化
+        ulong* dp = (ADDR_ARIA_STATE + OFF_DIRTY) as ulong*;
+        ulong dirty_full = DIRTY_FULL;
+        *dp = dirty_full;
+        ulong* smp = (ADDR_ARIA_STATE + OFF_STATUS_MSG) as ulong*;
+        *smp = zero;
+        ulong* pcyp = (ADDR_ARIA_STATE + OFF_PREV_CUR_Y) as ulong*;
+        *pcyp = zero;
+
+        // running = 1
+        ulong* rp = (ADDR_ARIA_STATE + OFF_RUNNING) as ulong*;
+        ulong one = 1;
+        *rp = one;
+
+        return 0;
+    }
+
+    // ----- SAVE -----
+    if (op == 2) {
+        ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+        ulong buf_size = *bs;
+
+        // ファイルが存在しない場合は作成
+        SyscallNr sc_sz = SC_FS_SIZE;
+        MemAddr sv_fname = ADDR_ARIA_FILENAME;
+        ulong fcheck = 0;
+        __asm__(`
+            movq ${r:sc_sz}, %rax;
+            movq ${r:sv_fname}, %rdi;
+            int $$0x80;
+            movq %rax, ${=r:fcheck}
+        `);
+        if (fcheck == 0xFFFFFFFFFFFFFFFF) {
+            SyscallNr sc_cr = SC_FS_CREATE;
+            MemAddr cr_buf2 = ADDR_ARIA_BUFFER;
+            ByteSize cr_cap2 = 4096;
+            __asm__(`
+                movq ${r:sc_cr}, %rax;
+                movq ${r:sv_fname}, %rdi;
+                movq ${r:cr_buf2}, %rsi;
+                movq ${r:cr_cap2}, %rdx;
+                int $$0x80
+            `);
+        }
+
+        // 書き込み
+        SyscallNr sc_wr = SC_FS_WRITE;
+        MemAddr wr_buf = ADDR_ARIA_BUFFER;
+        ulong written = 0;
+        __asm__(`
+            movq ${r:sc_wr}, %rax;
+            movq ${r:sv_fname}, %rdi;
+            movq ${r:wr_buf}, %rsi;
+            movq ${r:buf_size}, %rdx;
+            int $$0x80;
+            movq %rax, ${=r:written}
+        `);
+
+        ulong* sm = (ADDR_ARIA_STATE + OFF_STATUS_MSG) as ulong*;
+        if (written != 0xFFFFFFFFFFFFFFFF) {
+            ulong* mod = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+            ulong zero = 0;
+            *mod = zero;
+            ulong msg_ok = 1;
+            *sm = msg_ok;
+        } else {
+            ulong msg_fail = 2;
+            *sm = msg_fail;
+        }
+        return 0;
+    }
+
+    return 0;
+}

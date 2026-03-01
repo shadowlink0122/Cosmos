@@ -1,0 +1,36 @@
+//! platform: uefi
+// kernel::apps::mem - memコマンド（メモリ使用状況表示）
+
+import ../../shell/shell_io;
+import ../../config;
+import ../../sched/scheduler;
+import ../../mm/pmm;
+
+/// memコマンド: メモリ使用状況表示
+export ulong app_mem(ulong argc, ulong argv) {
+    PMM* pmm = sched_get_pmm();
+
+    shell_set_color(SHELL_COLOR_HEADER);
+    shell_println("Physical Memory (PMM):" as void*);
+    shell_set_color(SHELL_COLOR_OUTPUT);
+
+    shell_puts("  Total pages: " as void*);
+    shell_print_hex(pmm->total_pages);
+    shell_newline();
+
+    shell_puts("  Free pages:  " as void*);
+    shell_print_hex(pmm->free_pages);
+    shell_newline();
+
+    ulong total_kb = pmm->total_pages * 4;
+    ulong free_kb = pmm->free_pages * 4;
+
+    shell_puts("  Total: " as void*);
+    shell_print_hex(total_kb);
+    shell_println(" KB" as void*);
+
+    shell_puts("  Free:  " as void*);
+    shell_print_hex(free_kb);
+    shell_println(" KB" as void*);
+    return 0;
+}

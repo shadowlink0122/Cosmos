@@ -1,0 +1,236 @@
+//! platform: uefi
+// kernel::loader::elf_loader - ELF64 ローダー
+//
+// 静的リンクされた ELF64 バイナリを解析し、
+// PT_LOAD セグメントをメモリにロードする。
+//
+// ELF64ヘッダー構造（64バイト）:
+//   [0..3]   e_ident magic: 0x7F 'E' 'L' 'F'
+//   [4]      EI_CLASS: 2 = 64bit
+//   [5]      EI_DATA: 1 = Little Endian
+//   [16..17] e_type: 2 = ET_EXEC
+//   [18..19] e_machine: 0x3E = x86_64
+//   [24..31] e_entry: エントリポイントアドレス
+//   [32..39] e_phoff: Program Headerテーブルのオフセット
+//   [54..55] e_phentsize: Program Headerエントリサイズ
+//   [56..57] e_phnum: Program Headerエントリ数
+//
+// Program Header構造（56バイト）:
+//   [0..3]   p_type: 1 = PT_LOAD
+//   [4..7]   p_flags
+//   [8..15]  p_offset: ファイル内オフセット
+//   [16..23] p_vaddr: 仮想アドレス
+//   [32..39] p_filesz: ファイル内サイズ
+//   [40..47] p_memsz: メモリ内サイズ
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../types;
+
+// ELF定数
+const ulong ELF_MAGIC_0 = 0x7F;  // \x7f
+const ulong ELF_MAGIC_1 = 0x45;  // E
+const ulong ELF_MAGIC_2 = 0x4C;  // L
+const ulong ELF_MAGIC_3 = 0x46;  // F
+const ulong ELF_CLASS_64 = 2;
+const ulong ELF_DATA_LE  = 1;
+const ulong ET_EXEC = 2;
+const ulong EM_X86_64 = 0x3E;
+const ulong PT_LOAD = 1;
+
+// ============================================================
+// バイト読み取りヘルパー
+// ============================================================
+
+/// 1バイト読み取り
+ulong read_u8(MemAddr addr) {
+    ulong val = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:val}
+    `);
+    return val;
+}
+
+/// 2バイト（Little Endian）読み取り
+ulong read_u16(MemAddr addr) {
+    ulong b0 = read_u8(addr);
+    ulong b1 = read_u8(addr + 1);
+    return b0 + b1 * 256;
+}
+
+/// 4バイト（Little Endian）読み取り
+ulong read_u32(MemAddr addr) {
+    ulong b0 = read_u16(addr);
+    ulong b1 = read_u16(addr + 2);
+    return b0 + b1 * 65536;
+}
+
+/// 8バイト（Little Endian）読み取り
+ulong read_u64(MemAddr addr) {
+    ulong lo = read_u32(addr);
+    ulong hi = read_u32(addr + 4);
+    return lo + hi * 0x100000000;
+}
+
+/// メモリコピー
+void memcpy_bytes(MemAddr dst, MemAddr src, ulong len) {
+    ulong i = 0;
+    while (i < len) {
+        ulong val = read_u8(src + i);
+        ulong da = dst + i;
+        __asm__(`
+            movq ${r:da}, %rdi;
+            movq ${r:val}, %rax;
+            movb %al, (%rdi)
+        `);
+        i = i + 1;
+    }
+}
+
+/// メモリゼロクリア
+void memzero(MemAddr addr, ulong len) {
+    ulong i = 0;
+    while (i < len) {
+        ulong da = addr + i;
+        __asm__(`
+            movq ${r:da}, %rdi;
+            movb $$0, (%rdi)
+        `);
+        i = i + 1;
+    }
+}
+
+// ============================================================
+// ELF検証結果
+// ============================================================
+
+// ELFロード結果（固定メモリに格納）
+// 0 = 成功、それ以外 = エラーコード
+const ulong ELF_OK = 0;
+const ulong ELF_ERR_MAGIC = 1;    // マジックナンバー不一致
+const ulong ELF_ERR_CLASS = 2;    // 64bitでない
+const ulong ELF_ERR_ENDIAN = 3;   // Little Endianでない
+const ulong ELF_ERR_TYPE = 4;     // ET_EXECでない
+const ulong ELF_ERR_MACHINE = 5;  // x86_64でない
+const ulong ELF_ERR_NO_LOAD = 6;  // PT_LOADセグメントなし
+
+// ============================================================
+// ELF64ローダーメイン
+// ============================================================
+
+/// ELF64バイナリを検証してロードする
+///
+/// elf_data: ELFバイナリデータのアドレス
+/// elf_size: ELFバイナリのサイズ
+/// entry_out: エントリポイントアドレスの出力先
+///
+/// 戻り値: 0=成功, それ以外=エラーコード
+export ulong elf_load(MemAddr elf_data, ulong elf_size, ulong* entry_out) {
+    DebugPort debug(0xE9);
+
+    // --- ELFヘッダー検証 ---
+
+    // マジックナンバー
+    if (read_u8(elf_data) != ELF_MAGIC_0) { return ELF_ERR_MAGIC; }
+    if (read_u8(elf_data + 1) != ELF_MAGIC_1) { return ELF_ERR_MAGIC; }
+    if (read_u8(elf_data + 2) != ELF_MAGIC_2) { return ELF_ERR_MAGIC; }
+    if (read_u8(elf_data + 3) != ELF_MAGIC_3) { return ELF_ERR_MAGIC; }
+
+    // EI_CLASS = 64bit
+    if (read_u8(elf_data + 4) != ELF_CLASS_64) { return ELF_ERR_CLASS; }
+
+    // EI_DATA = Little Endian
+    if (read_u8(elf_data + 5) != ELF_DATA_LE) { return ELF_ERR_ENDIAN; }
+
+    // e_type = ET_EXEC (offset 16, 2bytes)
+    ulong e_type = read_u16(elf_data + 16);
+    if (e_type != ET_EXEC) { return ELF_ERR_TYPE; }
+
+    // e_machine = x86_64 (offset 18, 2bytes)
+    ulong e_machine = read_u16(elf_data + 18);
+    if (e_machine != EM_X86_64) { return ELF_ERR_MACHINE; }
+
+    // エントリポイント (offset 24, 8bytes)
+    ulong e_entry = read_u64(elf_data + 24);
+
+    // Program Header テーブル (offset 32, 8bytes)
+    ulong e_phoff = read_u64(elf_data + 32);
+
+    // Program Header エントリサイズ (offset 54, 2bytes)
+    ulong e_phentsize = read_u16(elf_data + 54);
+
+    // Program Header エントリ数 (offset 56, 2bytes)
+    ulong e_phnum = read_u16(elf_data + 56);
+
+    debug.puts("[ELF] entry=0x" as void*);
+    debug.print_hex(e_entry);
+    debug.puts(", phoff=0x" as void*);
+    debug.print_hex(e_phoff);
+    debug.puts(", phnum=" as void*);
+    debug.print_hex(e_phnum);
+    debug.println("" as void*);
+
+    // --- PT_LOADセグメントのロード ---
+
+    ulong loaded = 0;
+    ulong ph_idx = 0;
+    while (ph_idx < e_phnum) {
+        MemAddr ph = elf_data + e_phoff + ph_idx * e_phentsize;
+
+        // p_type (offset 0, 4bytes)
+        ulong p_type = read_u32(ph);
+
+        if (p_type == PT_LOAD) {
+            // p_offset (offset 8, 8bytes) — ファイル内オフセット
+            ulong p_offset = read_u64(ph + 8);
+
+            // p_vaddr (offset 16, 8bytes) — ロード先仮想アドレス
+            ulong p_vaddr = read_u64(ph + 16);
+
+            // p_filesz (offset 32, 8bytes) — ファイル内サイズ
+            ulong p_filesz = read_u64(ph + 32);
+
+            // p_memsz (offset 40, 8bytes) — メモリ内サイズ
+            ulong p_memsz = read_u64(ph + 40);
+
+            debug.puts("[ELF] LOAD: vaddr=0x" as void*);
+            debug.print_hex(p_vaddr);
+            debug.puts(", filesz=0x" as void*);
+            debug.print_hex(p_filesz);
+            debug.puts(", memsz=0x" as void*);
+            debug.print_hex(p_memsz);
+            debug.println("" as void*);
+
+            // ファイルデータをコピー
+            if (p_filesz > 0) {
+                memcpy_bytes(p_vaddr, elf_data + p_offset, p_filesz);
+            }
+
+            // BSS領域のゼロクリア (memsz > filesz の部分)
+            if (p_memsz > p_filesz) {
+                ulong bss_start = p_vaddr + p_filesz;
+                ulong bss_size = p_memsz - p_filesz;
+                memzero(bss_start, bss_size);
+            }
+
+            loaded = loaded + 1;
+        }
+
+        ph_idx = ph_idx + 1;
+    }
+
+    if (loaded == 0) { return ELF_ERR_NO_LOAD; }
+
+    *entry_out = e_entry;
+
+    debug.puts("[ELF] loaded " as void*);
+    debug.print_hex(loaded);
+    debug.puts(" segments, entry=0x" as void*);
+    debug.print_hex(e_entry);
+    debug.println("" as void*);
+
+    return ELF_OK;
+}

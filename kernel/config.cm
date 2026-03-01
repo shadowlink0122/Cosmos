@@ -1,0 +1,107 @@
+//! platform: uefi
+// kernel::config - カーネル全体設定
+//
+// 固定メモリアドレスマップ、バージョン定数、色定数を一元管理する。
+// 型定義は types.cm に分離。各モジュールはこのファイルをimportして参照する。
+
+import ./types;
+
+// ============================================================
+// カーネルバージョン
+// ============================================================
+
+export const ulong KERNEL_VERSION_MAJOR = 0;
+export const ulong KERNEL_VERSION_MINOR = 6;
+export const ulong KERNEL_VERSION_PATCH = 0;
+
+// ============================================================
+// 固定メモリアドレスマップ
+// ============================================================
+//
+// カーネルが使用する低メモリ領域のレイアウト:
+//   0x800 - 0x8FF : GDT (永続配置、5スロット + GDTR)
+//   0x900 - 0x9FF : PIT タイマー状態
+//   0xA00 - 0xAFF : スケジューラ状態
+//   0xB00 - 0xBFF : TSS (0xB20から104バイト)
+//   0xC00 - 0xCFF : キーボードバッファ
+//   0xD00 - 0xDFF : シェルバッファ
+//   0xE00 - 0xEFF : FBConsole
+//   0x1000-0x11FF : TCB配列 (最大8タスク × 64バイト)
+
+// --- GDT ---
+export const MemAddr ADDR_GDT_BASE         = 0x800;
+
+// --- PIT タイマー ---
+export const MemAddr ADDR_PIT_TICK_COUNT   = 0x900;
+export const MemAddr ADDR_PIT_RESCHED_FLAG = 0x908;
+
+// --- スケジューラ ---
+export const MemAddr ADDR_SCHED_CURRENT    = 0xA00;
+export const MemAddr ADDR_SCHED_COUNT      = 0xA08;
+export const MemAddr ADDR_SCHED_ENABLED    = 0xA10;
+export const MemAddr ADDR_SCHED_PMM        = 0xA18;
+
+// --- TSS ---
+export const MemAddr ADDR_TSS_BASE         = 0xB20;
+
+// --- キーボードバッファ ---
+export const MemAddr ADDR_KB_BUF           = 0xC00;
+export const MemAddr ADDR_KB_WRITE_IDX     = 0xC40;
+export const MemAddr ADDR_KB_READ_IDX      = 0xC48;
+export const MemAddr ADDR_KB_COUNT         = 0xC50;
+export const MemAddr ADDR_KB_LAST_SCAN     = 0xC58;
+
+// --- シェルバッファ ---
+export const MemAddr ADDR_SHELL_BUF        = 0xD00;
+export const MemAddr ADDR_SHELL_POS        = 0xD80;
+export const MemAddr ADDR_RECOVERY_RSP     = 0xD88;  // 例外復帰用RSP
+export const MemAddr ADDR_RECOVERY_RIP     = 0xD90;  // 例外復帰用RIP
+export const MemAddr ADDR_SHELL_CURSOR     = 0xDA8;  // 編集カーソル位置（バッファ内）
+
+// --- FBConsole ---
+export const MemAddr GLOBAL_FB_CONSOLE_ADDR = 0xE00;
+
+// --- TCB配列 ---
+export const MemAddr ADDR_TCB_BASE         = 0x1000;
+
+// --- CosmFS 状態 ---
+// ファイルテーブル: 64エントリ × 48B = 3072B (0x1200-0x1DFF)
+export const MemAddr ADDR_FS_FILE_TABLE    = 0x1200;  // ファイルテーブル先頭
+export const MemAddr ADDR_FS_FILE_COUNT    = 0x1E00;  // 現在のファイル数
+export const MemAddr ADDR_FS_INITIALIZED   = 0x1E08;  // 初期化フラグ
+export const MemAddr ADDR_FS_CWD           = 0x1E10;  // カレントディレクトリ(インデックス, 0=ルート)
+
+// --- シェル用グローバル参照 ---
+export const MemAddr ADDR_GLOBAL_HEAP      = 0x1E18;  // Heap構造体アドレス
+export const MemAddr ADDR_GLOBAL_PMM       = 0x3400;  // PMM構造体アドレス（ユーザプロセス用）
+
+// --- 環境変数テーブル ---
+// 16変数 × 64B = 1024B (0x1E20-0x221F)
+// 各エントリ: [key: 24B][NUL][value: 38B][NUL] = 64B
+export const MemAddr ADDR_ENV_TABLE        = 0x1E20;  // 環境変数テーブル先頭
+export const MemAddr ADDR_ENV_COUNT        = 0x2220;  // 変数数
+
+// --- Aria エディタ ---
+// 環境変数テーブルの後方に配置 (0x2230〜)
+export const MemAddr ADDR_ARIA_STATE       = 0x2230;  // エディタ状態 (128B)
+export const MemAddr ADDR_ARIA_BUFFER      = 0x2330;  // テキストバッファ (4KB)
+export const MemAddr ADDR_ARIA_FILENAME    = 0x3330;  // ファイル名バッファ (64B)
+export const MemAddr ADDR_ARIA_CMDLINE     = 0x3370;  // コマンドラインバッファ (64B)
+export const ulong ARIA_BUF_SIZE           = 4096;    // テキストバッファサイズ
+
+// --- アプリケーションロード領域 ---
+// 独立アプリのCosmEXEバイナリをこのアドレスにロードして実行
+export const MemAddr ADDR_APP_LOAD         = 0x10000;  // アプリロード先 (64KB)
+export const ulong APP_MAX_SIZE            = 0xC000;   // 最大アプリサイズ (48KB)
+export const ulong COSMEXE_MAGIC           = 0x004558456D736F43;  // "CosmEXE\0"
+export const ulong COSMEXE_HEADER_SIZE     = 32;       // ヘッダサイズ
+
+// ============================================================
+// シェル色定数
+// ============================================================
+
+export const Color SHELL_COLOR_PROMPT = 0x0000FFFF;  // シアン
+export const Color SHELL_COLOR_INPUT  = 0x00FFFFFF;  // 白
+export const Color SHELL_COLOR_ERROR  = 0x00FF4444;  // 赤
+export const Color SHELL_COLOR_HEADER = 0x00FFAA00;  // オレンジ
+export const Color SHELL_COLOR_OUTPUT = 0x0000FF00;  // 緑

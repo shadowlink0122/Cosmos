@@ -1,0 +1,24 @@
+//! platform: uefi
+// kernel::drivers::output_writer - 出力デバイス共通インターフェース
+//
+// SerialPort, DebugPort 等の出力デバイスが共通で実装する
+// テキスト出力APIを定義する。
+//
+// 使用例:
+//   impl SerialPort for OutputWriter { ... }
+//   impl DebugPort for OutputWriter { ... }
+
+// ============================================================
+// OutputWriter インターフェース
+// ============================================================
+
+/// テキスト出力デバイスの共通インターフェース
+///
+/// putc/puts/println/print_hex の4メソッドを要求する。
+/// SerialPort, DebugPort が実装。
+export interface OutputWriter {
+    void putc(AsciiChar ch);
+    void puts(void* data);
+    void println(void* data);
+    void print_hex(ulong value);
+}

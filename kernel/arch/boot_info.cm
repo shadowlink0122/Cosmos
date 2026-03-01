@@ -1,0 +1,41 @@
+//! platform: uefi
+// kernel::boot::boot_info - ブート情報構造体
+//
+// ExitBootServices前に取得した情報をカーネルに引き渡すための構造体。
+// メモリマップ、フレームバッファ情報を保持する。
+
+// ============================================================
+// BootInfo 構造体
+// ============================================================
+
+// フレームバッファ情報
+// GOPから取得した画面描画に必要な情報
+export struct FramebufferInfo {
+    ulong base_addr;       // フレームバッファの物理アドレス
+    ulong size;            // フレームバッファのサイズ（バイト）
+    uint  width;           // 水平解像度（ピクセル）
+    uint  height;          // 垂直解像度（ピクセル）
+    uint  stride;          // 1行あたりのピクセル数（パディング含む）
+    uint  pixel_format;    // ピクセルフォーマット（0=BGRA, 1=RGBA）
+}
+
+// メモリマップ情報
+// ExitBootServicesに必要なmap_keyも保持
+export struct MemoryMapInfo {
+    void* map_buffer;      // メモリマップバッファへのポインタ
+    ulong map_size;        // メモリマップ全体のサイズ
+    ulong map_key;         // ExitBootServicesに渡すキー
+    ulong desc_size;       // 1エントリのサイズ
+    uint  desc_version;    // ディスクリプタバージョン
+    uint  entry_count;     // エントリ数
+}
+
+// ブート情報全体
+// efi_mainで初期化し、カーネルに渡す
+export struct BootInfo {
+    FramebufferInfo fb;    // フレームバッファ情報
+    MemoryMapInfo   mmap;  // メモリマップ情報
+    ulong           acpi_rsdp;      // ACPI RSDPアドレス（将来用）
+    ulong           initramfs_base; // initramfsデータの先頭アドレス
+    ulong           initramfs_size; // initramfsデータのバイト数
+}

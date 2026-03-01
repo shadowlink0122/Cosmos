@@ -1,0 +1,48 @@
+//! platform: uefi
+// kernel::tests::test_keyboard - PS/2キーボードドライバテスト
+
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../drivers/keyboard;
+import ../test_runner;
+
+// ============================================================
+// キーボード テスト
+// ============================================================
+
+/// キーボードドライバテストを実行する
+export void test_keyboard(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === Keyboard Tests ===" as void*);
+
+    // テスト1: 初期状態でバッファが空
+    ulong has_data = kb_has_data();
+    ulong zero = 0 as ulong;
+    runner->assert_eq(has_data, zero, "Keyboard buffer is empty after init" as void*);
+
+    // テスト2: kb_read_scancodeがバッファ空時に0を返す
+    ulong sc = kb_read_scancode();
+    runner->assert_eq(sc, zero, "kb_read_scancode returns 0 when empty" as void*);
+
+    // テスト3: スキャンコード→ASCII変換テスト（'a' = scancode 0x1E → 0x61）
+    ulong ascii_a = scancode_to_ascii(0x1E);
+    ulong expected_a = 0x61 as ulong;
+    runner->assert_eq(ascii_a, expected_a, "Scancode 0x1E maps to 'a' (0x61)" as void*);
+
+    // テスト4: スキャンコード→ASCII変換テスト（Enter = scancode 0x1C → 0x0A）
+    ulong ascii_enter = scancode_to_ascii(0x1C);
+    ulong expected_enter = 0x0A as ulong;
+    runner->assert_eq(ascii_enter, expected_enter, "Scancode 0x1C maps to Enter (0x0A)" as void*);
+
+    // テスト5: スキャンコード→ASCII変換テスト（Space = scancode 0x39 → 0x20）
+    ulong ascii_space = scancode_to_ascii(0x39);
+    ulong expected_space = 0x20 as ulong;
+    runner->assert_eq(ascii_space, expected_space, "Scancode 0x39 maps to Space (0x20)" as void*);
+
+    // テスト6: 未定義スキャンコードが0を返す
+    ulong ascii_undef = scancode_to_ascii(0xF0);
+    runner->assert_eq(ascii_undef, zero, "Undefined scancode returns 0" as void*);
+
+    serial.println("[TEST] Keyboard tests complete" as void*);
+}

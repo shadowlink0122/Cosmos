@@ -1,0 +1,119 @@
+//! platform: uefi
+// kernel::tests::test_heap - ヒープアロケータテスト
+//
+// ヒープの初期化状態確認に加え、alloc()で返されたメモリへの
+// 実際の書込み・読み戻し検証を行う。
+//
+// 注意: Cmのメソッド呼出しではselfがコピーされるため（Bug #13/Bug #9）、
+// ポインタ経由のalloc()は呼出し元のoffsetが更新されない。
+// そのため、alloc()の「メモリアクセス可能性」の検証に集中し、
+// offset追跡テストはefi_main_test.cm内で直接実行する。
+
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../mm/heap;
+import ../../config;
+import ../test_runner;
+
+// ============================================================
+// ヒープ テスト
+// ============================================================
+
+/// ヒープ基本テストを実行する
+export void test_heap(TestRunner* runner, Heap* heap) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === Heap Tests ===" as void*);
+
+    // テスト1: ベースアドレスが非ゼロ（初期化成功）
+    MemAddr base = heap->base_addr;
+    runner->assert_nonzero(base, "Heap: base addr nonzero" as void*);
+
+    // テスト2: サイズが非ゼロ（ページ割当成功）
+    ulong size = heap->size;
+    runner->assert_nonzero(size, "Heap: size nonzero" as void*);
+
+    // テスト3: 初期offsetが0
+    ulong offset0 = heap->offset;
+    runner->assert_eq(offset0, 0, "Heap: initial offset is 0" as void*);
+
+    // テスト4: free_bytes() == size（初期状態）
+    ulong free0 = heap->free_bytes();
+    runner->assert_eq(free0, size, "Heap: initial free == size" as void*);
+
+    // テスト5: alloc(16) — 非ゼロアドレスが返る
+    MemAddr ptr1 = heap->alloc(16);
+    runner->assert_nonzero(ptr1, "Heap: alloc(16) returns nonzero" as void*);
+
+    // テスト6: alloc結果に書込み→読み戻し（PF検出の核心テスト）
+    runner->assert_mem_write(ptr1, 0xDEADBEEFCAFE0001, "Heap: alloc'd memory writable" as void*);
+
+    // テスト7: 2回目のalloc — 異なるアドレスが返る
+    MemAddr ptr2 = heap->alloc(32);
+    runner->assert_nonzero(ptr2, "Heap: alloc(32) returns nonzero" as void*);
+    runner->assert_ne(ptr1, ptr2, "Heap: 2nd alloc returns different addr" as void*);
+
+    // テスト8: 2回目のalloc結果にも書込み可能
+    runner->assert_mem_write(ptr2, 0x0102030405060708, "Heap: 2nd alloc'd memory writable" as void*);
+
+    // テスト9: 1回目のallocメモリが上書きされていないこと
+    ulong* check_ptr1 = ptr1 as ulong*;
+    ulong readback1 = *check_ptr1;
+    runner->assert_eq(readback1, 0xDEADBEEFCAFE0001, "Heap: 1st alloc not corrupted" as void*);
+
+    // テスト10: allocアドレスが8バイトアライン
+    ulong align_mask = 7;
+    ulong align1 = ptr1 & align_mask;
+    runner->assert_eq(align1, 0, "Heap: alloc addr 8-byte aligned" as void*);
+    ulong align2 = ptr2 & align_mask;
+    runner->assert_eq(align2, 0, "Heap: 2nd alloc addr 8-byte aligned" as void*);
+
+    // テスト11: allocアドレスがbase_addr〜base_addr+sizeの範囲内
+    ulong in_range1 = 0;
+    if (ptr1 >= base) {
+        ulong end = base + size;
+        if (ptr1 < end) {
+            in_range1 = 1;
+        }
+    }
+    runner->assert_true(in_range1, "Heap: alloc addr within heap range" as void*);
+
+    // テスト12: 大量alloc（ヒープサイズ超過）→ 0が返る
+    MemAddr huge = heap->alloc(size);
+    runner->assert_eq(huge, 0, "Heap: oversized alloc returns 0" as void*);
+
+    // ============================================================
+    // フリーリスト再利用テスト
+    // ============================================================
+
+    // テスト13: free後のフリーリストカウント
+    heap->free(ptr1);
+    runner->assert_eq(heap->free_count, 1, "Heap: free_count=1 after free" as void*);
+
+    // テスト14: free後に再alloc → フリーリストから再利用
+    MemAddr ptr3 = heap->alloc(16);
+    runner->assert_nonzero(ptr3, "Heap: realloc after free returns nonzero" as void*);
+
+    // テスト15: 再利用ブロックに書き込み可能
+    runner->assert_mem_write(ptr3, 0xAAAABBBBCCCCDDDD, "Heap: reused block writable" as void*);
+
+    // テスト16: ptr2がまだ有効（上書きされていない）
+    ulong* check_ptr2 = ptr2 as ulong*;
+    ulong readback2 = *check_ptr2;
+    runner->assert_eq(readback2, 0x0102030405060708, "Heap: ptr2 not corrupted after reuse" as void*);
+
+    // テスト17: free → free → alloc のサイクル
+    heap->free(ptr2);
+    heap->free(ptr3);
+    runner->assert_eq(heap->free_count, 2, "Heap: free_count=2 after 2 frees" as void*);
+
+    MemAddr ptr4 = heap->alloc(8);
+    runner->assert_nonzero(ptr4, "Heap: alloc from 2-item freelist" as void*);
+    runner->assert_mem_write(ptr4, 0x1234567890ABCDEF, "Heap: freelist reuse writable" as void*);
+
+    // テスト18: アラインメント確認（フリーリスト経由）
+    ulong align4 = ptr4 & align_mask;
+    runner->assert_eq(align4, 0, "Heap: freelist alloc 8-byte aligned" as void*);
+
+    serial.println("[TEST] Heap tests complete" as void*);
+}

@@ -1,0 +1,593 @@
+//! platform: uefi
+// kernel::lib::print - フレームバッファテキスト描画（printk相当）
+//
+// ExitBootServices後のフレームバッファへの文字列描画を提供する。
+// 8x16ビットマップフォントを使用してピクセル単位で文字を描画。
+//
+// impl FBConsole { ... } パターンでメソッド呼び出しを提供:
+//   FBConsole con();
+//   con.set_color(0x0000FF00);
+//   con.println("Hello" as void*);
+//
+// 設計: ポインタ内包型（Wrapper）
+//   Bug #10（UEFIターゲットのimpl制限）を回避するため、
+//   FBConsoleは固定アドレスへの1フィールドラッパーとして実装。
+//   全フィールドアクセスはaddr+offsetのポインタ算術で行う。
+
+import ./font;
+import ../drivers/serial;
+import ../config;
+
+// ============================================================
+// FBConsole 構造体（ポインタ内包型）
+// ============================================================
+
+/// フレームバッファテキストコンソール
+/// addr フィールドに固定メモリアドレスを保持し、
+/// そのアドレスにレイアウトされたulongフィールドを操作する。
+///
+/// メモリレイアウト (addr + offset):
+///   +0x00: fb_addr         — フレームバッファの物理アドレス
+///   +0x08: width           — 水平解像度（ピクセル）
+///   +0x10: height          — 垂直解像度（ピクセル）
+///   +0x18: stride          — 1行あたりのピクセル数
+///   +0x20: cursor_x        — テキストカーソル列（文字単位）
+///   +0x28: cursor_y        — テキストカーソル行（文字単位）
+///   +0x30: fg_color        — 前景色（BGRA）
+///   +0x38: bg_color        — 背景色（BGRA）
+///   +0x40: cursor_enabled  — カーソル点滅有効フラグ (0/1)
+///   +0x48: cursor_tick     — 前回の点滅切替tick
+///   +0x50: cursor_state    — 点滅状態 (0=非表示, 1=表示)
+export struct FBConsole {
+    MemAddr addr;  // グローバルFBConsole状態のベースアドレス（実データへのポインタ）
+}
+
+// ============================================================
+// フィールドオフセット定数
+// ============================================================
+
+const ByteOffset FB_OFF_ADDR           = 0x00;
+const ByteOffset FB_OFF_WIDTH          = 0x08;
+const ByteOffset FB_OFF_HEIGHT         = 0x10;
+const ByteOffset FB_OFF_STRIDE         = 0x18;
+const ByteOffset FB_OFF_CURSOR_X       = 0x20;
+const ByteOffset FB_OFF_CURSOR_Y       = 0x28;
+const ByteOffset FB_OFF_FG_COLOR       = 0x30;
+const ByteOffset FB_OFF_BG_COLOR       = 0x38;
+const ByteOffset FB_OFF_CURSOR_ENABLED = 0x40;
+const ByteOffset FB_OFF_CURSOR_TICK    = 0x48;
+const ByteOffset FB_OFF_CURSOR_STATE   = 0x50;
+const ByteOffset FB_OFF_BACKBUF        = 0x58;  // バックバッファアドレス (0=無効)
+const ByteOffset FB_OFF_BATCH_MODE     = 0x60;  // バッチモードフラグ (1=バックバッファに描画)
+const ByteOffset FB_OFF_DIRTY_MIN_Y    = 0x68;  // ダーティ領域: 最小ピクセルY座標
+const ByteOffset FB_OFF_DIRTY_MAX_Y    = 0x70;  // ダーティ領域: 最大ピクセルY座標
+
+// カーソル点滅間隔（PIT tick数、100Hz基準で50tick = 500ms）
+const Tick CURSOR_BLINK_INTERVAL = 50;
+
+// ============================================================
+// カラー定数
+// ============================================================
+
+const Color FB_COLOR_WHITE   = 0x00FFFFFF;
+const Color FB_COLOR_BLACK   = 0x00000000;
+const Color FB_COLOR_GREEN   = 0x0000FF00;
+const Color FB_COLOR_DARK_BG = 0x00101020;
+
+// ============================================================
+// FBConsole impl
+// ============================================================
+
+impl FBConsole {
+    /// デフォルトコンストラクタ: グローバルFBConsoleアドレスを設定
+    overload self() {
+        self.addr = GLOBAL_FB_CONSOLE_ADDR;
+    }
+
+    // --------------------------------------------------------
+    // フィールドアクセス（ポインタ算術）
+    // --------------------------------------------------------
+
+    /// 指定オフセットの値を読み取る
+    ulong _read(ulong offset) {
+        ulong* ptr = (self.addr + offset) as ulong*;
+        return *ptr;
+    }
+
+    /// 指定オフセットに値を書き込む
+    void _write(ulong offset, ulong value) {
+        ulong* ptr = (self.addr + offset) as ulong*;
+        *ptr = value;
+    }
+
+    // --------------------------------------------------------
+    // 初期化
+    // --------------------------------------------------------
+
+    /// FBConsoleを初期化する
+    void init(MemAddr fb_addr, ulong width, ulong height, ulong stride) {
+        self._write(FB_OFF_ADDR, fb_addr);
+        self._write(FB_OFF_WIDTH, width);
+        self._write(FB_OFF_HEIGHT, height);
+        self._write(FB_OFF_STRIDE, stride);
+        self._write(FB_OFF_CURSOR_X, 0);
+        self._write(FB_OFF_CURSOR_Y, 0);
+        self._write(FB_OFF_FG_COLOR, FB_COLOR_GREEN);
+        self._write(FB_OFF_BG_COLOR, FB_COLOR_DARK_BG);
+        self._write(FB_OFF_CURSOR_ENABLED, 0);
+        self._write(FB_OFF_CURSOR_TICK, 0);
+        self._write(FB_OFF_CURSOR_STATE, 0);
+    }
+
+    // --------------------------------------------------------
+    // プロパティアクセス
+    // --------------------------------------------------------
+
+    /// 前景色を設定する
+    void set_color(Color fg) {
+        self._write(FB_OFF_FG_COLOR, fg);
+    }
+
+    /// 最大列数を取得
+    ulong max_cols() {
+        return self._read(FB_OFF_WIDTH) / FONT_WIDTH;
+    }
+
+    /// 最大行数を取得
+    ulong max_rows() {
+        return self._read(FB_OFF_HEIGHT) / FONT_HEIGHT;
+    }
+
+    // --------------------------------------------------------
+    // 描画先アドレス取得（バッチモード対応）
+    // --------------------------------------------------------
+
+    /// バッチモード中はバックバッファ、それ以外はVRAMアドレスを返す
+    ulong active_fb() {
+        ulong fb = self._read(FB_OFF_ADDR);
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch != 0) {
+            ulong bb = self._read(FB_OFF_BACKBUF);
+            if (bb != 0) { fb = bb; }
+        }
+        return fb;
+    }
+
+    // --------------------------------------------------------
+    // 文字描画（内部用）
+    // --------------------------------------------------------
+
+    /// 指定ピクセル座標に1文字を描画
+    void draw_char(ulong px, ulong py, ulong ch) {
+        ulong fb = self.active_fb();
+        ulong screen_w = self._read(FB_OFF_WIDTH);
+        ulong screen_h = self._read(FB_OFF_HEIGHT);
+        ulong stride = self._read(FB_OFF_STRIDE);
+        ulong fg = self._read(FB_OFF_FG_COLOR);
+        ulong bg = self._read(FB_OFF_BG_COLOR);
+
+        if (fb == 0) { return; }
+
+        // ダーティ範囲更新（バッチモード中のみ）
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch != 0) {
+            ulong cur_min = self._read(FB_OFF_DIRTY_MIN_Y);
+            if (py < cur_min) { self._write(FB_OFF_DIRTY_MIN_Y, py); }
+            ulong py_end = py + FONT_HEIGHT;
+            ulong cur_max = self._read(FB_OFF_DIRTY_MAX_Y);
+            if (py_end > cur_max) { self._write(FB_OFF_DIRTY_MAX_Y, py_end); }
+        }
+
+        ulong row = 0;
+        while (row < FONT_HEIGHT) {
+            ulong bits = font_get_row(ch, row);
+            ulong col = 0;
+            while (col < FONT_WIDTH) {
+                ulong sx = px + col;
+                ulong sy = py + row;
+
+                if (sx < screen_w) {
+                    if (sy < screen_h) {
+                        ulong offset = (sy * stride + sx) * 4;
+                        uint* pixel = (fb + offset) as uint*;
+
+                        ulong bit_pos = 7 - col;
+                        ulong mask = 1 << bit_pos;
+                        if ((bits & mask) != 0) {
+                            *pixel = fg as uint;
+                        } else {
+                            *pixel = bg as uint;
+                        }
+                    }
+                }
+                col += 1;
+            }
+            row += 1;
+        }
+    }
+
+    /// バッチ描画モード開始（シリアル出力を抑制し描画を高速化）
+    void begin_batch() {
+        ulong one = 1;
+        self._write(FB_OFF_BATCH_MODE, one);
+        // ダーティ範囲をリセット（min=最大値, max=0 → 変更なし状態）
+        ulong max_val = 0xFFFFFFFF;
+        self._write(FB_OFF_DIRTY_MIN_Y, max_val);
+        ulong zero = 0;
+        self._write(FB_OFF_DIRTY_MAX_Y, zero);
+    }
+
+    /// バッチ描画モード終了 + バックバッファ→VRAM部分転送
+    /// ダーティ行トラッキング: 変更されたピクセル行のみVRAMにコピー
+    void end_batch() {
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch == 0) { return; }
+
+        // バッチモード解除
+        ulong zero = 0;
+        self._write(FB_OFF_BATCH_MODE, zero);
+
+        // バックバッファ→VRAM コピー
+        ulong bb = self._read(FB_OFF_BACKBUF);
+        ulong fb = self._read(FB_OFF_ADDR);
+        if (bb == 0) { return; }
+        if (fb == 0) { return; }
+
+        ulong stride = self._read(FB_OFF_STRIDE);
+        ulong height = self._read(FB_OFF_HEIGHT);
+
+        // ダーティ範囲を取得
+        ulong min_y = self._read(FB_OFF_DIRTY_MIN_Y);
+        ulong max_y = self._read(FB_OFF_DIRTY_MAX_Y);
+
+        // ダーティ範囲が無効（変更なし）→ コピー不要
+        if (min_y >= max_y) { return; }
+        // 範囲クランプ
+        if (max_y > height) { max_y = height; }
+
+        // ダーティ範囲のみコピー（stride × (max_y - min_y) × 4 バイト）
+        ulong offset_bytes = stride * min_y * 4;
+        ulong copy_bytes = stride * (max_y - min_y) * 4;
+        ulong qword_count = copy_bytes / 8;
+        ulong src = bb + offset_bytes;
+        ulong dst = fb + offset_bytes;
+        __asm__(`
+            movq ${r:src}, %rsi;
+            movq ${r:dst}, %rdi;
+            movq ${r:qword_count}, %rcx;
+            cld;
+            rep movsq
+        `);
+    }
+
+    // --------------------------------------------------------
+    // 画面操作
+    // --------------------------------------------------------
+
+    /// 画面を背景色でクリアする
+    void clear() {
+        ulong fb = self.active_fb();
+        ulong stride = self._read(FB_OFF_STRIDE);
+        ulong height = self._read(FB_OFF_HEIGHT);
+        ulong bg = self._read(FB_OFF_BG_COLOR);
+
+        if (fb == 0) { return; }
+
+        ulong y = 0;
+        while (y < height) {
+            ulong x = 0;
+            while (x < stride) {
+                ulong offset = (y * stride + x) * 4;
+                uint* pixel = (fb + offset) as uint*;
+                *pixel = bg as uint;
+                x += 1;
+            }
+            y += 1;
+        }
+
+        self._write(FB_OFF_CURSOR_X, 0);
+        self._write(FB_OFF_CURSOR_Y, 0);
+
+        // ダーティ範囲: 全画面
+        ulong batch = self._read(FB_OFF_BATCH_MODE);
+        if (batch != 0) {
+            ulong zero = 0;
+            self._write(FB_OFF_DIRTY_MIN_Y, zero);
+            self._write(FB_OFF_DIRTY_MAX_Y, height);
+        }
+    }
+
+    /// 画面を1行分上にスクロールする
+    void scroll_up() {
+        ulong fb = self.active_fb();
+        ulong stride = self._read(FB_OFF_STRIDE);
+        ulong height = self._read(FB_OFF_HEIGHT);
+        ulong bg = self._read(FB_OFF_BG_COLOR);
+
+        if (fb == 0) { return; }
+
+        // FONT_HEIGHT行分のピクセルを上にコピー
+        ulong y = 0;
+        ulong copy_height = height - FONT_HEIGHT;
+        while (y < copy_height) {
+            ulong src_y = y + FONT_HEIGHT;
+            ulong x = 0;
+            while (x < stride) {
+                ulong dst_offset = (y * stride + x) * 4;
+                ulong src_offset = (src_y * stride + x) * 4;
+                uint* dst = (fb + dst_offset) as uint*;
+                uint* src = (fb + src_offset) as uint*;
+                *dst = *src;
+                x += 1;
+            }
+            y += 1;
+        }
+
+        // 最下行を背景色でクリア
+        ulong clear_y = copy_height;
+        while (clear_y < height) {
+            ulong x = 0;
+            while (x < stride) {
+                ulong offset = (clear_y * stride + x) * 4;
+                uint* pixel = (fb + offset) as uint*;
+                *pixel = bg as uint;
+                x += 1;
+            }
+            clear_y += 1;
+        }
+    }
+
+    // --------------------------------------------------------
+    // テキスト出力
+    // --------------------------------------------------------
+
+    /// 改行処理（画面下端でスクロール）
+    void newline() {
+        self._write(FB_OFF_CURSOR_X, 0);
+        ulong rows = self.max_rows();
+        ulong next_y = self._read(FB_OFF_CURSOR_Y) + 1;
+        if (next_y >= rows) {
+            // 画面下端に達した場合、スクロール
+            self.scroll_up();
+            self._write(FB_OFF_CURSOR_Y, rows - 1);
+        } else {
+            self._write(FB_OFF_CURSOR_Y, next_y);
+        }
+    }
+
+    /// 1文字を出力（テキストカーソル自動進行）
+    void putc(AsciiChar ch) {
+        // 出力前にカーソルを消す
+        self.cursor_hide();
+
+        // 改行文字
+        if (ch == 10) {
+            self.newline();
+            return;
+        }
+        // キャリッジリターン
+        if (ch == 13) {
+            self._write(FB_OFF_CURSOR_X, 0);
+            return;
+        }
+
+        // テキスト座標 → ピクセル座標
+        ulong cx = self._read(FB_OFF_CURSOR_X);
+        ulong cy = self._read(FB_OFF_CURSOR_Y);
+        ulong px = cx * FONT_WIDTH;
+        ulong py = cy * FONT_HEIGHT;
+
+        // 文字を描画
+        self.draw_char(px, py, ch);
+
+        // カーソル前進
+        ulong cols = self.max_cols();
+        ulong next_x = cx + 1;
+        if (next_x >= cols) {
+            self.newline();
+        } else {
+            self._write(FB_OFF_CURSOR_X, next_x);
+        }
+    }
+
+    /// NUL終端文字列を出力
+    void puts(void* data) {
+        ulong data_val = data as ulong;
+        ulong i = 0;
+
+        while (true) {
+            ulong byte_val = 0;
+            ulong addr = data_val + i;
+            __asm__(`
+                movq ${r:addr}, %r10;
+                xorq %rax, %rax;
+                movzbl (%r10), %eax;
+                movq %rax, ${=r:byte_val}
+            `);
+            if (byte_val == 0) {
+                break;
+            }
+            self.putc(byte_val);
+            i += 1;
+        }
+    }
+
+    /// 文字列を改行付きで出力
+    void println(void* data) {
+        self.puts(data);
+        self.newline();
+    }
+
+    // --------------------------------------------------------
+    // 16進数出力
+    // --------------------------------------------------------
+
+    /// 16進数値を出力
+    void print_hex(ulong value) {
+        self.puts("0x" as void*);
+        ulong i = 0;
+        while (i < 16) {
+            ulong shift = (15 - i) * 4;
+            ulong nibble = (value >> shift) & 0xF;
+            ulong ch = 0;
+            if (nibble < 10) {
+                ch = nibble + 0x30;  // '0'-'9'
+            } else {
+                ch = nibble - 10 + 0x41;  // 'A'-'F'
+            }
+            self.putc(ch);
+            i += 1;
+        }
+    }
+
+    // --------------------------------------------------------
+    // バックスペース処理
+    // --------------------------------------------------------
+
+    /// カーソルを1つ戻して空白で上書き（Backspace用）
+    void backspace() {
+        self.cursor_hide();
+        ulong cx = self._read(FB_OFF_CURSOR_X);
+        if (cx > 0) {
+            ulong new_cx = cx - 1;
+            self._write(FB_OFF_CURSOR_X, new_cx);
+            // カーソル位置に空白を描画
+            ulong px = new_cx * FONT_WIDTH;
+            ulong py = self._read(FB_OFF_CURSOR_Y) * FONT_HEIGHT;
+            self.draw_char(px, py, 0x20);
+        }
+    }
+
+    // --------------------------------------------------------
+    // カーソル点滅（OS標準機能）
+    // --------------------------------------------------------
+
+    /// カーソル点滅を有効にする
+    void cursor_enable() {
+        self._write(FB_OFF_CURSOR_ENABLED, 1);
+        self._write(FB_OFF_CURSOR_STATE, 0);
+        // 現在のPIT tickを初期値に設定
+        ulong* tick_ptr = 0x900 as ulong*;
+        self._write(FB_OFF_CURSOR_TICK, *tick_ptr);
+    }
+
+    /// カーソル点滅を無効にする
+    void cursor_disable() {
+        self.cursor_hide();
+        self._write(FB_OFF_CURSOR_ENABLED, 0);
+    }
+
+    /// カーソルを即座に非表示にする（文字入力前に呼ぶ）
+    void cursor_hide() {
+        ulong state = self._read(FB_OFF_CURSOR_STATE);
+        if (state != 0) {
+            // カーソル位置のアンダーラインバーを消去
+            ulong cx = self._read(FB_OFF_CURSOR_X);
+            ulong cy = self._read(FB_OFF_CURSOR_Y);
+            ulong px = cx * FONT_WIDTH;
+            ulong py = cy * FONT_HEIGHT;
+            self.draw_cursor_bar(px, py, 0);
+            self._write(FB_OFF_CURSOR_STATE, 0);
+        }
+    }
+
+    /// カーソル点滅を更新する（メインループから定期的に呼び出す）
+    /// PIT tick(0x900, 100Hz)を参照し、500msごとに表示/非表示を切替
+    void cursor_update() {
+        ulong enabled = self._read(FB_OFF_CURSOR_ENABLED);
+        if (enabled == 0) { return; }
+
+        ulong* pit_tick_ptr = 0x900 as ulong*;
+        ulong current_tick = *pit_tick_ptr;
+        ulong last_tick = self._read(FB_OFF_CURSOR_TICK);
+        ulong diff = current_tick - last_tick;
+
+        if (diff < CURSOR_BLINK_INTERVAL) { return; }
+
+        // 切替タイミング
+        self._write(FB_OFF_CURSOR_TICK, current_tick);
+        ulong state = self._read(FB_OFF_CURSOR_STATE);
+        ulong cx = self._read(FB_OFF_CURSOR_X);
+        ulong cy = self._read(FB_OFF_CURSOR_Y);
+        ulong px = cx * FONT_WIDTH;
+        ulong py = cy * FONT_HEIGHT;
+
+        if (state == 0) {
+            // カーソル表示: アンダーラインバーを描画
+            self.draw_cursor_bar(px, py, 1);
+            self._write(FB_OFF_CURSOR_STATE, 1);
+        } else {
+            // カーソル非表示: アンダーラインバーを消去
+            self.draw_cursor_bar(px, py, 0);
+            self._write(FB_OFF_CURSOR_STATE, 0);
+        }
+    }
+
+    /// アンダーラインカーソルバーを描画/消去する
+    /// フォントセル下部2ピクセル行にfg_color(show=1)またはbg_color(show=0)のバーを描画
+    void draw_cursor_bar(ulong px, ulong py, ulong show) {
+        ulong fb = self.active_fb();
+        ulong stride = self._read(FB_OFF_STRIDE);
+        ulong screen_w = self._read(FB_OFF_WIDTH);
+        ulong screen_h = self._read(FB_OFF_HEIGHT);
+        if (fb == 0) { return; }
+
+        ulong color = 0;
+        if (show != 0) {
+            color = self._read(FB_OFF_FG_COLOR);
+        } else {
+            color = self._read(FB_OFF_BG_COLOR);
+        }
+
+        // フォントセルの下2ピクセル行（row 14, 15）にバーを描画
+        ulong bar_row = 0;
+        while (bar_row < 2) {
+            ulong sy = py + 14 + bar_row;
+            if (sy < screen_h) {
+                ulong col = 0;
+                while (col < FONT_WIDTH) {
+                    ulong sx = px + col;
+                    if (sx < screen_w) {
+                        ulong offset = (sy * stride + sx) * 4;
+                        uint* pixel = (fb + offset) as uint*;
+                        *pixel = color as uint;
+                    }
+                    col += 1;
+                }
+            }
+            bar_row += 1;
+        }
+    }
+}
+
+// ============================================================
+// 互換ラッパー関数（段階的移行用）
+// ============================================================
+
+/// グローバルFBConsoleの実データを初期化する
+export void fb_init_global(MemAddr fb_addr, ulong width, ulong height, ulong stride) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.init(fb_addr, width, height, stride);
+    // バックバッファは efi_main.cm で PMM 経由で割り当てる
+    ulong z = 0;
+    con._write(FB_OFF_BACKBUF, z);
+    con._write(FB_OFF_BATCH_MODE, z);
+}
+
+/// バックバッファを設定する（外部からPMMで割当済みアドレスを渡す）
+export void fb_set_backbuffer(MemAddr backbuf) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con._write(FB_OFF_BACKBUF, backbuf);
+}
+
+/// バッチモード開始（バックバッファに描画、シリアル抑制）
+export void fb_begin_batch() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.begin_batch();
+}
+
+/// バッチモード終了（バックバッファ→VRAMフラッシュ）
+export void fb_end_batch() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.end_batch();
+}

@@ -1,0 +1,513 @@
+//! platform: uefi
+import ../config;
+// kernel::drivers::keyboard - PS/2 キーボードドライバ
+//
+// PS/2キーボードからのスキャンコードをIRQ1経由で受信し、
+// リングバッファに格納する。ASCII変換機能を提供。
+//
+// IRQ1ハンドラ:
+//   1. ポート0x60からスキャンコードを読取り
+//   2. リングバッファに格納
+//   3. PIC EOIを送信
+//   4. iretqで復帰
+//
+// 固定アドレスマップ:
+//   0xC00: キーバッファ（リングバッファ、64バイト）
+//   0xC40: write_idx（書込み位置）
+//   0xC48: read_idx（読取り位置）
+//   0xC50: count（バッファ内の要素数）
+//   0xC58: last_scancode（最後に受信したスキャンコード）
+//   0xC60: shift_state（Shiftキーの状態: 0=未押下, 1=押下中）
+//   0xC68: extended_flag（0xE0プレフィックス受信フラグ）
+
+import ./serial;
+import ./debug_port;
+import ./pic;
+import ../arch/idt;
+import ../arch/isr;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// キーバッファの固定アドレスとサイズ
+const MemAddr KB_BUF_ADDR      = 0xC00;  // リングバッファ開始
+const ByteSize KB_BUF_SIZE   = 64;     // バッファサイズ（バイト）
+const MemAddr KB_WRITE_IDX     = 0xC40;  // 書込みインデックス
+const MemAddr KB_READ_IDX      = 0xC48;  // 読取りインデックス
+const MemAddr KB_COUNT         = 0xC50;  // バッファ内要素数
+const MemAddr KB_LAST_SCANCODE = 0xC58;  // 最後のスキャンコード
+const MemAddr KB_SHIFT_STATE   = 0xC60;  // Shiftキー状態
+const MemAddr KB_EXTENDED_FLAG = 0xC68;  // 0xE0拡張フラグ
+
+// キーボードレイアウト定数
+const ulong KB_LAYOUT_US  = 0;
+const ulong KB_LAYOUT_JIS = 1;
+
+// デフォルトレイアウト（Mac標準 = JIS）
+const ulong KB_LAYOUT = KB_LAYOUT_JIS;
+
+// 矢印キーの仮想キーコード
+const KeyCode VKEY_UP    = 0x80;
+const KeyCode VKEY_DOWN  = 0x81;
+const KeyCode VKEY_LEFT  = 0x82;
+const KeyCode VKEY_RIGHT = 0x83;
+
+// PS/2 I/Oポート
+const IoPort KB_DATA_PORT   = 0x60;  // キーボードデータポート
+const IoPort KB_STATUS_PORT = 0x64;  // キーボードステータスポート
+
+// ============================================================
+// スキャンコード→ASCII変換テーブル（US配列、Set 1）
+// ============================================================
+
+/// メイクコード（キー押下）からASCIIへの変換
+/// 未定義キーは0を返す
+export AsciiChar scancode_to_ascii(ScanCode scancode) {
+    // 数字行
+    if (scancode == 0x02) { return 0x31; }  // 1
+    if (scancode == 0x03) { return 0x32; }  // 2
+    if (scancode == 0x04) { return 0x33; }  // 3
+    if (scancode == 0x05) { return 0x34; }  // 4
+    if (scancode == 0x06) { return 0x35; }  // 5
+    if (scancode == 0x07) { return 0x36; }  // 6
+    if (scancode == 0x08) { return 0x37; }  // 7
+    if (scancode == 0x09) { return 0x38; }  // 8
+    if (scancode == 0x0A) { return 0x39; }  // 9
+    if (scancode == 0x0B) { return 0x30; }  // 0
+    if (scancode == 0x0C) { return 0x2D; }  // -
+    // レイアウト依存キー
+    if (scancode == 0x0D) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x5E; }  // JIS: ^
+        return 0x3D;  // US: =
+    }
+    if (scancode == 0x0E) { return 0x08; }  // Backspace
+
+    // Tabとアルファベット上段
+    if (scancode == 0x0F) { return 0x09; }  // Tab
+    if (scancode == 0x10) { return 0x71; }  // q
+    if (scancode == 0x11) { return 0x77; }  // w
+    if (scancode == 0x12) { return 0x65; }  // e
+    if (scancode == 0x13) { return 0x72; }  // r
+    if (scancode == 0x14) { return 0x74; }  // t
+    if (scancode == 0x15) { return 0x79; }  // y
+    if (scancode == 0x16) { return 0x75; }  // u
+    if (scancode == 0x17) { return 0x69; }  // i
+    if (scancode == 0x18) { return 0x6F; }  // o
+    if (scancode == 0x19) { return 0x70; }  // p
+    // レイアウト依存キー
+    if (scancode == 0x1A) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x40; }  // JIS: @
+        return 0x5B;  // US: [
+    }
+    if (scancode == 0x1B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x5B; }  // JIS: [
+        return 0x5D;  // US: ]
+    }
+    if (scancode == 0x1C) { return 0x0A; }  // Enter (LF)
+
+    // アルファベット中段
+    if (scancode == 0x1E) { return 0x61; }  // a
+    if (scancode == 0x1F) { return 0x73; }  // s
+    if (scancode == 0x20) { return 0x64; }  // d
+    if (scancode == 0x21) { return 0x66; }  // f
+    if (scancode == 0x22) { return 0x67; }  // g
+    if (scancode == 0x23) { return 0x68; }  // h
+    if (scancode == 0x24) { return 0x6A; }  // j
+    if (scancode == 0x25) { return 0x6B; }  // k
+    if (scancode == 0x26) { return 0x6C; }  // l
+    if (scancode == 0x27) { return 0x3B; }  // ;
+    // レイアウト依存キー
+    if (scancode == 0x28) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x3A; }  // JIS: :
+        return 0x27;  // US: '
+    }
+    if (scancode == 0x29) { return 0x60; }  // `
+
+    // アルファベット下段
+    // レイアウト依存キー
+    if (scancode == 0x2B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x5D; }  // JIS: ]
+        return 0x5C;  // US: backslash
+    }
+    if (scancode == 0x2C) { return 0x7A; }  // z
+    if (scancode == 0x2D) { return 0x78; }  // x
+    if (scancode == 0x2E) { return 0x63; }  // c
+    if (scancode == 0x2F) { return 0x76; }  // v
+    if (scancode == 0x30) { return 0x62; }  // b
+    if (scancode == 0x31) { return 0x6E; }  // n
+    if (scancode == 0x32) { return 0x6D; }  // m
+    if (scancode == 0x33) { return 0x2C; }  // ,
+    if (scancode == 0x34) { return 0x2E; }  // .
+    if (scancode == 0x35) { return 0x2F; }  // /
+
+    // スペースバー
+    if (scancode == 0x39) { return 0x20; }  // Space
+
+    // Escape
+    if (scancode == 0x01) { return 0x1B; }  // ESC
+
+    return 0;  // 未定義
+}
+
+/// Shift押下時のスキャンコード→ASCII変換
+export AsciiChar scancode_to_ascii_shifted(ScanCode scancode) {
+    // 数字行（Shift付き）
+    if (scancode == 0x02) { return 0x21; }  // !
+    // レイアウト依存キー
+    if (scancode == 0x03) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x22; }  // JIS: "
+        return 0x40;  // US: @
+    }
+    if (scancode == 0x04) { return 0x23; }  // #
+    if (scancode == 0x05) { return 0x24; }  // $
+    if (scancode == 0x06) { return 0x25; }  // %
+    // レイアウト依存キー
+    if (scancode == 0x07) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x26; }  // JIS: &
+        return 0x5E;  // US: ^
+    }
+    if (scancode == 0x08) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x27; }  // JIS: '
+        return 0x26;  // US: &
+    }
+    if (scancode == 0x09) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x28; }  // JIS: (
+        return 0x2A;  // US: *
+    }
+    if (scancode == 0x0A) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x29; }  // JIS: )
+        return 0x28;  // US: (
+    }
+    if (scancode == 0x0B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0; }     // JIS: なし
+        return 0x29;  // US: )
+    }
+    if (scancode == 0x0C) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x3D; }  // JIS: =
+        return 0x5F;  // US: _
+    }
+    if (scancode == 0x0D) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x7E; }  // JIS: ~
+        return 0x2B;  // US: +
+    }
+    if (scancode == 0x0E) { return 0x08; }  // Backspace
+
+    // Tabとアルファベット上段（大文字）
+    if (scancode == 0x0F) { return 0x09; }  // Tab
+    if (scancode == 0x10) { return 0x51; }  // Q
+    if (scancode == 0x11) { return 0x57; }  // W
+    if (scancode == 0x12) { return 0x45; }  // E
+    if (scancode == 0x13) { return 0x52; }  // R
+    if (scancode == 0x14) { return 0x54; }  // T
+    if (scancode == 0x15) { return 0x59; }  // Y
+    if (scancode == 0x16) { return 0x55; }  // U
+    if (scancode == 0x17) { return 0x49; }  // I
+    if (scancode == 0x18) { return 0x4F; }  // O
+    if (scancode == 0x19) { return 0x50; }  // P
+    // レイアウト依存キー
+    if (scancode == 0x1A) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x60; }  // JIS: `
+        return 0x7B;  // US: {
+    }
+    if (scancode == 0x1B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x7B; }  // JIS: {
+        return 0x7D;  // US: }
+    }
+    if (scancode == 0x1C) { return 0x0A; }  // Enter
+
+    // アルファベット中段（大文字）
+    if (scancode == 0x1E) { return 0x41; }  // A
+    if (scancode == 0x1F) { return 0x53; }  // S
+    if (scancode == 0x20) { return 0x44; }  // D
+    if (scancode == 0x21) { return 0x46; }  // F
+    if (scancode == 0x22) { return 0x47; }  // G
+    if (scancode == 0x23) { return 0x48; }  // H
+    if (scancode == 0x24) { return 0x4A; }  // J
+    if (scancode == 0x25) { return 0x4B; }  // K
+    if (scancode == 0x26) { return 0x4C; }  // L
+    // レイアウト依存キー
+    if (scancode == 0x27) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x2B; }  // JIS: +
+        return 0x3A;  // US: :
+    }
+    if (scancode == 0x28) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x2A; }  // JIS: *
+        return 0x22;  // US: "
+    }
+    if (scancode == 0x29) { return 0x7E; }  // ~
+
+    // アルファベット下段（大文字）
+    // レイアウト依存キー
+    if (scancode == 0x2B) {
+        if (KB_LAYOUT == KB_LAYOUT_JIS) { return 0x7D; }  // JIS: }
+        return 0x7C;  // US: |
+    }
+    if (scancode == 0x2C) { return 0x5A; }  // Z
+    if (scancode == 0x2D) { return 0x58; }  // X
+    if (scancode == 0x2E) { return 0x43; }  // C
+    if (scancode == 0x2F) { return 0x56; }  // V
+    if (scancode == 0x30) { return 0x42; }  // B
+    if (scancode == 0x31) { return 0x4E; }  // N
+    if (scancode == 0x32) { return 0x4D; }  // M
+    if (scancode == 0x33) { return 0x3C; }  // <
+    if (scancode == 0x34) { return 0x3E; }  // >
+    if (scancode == 0x35) { return 0x3F; }  // ?
+
+    // スペースバー
+    if (scancode == 0x39) { return 0x20; }  // Space
+
+    // Escape
+    if (scancode == 0x01) { return 0x1B; }  // ESC
+
+    return 0;  // 未定義
+}
+
+// ============================================================
+// IRQ1ハンドラ（フリー関数）
+// ============================================================
+
+/// IRQ1ハンドラ: PS/2キーボード割り込み
+/// 純ASM関数のためnaked属性が自動適用され、prologue/epilogueなしで生成される
+///   1. RAX, RCX, RDX を退避
+///   2. ポート0x60からスキャンコード読取り
+///   3. 固定アドレスのリングバッファに格納
+///   4. PIC EOI送信
+///   5. iretq
+export void irq1_handler() {
+    __asm__(`
+        pushq %rax;
+        pushq %rcx;
+        pushq %rdx;
+
+        // ポート0x60からスキャンコード読取り
+        xorq %rax, %rax;
+        inb $$0x60, %al;
+
+        // last_scancodeに保存
+        movq $$0xC58, %rcx;
+        movq %rax, (%rcx);
+
+        // --- Shiftキートラッキング ---
+        // Left Shift押下 (0x2A)
+        cmpb $$0x2A, %al;
+        jne .not_lshift_press;
+        movq $$0xC60, %rcx;
+        movq $$1, (%rcx);
+        jmp .irq1_skip;
+    .not_lshift_press:
+        // Right Shift押下 (0x36)
+        cmpb $$0x36, %al;
+        jne .not_rshift_press;
+        movq $$0xC60, %rcx;
+        movq $$1, (%rcx);
+        jmp .irq1_skip;
+    .not_rshift_press:
+        // Left Shiftリリース (0xAA)
+        cmpb $$0xAA, %al;
+        jne .not_lshift_release;
+        movq $$0xC60, %rcx;
+        movq $$0, (%rcx);
+        jmp .irq1_skip;
+    .not_lshift_release:
+        // Right Shiftリリース (0xB6)
+        cmpb $$0xB6, %al;
+        jne .not_rshift_release;
+        movq $$0xC60, %rcx;
+        movq $$0, (%rcx);
+        jmp .irq1_skip;
+    .not_rshift_release:
+
+        // --- 0xE0拡張プレフィックス ---
+        cmpb $$0xE0, %al;
+        jne .not_e0;
+        movq $$0xC68, %rcx;
+        movq $$1, (%rcx);
+        jmp .irq1_skip;
+    .not_e0:
+
+        // ブレークコード（bit7 = 1）はスキップ
+        testb $$0x80, %al;
+        jnz .irq1_skip;
+
+        // リングバッファに格納
+        // count < 64 なら格納
+        movq $$0xC50, %rcx;
+        movq (%rcx), %rdx;
+        cmpq $$64, %rdx;
+        jge .irq1_skip;
+
+        // --- 拡張スキャンコードの変換 ---
+        // extended_flagをチェック
+        movq $$0xC68, %rcx;
+        movq (%rcx), %rdx;
+        cmpq $$0, %rdx;
+        je .not_extended;
+        // 拡張フラグクリア
+        movq $$0, (%rcx);
+        // 矢印キーを仮想コードに変換（スキャンコードに0x80を加算）
+        addb $$0x80, %al;
+    .not_extended:
+
+        // buf[write_idx] = scancode (または変換済み拡張コード)
+        movq $$0xC40, %rcx;
+        movq (%rcx), %rdx;      // rdx = write_idx
+        movq $$0xC00, %rcx;
+        addq %rdx, %rcx;        // rcx = &buf[write_idx]
+        movb %al, (%rcx);       // buf[write_idx] = scancode
+
+        // write_idx = (write_idx + 1) % 64
+        incq %rdx;
+        andq $$63, %rdx;        // 64要素のリングバッファ
+        movq $$0xC40, %rcx;
+        movq %rdx, (%rcx);
+
+        // count++
+        movq $$0xC50, %rcx;
+        movq (%rcx), %rdx;
+        incq %rdx;
+        movq %rdx, (%rcx);
+
+    .irq1_skip:
+        // PIC EOI
+        movb $$0x20, %al;
+        outb %al, $$0x20;
+
+        popq %rdx;
+        popq %rcx;
+        popq %rax;
+        iretq
+    `);
+}
+
+// ============================================================
+// キーバッファ操作
+// ============================================================
+
+/// キーバッファからスキャンコードを1つ取得する
+/// バッファが空の場合は0を返す
+export ScanCode kb_read_scancode() {
+    ulong* count_ptr = KB_COUNT as ulong*;
+    Count count = *count_ptr;
+    if (count == 0) {
+        return 0;
+    }
+
+    // buf[read_idx] を読取り
+    ulong* read_ptr = KB_READ_IDX as ulong*;
+    ByteOffset read_idx = *read_ptr;
+    MemAddr byte_addr = KB_BUF_ADDR + read_idx;
+
+    // ASMでバイト読取り
+    ScanCode scancode = 0;
+    __asm__(`
+        movq ${r:byte_addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:scancode}
+    `);
+
+    // read_idx = (read_idx + 1) % 64
+    ulong ring_mask = 63;
+    ulong new_read = (read_idx + 1) & ring_mask;
+    *read_ptr = new_read;
+
+    // count--
+    Count new_count = count - 1;
+    *count_ptr = new_count;
+
+    return scancode;
+}
+
+/// キーバッファにデータがあるかチェック
+export Count kb_has_data() {
+    ulong* count_ptr = KB_COUNT as ulong*;
+    return *count_ptr;
+}
+
+/// 最後に受信したスキャンコードを取得
+export ScanCode kb_last_scancode() {
+    ulong* ptr = KB_LAST_SCANCODE as ulong*;
+    return *ptr;
+}
+
+/// キーバッファからASCII文字を1つ取得する
+/// Shift状態を考慮して変換する
+/// 矢印キーは仮想キーコード(VKEY_UP等)を返す
+/// バッファが空の場合や変換不能キーの場合は0を返す
+export AsciiChar kb_read_char() {
+    ScanCode scancode = kb_read_scancode();
+    if (scancode == 0) {
+        return 0;
+    }
+    // 拡張スキャンコード（矢印キー等）は仮想キーコードを返す
+    // IRQ1ハンドラが0xE0プレフィックス後のコードに0x80を加算済み
+    // 0xC8 = 0x48+0x80 = Up, 0xD0 = 0x50+0x80 = Down
+    // 0xCB = 0x4B+0x80 = Left, 0xCD = 0x4D+0x80 = Right
+    if (scancode == 0xC8) { return VKEY_UP; }     // 上矢印
+    if (scancode == 0xD0) { return VKEY_DOWN; }   // 下矢印
+    if (scancode == 0xCB) { return VKEY_LEFT; }   // 左矢印
+    if (scancode == 0xCD) { return VKEY_RIGHT; }  // 右矢印
+
+    // Shift状態チェック
+    ulong* shift_ptr = KB_SHIFT_STATE as ulong*;
+    ulong shift = *shift_ptr;
+    if (shift != 0) {
+        return scancode_to_ascii_shifted(scancode);
+    }
+    return scancode_to_ascii(scancode);
+}
+
+// ============================================================
+// キーボード初期化
+// ============================================================
+
+/// PS/2キーボードドライバを初期化する
+/// pic: PIC8259Aへのポインタ（IRQ1アンマスク用）
+/// idt_table: IDTテーブルへのポインタ（ベクタ33登録用）
+export void keyboard_init(PIC8259A* pic, uint* idt_table) {
+    DebugPort debug(0xE9);
+    SerialPort serial = {port: 0x3F8};
+
+    // バッファを初期化
+    ulong zero = 0;
+    ulong* write_ptr = KB_WRITE_IDX as ulong*;
+    *write_ptr = zero;
+    ulong* read_ptr = KB_READ_IDX as ulong*;
+    *read_ptr = zero;
+    ulong* count_ptr = KB_COUNT as ulong*;
+    *count_ptr = zero;
+    ulong* last_ptr = KB_LAST_SCANCODE as ulong*;
+    *last_ptr = zero;
+
+    // バッファ領域をゼロクリア（64バイト / 8 = 8 qwords）
+    ulong i = 0;
+    ulong buf_qwords = 8;
+    while (i < buf_qwords) {
+        MemAddr addr = KB_BUF_ADDR + (i * 8);
+        ulong* ptr = addr as ulong*;
+        *ptr = zero;
+        i = i + 1;
+    }
+
+    // Shift状態と拡張フラグを初期化
+    ulong* shift_ptr = KB_SHIFT_STATE as ulong*;
+    *shift_ptr = zero;
+    ulong* ext_ptr = KB_EXTENDED_FLAG as ulong*;
+    *ext_ptr = zero;
+
+    // IDTにベクタ33（IRQ1）のハンドラを登録
+    IDT idt = {table: idt_table};
+    IdtVector vec33 = 33;
+    idt.set_gate(vec33, fn_addr(irq1_handler as void*), IDT_INTERRUPT_GATE);
+
+    // IDTを再ロード
+    idt.load();
+
+    // PICのIRQ1をアンマスク（有効化）
+    IrqNr irq1 = 1;
+    pic->unmask(irq1);
+
+    debug.println("[KBD] PS/2 keyboard initialized" as void*);
+    serial.println("[CosmOS] Keyboard initialized" as void*);
+}

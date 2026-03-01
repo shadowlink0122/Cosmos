@@ -1,0 +1,277 @@
+//! platform: uefi
+// CosmOS - テスト用エントリポイント
+//
+// make test で使用されるテスト専用ビルド。
+// 通常のカーネル初期化を行った後、テストスイートを実行し結果を出力。
+// デモタスクやシェルは起動せず、テスト完了後にhaltする。
+//
+// ビルド: make test
+
+import ./libs/efi_core;
+import ./libs/efi_text;
+import ./libs/efi_input;
+import ./libs/efi_memmap;
+import ./libs/efi_gop;
+import ./libs/efi_file;
+import ./util/menu;
+import ./util/memmap;
+import ./util/keyboard;
+import ./util/sysinfo;
+import ./util/convert;
+import ./util/graphics;
+import ./arch/boot_info;
+import ./arch/gdt;
+import ./arch/idt;
+import ./arch/isr;
+import ./arch/tss;
+import ./drivers/serial;
+import ./drivers/debug_port;
+import ./drivers/pic;
+import ./drivers/pit;
+import ./drivers/keyboard;
+import ./mm/pmm;
+import ./mm/vmm;
+import ./mm/heap;
+import ./sched/task;
+import ./sched/scheduler;
+import ./tests/test_runner;
+import ./tests/test_kernel;
+import ./tests/test_apps;
+import ./fs/cosmfs;
+import ./apps/aria/aria;
+import ./libs/boot_services;
+import ./arch/usermode;
+import ./sys/syscall;
+
+// ============================================================
+// テスト用 kernel_main
+// ============================================================
+
+void kernel_main_test(BootInfo* info) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+
+    debug.println("[BOOT] kernel_main_test entered" as void*);
+    serial.println("[CosmOS] === Kernel Test Mode ===" as void*);
+
+    // GDT設定
+    gdt_init();
+
+    // PIC初期化
+    PIC8259A pic();
+    pic.init();
+    debug.println("[BOOT] PIC initialized" as void*);
+
+    // IDT初期化
+    uint* idt_table = info->mmap.map_buffer as uint*;
+    IDT idt(idt_table);
+    debug.println("[BOOT] IDT initialized" as void*);
+
+    // ISRスタブ登録
+    ISRManager isr(idt_table);
+    debug.println("[BOOT] ISR registered" as void*);
+
+    // IDT再ロード
+    idt.load();
+    debug.println("[BOOT] IDT reloaded" as void*);
+
+    // Syscallハンドラ登録（Ariaがsyscall経由でI/Oを行うため）
+    syscall_init(idt_table);
+    ipc_init();
+    debug.println("[BOOT] syscall handler registered" as void*);
+
+    // PMM初期化
+    PMM pmm(info->mmap.map_buffer, info->mmap.map_size,
+    info->mmap.desc_size as ulong, info->mmap.entry_count as ulong);
+    debug.println("[BOOT] PMM initialized" as void*);
+
+    // ページテーブル管理
+    VMM vmm();
+    debug.println("[BOOT] paging enabled" as void*);
+
+    // ヒープ初期化（64ページ = 256KB、ConventionalMemoryのみ使用）
+    Heap heap(&pmm, 64);
+    debug.println("[BOOT] heap initialized" as void*);
+
+    // グローバルHeapポインタを保存（SYS_SBRK等からアクセス用）
+    Heap* heap_ref = &heap;
+    ulong heap_addr_val = heap_ref as ulong;
+    ulong* global_heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+    *global_heap_ptr = heap_addr_val;
+
+    // PITタイマー初期化
+    PIT pit();
+    pit.init(&pic, idt_table);
+    debug.println("[BOOT] PIT initialized" as void*);
+
+    // スケジューラ初期化
+    sched_init(&pmm);
+    debug.println("[BOOT] scheduler initialized" as void*);
+
+    // 割り込み有効化
+    __asm__(`sti`);
+        debug.println("[BOOT] interrupts enabled" as void*);
+
+        // TSS初期化
+        ulong current_rsp = 0;
+    __asm__(`
+    movq %rsp, ${=r:current_rsp}
+    `);
+        tss_init(current_rsp);
+        tss_install_gdt();
+        debug.println("[BOOT] TSS initialized" as void*);
+
+        // syscall/sysret MSR初期化（高速パス有効化）
+        MemAddr fast_handler = fn_addr(syscall_entry_fast as void*);
+        usermode_init(fast_handler);
+        debug.println("[BOOT] syscall/sysret fast path enabled" as void*);
+
+        // キーボード初期化
+        keyboard_init(&pic, idt_table);
+        debug.println("[BOOT] keyboard initialized" as void*);
+
+        // ============================================================
+        // カーネル統合テスト
+        // ============================================================
+        serial.println("[CosmOS] ==============================" as void*);
+        serial.println("[CosmOS] Running kernel tests..." as void*);
+        serial.println("[CosmOS] ==============================" as void*);
+
+        TestRunner runner();
+        test_kernel(&runner, info, &pmm, &heap, &pit, &vmm);
+
+        serial.println("[CosmOS] ==============================" as void*);
+        serial.println("[CosmOS] Running app tests..." as void*);
+        serial.println("[CosmOS] ==============================" as void*);
+
+        test_apps(&runner);
+        runner.print_results();
+
+        // テスト完了 — isa-debug-exitでQEMUを即座に終了
+        debug.println("[BOOT] all tests done, exiting QEMU" as void*);
+        serial.println("[CosmOS] Tests complete" as void*);
+
+        // port 0xf4への書き込みでQEMUが終了する
+        // 終了コード = (val << 1) | 1
+        // val=0 → exit 1 (成功), val>0 → exit >1 (失敗)
+        ulong exit_val = runner.fail_count;
+        ulong exit_port = 0xF4;
+    __asm__(`
+    movq ${r:exit_val}, %rax;
+    movq ${r:exit_port}, %rdx;
+    outb %al, %dx
+    `);
+
+        // フォールバック: debug-exitが使えない場合はhalt
+        while (true) {
+        __asm__("hlt");
+        }
+        }
+
+        // ============================================================
+        // UEFI メインエントリ（テスト用）
+        // ============================================================
+
+        ulong efi_main(void* image_handle, void* system_table) {
+        DebugPort debug(0xE9);
+        debug.println("[BOOT] efi_main (TEST) entered" as void*);
+
+        SerialPort serial = {port: 0x3F8};
+        serial.println("[CosmOS] Test mode boot started" as void*);
+
+        efi_clear_screen(system_table);
+
+        efi_println(system_table, "========================================" as void*);
+        efi_println(system_table, "  CosmOS - Test Mode" as void*);
+        efi_println(system_table, "========================================" as void*);
+        efi_println(system_table, "" as void*);
+
+        // BootInfo収集
+        efi_println(system_table, "[Phase 1] Collecting boot information..." as void*);
+
+        BootInfo boot_info = {
+        fb: {
+        base_addr: 0, size: 0,
+        width: 0 as uint, height: 0 as uint,
+        stride: 0 as uint, pixel_format: 0 as uint
+        },
+        mmap: {
+        map_buffer: 0 as void*,
+        map_size: 0, map_key: 0,
+        desc_size: 0, desc_version: 0 as uint,
+        entry_count: 0 as uint
+        },
+        acpi_rsdp: 0,
+        initramfs_base: 0,
+        initramfs_size: 0
+        };
+
+        // GOP情報
+        efi_println(system_table, "  Initializing GOP..." as void*);
+        collect_fb_info(system_table, &boot_info);
+
+        // メモリマップ
+        efi_println(system_table, "  Getting memory map..." as void*);
+        ulong mmap_status = collect_memory_map(system_table, &boot_info);
+        long signed_mmap_status = mmap_status as long;
+        if (signed_mmap_status < 0) {
+        efi_println(system_table, "  ERROR: Memory map collection failed!" as void*);
+        while (true) {
+        __asm__("hlt");
+        }
+        }
+
+        efi_println(system_table, "  Boot information collected." as void*);
+
+        // initramfsロード: ESPからhelp.cosmexeを読み込み
+        efi_ascii_to_ucs2("\\help.cosmexe" as ulong, 0xCE0, 14);
+        ulong initramfs_buf = 0;
+        ulong initramfs_sz = 0;
+        ulong load_status = efi_load_file(system_table, 0xCE0, &initramfs_buf, &initramfs_sz);
+        long signed_load = load_status as long;
+        if (signed_load < 0) {
+        debug.println("[BOOT] WARNING: initramfs load failed" as void*);
+        }
+        if (signed_load >= 0) {
+        boot_info.initramfs_base = initramfs_buf;
+        boot_info.initramfs_size = initramfs_sz;
+        debug.println("[BOOT] initramfs loaded from ESP" as void*);
+        }
+
+        // ExitBootServices
+        efi_println(system_table, "[Phase 1] Calling ExitBootServices..." as void*);
+        debug.println("[BOOT] calling ExitBootServices" as void*);
+
+        ulong exit_status = efi_exit_boot_services(system_table, image_handle, boot_info.mmap.map_key);
+        long signed_exit = exit_status as long;
+
+        if (signed_exit < 0) {
+        serial.println("[CosmOS] ExitBootServices failed, retrying..." as void*);
+
+        ulong retry_map_size = boot_info.mmap.map_size + 4096;
+        ulong retry_map_key = 0;
+        ulong retry_desc_size = 0;
+        ulong retry_desc_ver = 0;
+        efi_get_memory_map(system_table, &retry_map_size, boot_info.mmap.map_buffer,
+        &retry_map_key, &retry_desc_size, &retry_desc_ver);
+
+        boot_info.mmap.map_key = retry_map_key;
+
+        exit_status = efi_exit_boot_services(system_table, image_handle, retry_map_key);
+        signed_exit = exit_status as long;
+
+        if (signed_exit < 0) {
+        serial.println("[CosmOS] FATAL: ExitBootServices retry failed!" as void*);
+        while (true) {
+        __asm__("hlt");
+        }
+        }
+        }
+
+        serial.println("[CosmOS] ExitBootServices OK" as void*);
+        debug.println("[BOOT] ExitBootServices OK" as void*);
+
+        kernel_main_test(&boot_info);
+
+        return 0;
+        }

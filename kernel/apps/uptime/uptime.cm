@@ -1,0 +1,21 @@
+//! platform: uefi
+// kernel::apps::uptime - uptimeコマンド（システム稼働時間表示）
+
+import ../../shell/shell_io;
+import ../../config;
+
+/// uptimeコマンド: システム稼働時間表示
+export ulong app_uptime(ulong argc, ulong argv) {
+    shell_set_color(SHELL_COLOR_OUTPUT);
+
+    ulong* tick_ptr = 0x900 as ulong*;
+    ulong ticks = *tick_ptr;
+    ulong seconds = ticks / 100;
+
+    shell_puts("Uptime: " as void*);
+    shell_print_hex(seconds);
+    shell_puts(" seconds (" as void*);
+    shell_print_hex(ticks);
+    shell_println(" ticks)" as void*);
+    return 0;
+}

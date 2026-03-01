@@ -1,0 +1,131 @@
+//! platform: uefi
+// kernel::apps::aria::aria_const - Aria エディタ定数定義
+//
+// aria.cm と各テストモジュールで共有される定数をまとめたファイル。
+// 操作コード、モード、状態オフセット、キーコード、syscall番号を定義。
+
+import ../../types;
+
+// ============================================================
+// 操作コード（aria_op の op 引数）
+// ============================================================
+
+export const FsOpCode ARIA_OP_OPEN        = 1;
+export const FsOpCode ARIA_OP_KEY_INPUT   = 2;
+export const FsOpCode ARIA_OP_RENDER      = 3;
+export const FsOpCode ARIA_OP_IS_RUNNING  = 4;
+export const FsOpCode ARIA_OP_SAVE        = 5;
+export const FsOpCode ARIA_OP_GET_MODE    = 6;
+export const FsOpCode ARIA_OP_INSERT_CHAR = 7;
+export const FsOpCode ARIA_OP_DELETE_CHAR = 8;
+export const FsOpCode ARIA_OP_CURSOR_MOVE = 9;
+export const FsOpCode ARIA_OP_NEWLINE     = 10;
+
+// ============================================================
+// モード
+// ============================================================
+
+export const ulong MODE_NORMAL  = 0;
+export const ulong MODE_INSERT  = 1;
+export const ulong MODE_COMMAND = 2;
+
+// ============================================================
+// 状態オフセット（ADDR_ARIA_STATE からの相対バイトオフセット）
+// ============================================================
+
+export const ByteOffset OFF_MODE       = 0;
+export const ByteOffset OFF_CURSOR_X   = 8;
+export const ByteOffset OFF_CURSOR_Y   = 16;
+export const ByteOffset OFF_BUF_SIZE   = 24;
+export const ByteOffset OFF_SCROLL_TOP = 32;
+export const ByteOffset OFF_MODIFIED   = 40;
+export const ByteOffset OFF_RUNNING    = 48;
+export const ByteOffset OFF_FNAME_LEN  = 56;
+export const ByteOffset OFF_CMD_LEN    = 64;
+export const ByteOffset OFF_NUM_LINES  = 72;
+export const ByteOffset OFF_STATUS_MSG = 80;
+export const ByteOffset OFF_DIRTY      = 88;  // ダーティフラグ (0=none, 1=full, 2=cursor_only)
+export const ByteOffset OFF_PREV_CUR_Y = 96;  // 前回のカーソルY位置
+
+// ダーティフラグ値
+export const ulong DIRTY_NONE   = 0;
+export const ulong DIRTY_FULL   = 1;  // 全画面再描画
+export const ulong DIRTY_CURSOR = 2;  // カーソル行のみ再描画
+
+// ============================================================
+// メモリアドレス（config.cm相当 — アプリ自身が所有）
+// ============================================================
+
+export const MemAddr ADDR_ARIA_STATE    = 0x2230;
+export const MemAddr ADDR_ARIA_BUFFER   = 0x2330;
+export const MemAddr ADDR_ARIA_FILENAME = 0x3330;
+export const MemAddr ADDR_ARIA_CMDLINE  = 0x3370;
+export const MemAddr ADDR_ARIA_LINEBUF  = 0x33B0;  // 描画用行バッファ (256B)
+export const ByteSize ARIA_BUF_SIZE      = 4096;
+
+// ============================================================
+// syscall番号（syscall_table.cm と一致）
+// ============================================================
+
+// 画面I/O
+export const SyscallNr SC_SCREEN_CLEAR      = 10;
+export const SyscallNr SC_SCREEN_PUTC       = 11;
+export const SyscallNr SC_SCREEN_PUTS       = 12;
+export const SyscallNr SC_SCREEN_SET_COLOR  = 13;
+export const SyscallNr SC_SCREEN_GET_SIZE   = 14;
+export const SyscallNr SC_SCREEN_SET_CURSOR = 15;
+export const SyscallNr SC_SCREEN_NEWLINE    = 16;
+export const SyscallNr SC_SCREEN_PRINT_NUM  = 17;
+export const SyscallNr SC_SCREEN_PRINT_HEX  = 18;
+export const SyscallNr SC_SCREEN_BATCH      = 19;  // batch(1=begin, 0=end+flush)
+
+// ファイルI/O
+export const SyscallNr SC_FS_OPEN   = 20;
+export const SyscallNr SC_FS_READ   = 21;
+export const SyscallNr SC_FS_WRITE  = 22;
+export const SyscallNr SC_FS_CREATE = 23;
+export const SyscallNr SC_FS_SIZE   = 24;
+export const SyscallNr SC_FS_MEMCPY = 25;
+
+// ============================================================
+// UI色定数（shell_io.cm の SHELL_COLOR_* 相当）
+// ============================================================
+
+export const Color COLOR_HEADER = 0x00FFFF00;  // 黄色
+export const Color COLOR_OUTPUT = 0x00FFFFFF;  // 白
+export const Color COLOR_PROMPT = 0x0000FFFF;  // シアン
+export const Color COLOR_ERROR  = 0x00FF0000;  // 赤
+export const Color COLOR_GREEN  = 0x0000FF00;  // 緑
+export const Color COLOR_CURSOR = 0x0000FF00;  // カーソル色
+
+// ============================================================
+// キーコード
+// ============================================================
+
+export const KeyCode KEY_ESC       = 0x1B;
+export const KeyCode KEY_COLON     = 0x3A;  // ':'
+export const KeyCode KEY_BACKSPACE = 0x08;
+export const KeyCode KEY_ENTER     = 0x0A;
+export const KeyCode KEY_h = 0x68;
+export const KeyCode KEY_j = 0x6A;
+export const KeyCode KEY_k = 0x6B;
+export const KeyCode KEY_l = 0x6C;
+export const KeyCode KEY_i = 0x69;
+export const KeyCode KEY_a = 0x61;
+export const KeyCode KEY_o = 0x6F;
+export const KeyCode KEY_x = 0x78;
+export const KeyCode KEY_q = 0x71;
+export const KeyCode KEY_w = 0x77;
+export const KeyCode KEY_EXCL   = 0x21;  // '!'
+export const KeyCode KEY_G      = 0x47;  // 'G'
+export const KeyCode KEY_0      = 0x30;  // '0'
+export const KeyCode KEY_DOLLAR = 0x24;  // '$'
+
+// ============================================================
+// 矢印キー仮想キーコード（keyboard.cm と一致）
+// ============================================================
+
+export const KeyCode VKEY_UP    = 0x80;
+export const KeyCode VKEY_DOWN  = 0x81;
+export const KeyCode VKEY_LEFT  = 0x82;
+export const KeyCode VKEY_RIGHT = 0x83;

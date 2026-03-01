@@ -1,0 +1,300 @@
+//! platform: uefi
+// kernel::mm::user_pgtable - ユーザ空間ページテーブル管理
+//
+// プロセスごとの独立したCR3（PML4テーブル）を作成・管理。
+// カーネルマッピングをコピーし、ユーザ空間ページを追加。
+//
+// アーキテクチャ:
+//   CR3 → PML4 [512エントリ]
+//     エントリ0-255:   ユーザ空間（プロセス固有）
+//     エントリ256-511: カーネル空間（全プロセス共有 = カーネルCR3のコピー）
+//
+// API:
+//   user_pgtable_create(pmm)               → 新しいPML4の物理アドレス
+//   user_pgtable_map(cr3, vaddr, paddr, pmm) → ユーザページ追加
+//   user_pgtable_destroy(cr3, pmm)         → ページテーブル解放
+
+import ../config;
+import ../drivers/debug_port;
+import ../drivers/serial;
+import ./pmm;
+import ./vmm;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// ユーザ空間のデフォルトベースアドレス
+const MemAddr USER_CODE_BASE  = 0x400000;   // 4MB: ユーザコード開始
+const MemAddr USER_STACK_TOP  = 0x800000;   // 8MB: ユーザスタック上端
+const ulong   USER_STACK_PAGES = 2;          // 8KB スタック
+
+// PML4テーブルの構造
+const ulong PML4_ENTRIES = 512;
+const ulong PML4_KERNEL_START = 256;  // エントリ256以降 = カーネル空間
+
+// ============================================================
+// ユーザページテーブル作成
+// ============================================================
+
+/// 新しいユーザ空間PML4テーブルを作成する
+///
+/// カーネルCR3からカーネル空間エントリ（256-511）をコピーし、
+/// ユーザ空間エントリ（0-255）は空で初期化。
+///
+/// pmm: ページ割当用PMM
+/// 戻り値: 新しいPML4の物理アドレス（0=失敗）
+export MemAddr user_pgtable_create(PMM* pmm) {
+    DebugPort debug(0xE9);
+    debug.println("[USER_PT] creating user page table" as void*);
+
+    // 新しいPML4ページを割り当て
+    MemAddr new_pml4 = pmm->alloc_page();
+    if (new_pml4 == 0) {
+        debug.println("[USER_PT] ERROR: cannot alloc PML4" as void*);
+        return 0;
+    }
+
+    // PML4をゼロクリア
+    vmm_zero_page(new_pml4);
+
+    // カーネルCR3を取得
+    ulong kernel_cr3 = 0;
+    __asm__(`
+        movq %cr3, %rax;
+        movq %rax, ${=r:kernel_cr3}
+    `);
+    MemAddr kernel_pml4 = kernel_cr3 & PTE_ADDR_MASK;
+
+    // カーネル空間エントリ（256-511）をコピー
+    // これによりユーザプロセスからカーネルメモリにアクセスはできるが
+    // PTE_USERフラグなしなのでRing 3からはPage Faultが発生
+    ulong i = PML4_KERNEL_START;
+    while (i < PML4_ENTRIES) {
+        ulong offset = i * 8;
+        ulong entry = vmm_read64(kernel_pml4 + offset);
+        if (entry != 0) {
+            vmm_write64(new_pml4 + offset, entry);
+        }
+        i = i + 1;
+    }
+
+    // 低メモリ（アイデンティティマップ）もコピー
+    // カーネルデータ、フレームバッファ、デバイスIOに必要
+    // エントリ0: 0x0 - 512GB（UEFIのアイデンティティマップ全体）
+    ulong entry0 = vmm_read64(kernel_pml4);
+    if (entry0 != 0) {
+        vmm_write64(new_pml4, entry0);
+    }
+
+    debug.puts("[USER_PT] new PML4=0x" as void*);
+    debug.print_hex(new_pml4);
+    debug.puts(", kernel PML4=0x" as void*);
+    debug.print_hex(kernel_pml4);
+    debug.println("" as void*);
+
+    return new_pml4;
+}
+
+// ============================================================
+// ユーザページマッピング
+// ============================================================
+
+/// ユーザ空間に1ページをマッピングする
+///
+/// user_cr3: ユーザPML4の物理アドレス
+/// vaddr:    仮想アドレス（4KB アラインメント必須）
+/// paddr:    物理アドレス（4KB アラインメント必須）
+/// pmm:      中間テーブル割当用PMM
+///
+/// 戻り値: 0=成功, 1=失敗
+export ulong user_pgtable_map(MemAddr user_cr3, MemAddr vaddr, MemAddr paddr, PMM* pmm) {
+    DebugPort debug(0xE9);
+
+    // PML4ベース
+    MemAddr pml4_base = user_cr3 & PTE_ADDR_MASK;
+
+    // Level 4: PML4 → PDPT
+    ulong pml4_idx = (vaddr >> PML4_SHIFT) & INDEX_MASK;
+    MemAddr pml4_ea = pml4_base + (pml4_idx * 8);
+    ulong pml4_e = vmm_read64(pml4_ea);
+
+    MemAddr pdpt_base = 0;
+    if ((pml4_e & PTE_PRESENT) != 0) {
+        pdpt_base = pml4_e & PTE_ADDR_MASK;
+        // ユーザフラグの伝播
+        if ((pml4_e & PTE_USER) == 0) {
+            vmm_write64(pml4_ea, pml4_e | PTE_USER | PTE_WRITABLE);
+        }
+    } else {
+        pdpt_base = pmm->alloc_page();
+        if (pdpt_base == 0) { return 1; }
+        vmm_zero_page(pdpt_base);
+        vmm_write64(pml4_ea, pdpt_base | PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    }
+
+    // Level 3: PDPT → PD
+    ulong pdpt_idx = (vaddr >> PDPT_SHIFT) & INDEX_MASK;
+    MemAddr pdpt_ea = pdpt_base + (pdpt_idx * 8);
+    ulong pdpt_e = vmm_read64(pdpt_ea);
+
+    MemAddr pd_base = 0;
+    if ((pdpt_e & PTE_PRESENT) != 0) {
+        pd_base = pdpt_e & PTE_ADDR_MASK;
+        if ((pdpt_e & PTE_USER) == 0) {
+            vmm_write64(pdpt_ea, pdpt_e | PTE_USER | PTE_WRITABLE);
+        }
+    } else {
+        pd_base = pmm->alloc_page();
+        if (pd_base == 0) { return 1; }
+        vmm_zero_page(pd_base);
+        vmm_write64(pdpt_ea, pd_base | PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    }
+
+    // Level 2: PD → PT
+    ulong pd_idx = (vaddr >> PD_SHIFT) & INDEX_MASK;
+    MemAddr pd_ea = pd_base + (pd_idx * 8);
+    ulong pd_e = vmm_read64(pd_ea);
+
+    MemAddr pt_base = 0;
+    if ((pd_e & PTE_PRESENT) != 0) {
+        pt_base = pd_e & PTE_ADDR_MASK;
+        if ((pd_e & PTE_USER) == 0) {
+            vmm_write64(pd_ea, pd_e | PTE_USER | PTE_WRITABLE);
+        }
+    } else {
+        pt_base = pmm->alloc_page();
+        if (pt_base == 0) { return 1; }
+        vmm_zero_page(pt_base);
+        vmm_write64(pd_ea, pt_base | PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    }
+
+    // Level 1: PT エントリ設定
+    ulong pt_idx = (vaddr >> PT_SHIFT) & INDEX_MASK;
+    MemAddr pt_ea = pt_base + (pt_idx * 8);
+    vmm_write64(pt_ea, paddr | PTE_USER_RW);
+
+    debug.puts("[USER_PT] mapped 0x" as void*);
+    debug.print_hex(vaddr);
+    debug.puts(" -> 0x" as void*);
+    debug.print_hex(paddr);
+    debug.println("" as void*);
+
+    return 0;
+}
+
+// ============================================================
+// ユーザプログラムのロードとマッピング
+// ============================================================
+
+/// CosmEXEバイナリをユーザ空間にロードし、必要なページをマッピングする
+///
+/// user_cr3: ユーザPML4
+/// src_buf:  CosmEXEデータのカーネル空間バッファ
+/// buf_size: バッファサイズ
+/// pmm:      ページ割当用PMM
+///
+/// 戻り値: エントリポイントの仮想アドレス（0=失敗）
+export MemAddr user_pgtable_load_cosmexe(MemAddr user_cr3, MemAddr src_buf, ulong buf_size, PMM* pmm) {
+    DebugPort debug(0xE9);
+
+    // コードページ数を計算（ヘッダ含むサイズをページ単位に切り上げ）
+    ulong page_size = 4096;
+    ulong code_pages = (buf_size + page_size - 1) / page_size;
+    if (code_pages == 0) { code_pages = 1; }
+
+    debug.puts("[USER_PT] loading " as void*);
+    debug.print_hex(code_pages);
+    debug.puts(" pages to user space" as void*);
+    debug.println("" as void*);
+
+    // 各ページを割り当ててコピー＆マッピング
+    ulong pi = 0;
+    while (pi < code_pages) {
+        // 物理ページを割り当て
+        MemAddr phys = pmm->alloc_page();
+        if (phys == 0) {
+            debug.println("[USER_PT] ERROR: code page alloc failed" as void*);
+            return 0;
+        }
+
+        // カーネル空間からユーザ物理ページにコピー
+        ulong src_off = pi * page_size;
+        ulong copy_len = page_size;
+        ulong remaining = buf_size - src_off;
+        if (remaining < page_size) { copy_len = remaining; }
+
+        // ゼロクリアしてからコピー
+        vmm_zero_page(phys);
+        ulong ci = 0;
+        while (ci < copy_len) {
+            ulong byte_val = 0;
+            ulong src_addr = src_buf + src_off + ci;
+            __asm__(` movq ${r:src_addr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:byte_val} `);
+            ulong dst_addr = phys + ci;
+            __asm__(` movq ${r:dst_addr}, %rdi; movq ${r:byte_val}, %rax; movb %al, (%rdi) `);
+            ci = ci + 1;
+        }
+
+        // ユーザ空間にマッピング: USER_CODE_BASE + offset
+        MemAddr user_vaddr = USER_CODE_BASE + src_off;
+        ulong map_result = user_pgtable_map(user_cr3, user_vaddr, phys, pmm);
+        if (map_result != 0) {
+            debug.println("[USER_PT] ERROR: code map failed" as void*);
+            return 0;
+        }
+
+        pi = pi + 1;
+    }
+
+    // ユーザスタックを割り当て＆マッピング
+    ulong si = 0;
+    while (si < USER_STACK_PAGES) {
+        MemAddr stack_phys = pmm->alloc_page();
+        if (stack_phys == 0) {
+            debug.println("[USER_PT] ERROR: stack page alloc failed" as void*);
+            return 0;
+        }
+        vmm_zero_page(stack_phys);
+
+        // スタックはUSER_STACK_TOP - (N * PAGE_SIZE)からマッピング
+        MemAddr stack_vaddr = USER_STACK_TOP - ((si + 1) * page_size);
+        ulong map_r = user_pgtable_map(user_cr3, stack_vaddr, stack_phys, pmm);
+        if (map_r != 0) {
+            debug.println("[USER_PT] ERROR: stack map failed" as void*);
+            return 0;
+        }
+        si = si + 1;
+    }
+
+    // CosmEXEヘッダからエントリポイントオフセットを読取り
+    ulong entry_offset = vmm_read64(src_buf + 8);
+    ulong header_size = 32;  // COSMEXE_HEADER_SIZE
+    MemAddr user_entry = USER_CODE_BASE + header_size + entry_offset;
+
+    debug.puts("[USER_PT] user entry=0x" as void*);
+    debug.print_hex(user_entry);
+    debug.puts(", stack_top=0x" as void*);
+    debug.print_hex(USER_STACK_TOP);
+    debug.println("" as void*);
+
+    return user_entry;
+}
+
+// ============================================================
+// ページテーブル解放（簡易版）
+// ============================================================
+
+/// ユーザPML4テーブルを解放する
+///
+/// 注: 現在は簡易実装でPML4ページのみ解放。
+/// 中間テーブル（PDPT/PD/PT）とデータページの解放は
+/// プロセス終了時のクリーンアップで将来実装。
+export void user_pgtable_destroy(MemAddr user_cr3, PMM* pmm) {
+    DebugPort debug(0xE9);
+    MemAddr pml4_phys = user_cr3 & PTE_ADDR_MASK;
+    pmm->free_page(pml4_phys);
+    debug.puts("[USER_PT] destroyed PML4=0x" as void*);
+    debug.print_hex(pml4_phys);
+    debug.println("" as void*);
+}

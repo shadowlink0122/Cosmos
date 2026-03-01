@@ -1,0 +1,58 @@
+//! platform: uefi
+// kernel::tests::test_tss - TSS（タスクステートセグメント）テスト
+
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../arch/tss;
+import ../test_runner;
+
+// ============================================================
+// TSS テスト
+// ============================================================
+
+/// TSSテストを実行する
+export void test_tss(TestRunner* runner) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === TSS Tests ===" as void*);
+
+    // テスト1: TSS構造体がゼロ以外のRSP0を持っている
+    ulong* rsp0_ptr = (TSS_BASE_ADDR + TSS_OFF_RSP0) as ulong*;
+    ulong rsp0 = *rsp0_ptr;
+    runner->assert_nonzero(rsp0, "TSS RSP0 is nonzero" as void*);
+
+    // テスト2: IOPBオフセットがTSSサイズに設定されている
+    // 注: ushort*デリファレンスはJITでは動作するがUEFIターゲットでは非対応
+    // ulong*で読み取り、下位16bitをマスクして取得
+    ulong* iopb_qword = (TSS_BASE_ADDR + TSS_OFF_IOPB) as ulong*;
+    ulong iopb_read = *iopb_qword & 0xFFFF;
+    ulong expected_iopb = TSS_SIZE;
+    runner->assert_eq(iopb_read, expected_iopb, "TSS IOPB offset equals TSS_SIZE" as void*);
+
+    // テスト3: TSSディスクリプタがGDTに書き込まれている
+    // GDT[5]のtypeフィールド（bit 40-43）が0x9（available TSS）
+    ulong* gdt_slot3 = (0x800 + 40) as ulong*;  // GDT base + 5*8
+    ulong gdt_val = *gdt_slot3;
+    // type+P bitを抽出: byte 5 (bits 40-47) should be 0x89
+    ulong type_byte = (gdt_val >> 40) & 0xFF;
+    // ltr実行後はbusy bit (0x8B)になっている可能性がある
+    ulong is_valid = 0;
+    if (type_byte == 0x89) {
+        is_valid = 1;
+    }
+    if (type_byte == 0x8B) {
+        is_valid = 1;
+    }
+    runner->assert_true(is_valid, "TSS GDT descriptor type is valid (0x89 or 0x8B)" as void*);
+
+    // テスト4: RSP0の更新が正しく反映される
+    ulong original_rsp0 = rsp0;
+    ulong test_rsp0 = 0xDEADBEEF;
+    tss_set_rsp0(test_rsp0);
+    ulong new_rsp0 = *rsp0_ptr;
+    runner->assert_eq(new_rsp0, test_rsp0, "TSS RSP0 update works" as void*);
+    // 元に戻す
+    tss_set_rsp0(original_rsp0);
+
+    serial.println("[TEST] TSS tests complete" as void*);
+}

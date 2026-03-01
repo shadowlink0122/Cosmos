@@ -1,0 +1,188 @@
+//! platform: uefi
+// kernel::sys::ipc - プロセス間通信（メッセージパッシング）
+//
+// マイクロカーネル基盤のIPCメカニズム。
+// 各タスクにメッセージキュー（4エントリ）を割り当て。
+//
+// Bug #14回避: export は ipc_init と ipc_dispatch の2関数のみ。
+
+import ../sched/task;
+import ../sched/scheduler;
+import ../drivers/debug_port;
+import ../sys/syscall_table;
+
+// ============================================================
+// 定数
+// ============================================================
+
+const MemAddr IPC_BASE = 0x3000;
+const ulong IPC_MSG_SIZE = 64;
+const ulong IPC_QUEUE_SIZE = 4;
+const ulong IPC_TASK_SIZE = 256;
+
+const ulong MSG_OFF_SENDER   = 0;
+const ulong MSG_OFF_RECEIVER = 8;
+const ulong MSG_OFF_TYPE     = 16;
+const ulong MSG_OFF_ARG0     = 24;
+const ulong MSG_OFF_ARG1     = 32;
+const ulong MSG_OFF_STATUS   = 56;
+
+const ulong MSG_EMPTY = 0;
+const ulong MSG_VALID = 1;
+
+const MemAddr IPC_NOTIFY_BASE = 0x3800;
+const ulong IPC_ANY_PID = 0xFFFFFFFFFFFFFFFF;
+
+// ============================================================
+// ヘルパー
+// ============================================================
+
+MemAddr msg_slot(ulong tid, ulong slot) {
+    return IPC_BASE + tid * IPC_TASK_SIZE + slot * IPC_MSG_SIZE;
+}
+ulong msg_rd(MemAddr base, ulong off) { ulong* p = (base + off) as ulong*; return *p; }
+void msg_wr(MemAddr base, ulong off, ulong val) { ulong* p = (base + off) as ulong*; *p = val; }
+
+// ============================================================
+// IPC初期化
+// ============================================================
+
+export void ipc_init() {
+    DebugPort debug(0xE9);
+    ulong total = 8 * IPC_TASK_SIZE;
+    ulong i = 0;
+    while (i < total) { ulong* p = (IPC_BASE + i) as ulong*; ulong z = 0; *p = z; i = i + 8; }
+    ulong j = 0;
+    while (j < 8) { ulong* np = (IPC_NOTIFY_BASE + j * 8) as ulong*; ulong z = 0; *np = z; j = j + 1; }
+    debug.println("[IPC] initialized" as void*);
+}
+
+// ============================================================
+// 内部実装
+// ============================================================
+
+SyscallResult do_send(ulong target, ulong mtype, ulong a0, ulong a1) {
+    DebugPort debug(0xE9);
+    TaskId sender = sched_current_id();
+    ulong count = sched_task_count();
+    if (target >= count) { return SYSCALL_EINVAL; }
+
+    ulong slot = 0;
+    ulong found = 0;
+    while (slot < IPC_QUEUE_SIZE) {
+        MemAddr ma = msg_slot(target, slot);
+        if (msg_rd(ma, MSG_OFF_STATUS) == MSG_EMPTY) {
+            msg_wr(ma, MSG_OFF_SENDER, sender);
+            msg_wr(ma, MSG_OFF_RECEIVER, target);
+            msg_wr(ma, MSG_OFF_TYPE, mtype);
+            msg_wr(ma, MSG_OFF_ARG0, a0);
+            msg_wr(ma, MSG_OFF_ARG1, a1);
+            msg_wr(ma, MSG_OFF_STATUS, MSG_VALID);
+            found = 1;
+            slot = IPC_QUEUE_SIZE;
+        } else { slot = slot + 1; }
+    }
+    if (found == 0) { return SYSCALL_ERR; }
+
+    // 受信側がBLOCKEDなら起床
+    TaskState st = tcb_read(target, TCB_OFF_STATE);
+    if (st == TASK_BLOCKED) {
+        TaskId wf = tcb_read(target, TCB_OFF_WAIT_FOR);
+        if (wf == IPC_ANY_PID) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+        if (wf == sender) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+    }
+
+    debug.puts("[IPC] send " as void*);
+    debug.print_hex(sender);
+    debug.puts("->" as void*);
+    debug.print_hex(target);
+    debug.println("" as void*);
+    return 0;
+}
+
+SyscallResult scan_queue(TaskId receiver, ulong filter) {
+    ulong slot = 0;
+    while (slot < IPC_QUEUE_SIZE) {
+        MemAddr ma = msg_slot(receiver, slot);
+        if (msg_rd(ma, MSG_OFF_STATUS) == MSG_VALID) {
+            ulong sender = msg_rd(ma, MSG_OFF_SENDER);
+            ulong match = 0;
+            if (filter == IPC_ANY_PID) { match = 1; }
+            if (filter == sender) { match = 1; }
+            if (match != 0) {
+                ulong mt = msg_rd(ma, MSG_OFF_TYPE);
+                ulong a0 = msg_rd(ma, MSG_OFF_ARG0);
+                msg_wr(ma, MSG_OFF_STATUS, MSG_EMPTY);
+                return mt * 0x100000000 + a0;
+            }
+        }
+        slot = slot + 1;
+    }
+    return SYSCALL_ERR;
+}
+
+SyscallResult do_recv(ulong filter) {
+    DebugPort debug(0xE9);
+    TaskId receiver = sched_current_id();
+
+    // キュー走査
+    SyscallResult r = scan_queue(receiver, filter);
+    if (r != SYSCALL_ERR) { return r; }
+
+    // メッセージなし → BLOCKED
+    tcb_write(receiver, TCB_OFF_STATE, TASK_BLOCKED);
+    tcb_write(receiver, TCB_OFF_WAIT_FOR, filter);
+    schedule();
+
+    // 復帰後に再走査
+    return scan_queue(receiver, filter);
+}
+
+SyscallResult do_notify(ulong target, ulong bits) {
+    ulong count = sched_task_count();
+    if (target >= count) { return SYSCALL_EINVAL; }
+    ulong* np = (IPC_NOTIFY_BASE + target * 8) as ulong*;
+    ulong cur = *np;
+    ulong upd = cur | bits;
+    *np = upd;
+    TaskState st = tcb_read(target, TCB_OFF_STATE);
+    if (st == TASK_BLOCKED) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+    return 0;
+}
+
+SyscallResult do_get_notify() {
+    TaskId cur = sched_current_id();
+    ulong* np = (IPC_NOTIFY_BASE + cur * 8) as ulong*;
+    ulong bits = *np;
+    ulong z = 0;
+    *np = z;
+    return bits;
+}
+
+// ============================================================
+// 統合ディスパッチャ（export 1関数のみ）
+// ============================================================
+
+/// IPCサブシステム syscall ディスパッチャ
+/// sub_nr: syscall番号
+/// arg1-3: 引数
+export SyscallResult ipc_dispatch(SyscallNr sub_nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (sub_nr == SYS_SEND) {
+        return do_send(arg1, arg2, arg3, 0);
+    }
+    if (sub_nr == SYS_RECV) {
+        return do_recv(arg1);
+    }
+    if (sub_nr == SYS_REPLY) {
+        // reply = type 0xFFFF の send
+        ulong reply_type = 0xFFFF;
+        return do_send(arg1, reply_type, arg2, 0);
+    }
+    if (sub_nr == SYS_NOTIFY) {
+        return do_notify(arg1, arg2);
+    }
+    if (sub_nr == SYS_GET_NOTIFY) {
+        return do_get_notify();
+    }
+    return SYSCALL_ENOSYS;
+}

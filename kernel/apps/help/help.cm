@@ -1,0 +1,32 @@
+//! platform: uefi
+// kernel::apps::help - helpコマンド（独立アプリ）
+//
+// libcosmのみを使用。カーネルモジュールを直接importしない。
+// CosmEXEとしてビルドされ、ローダーから動的にロード・実行される。
+
+import ../libcosm/libcosm;
+
+/// アプリケーションエントリポイント
+/// Cm UEFIターゲットはefi_mainをルートとして認識するため、この名前を使用
+export ulong efi_main(ulong argc, ulong argv) {
+    cosm_println("Available commands:" as ulong);
+    cosm_puts("  help           - Show this help\n" as ulong);
+    cosm_puts("  ps             - List tasks\n" as ulong);
+    cosm_puts("  mem            - Show memory usage\n" as ulong);
+    cosm_puts("  uptime         - Show system uptime\n" as ulong);
+    cosm_puts("  clear          - Clear screen\n" as ulong);
+    cosm_puts("  env            - Show environment\n" as ulong);
+    cosm_puts("  ls             - List files\n" as ulong);
+    cosm_puts("  touch <name>   - Create file\n" as ulong);
+    cosm_puts("  cat <name>     - Show file\n" as ulong);
+    cosm_puts("  rm <name>      - Delete file\n" as ulong);
+    cosm_puts("  write <n> <d>  - Write to file\n" as ulong);
+    cosm_puts("  append <n> <d> - Append to file\n" as ulong);
+    cosm_puts("  mkdir <name>   - Create directory\n" as ulong);
+    cosm_puts("  cp <src> <dst> - Copy file\n" as ulong);
+    cosm_puts("  mv <src> <dst> - Move/rename file\n" as ulong);
+    cosm_puts("  aria <file>    - Text editor\n" as ulong);
+    cosm_puts("  cm <file>      - Compile .cm file\n" as ulong);
+    cosm_puts("  a.out          - Run compiled program\n" as ulong);
+    return 0;
+}

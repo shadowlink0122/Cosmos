@@ -1,0 +1,492 @@
+//! platform: uefi
+// kernel::shell::cmd_cm - Cm コンパイラ＆VMランタイム
+//
+// cm <file> : .cmソースファイルを読み込み、コンパイルして a.out を作成。
+// cm help   : cmコマンドのヘルプを表示。
+// a.out     : コンパイル済みバイトコードをVMで実行。
+//
+// コンパイラパイプライン:
+//   Source → Tokenizer → Parser(AST) → Codegen → VMIR バイトコード
+//
+// VM: スタックベース仮想マシン（19命令、変数16個、スタック64段）
+//
+// サポート構文:
+//   int x = 42;              変数宣言
+//   x = x + 1;               代入 + 算術演算
+//   if (x > 0) { ... }       条件分岐
+//   while (x > 0) { ... }    ループ
+//   print(42);               数値出力
+//   print("hello");          文字列出力
+
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../types;
+import ../../fs/cosmfs;
+import ../../mm/heap;
+import ../../config;
+import ../../shell/shell_io;
+import ../fs/fs;
+import ../../shell/fs_result;
+import ./cm_compile;
+
+// エラーコード定数
+const FsError CM_OK            = 0;
+const FsError CM_ERR_ALLOC     = 2;
+const FsError CM_ERR_NOT_FOUND = 3;
+const FsError CM_ERR_EMPTY     = 4;
+
+const MemAddr CM_NOT_FOUND = 0xFFFFFFFFFFFFFFFF;
+
+// ============================================================
+// ヘルプ表示
+// ============================================================
+
+/// cmコマンドのヘルプを表示
+export void cm_help() {
+    shell_set_color(0x0000AAFF);
+    shell_println("Cm Compiler v2.0" as void*);
+    shell_set_color(0x00CCCCCC);
+    shell_println("" as void*);
+    shell_println("Usage:" as void*);
+    shell_println("  cm <file.cm>  - Compile to a.out" as void*);
+    shell_println("  cm help       - Show this help" as void*);
+    shell_println("  a.out         - Run compiled program" as void*);
+    shell_println("" as void*);
+    shell_println("Supported syntax:" as void*);
+    shell_println("  int x = 42;          - variable decl" as void*);
+    shell_println("  x = x + 1;          - assignment" as void*);
+    shell_println("  if (x > 0) { ... }  - conditional" as void*);
+    shell_println("  while (x > 0) {...} - loop" as void*);
+    shell_println("  print(N);           - numeric output" as void*);
+    shell_println("  print(\"...\");       - string output" as void*);
+    shell_println("" as void*);
+    shell_println("Operators: + - * / == != < > <= >=" as void*);
+}
+
+// ============================================================
+// a.out ファイル操作
+// ============================================================
+
+/// a.outファイルを作成してバイトコードを書き込む
+export FsResult cm_create_aout(MemAddr code_buf, ByteSize code_size, Heap* heap) {
+    MemAddr __r_name_addr = heap->alloc(6);
+
+    FsResult r_name = FsResult::from_alloc(__r_name_addr);
+    if (r_name.is_err != 0) { return r_name; }
+    ulong aout_name = r_name.value;
+    cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
+
+    ulong existing = cosmfs_op(FS_OP_FIND, aout_name, 0, 0, 0);
+    if (existing != CM_NOT_FOUND) {
+        cosmfs_op(FS_OP_DELETE, aout_name, 0, 0, 0);
+    }
+
+    MemAddr __r_data_addr = heap->alloc(4096);
+
+    FsResult r_data = FsResult::from_alloc(__r_data_addr);
+    if (r_data.is_err != 0) { return r_data; }
+
+    FsResult r_create = FsResult::from_create(cosmfs_op(FS_OP_CREATE, aout_name, r_data.value, 4096, 0));
+    if (r_create.is_err != 0) { return r_create; }
+
+    FsResult r_write = FsResult::from_op(cosmfs_op(FS_OP_WRITE, aout_name, code_buf, code_size, 0));
+    if (r_write.is_err != 0) { return r_write; }
+
+    return FsResult::ok(0 as ulong);
+}
+
+// ============================================================
+// cmコマンド
+// ============================================================
+
+/// cmコマンド: .cmファイルをコンパイルしてa.outを生成
+export void cmd_cm(MemAddr buf_addr, ByteSize buf_len, Heap* heap) {
+    ulong arg_start = cmd_find_arg(buf_addr, buf_len);
+    ulong arg_len = cmd_arg_len(buf_addr, arg_start, buf_len);
+
+    // 引数なし → Usage表示
+    if (arg_len == 0) {
+        shell_set_color(0x00FFAA00);
+        shell_println("Usage: cm <file.cm>" as void*);
+        shell_println("  cm help  - Show help" as void*);
+        return;
+    }
+
+    // "help" チェック
+    if (arg_len == 4) {
+        ulong h0 = cmd_read_byte(buf_addr + arg_start);
+        ulong h1 = cmd_read_byte(buf_addr + arg_start + 1);
+        ulong h2 = cmd_read_byte(buf_addr + arg_start + 2);
+        ulong h3 = cmd_read_byte(buf_addr + arg_start + 3);
+        if (h0 == 0x68) { if (h1 == 0x65) { if (h2 == 0x6C) { if (h3 == 0x70) {
+                        cm_help();
+                        return;
+                    } } } }
+                }
+
+                // ファイル名をバッファにコピー
+                MemAddr __r_name_addr = heap->alloc(arg_len + 1);
+                FsResult r_name = FsResult::from_alloc(__r_name_addr);
+                if (r_name.is_err != 0) { r_name.print_error(); return; }
+                ulong name_buf = r_name.value;
+                cosmfs_op(FS_OP_MEMCPY, name_buf, buf_addr + arg_start, arg_len, 0);
+                cmd_write_byte(name_buf + arg_len, 0);
+
+                // ソースファイルの検索
+                FsResult r_find = FsResult::from_op(cosmfs_op(FS_OP_FIND, name_buf, 0, 0, 0));
+                if (r_find.is_err != 0) { r_find.print_error(); return; }
+
+                // ソースファイル読み込み
+                FsResult r_size = FsResult::from_op_nz(cosmfs_op(FS_OP_SIZE, name_buf, 0, 0, 0));
+                if (r_size.is_err != 0) { r_size.print_error(); return; }
+                ulong src_size = r_size.value;
+
+                MemAddr __r_src_addr = heap->alloc(src_size + 1);
+                FsResult r_src = FsResult::from_alloc(__r_src_addr);
+                if (r_src.is_err != 0) { r_src.print_error(); return; }
+
+                FsResult r_read = FsResult::from_op_nz(cosmfs_op(FS_OP_READ, name_buf, r_src.value, src_size, 0));
+                if (r_read.is_err != 0) { r_read.print_error(); return; }
+
+                // === コンパイラパイプライン ===
+
+                // バッファ確保
+                ulong tok_buf_size = 16 * 128;   // TOKEN_SIZE * MAX_TOKENS
+                ulong ast_buf_size = 32 * 64;    // AST_NODE_SIZE * MAX_AST
+                ulong ident_buf_size = 16 * 16;  // IDENT_ENTRY * MAX_IDENTS
+                ulong code_buf_size = 16 * 256;  // VM_INSTR_SIZE * MAX_VM_INSTRS
+
+                MemAddr __r_tok_addr = heap->alloc(tok_buf_size);
+                FsResult r_tok = FsResult::from_alloc(__r_tok_addr);
+                if (r_tok.is_err != 0) { r_tok.print_error(); return; }
+                MemAddr tok_buf = r_tok.value;
+
+                MemAddr __r_ast_addr = heap->alloc(ast_buf_size);
+                FsResult r_ast = FsResult::from_alloc(__r_ast_addr);
+                if (r_ast.is_err != 0) { r_ast.print_error(); return; }
+                MemAddr ast_buf = r_ast.value;
+
+                MemAddr __r_ident_addr = heap->alloc(ident_buf_size);
+                FsResult r_ident = FsResult::from_alloc(__r_ident_addr);
+                if (r_ident.is_err != 0) { r_ident.print_error(); return; }
+                MemAddr ident_buf = r_ident.value;
+
+                MemAddr __r_ic_addr = heap->alloc(8);
+                FsResult r_ic = FsResult::from_alloc(__r_ic_addr);
+                if (r_ic.is_err != 0) { r_ic.print_error(); return; }
+                ulong* ident_count_ptr = r_ic.value as ulong*;
+                ulong ic_zero = 0;
+                *ident_count_ptr = ic_zero;
+
+                MemAddr __r_tco_addr = heap->alloc(8);
+                FsResult r_tco = FsResult::from_alloc(__r_tco_addr);
+                if (r_tco.is_err != 0) { r_tco.print_error(); return; }
+                ulong* tok_count_ptr = r_tco.value as ulong*;
+
+                MemAddr __r_code_addr = heap->alloc(code_buf_size);
+                FsResult r_code = FsResult::from_alloc(__r_code_addr);
+                if (r_code.is_err != 0) { r_code.print_error(); return; }
+                MemAddr code_buf = r_code.value;
+
+                // コンパイル実行（Tokenize → Parse → Codegen）
+                ulong code_size = cm_full_compile(r_src.value, src_size, code_buf, tok_buf, ast_buf, ident_buf, ident_count_ptr, tok_count_ptr);
+                ulong tok_count = *tok_count_ptr;
+
+                // a.out作成
+                FsResult r_aout = cm_create_aout(code_buf, code_size, heap);
+                if (r_aout.is_err != 0) { r_aout.print_error(); return; }
+
+                shell_set_color(0x0000FF88);
+                shell_puts("Compiled: " as void*);
+                shell_print_num(tok_count);
+                shell_puts(" tokens, " as void*);
+                shell_print_num(code_size / VM_INSTR_SIZE);
+                shell_puts(" instructions -> a.out" as void*);
+                shell_newline();
+            }
+
+            // ============================================================
+            // VM実行エンジン
+            // ============================================================
+
+            /// a.outコマンド: バイトコードVMで実行
+            export void cmd_run_aout(Heap* heap) {
+                MemAddr __r_name_addr = heap->alloc(6);
+
+                FsResult r_name = FsResult::from_alloc(__r_name_addr);
+                if (r_name.is_err != 0) { r_name.print_error(); return; }
+                ulong aout_name = r_name.value;
+                cosmfs_op(FS_OP_MEMCPY, aout_name, "a.out" as ulong, 6, 0);
+
+                FsResult r_find = FsResult::from_op(cosmfs_op(FS_OP_FIND, aout_name, 0, 0, 0));
+                if (r_find.is_err != 0) {
+                    shell_set_color(0x00FF4444);
+                    shell_println("Error: a.out not found" as void*);
+                    shell_println("  Compile first: cm <file.cm>" as void*);
+                    return;
+                }
+
+                FsResult r_size = FsResult::from_op_nz(cosmfs_op(FS_OP_SIZE, aout_name, 0, 0, 0));
+                if (r_size.is_err != 0) { r_size.print_error(); return; }
+                ulong code_size = r_size.value;
+
+                MemAddr __r_buf_addr = heap->alloc(code_size);
+                FsResult r_buf = FsResult::from_alloc(__r_buf_addr);
+                if (r_buf.is_err != 0) { r_buf.print_error(); return; }
+
+                FsResult r_read = FsResult::from_op_nz(cosmfs_op(FS_OP_READ, aout_name, r_buf.value, code_size, 0));
+                if (r_read.is_err != 0) { r_read.print_error(); return; }
+
+                shell_set_color(0x00FFFFFF);
+                cm_vm_exec(r_buf.value, code_size, heap);
+            }
+
+            /// バイトコードVM実行エンジン（拡張版）
+            export void cm_vm_exec(MemAddr code_buf, ByteSize code_size, Heap* heap) {
+                // VMスタック（64エントリ × 8バイト）
+                MemAddr __r_stack_addr = heap->alloc(512);
+                FsResult r_stk = FsResult::from_alloc(__r_stack_addr);
+                if (r_stk.is_err != 0) { return; }
+                MemAddr stack = r_stk.value;
+
+                // VM変数スロット（16変数 × 8バイト）
+                MemAddr __r_vars_addr = heap->alloc(128);
+                FsResult r_vars = FsResult::from_alloc(__r_vars_addr);
+                if (r_vars.is_err != 0) { return; }
+                MemAddr vars = r_vars.value;
+
+                // 変数スロットを0クリア
+                ulong vi = 0;
+                while (vi < 16) {
+                    ulong* vp = (vars + vi * 8) as ulong*;
+                    ulong vz = 0;
+                    *vp = vz;
+                    vi = vi + 1;
+                }
+
+                ulong pc = 0;
+                ulong sp = 0;
+                ulong steps = 0;
+                ulong max_steps = 10000;
+                ulong max_instr = code_size / VM_INSTR_SIZE;
+
+                while (steps < max_steps) {
+                    if (pc >= max_instr) { return; }
+
+                    ulong off = pc * VM_INSTR_SIZE;
+                    ulong* op_ptr = (code_buf + off) as ulong*;
+                    ulong opcode = *op_ptr;
+                    ulong* arg_ptr = (code_buf + off + 8) as ulong*;
+                    ulong operand = *arg_ptr;
+
+                    // HALT
+                    if (opcode == VM_HALT) { return; }
+
+                    // PUSH constant
+                    if (opcode == VM_PUSH) {
+                        ulong* sp_ptr = (stack + sp * 8) as ulong*;
+                        *sp_ptr = operand;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+
+                    // LOAD variable
+                    else if (opcode == VM_LOAD) {
+                        ulong* var_ptr = (vars + operand * 8) as ulong*;
+                        ulong val = *var_ptr;
+                        ulong* sp_ptr = (stack + sp * 8) as ulong*;
+                        *sp_ptr = val;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+
+                    // STORE variable
+                    else if (opcode == VM_STORE) {
+                        sp = sp - 1;
+                        ulong* sp_ptr = (stack + sp * 8) as ulong*;
+                        ulong val = *sp_ptr;
+                        ulong* var_ptr = (vars + operand * 8) as ulong*;
+                        *var_ptr = val;
+                        pc = pc + 1;
+                    }
+
+                    // POP
+                    else if (opcode == VM_POP) {
+                        if (sp > 0) { sp = sp - 1; }
+                        pc = pc + 1;
+                    }
+
+                    // ADD
+                    else if (opcode == VM_ADD) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        *ap = a + b;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+
+                    // SUB
+                    else if (opcode == VM_SUB) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        *ap = a - b;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+
+                    // MUL
+                    else if (opcode == VM_MUL) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        *ap = a * b;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+
+                    // DIV
+                    else if (opcode == VM_DIV) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        if (b != 0) { *ap = a / b; }
+                        else { ulong div_zero = 0; *ap = div_zero; }
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+
+                    // 比較演算
+                    else if (opcode == VM_CMP_EQ) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        ulong r = 0;
+                        if (a == b) { r = 1; } *ap = r;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+                    else if (opcode == VM_CMP_NEQ) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        ulong r = 0;
+                        if (a != b) { r = 1; } *ap = r;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+                    else if (opcode == VM_CMP_LT) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        ulong r = 0;
+                        if (a < b) { r = 1; } *ap = r;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+                    else if (opcode == VM_CMP_GT) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        ulong r = 0;
+                        if (a > b) { r = 1; } *ap = r;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+                    else if (opcode == VM_CMP_LTEQ) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        ulong r = 0;
+                        if (a <= b) { r = 1; } *ap = r;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+                    else if (opcode == VM_CMP_GTEQ) {
+                        sp = sp - 1;
+                        ulong* bp = (stack + sp * 8) as ulong*;
+                        ulong b = *bp;
+                        sp = sp - 1;
+                        ulong* ap = (stack + sp * 8) as ulong*;
+                        ulong a = *ap;
+                        ulong r = 0;
+                        if (a >= b) { r = 1; } *ap = r;
+                        sp = sp + 1;
+                        pc = pc + 1;
+                    }
+
+                    // JUMP
+                    else if (opcode == VM_JUMP) {
+                        pc = operand;
+                    }
+
+                    // JUMP_FALSE
+                    else if (opcode == VM_JUMP_FALSE) {
+                        sp = sp - 1;
+                        ulong* sp_ptr = (stack + sp * 8) as ulong*;
+                        ulong val = *sp_ptr;
+                        if (val == 0) { pc = operand; }
+                        else { pc = pc + 1; }
+                    }
+
+                    // PRINT_NUM
+                    else if (opcode == VM_PRINT_NUM) {
+                        sp = sp - 1;
+                        ulong* sp_ptr = (stack + sp * 8) as ulong*;
+                        ulong val = *sp_ptr;
+                        shell_print_num(val);
+                        shell_newline();
+                        pc = pc + 1;
+                    }
+
+                    // PRINT_STR
+                    else if (opcode == VM_PRINT_STR) {
+                        ulong len_off = (pc + 1) * VM_INSTR_SIZE;
+                        ulong* len_ptr = (code_buf + len_off) as ulong*;
+                        ulong str_len = *len_ptr;
+                        ulong si = 0;
+                        while (si < str_len) {
+                            ulong ch = cmd_read_byte(operand + si);
+                            shell_putc(ch);
+                            si = si + 1;
+                        }
+                        shell_newline();
+                        pc = pc + 2;
+                    }
+
+                    else {
+                        // 不明な命令 → スキップ
+                        pc = pc + 1;
+                    }
+
+                    steps = steps + 1;
+                }
+            }

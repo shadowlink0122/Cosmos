@@ -1,0 +1,153 @@
+//! platform: uefi
+// kernel::demo - デモタスク（マルチタスク動作確認用）
+//
+// make run時にマルチタスクの交互実行を可視化する。
+// serial出力とFBConsole出力を並行して実行。
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../drivers/pit;
+import ../config;
+import ../sched/task;
+import ../sched/scheduler;
+import ../lib/print;
+
+// (GLOBAL_FB_CONSOLE_ADDR, global_fb_init, global_fb_ptr 削除済)
+
+// ============================================================
+// 共通: hlt + リスケジュール確認
+// ============================================================
+
+export void demo_yield() {
+    __asm__("hlt");
+    ulong resched = pit_check_resched();
+    if (resched != 0) {
+        sched_timer_tick();
+        ulong my_id = sched_current_id();
+        ulong remaining = tcb_read(my_id, TCB_OFF_TIMESLICE);
+        if (remaining == 0) {
+            schedule();
+        }
+    }
+}
+
+// ============================================================
+// デモタスク関数
+// ============================================================
+
+/// デモタスク1: シアン色出力
+export void demo_task1_fn() {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+
+    serial.println("[Task-1] Started" as void*);
+    con.set_color(0x0000FFFF);  // シアン
+    con.puts("[Task-1] Started" as void*);
+    con.newline();
+
+    ulong count = 0;
+    ulong target = 10;
+
+    while (count < target) {
+        count = count + 1;
+
+        // serial出力
+        serial.puts("[Task-1] iter " as void*);
+        serial.print_hex(count);
+        serial.println("" as void*);
+
+        // フレームバッファ出力
+        con.set_color(0x0000FFFF);
+        con.puts("  [1] iter " as void*);
+        ulong digit = count + 0x30;
+        if (count > 9) { digit = 0x3F; }
+        con.putc(digit);
+        con.newline();
+
+        // yield（プリエンプション用）
+        demo_yield();
+        demo_yield();
+    }
+
+    serial.println("[Task-1] Done" as void*);
+    con.set_color(0x0000FFFF);
+    con.puts("[Task-1] Done" as void*);
+    con.newline();
+
+    // 自身をTERMINATED → schedule
+    ulong my_id = sched_current_id();
+    tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
+    schedule();
+
+    while (true) {
+        __asm__("hlt");
+    }
+}
+
+/// デモタスク2: 黄色出力
+export void demo_task2_fn() {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+
+    serial.println("[Task-2] Started" as void*);
+    con.set_color(0x00FFFF00);  // 黄色
+    con.puts("[Task-2] Started" as void*);
+    con.newline();
+
+    ulong count = 0;
+    ulong target = 10;
+
+    while (count < target) {
+        count = count + 1;
+
+        serial.puts("[Task-2] iter " as void*);
+        serial.print_hex(count);
+        serial.println("" as void*);
+
+        con.set_color(0x00FFFF00);
+        con.puts("  [2] iter " as void*);
+        ulong digit = count + 0x30;
+        if (count > 9) { digit = 0x3F; }
+        con.putc(digit);
+        con.newline();
+
+        demo_yield();
+        demo_yield();
+    }
+
+    serial.println("[Task-2] Done" as void*);
+    con.set_color(0x00FFFF00);
+    con.puts("[Task-2] Done" as void*);
+    con.newline();
+
+    ulong my_id = sched_current_id();
+    tcb_write(my_id, TCB_OFF_STATE, TASK_TERMINATED);
+    schedule();
+
+    while (true) {
+        __asm__("hlt");
+    }
+}
+
+// ============================================================
+// デモタスク生成
+// ============================================================
+
+export void demo_spawn_tasks() {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+
+    ulong addr1 = fn_addr(demo_task1_fn as void*);
+    ulong id1 = sched_spawn(addr1);
+    serial.puts("[CosmOS] Task-1 spawned (id=" as void*);
+    serial.print_hex(id1);
+    serial.println(")" as void*);
+
+    ulong addr2 = fn_addr(demo_task2_fn as void*);
+    ulong id2 = sched_spawn(addr2);
+    serial.puts("[CosmOS] Task-2 spawned (id=" as void*);
+    serial.print_hex(id2);
+    serial.println(")" as void*);
+
+    debug.println("[DEMO] demo tasks spawned" as void*);
+}

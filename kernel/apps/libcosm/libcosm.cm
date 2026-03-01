@@ -1,0 +1,173 @@
+//! platform: uefi
+// kernel::apps::libcosm - CosmOS ユーザー空間ライブラリ
+//
+// 独立アプリケーションがカーネルと通信するための唯一のインターフェース。
+// syscall命令を使用し、カーネルモジュールを直接importしない。
+//
+// syscall ABI:
+//   RAX = syscall番号
+//   RDI = 引数1, RSI = 引数2, RDX = 引数3
+//   戻り値: RAX
+//   破壊レジスタ: RCX (復帰RIP), R11 (RFLAGS)
+//
+// API:
+//   cosm_exit(code)         — プロセス終了
+//   cosm_write(fd, buf, len) — バイト列書き込み
+//   cosm_puts(msg)          — NUL終端文字列出力 (stdout)
+//   cosm_putc(ch)           — 1文字出力
+//   cosm_println(msg)       — 改行付き出力
+//   cosm_print_hex(val)     — 16進数出力
+//   cosm_getenv(key)        — 環境変数取得
+//   cosm_sbrk(increment)    — ヒープ領域拡張
+
+import ../../types;
+
+// ============================================================
+// syscall番号定数（syscall_table.cmと一致）
+// ============================================================
+
+const SyscallNr COSM_SYS_EXIT    = 0;
+const SyscallNr COSM_SYS_WRITE   = 1;
+const SyscallNr COSM_SYS_GETENV  = 6;
+const SyscallNr COSM_SYS_SBRK   = 40;
+
+const Fd COSM_FD_STDOUT   = 1;
+
+// ============================================================
+// 低レベルsyscall発行
+// ============================================================
+
+/// syscall発行: syscall命令 (rax=nr, rdi=a1, rsi=a2, rdx=a3)
+/// 注: syscall命令はRCXとR11を破壊する
+export SyscallResult cosm_syscall3(SyscallNr nr, ulong a1, ulong a2, ulong a3) {
+    ulong ret = 0;
+    __asm__(`
+        movq ${r:nr}, %rax;
+        movq ${r:a1}, %rdi;
+        movq ${r:a2}, %rsi;
+        movq ${r:a3}, %rdx;
+        syscall;
+        movq %rax, ${=r:ret}
+    `);
+    return ret;
+}
+
+/// syscall発行: syscall命令 (rax=nr, rdi=a1)
+export SyscallResult cosm_syscall1(SyscallNr nr, ulong a1) {
+    ulong ret = 0;
+    __asm__(`
+        movq ${r:nr}, %rax;
+        movq ${r:a1}, %rdi;
+        syscall;
+        movq %rax, ${=r:ret}
+    `);
+    return ret;
+}
+
+// ============================================================
+// ヘルパー
+// ============================================================
+
+/// 1バイト読み取り
+export AsciiChar cosm_read_byte(MemAddr addr) {
+    ulong ch = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:ch}
+    `);
+    return ch;
+}
+
+/// NUL終端文字列の長さを計算
+export ByteSize cosm_strlen(MemAddr addr) {
+    ulong len = 0;
+    ulong max = 4096;
+    while (len < max) {
+        ulong ch = cosm_read_byte(addr + len);
+        if (ch == 0) { return len; }
+        len = len + 1;
+    }
+    return len;
+}
+
+// ============================================================
+// 高レベルAPI
+// ============================================================
+
+/// プロセス終了
+export void cosm_exit(ExitCode code) {
+    cosm_syscall1(COSM_SYS_EXIT, code);
+}
+
+/// バイト列書き込み
+export SyscallResult cosm_write(Fd fd, MemAddr buf, ByteSize len) {
+    return cosm_syscall3(COSM_SYS_WRITE, fd, buf, len);
+}
+
+/// NUL終端文字列出力 (stdout)
+export void cosm_puts(MemAddr msg) {
+    ulong len = cosm_strlen(msg);
+    cosm_write(COSM_FD_STDOUT, msg, len);
+}
+
+/// 1文字出力
+export void cosm_putc(AsciiChar ch) {
+    // 一時領域に1バイト書いて出力
+    MemAddr tmp = 0xCE0;  // 一時バッファ
+    __asm__(`
+        movq ${r:tmp}, %rdi;
+        movq ${r:ch}, %rax;
+        movb %al, (%rdi)
+    `);
+    cosm_write(COSM_FD_STDOUT, tmp, 1);
+}
+
+/// 改行付き文字列出力
+export void cosm_println(MemAddr msg) {
+    cosm_puts(msg);
+    cosm_putc(0x0A);  // '\n'
+}
+
+/// 16進数出力
+export void cosm_print_hex(ulong value) {
+    // "0x" プレフィックス
+    cosm_putc(0x30);  // '0'
+    cosm_putc(0x78);  // 'x'
+
+    // 16桁の16進数を出力（先頭ゼロ含む）
+    ulong shift = 60;
+    ulong printed = 0;
+    while (shift < 64) {  // ulongのラップアラウンドで終了
+        ulong nibble = (value >> shift) & 0x0F;
+        if (nibble > 0) { printed = 1; }
+        if (printed != 0) {
+            if (nibble < 10) {
+                cosm_putc(nibble + 0x30);
+            }
+            if (nibble >= 10) {
+                cosm_putc(nibble - 10 + 0x61);
+            }
+        }
+        if (shift == 0) { shift = 64; }  // ループ終了
+        if (shift != 64) {
+            if (shift < 64) { shift = shift - 4; }
+        }
+    }
+    if (printed == 0) {
+        cosm_putc(0x30);  // '0' — value==0の場合
+    }
+}
+
+/// 環境変数取得
+export MemAddr cosm_getenv(MemAddr key) {
+    return cosm_syscall1(COSM_SYS_GETENV, key);
+}
+
+/// ヒープ領域を拡張する
+/// increment: 確保するバイト数
+/// 戻り値: 確保されたメモリのアドレス（失敗時は INVALID_VALUE）
+export MemAddr cosm_sbrk(ulong increment) {
+    return cosm_syscall1(COSM_SYS_SBRK, increment);
+}

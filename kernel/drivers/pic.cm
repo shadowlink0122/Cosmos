@@ -1,0 +1,126 @@
+//! platform: uefi
+// kernel::drivers::pic - PIC 8259A 割り込みコントローラドライバ
+//
+// カスケード接続された2つの8259A PICを初期化し、
+// IRQ 0-7 をベクタ 32-39 に、IRQ 8-15 をベクタ 40-47 にリマップする。
+//
+// impl PIC8259A { ... } パターンでメソッド呼び出しを提供:
+//   pic.init();
+//   pic.unmask(1);     // キーボード割り込み有効化
+//   pic.send_eoi(1);   // EOI送信
+
+import ./serial;  // outb/inb関数を再利用
+import ../config;
+
+// ============================================================
+// ICW（初期化コマンドワード）定数
+// ============================================================
+
+const ulong ICW1_INIT = 0x11;   // ICW1: 初期化開始 + ICW4が必要
+const ulong ICW4_8086 = 0x01;   // ICW4: 8086/88モード
+const ulong PIC_EOI   = 0x20;   // End Of Interrupt
+
+// ============================================================
+// PIC8259A 構造体
+// ============================================================
+
+/// 8259A PIC割り込みコントローラ
+export struct PIC8259A {
+    IoPort master_cmd;    // マスターPICコマンドポート（通常0x20）
+    IoPort master_data;   // マスターPICデータポート（通常0x21）
+    IoPort slave_cmd;     // スレーブPICコマンドポート（通常0xA0）
+    IoPort slave_data;    // スレーブPICデータポート（通常0xA1）
+}
+
+// ============================================================
+// I/Oポート操作ヘルパー
+// ============================================================
+
+/// I/Oポートからの応答待ち（短いディレイ）
+export void io_wait() {
+    __asm__(`
+        xorq %rax, %rax;
+        outb %al, $$0x80
+    `);
+}
+
+// ============================================================
+// PIC8259A メソッド実装
+// ============================================================
+
+impl PIC8259A {
+    /// デフォルトコンストラクタ: 標準ポートアドレス設定
+    /// 使用例: PIC8259A pic();
+    self() {
+        self.master_cmd = 0x20;
+        self.master_data = 0x21;
+        self.slave_cmd = 0xA0;
+        self.slave_data = 0xA1;
+    }
+
+    /// PIC 8259Aを初期化し、IRQをベクタ32-47にリマップする
+    void init() {
+        // ICW1: 初期化開始
+        outb(self.master_cmd, ICW1_INIT);
+        io_wait();
+        outb(self.slave_cmd, ICW1_INIT);
+        io_wait();
+
+        // ICW2: ベクタオフセット
+        outb(self.master_data, 32);  // マスター: IRQ0 → ベクタ32
+        io_wait();
+        outb(self.slave_data, 40);   // スレーブ: IRQ8 → ベクタ40
+        io_wait();
+
+        // ICW3: カスケード接続
+        outb(self.master_data, 4);   // マスター: IRQ2にスレーブ接続
+        io_wait();
+        outb(self.slave_data, 2);    // スレーブ: カスケードID = 2
+        io_wait();
+
+        // ICW4: 8086モード
+        outb(self.master_data, ICW4_8086);
+        io_wait();
+        outb(self.slave_data, ICW4_8086);
+        io_wait();
+
+        // 全IRQをマスク（無効化）
+        self.mask_all();
+    }
+
+    /// 全IRQをマスク（無効化）する
+    void mask_all() {
+        outb(self.master_data, 0xFF);
+        outb(self.slave_data, 0xFF);
+    }
+
+    /// 指定IRQ番号をアンマスク（有効化）する
+    void unmask(IrqNr irq) {
+        IoPort port = self.master_data;
+        IrqNr irq_line = irq;
+        if (irq >= 8) {
+            port = self.slave_data;
+            irq_line = irq - 8;
+        }
+
+        // 現在のマスクを読み取り
+        ulong mask = inb(port);
+
+        // 対象ビットをクリア
+        ulong one = 1;
+        ulong bit = one << irq_line;
+        ulong ff = 0xFF;
+        ulong inv = bit ^ ff;
+        mask = mask & inv;
+
+        outb(port, mask);
+    }
+
+    /// EOI（End Of Interrupt）を送信する
+    void send_eoi(IrqNr irq) {
+        if (irq >= 8) {
+            outb(self.slave_cmd, PIC_EOI);
+        }
+        outb(self.master_cmd, PIC_EOI);
+    }
+}

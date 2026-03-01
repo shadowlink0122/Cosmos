@@ -1,0 +1,193 @@
+//! platform: uefi
+// kernel::sys::process - プロセス管理syscallハンドラ
+//
+// syscall経由でプロセスの生成・終了・待機・PID取得を行う。
+//
+// API:
+//   sys_spawn(entry_fn) → pid        タスク生成
+//   sys_kill(pid) → 0                タスク終了
+//   sys_wait(pid) → exit_code        タスク完了待機
+//   sys_getpid() → pid               現在のPID取得
+//   sys_exit_task(code)               現在タスク終了
+
+import ../sched/task;
+import ../sched/scheduler;
+import ../drivers/debug_port;
+import ../sys/syscall_table;
+
+// ============================================================
+// sys_spawn — 新しいタスクを生成する
+// ============================================================
+// entry_fn: タスクのエントリポイント関数アドレス
+// 戻り値: 新しいタスクID（失敗時は0xFFFFFFFFFFFFFFFF）
+
+export SyscallResult sys_spawn(MemAddr entry_fn) {
+    DebugPort debug(0xE9);
+    debug.puts("[PROCESS] sys_spawn entry=0x" as void*);
+    debug.print_hex(entry_fn);
+    debug.println("" as void*);
+
+    // 現在のタスクIDを親として記録
+    TaskId parent_id = sched_current_id();
+
+    // sched_spawnで新タスク生成
+    TaskId pid = sched_spawn(entry_fn);
+    if (pid == 0xFFFFFFFF) {
+        debug.println("[PROCESS] spawn failed" as void*);
+        ulong err = 0xFFFFFFFFFFFFFFFF;
+        return err;
+    }
+
+    // 拡張フィールドを設定
+    ulong proc_type = 1;  // user process
+    tcb_write(pid, TCB_OFF_PROCESS_TYPE, proc_type);
+    tcb_write(pid, TCB_OFF_PARENT_ID, parent_id);
+    ulong zero = 0;
+    tcb_write(pid, TCB_OFF_EXIT_CODE, zero);
+    tcb_write(pid, TCB_OFF_WAIT_FOR, zero);
+
+    debug.puts("[PROCESS] spawned pid=" as void*);
+    debug.print_hex(pid);
+    debug.puts(", parent=" as void*);
+    debug.print_hex(parent_id);
+    debug.println("" as void*);
+
+    return pid;
+}
+
+// ============================================================
+// sys_kill — タスクを終了させる
+// ============================================================
+// pid: 終了させるタスクID
+// 戻り値: 0=成功
+
+export SyscallResult sys_kill(Pid pid) {
+    DebugPort debug(0xE9);
+    debug.puts("[PROCESS] sys_kill pid=" as void*);
+    debug.print_hex(pid);
+    debug.println("" as void*);
+
+    ulong count = sched_task_count();
+    if (pid >= count) {
+        ulong err = 0xFFFFFFFFFFFFFFFF;
+        return err;
+    }
+
+    // idle(pid=0)はkillできない
+    if (pid == 0) {
+        debug.println("[PROCESS] cannot kill idle task" as void*);
+        ulong err = 0xFFFFFFFFFFFFFFFF;
+        return err;
+    }
+
+    // タスクを終了状態に設定
+    tcb_write(pid, TCB_OFF_STATE, TASK_TERMINATED);
+
+    // このタスクをwaitしている親がいれば起床
+    wake_waiting_parent(pid);
+
+    return 0;
+}
+
+// ============================================================
+// sys_wait — 子タスクの終了を待つ
+// ============================================================
+// pid: 待機対象タスクID
+// 戻り値: 対象の終了コード
+
+export SyscallResult sys_wait(Pid pid) {
+    DebugPort debug(0xE9);
+    debug.puts("[PROCESS] sys_wait pid=" as void*);
+    debug.print_hex(pid);
+    debug.println("" as void*);
+
+    ulong count = sched_task_count();
+    if (pid >= count) {
+        ulong err = 0xFFFFFFFFFFFFFFFF;
+        return err;
+    }
+
+    // 対象が既にTERMINATEDなら即座にexit_codeを返す
+    TaskState state = tcb_read(pid, TCB_OFF_STATE);
+    if (state == TASK_TERMINATED) {
+        ExitCode code = tcb_read(pid, TCB_OFF_EXIT_CODE);
+        debug.puts("[PROCESS] wait: already terminated, code=" as void*);
+        debug.print_hex(code);
+        debug.println("" as void*);
+        return code;
+    }
+
+    // まだ実行中 → 現在タスクをBLOCKEDにしてschedule()
+    TaskId current = sched_current_id();
+    tcb_write(current, TCB_OFF_STATE, TASK_BLOCKED);
+    tcb_write(current, TCB_OFF_WAIT_FOR, pid);
+
+    debug.puts("[PROCESS] blocking task " as void*);
+    debug.print_hex(current);
+    debug.puts(" waiting for " as void*);
+    debug.print_hex(pid);
+    debug.println("" as void*);
+
+    schedule();
+
+    // schedule()から戻ってきた = 対象が終了した
+    ExitCode code = tcb_read(pid, TCB_OFF_EXIT_CODE);
+    return code;
+}
+
+// ============================================================
+// sys_getpid — 現在のプロセスIDを取得
+// ============================================================
+
+export Pid sys_getpid() {
+    return sched_current_id();
+}
+
+// ============================================================
+// sys_exit_task — 現在のタスクを終了
+// ============================================================
+// code: 終了コード
+
+export void sys_exit_task(ExitCode code) {
+    DebugPort debug(0xE9);
+    TaskId current = sched_current_id();
+    debug.puts("[PROCESS] sys_exit_task pid=" as void*);
+    debug.print_hex(current);
+    debug.puts(", code=" as void*);
+    debug.print_hex(code);
+    debug.println("" as void*);
+
+    // 終了コードとステータスを設定
+    tcb_write(current, TCB_OFF_EXIT_CODE, code);
+    tcb_write(current, TCB_OFF_STATE, TASK_TERMINATED);
+
+    // このタスクをwaitしている親がいれば起床
+    wake_waiting_parent(current);
+
+    // 他のタスクにスイッチ
+    schedule();
+}
+
+// ============================================================
+// ヘルパー: 待機中の親タスクを起床
+// ============================================================
+
+/// 指定pidをwait_forとしてBLOCKEDしているタスクがあればREADYに変更
+export void wake_waiting_parent(TaskId pid) {
+    DebugPort debug(0xE9);
+    ulong count = sched_task_count();
+    ulong i = 0;
+    while (i < count) {
+        TaskState state = tcb_read(i, TCB_OFF_STATE);
+        if (state == TASK_BLOCKED) {
+            TaskId wait_for = tcb_read(i, TCB_OFF_WAIT_FOR);
+            if (wait_for == pid) {
+                tcb_write(i, TCB_OFF_STATE, TASK_READY);
+                debug.puts("[PROCESS] woke up task " as void*);
+                debug.print_hex(i);
+                debug.println("" as void*);
+            }
+        }
+        i = i + 1;
+    }
+}

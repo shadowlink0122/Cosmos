@@ -1,0 +1,731 @@
+//! platform: uefi
+// kernel::shell - カーネルシェル（メインループ）
+//
+// PS/2キーボードからの入力を受け取り、コマンドを解釈・実行する。
+// serial + FBConsole のデュアル出力対応。
+//
+// コマンド実装は個別ファイルに分割:
+//   cmd_help.cm, cmd_ps.cm, cmd_mem.cm, cmd_uptime.cm
+
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../drivers/keyboard;
+import ../lib/print;
+import ../lib/console;
+import ../config;
+import ../mm/heap;
+import ../apps/aria/aria;
+import ../apps/aria/aria_edit;
+import ../sys/exec;
+import ./shell_io;
+
+// ============================================================
+// 定数
+// ============================================================
+
+// コマンドバッファ
+const MemAddr SHELL_BUF_ADDR = 0xD00;  // コマンドバッファ（128バイト）
+const ulong SHELL_BUF_SIZE = 128;
+const MemAddr SHELL_POS_ADDR = 0xD80;  // バッファ位置
+
+// ============================================================
+// 文字列比較ヘルパー
+// ============================================================
+
+/// 2つの文字列を比較する（固定アドレスの文字列 vs リテラル）
+/// 一致すれば1、不一致なら0を返す
+export ulong shell_streq(MemAddr buf_addr, ulong buf_len, void* target) {
+    MemAddr target_addr = target as ulong;
+
+    // ターゲット文字列の長さを計算
+    ulong target_len = 0;
+    ulong zero_byte = 0;
+    while (true) {
+        AsciiChar ch = 0;
+        MemAddr check_addr = target_addr + target_len;
+        __asm__(`
+            movq ${r:check_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        if (ch == zero_byte) {
+            break;
+        }
+        target_len = target_len + 1;
+    }
+
+    if (buf_len != target_len) {
+        return 0;
+    }
+
+    ulong i = 0;
+    while (i < buf_len) {
+        AsciiChar ch_buf = 0;
+        MemAddr buf_byte_addr = buf_addr + i;
+        __asm__(`
+            movq ${r:buf_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_buf}
+        `);
+
+        AsciiChar ch_target = 0;
+        MemAddr target_byte_addr = target_addr + i;
+        __asm__(`
+            movq ${r:target_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_target}
+        `);
+
+        if (ch_buf != ch_target) {
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    return 1;
+}
+
+/// コマンドバッファが指定プレフィックスで始まるか判定
+/// 一致すれば1、不一致なら0を返す
+export ulong shell_starts_with(MemAddr buf_addr, ulong buf_len, void* prefix, ulong prefix_len) {
+    if (buf_len < prefix_len) {
+        return 0;
+    }
+
+    MemAddr prefix_addr = prefix as ulong;
+    ulong i = 0;
+    while (i < prefix_len) {
+        AsciiChar ch_buf = 0;
+        MemAddr buf_byte_addr = buf_addr + i;
+        __asm__(`
+            movq ${r:buf_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_buf}
+        `);
+
+        AsciiChar ch_prefix = 0;
+        MemAddr prefix_byte_addr = prefix_addr + i;
+        __asm__(`
+            movq ${r:prefix_byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch_prefix}
+        `);
+
+        if (ch_buf != ch_prefix) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// ============================================================
+// コマンド実行
+// ============================================================
+
+/// コマンドバッファにバイトを書込む
+export void shell_buf_write(ulong pos, AsciiChar byte_val) {
+    MemAddr addr = SHELL_BUF_ADDR + pos;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        movq ${r:byte_val}, %rax;
+        movb %al, (%rdi)
+    `);
+}
+
+/// コマンドバッファからバイトを読取る
+export AsciiChar shell_buf_read(ulong pos) {
+    MemAddr addr = SHELL_BUF_ADDR + pos;
+    AsciiChar val = 0;
+    __asm__(`
+        movq ${r:addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:val}
+    `);
+    return val;
+}
+
+/// シリアルポートに10進数を出力する（ESCシーケンス用）
+void serial_put_decimal(SerialPort serial, ulong num) {
+    if (num == 0) { serial.putc(0x30); return; }
+    // 最大5桁分のバッファ（スタック上）
+    ulong d0 = 0;
+    ulong d1 = 0;
+    ulong d2 = 0;
+    ulong d3 = 0;
+    ulong d4 = 0;
+    ulong cnt = 0;
+    ulong n = num;
+    // 下位桁から格納
+    if (n > 0) { d0 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 1; }
+    if (n > 0) { d1 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 2; }
+    if (n > 0) { d2 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 3; }
+    if (n > 0) { d3 = (n - (n / 10) * 10) + 0x30; n = n / 10; cnt = 4; }
+    if (n > 0) { d4 = (n - (n / 10) * 10) + 0x30; cnt = 5; }
+    // 上位桁から出力
+    if (cnt >= 5) { serial.putc(d4); }
+    if (cnt >= 4) { serial.putc(d3); }
+    if (cnt >= 3) { serial.putc(d2); }
+    if (cnt >= 2) { serial.putc(d1); }
+    if (cnt >= 1) { serial.putc(d0); }
+}
+
+/// カーソル位置以降のバッファ内容を再描画する（FBConsole）
+/// prompt_len: プロンプト文字列の長さ（"CosmOS > " = 9文字）
+export void shell_redraw_from(ulong cursor, ulong len) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    SerialPort serial = {port: 0x3F8};
+    ulong prompt_len = 9;  // "CosmOS > " の長さ
+
+    // FBConsoleのカーソルX位置をcursor+prompt_lenに設定
+    con._write(0x20, prompt_len + cursor);  // FB_OFF_CURSOR_X
+
+    // カーソル位置から末尾まで描画
+    ulong i = cursor;
+    while (i < len) {
+        AsciiChar ch = shell_buf_read(i);
+        ulong px = (prompt_len + i) * 8;  // FONT_WIDTH
+        ulong cy = con._read(0x28);       // FB_OFF_CURSOR_Y
+        ulong py = cy * 16;               // FONT_HEIGHT
+        con.set_color(SHELL_COLOR_INPUT);
+        con.draw_char(px, py, ch);
+        i = i + 1;
+    }
+
+    // 末尾の残り文字をクリア（削除時のゴミ除去）
+    ulong clear_px = (prompt_len + len) * 8;
+    ulong cy2 = con._read(0x28);
+    ulong py2 = cy2 * 16;
+    con.draw_char(clear_px, py2, 0x20);  // 空白で消去
+
+    // FBConsoleカーソルをcursor位置に戻す
+    con._write(0x20, prompt_len + cursor);
+
+    // シリアル: カーソル位置も同期
+    // (シリアルではESCシーケンスで対応)
+    // まず行頭に戻ってプロンプト後から再描画
+    serial.putc(0x0D);  // CR
+    serial.puts("CosmOS > " as void*);
+    ulong j = 0;
+    while (j < len) {
+        AsciiChar ch2 = shell_buf_read(j);
+        serial.putc(ch2);
+        j = j + 1;
+    }
+    serial.putc(0x20);  // 末尾クリア
+    // カーソルをcursor位置に移動 — ESC[nG（絶対カラム位置, 1-indexed）
+    ulong col = prompt_len + cursor + 1;
+    serial.putc(0x1B);  // ESC
+    serial.putc(0x5B);  // [
+    serial_put_decimal(serial, col);
+    serial.putc(0x47);  // G
+}
+
+/// コマンドを実行する
+export void shell_exec(MemAddr buf_addr, ulong buf_len) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+
+    if (buf_len == 0) {
+        return;
+    }
+
+    debug.puts("[SHELL] cmd len=" as void*);
+    debug.print_hex(buf_len);
+    debug.println("" as void*);
+
+    // Aria エディタ（シェルモード切替が必要なため、ここで処理）
+    ulong is_aria = shell_starts_with(buf_addr, buf_len, "aria " as void*, 5);
+    if (is_aria != 0) {
+        ulong fname_start = 5;
+        ulong fname_len = buf_len - fname_start;
+        ulong fname_addr = buf_addr + fname_start;
+        aria_init();
+        aria_op(1, fname_addr, fname_len, 0, 0);
+        aria_op(3, 0, 0, 0, 0);
+        return;
+    }
+
+    // コマンド実行エンジンに委譲
+    ulong result = exec_command(buf_addr, buf_len);
+    if (result != 0) {
+        serial.puts("Unknown command. Type 'help'" as void*);
+        serial.println("" as void*);
+
+        con.set_color(SHELL_COLOR_ERROR);
+        con.println("Unknown command. Type 'help'" as void*);
+        con.set_color(SHELL_COLOR_INPUT);
+    }
+}
+
+// ============================================================
+// Ariaテキストバッファ読取りヘルパー
+// ============================================================
+
+/// テキストバッファの指定(行,列)位置の文字を読み取る
+/// 行末・バッファ終端では '_' (0x5F) を返す
+ulong aria_buf_char_at(MemAddr buf_addr, ulong buf_size, ulong target_line, ulong target_col) {
+    // target_line行目の先頭まで走査
+    ulong pos = 0;
+    ulong line = 0;
+    while (line < target_line) {
+        if (pos >= buf_size) { return 0x5F; }
+        ulong ch = 0;
+        ulong addr = buf_addr + pos;
+        __asm__(` movq ${r:addr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+        if (ch == 0x0A) { line = line + 1; }
+        pos = pos + 1;
+    }
+    // target_col文字目まで進む
+    ulong col = 0;
+    while (col < target_col) {
+        if (pos >= buf_size) { return 0x5F; }
+        ulong ch = 0;
+        ulong addr = buf_addr + pos;
+        __asm__(` movq ${r:addr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+        if (ch == 0x0A) { return 0x5F; }
+        col = col + 1;
+        pos = pos + 1;
+    }
+    // 対象文字を読み取り
+    if (pos >= buf_size) { return 0x5F; }
+    ulong result = 0;
+    ulong raddr = buf_addr + pos;
+    __asm__(` movq ${r:raddr}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:result} `);
+    if (result == 0x0A) { return 0x5F; }
+    return result;
+}
+
+// ============================================================
+// 入力処理
+// ============================================================
+
+/// シェルのメインループ（idle_loopから呼ばれる）
+export void shell_process_input() {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+
+    // Ariaモードチェック
+    ulong aria_running = aria_op(4, 0, 0, 0, 0);  // IS_RUNNING
+    if (aria_running != 0) {
+        AsciiChar ch = kb_read_char();
+        if (ch == 0) {
+            return;
+        }
+
+        // ============================================================
+        // Aria高速パス: 全操作で直接VRAM描画
+        // ============================================================
+        // バッチモード(begin/end_batch)を使わず直接VRAMに描画。
+        // end_batch()の3MBフレームバッファmemcpyを完全回避。
+        //
+        // 高速パス対象:
+        //   - INSERTモード通常文字: draw_char×2（文字+カーソル）
+        //   - INSERTモードBackspace: draw_char×3
+        //   - カーソル移動(DIRTY_CURSOR): draw_char×2（旧/新カーソル）
+        //   - フォールバック: aria_render_op()（構造変更時のみ）
+
+        MemAddr aria_state = 0x2230;  // ADDR_ARIA_STATE
+        MemAddr aria_buf = 0x2330;    // ADDR_ARIA_BUFFER
+        ulong* mode_p = (aria_state + 0) as ulong*;     // OFF_MODE
+        ulong* cx_p = (aria_state + 8) as ulong*;       // OFF_CURSOR_X
+        ulong* cy_p = (aria_state + 16) as ulong*;      // OFF_CURSOR_Y
+        ulong* bsz_p = (aria_state + 24) as ulong*;     // OFF_BUF_SIZE
+        ulong* scroll_p = (aria_state + 32) as ulong*;  // OFF_SCROLL_TOP
+        ulong* dirty_p = (aria_state + 88) as ulong*;   // OFF_DIRTY
+
+        // 入力前のカーソル位置を保存（全高速パスで使用）
+        ulong pre_cx = *cx_p;
+        ulong pre_cy = *cy_p;
+        ulong pre_scroll = *scroll_p;
+        ulong aria_mode = *mode_p;
+
+        // ============================================================
+        // INSERT高速パス: 通常文字 (0x20-0x7E)
+        // ============================================================
+        if (aria_mode == 1) {  // MODE_INSERT
+            if (ch >= 0x20) {
+                if (ch < 0x7F) {
+                    aria_edit_op(1, ch, 0, 0, 0);  // INSERT_CHAR
+                    ulong post_cx = *cx_p;
+                    ulong post_cy = *cy_p;
+
+                    if (post_cy == pre_cy) {
+                        ulong screen_y = pre_cy - pre_scroll + 1;
+                        ulong dn = pre_cy + 1;
+                        ulong lnw = 1;
+                        if (dn >= 10) { lnw = 2; }
+                        if (dn >= 100) { lnw = 3; }
+                        if (dn >= 1000) { lnw = 4; }
+                        ulong toff = lnw + 1;
+                        ulong py = screen_y * 16;
+
+                        // 直接VRAM描画（バッチモード不使用 → 3MB memcpy回避）
+                        con_set_color(0x00FFFFFF as Color);
+                        con_draw_char_at((toff + pre_cx) * 8, py, ch);
+                        con_set_color(0x0000FF00 as Color);
+                        con_draw_char_at((toff + post_cx) * 8, py, 0x5F);
+                        return;
+                    }
+                    aria_op(3, 0, 0, 0, 0);  // フォールバック
+                    return;
+                }
+            }
+
+            // ============================================================
+            // INSERT高速パス: Backspace
+            // ============================================================
+            if (ch == 0x08) {
+                if (pre_cx == 0) {
+                    // 行頭Backspace → 行結合 → フルレンダリング
+                    aria_op(2, ch, 0, 0, 0);
+                    ulong sr = aria_op(4, 0, 0, 0, 0);
+                    if (sr != 0) { aria_op(3, 0, 0, 0, 0); }
+                    return;
+                }
+                aria_edit_op(2, 0, 0, 0, 0);  // DELETE_CHAR
+                ulong post_cx_bs = *cx_p;
+                ulong post_cy_bs = *cy_p;
+                if (post_cy_bs == pre_cy) {
+                    ulong screen_y_bs = pre_cy - pre_scroll + 1;
+                    ulong dn_bs = pre_cy + 1;
+                    ulong lnw_bs = 1;
+                    if (dn_bs >= 10) { lnw_bs = 2; }
+                    if (dn_bs >= 100) { lnw_bs = 3; }
+                    if (dn_bs >= 1000) { lnw_bs = 4; }
+                    ulong toff_bs = lnw_bs + 1;
+                    ulong py_bs = screen_y_bs * 16;
+
+                    // 直接VRAM描画
+                    con_set_color(0x00FFFFFF as Color);
+                    con_draw_char_at((toff_bs + pre_cx) * 8, py_bs, 0x20);
+                    con_draw_char_at((toff_bs + pre_cx - 1) * 8, py_bs, 0x20);
+                    con_set_color(0x0000FF00 as Color);
+                    con_draw_char_at((toff_bs + post_cx_bs) * 8, py_bs, 0x5F);
+
+                    ulong dirty_full = 1;
+                    *dirty_p = dirty_full;
+                    return;
+                }
+                aria_op(3, 0, 0, 0, 0);  // フォールバック
+                return;
+            }
+        }
+
+        // ============================================================
+        // 通常パス: キー入力処理
+        // ============================================================
+        aria_op(2, ch, 0, 0, 0);  // KEY_INPUT
+
+        ulong still_running = aria_op(4, 0, 0, 0, 0);
+        if (still_running == 0) {
+            // Aria終了 — シェルに復帰
+            shell_clear();
+            shell_set_color(SHELL_COLOR_OUTPUT);
+            shell_println("[Aria closed]" as void*);
+            serial.puts("CosmOS > " as void*);
+            con.set_color(SHELL_COLOR_PROMPT);
+            con.puts("CosmOS > " as void*);
+            con.set_color(SHELL_COLOR_INPUT);
+            return;
+        }
+
+        // ============================================================
+        // カーソル移動高速パス: DIRTY_CURSOR時
+        // ============================================================
+        ulong post_dirty = *dirty_p;
+        ulong post_scroll = *scroll_p;
+        ulong post_cx2 = *cx_p;
+        ulong post_cy2 = *cy_p;
+
+        // DIRTY_CURSOR(=2) かつスクロールなし → draw_char×2で済ませる
+        if (post_dirty == 2) {
+            if (post_scroll == pre_scroll) {
+                // --- 旧カーソル位置: 元の文字を白で描画 ---
+                ulong old_dn = pre_cy + 1;
+                ulong old_lnw = 1;
+                if (old_dn >= 10) { old_lnw = 2; }
+                if (old_dn >= 100) { old_lnw = 3; }
+                if (old_dn >= 1000) { old_lnw = 4; }
+                ulong old_toff = old_lnw + 1;
+                ulong old_screen_y = pre_cy - pre_scroll + 1;
+                ulong old_px = (old_toff + pre_cx) * 8;
+                ulong old_py = old_screen_y * 16;
+
+                // テキストバッファから旧カーソル位置の文字を読取り
+                ulong old_ch = aria_buf_char_at(aria_buf, *bsz_p, pre_cy, pre_cx);
+                con_set_color(0x00FFFFFF as Color);
+                con_draw_char_at(old_px, old_py, old_ch);
+
+                // --- 新カーソル位置: 文字を緑で描画 ---
+                ulong new_dn = post_cy2 + 1;
+                ulong new_lnw = 1;
+                if (new_dn >= 10) { new_lnw = 2; }
+                if (new_dn >= 100) { new_lnw = 3; }
+                if (new_dn >= 1000) { new_lnw = 4; }
+                ulong new_toff = new_lnw + 1;
+                ulong new_screen_y = post_cy2 - post_scroll + 1;
+                ulong new_px = (new_toff + post_cx2) * 8;
+                ulong new_py = new_screen_y * 16;
+
+                ulong new_ch = aria_buf_char_at(aria_buf, *bsz_p, post_cy2, post_cx2);
+                con_set_color(0x0000FF00 as Color);
+                con_draw_char_at(new_px, new_py, new_ch);
+
+                return;
+            }
+        }
+
+        // フルレンダリング
+        aria_op(3, 0, 0, 0, 0);
+        return;
+    }
+
+    ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
+    ulong pos = *pos_ptr;
+    ulong* cur_ptr = 0xDA8 as ulong*;  // ADDR_SHELL_CURSOR
+    ulong cursor = *cur_ptr;
+
+    AsciiChar ch = kb_read_char();
+    if (ch == 0) {
+        return;
+    }
+
+    // ← 左矢印 (VKEY_LEFT = 0x82)
+    if (ch == 0x82) {
+        if (cursor > 0) {
+            con.cursor_hide();
+            cursor = cursor - 1;
+            *cur_ptr = cursor;
+            // シリアル: カーソル左移動
+            serial.putc(0x1B);
+            serial.putc(0x5B);  // [
+            serial.putc(0x44);  // D
+            // FBConsoleカーソルX更新
+            ulong new_x = 9 + cursor;
+            con._write(0x20, new_x);
+        }
+        return;
+    }
+
+    // → 右矢印 (VKEY_RIGHT = 0x83)
+    if (ch == 0x83) {
+        if (cursor < pos) {
+            con.cursor_hide();
+            cursor = cursor + 1;
+            *cur_ptr = cursor;
+            // シリアル: カーソル右移動
+            serial.putc(0x1B);
+            serial.putc(0x5B);  // [
+            serial.putc(0x43);  // C
+            // FBConsoleカーソルX更新
+            ulong new_x2 = 9 + cursor;
+            con._write(0x20, new_x2);
+        }
+        return;
+    }
+
+    // Enter (0x0A)
+    ulong enter = 0x0A;
+    if (ch == enter) {
+        serial.println("" as void*);
+        con.newline();
+        shell_exec(SHELL_BUF_ADDR, pos);
+        ulong zero = 0;
+        *pos_ptr = zero;
+        *cur_ptr = zero;
+        // プロンプト再表示
+        serial.puts("CosmOS > " as void*);
+        con.set_color(SHELL_COLOR_PROMPT);
+        con.puts("CosmOS > " as void*);
+        con.set_color(SHELL_COLOR_INPUT);
+        return;
+    }
+
+    // Backspace (0x08)
+    ulong backspace = 0x08;
+    if (ch == backspace) {
+        if (cursor > 0) {
+            con.cursor_hide();
+            if (cursor == pos) {
+                // 末尾削除: 1文字クリアのみ（フルリドロー不要）
+                pos = pos - 1;
+                cursor = cursor - 1;
+                *pos_ptr = pos;
+                *cur_ptr = cursor;
+                // 削除された文字を空白で上書き
+                ulong clear_px = (9 + pos) * 8;
+                ulong cy_bs = con._read(0x28);
+                ulong py_bs = cy_bs * 16;
+                con.draw_char(clear_px, py_bs, 0x20);
+                // シリアル: BS + Space + BS
+                serial.putc(0x08);
+                serial.putc(0x20);
+                serial.putc(0x08);
+            } else {
+                // 中間削除: cursor以降を左にシフト + フルリドロー
+                ulong shift_i = cursor - 1;
+                while (shift_i < pos - 1) {
+                    AsciiChar next_ch = shell_buf_read(shift_i + 1);
+                    shell_buf_write(shift_i, next_ch);
+                    shift_i = shift_i + 1;
+                }
+                pos = pos - 1;
+                cursor = cursor - 1;
+                *pos_ptr = pos;
+                *cur_ptr = cursor;
+                shell_redraw_from(cursor, pos);
+            }
+            // FBConsoleカーソルをedit cursor位置に合わせる
+            con._write(0x20, 9 + cursor);
+        }
+        return;
+    }
+
+    // 通常文字（0x20-0x7E のみ）
+    if (ch >= 0x20) {
+        if (ch < 0x7F) {
+            ulong max_pos = SHELL_BUF_SIZE - 1;
+            if (pos < max_pos) {
+                con.cursor_hide();
+                if (cursor == pos) {
+                    // 末尾追加: 1文字だけ描画（フルリドロー不要）
+                    shell_buf_write(cursor, ch);
+                    pos = pos + 1;
+                    cursor = cursor + 1;
+                    *pos_ptr = pos;
+                    *cur_ptr = cursor;
+                    // FBConsole: 新しい文字を1文字描画
+                    ulong char_px = (9 + cursor - 1) * 8;
+                    ulong cy_ch = con._read(0x28);
+                    ulong py_ch = cy_ch * 16;
+                    con.set_color(SHELL_COLOR_INPUT);
+                    con.draw_char(char_px, py_ch, ch);
+                    // シリアル: 1文字出力
+                    serial.putc(ch);
+                } else {
+                    // 中間挿入: cursor以降を右にシフト + フルリドロー
+                    ulong shift_j = pos;
+                    while (shift_j > cursor) {
+                        AsciiChar prev_ch = shell_buf_read(shift_j - 1);
+                        shell_buf_write(shift_j, prev_ch);
+                        shift_j = shift_j - 1;
+                    }
+                    shell_buf_write(cursor, ch);
+                    pos = pos + 1;
+                    cursor = cursor + 1;
+                    *pos_ptr = pos;
+                    *cur_ptr = cursor;
+                    shell_redraw_from(cursor - 1, pos);
+                }
+                // FBConsoleカーソルをedit cursor位置に合わせる
+                con._write(0x20, 9 + cursor);
+            }
+        }
+    }
+}
+
+// ============================================================
+// 初期化
+// ============================================================
+
+/// シェルを初期化する
+export void shell_init() {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+
+    // バッファをクリア
+    ulong zero = 0;
+    ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
+    *pos_ptr = zero;
+
+    ulong i = 0;
+    ulong buf_qwords = 16;
+    while (i < buf_qwords) {
+        MemAddr addr = SHELL_BUF_ADDR + (i * 8);
+        ulong* ptr = addr as ulong*;
+        *ptr = zero;
+        i = i + 1;
+    }
+
+    // serial バナー
+    serial.println("" as void*);
+    serial.println("================================" as void*);
+    serial.println("  CosmOS v0.6.0 Kernel Shell" as void*);
+    serial.println("  Type 'help' for commands" as void*);
+    serial.println("================================" as void*);
+    serial.puts("CosmOS> " as void*);
+
+    // FBConsole バナー + プロンプト
+    con.set_color(0x00FFFFFF as Color);
+    con.println("================================" as void*);
+    con.println("  CosmOS v0.6.0 Kernel Shell" as void*);
+    con.println("  Type 'help' for commands" as void*);
+    con.println("================================" as void*);
+    con.set_color(SHELL_COLOR_PROMPT);
+    con.puts("CosmOS > " as void*);
+    con.set_color(SHELL_COLOR_INPUT);
+
+    debug.println("[SHELL] shell initialized" as void*);
+
+    // カーソル点滅有効化（OS標準機能）
+    con.cursor_enable();
+
+    // 編集カーソル位置リセット
+    ulong init_zero = 0;
+    ulong* cursor_pos = 0xDA8 as ulong*;
+    *cursor_pos = init_zero;
+}
+
+// ============================================================
+// 例外復帰
+// ============================================================
+
+/// 例外ハンドラから復帰した後の復旧処理
+/// バッファをクリアし、エラーメッセージとプロンプトを再表示する
+export void shell_recover() {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+
+    // シェルバッファをクリア
+    ulong zero = 0;
+    ulong* pos_ptr = SHELL_POS_ADDR as ulong*;
+    *pos_ptr = zero;
+
+    ulong i = 0;
+    ulong buf_qwords = 16;
+    while (i < buf_qwords) {
+        MemAddr addr = SHELL_BUF_ADDR + (i * 8);
+        ulong* ptr = addr as ulong*;
+        *ptr = zero;
+        i = i + 1;
+    }
+
+    // エラーから復帰したメッセージ
+    con.set_color(SHELL_COLOR_ERROR);
+    con.newline();
+    con.println("[Recovered from exception]" as void*);
+    serial.println("" as void*);
+    serial.println("[Recovered from exception]" as void*);
+
+    // プロンプト再表示
+    serial.puts("CosmOS > " as void*);
+    con.set_color(SHELL_COLOR_PROMPT);
+    con.puts("CosmOS > " as void*);
+    con.set_color(SHELL_COLOR_INPUT);
+
+    // カーソル点滅リセット（OS標準機能）
+    con.cursor_enable();
+
+    // 編集カーソル位置リセット
+    ulong* cursor_pos = 0xDA8 as ulong*;
+    *cursor_pos = zero;
+}

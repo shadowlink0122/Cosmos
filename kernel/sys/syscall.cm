@@ -1,0 +1,507 @@
+//! platform: uefi
+// kernel::sys::syscall - syscallディスパッチャ
+//
+// CosmOS syscall の中核モジュール。2つの経路でsyscallを受け付ける:
+//   1. int 0x80 ソフトウェア割り込み（レガシーパス）
+//   2. syscall命令（高速パス、usermode.cm の syscall_entry_fast 経由）
+//
+// 両パスとも最終的に syscall_dispatch() を呼び出す。
+//
+// ディスパッチ方式: カテゴリ別2段ディスパッチ
+//   syscall番号を10の位で6カテゴリに分類し、各カテゴリ関数内で
+//   個別ハンドラにディスパッチする（最悪16比較、平均8比較）。
+//
+//   カテゴリ0 (0-9):   基本     — exit, write, read, getenv
+//   カテゴリ1 (10-19):  画面I/O  — clear, putc, puts, color, cursor, newline, num, hex, batch
+//   カテゴリ2 (20-29):  ファイル — open, read, write, create, size, memcpy
+//   カテゴリ3 (30-39):  プロセス — spawn, kill, wait, getpid
+//   カテゴリ4 (40-49):  メモリ   — sbrk
+//   カテゴリ5 (50-59):  IPC      — send, recv, reply, notify, get_notify
+//
+// ABI規約 (x86_64 System V + CosmOS拡張):
+//   rax = syscall番号
+//   rdi = 引数1 (fd, addr, pid, etc.)
+//   rsi = 引数2 (buf, len, etc.)
+//   rdx = 引数3 (len, flags, etc.)
+//   r10 = 引数4 (予約)
+//   戻り値: rax (SyscallResult)
+//
+// エラーコード:
+//   0                    = SYSCALL_OK (成功)
+//   0xFFFFFFFFFFFFFFF7   = SYSCALL_EBADF (不正なfd)
+//   0xFFFFFFFFFFFFFFF8   = SYSCALL_ENOSYS (未実装syscall)
+//   0xFFFFFFFFFFFFFFF9   = SYSCALL_EINVAL (不正な引数)
+//   0xFFFFFFFFFFFFFFFF   = SYSCALL_ERR (汎用エラー)
+//
+// 使用方法:
+//   syscall_init(idt_table) でベクタ0x80を登録（レガシーパス）
+//   usermode_init(handler) でMSR設定（高速パス）
+
+import ../arch/idt;
+import ../arch/isr;
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../lib/print;
+import ./syscall_table;
+import ./env;
+import ./screen;
+import ./fs_syscall;
+import ./process;
+import ./sbrk;
+// IPC: Bug #14回避のため ipc.cm を独立モジュールにせず直接記述
+
+// ============================================================
+// syscallハンドラエントリポイント（アセンブリスタブ）
+// ============================================================
+
+/// int 0x80 ハンドラ — Cmプロローグのスタック操作を考慮した安全な実装
+///
+/// 注意: この関数はASM文とCmコード（syscall_dispatch呼出し）が混在するため、
+///       コンパイラのnaked属性は適用されない（純ASM関数のみnaked化される）。
+///       通常のプロローグ（push rbp; sub rsp, $X 等）が自動生成される。
+///
+/// 問題: Cmプロローグにより`iretq`時にinterruptフレーム(RIP,CS,RFLAGS,RSP,SS)が
+///       スタックの正しい位置にない。
+/// 解決: 固定メモリ(0xDA0)にプロローグ直後のRSPを保存。
+///       dispatch後、保存したRSPからinterruptフレーム位置を逆算して復元。
+export void syscall_entry() {
+    // Cmプロローグ直後のRSPを固定メモリに保存
+    // interruptフレームはプロローグ前のRSP位置にある
+    __asm__(`
+        movq %rsp, %r11;
+        movq %r11, (0xDA0)
+    `);
+
+    // int 0x80 時のレジスタ状態を取得
+    SyscallNr syscall_nr = 0;
+    ulong arg1 = 0;
+    ulong arg2 = 0;
+    ulong arg3 = 0;
+    __asm__(`
+        movq %rax, ${=r:syscall_nr};
+        movq %rdi, ${=r:arg1};
+        movq %rsi, ${=r:arg2};
+        movq %rdx, ${=r:arg3}
+    `);
+
+    SyscallResult result = syscall_dispatch(syscall_nr, arg1, arg2, arg3);
+
+    // dispatch結果をraxに設定し、スタックをinterruptフレーム先頭に復元
+    // 保存RSP = プロローグ完了後のRSP
+    // interruptフレーム = 保存RSP + プロローグサイズ（0xb8）
+    __asm__(`
+        movq ${r:result}, %rax;
+        movq (0xDA0), %rsp;
+        addq $$0xb8, %rsp;
+        iretq
+    `);
+}
+
+// ============================================================
+// syscallディスパッチャ（カテゴリ別2段ディスパッチ）
+// ============================================================
+//
+// 設計:
+//   第1段: syscall番号を10で割ってカテゴリ(0-5)を決定 → O(6)
+//   第2段: カテゴリ内でハンドラを特定 → O(10)
+//   合計: 最悪O(16)、フラットif-else方式のO(30)から大幅改善
+//
+// syscall番号マップ:
+//   Nr  Name            Category     Handler
+//   --- --------------- ------------ -------------------
+//    0  SYS_EXIT        基本(0-9)    sys_exit
+//    1  SYS_WRITE       基本(0-9)    sys_write
+//    2  SYS_READ        基本(0-9)    sys_read
+//    6  SYS_GETENV      基本(0-9)    env_get
+//   10  SYS_SCREEN_*    画面(10-19)  sys_screen_*
+//   20  SYS_FS_*        FS(20-29)    sys_fs_*
+//   30  SYS_SPAWN       プロセス     sys_spawn
+//   31  SYS_KILL        プロセス     sys_kill
+//   34  SYS_WAIT        プロセス     sys_wait
+//   35  SYS_GETPID      プロセス     sys_getpid
+//   40  SYS_SBRK        メモリ       sys_sbrk
+//   50  SYS_SEND        IPC(50-59)   ipc_send
+//   51  SYS_RECV        IPC(50-59)   ipc_recv
+//   52  SYS_REPLY       IPC(50-59)   ipc_send(reply)
+//   53  SYS_NOTIFY      IPC(50-59)   ipc_notify
+//   54  SYS_GET_NOTIFY  IPC(50-59)   ipc_get_notify
+
+/// syscall番号に基づいてハンドラを呼び出す（カテゴリ別2段ディスパッチ）
+///
+/// nr:   syscall番号 (0-59が有効範囲)
+/// arg1: 第1引数 (rdi)
+/// arg2: 第2引数 (rsi)
+/// arg3: 第3引数 (rdx)
+/// 戻り値: ハンドラの結果、未実装ならSYSCALL_ENOSYS
+export SyscallResult syscall_dispatch(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    // 第1段: カテゴリ分類（syscall番号の10の位で振り分け）
+    ulong category = nr / 10;
+
+    // カテゴリ0: 基本syscall (exit=0, write=1, read=2, getenv=6)
+    if (category == 0) {
+        return syscall_dispatch_basic(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ1: 画面I/O syscall (clear=10, putc=11, ..., batch=19)
+    if (category == 1) {
+        return syscall_dispatch_screen(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ2: ファイルI/O syscall (open=20, read=21, ..., memcpy=25)
+    if (category == 2) {
+        return syscall_dispatch_fs(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ3: プロセスsyscall (spawn=30, kill=31, wait=34, getpid=35)
+    if (category == 3) {
+        return syscall_dispatch_process(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ4: メモリ管理syscall (sbrk=40)
+    if (category == 4) {
+        return syscall_dispatch_memory(nr, arg1, arg2, arg3);
+    }
+    // カテゴリ5: IPC syscall (send=50, recv=51, reply=52, notify=53/54)
+    if (category == 5) {
+        return syscall_dispatch_ipc(nr, arg1, arg2, arg3);
+    }
+
+    // カテゴリ6以上: 範囲外のsyscall番号
+    return syscall_unknown(nr);
+}
+
+// ============================================================
+// カテゴリ別ディスパッチ関数
+// ============================================================
+
+/// 基本syscall (0-9): exit, write, read, getenv 等
+SyscallResult syscall_dispatch_basic(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_EXIT) {
+        sys_exit(arg1);
+        return 0;
+    }
+    if (nr == SYS_WRITE) {
+        return sys_write(arg1, arg2, arg3);
+    }
+    if (nr == SYS_READ) {
+        return sys_read(arg1, arg2, arg3);
+    }
+    if (nr == SYS_GETENV) {
+        return env_get(arg1);
+    }
+    return syscall_unknown(nr);
+}
+
+/// 画面I/O syscall (10-19): clear, putc, puts, color, cursor 等
+SyscallResult syscall_dispatch_screen(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_SCREEN_CLEAR) {
+        return sys_screen_clear();
+    }
+    if (nr == SYS_SCREEN_PUTC) {
+        return sys_screen_putc(arg1);
+    }
+    if (nr == SYS_SCREEN_PUTS) {
+        return sys_screen_puts(arg1, arg2);
+    }
+    if (nr == SYS_SCREEN_SET_COLOR) {
+        return sys_screen_set_color(arg1);
+    }
+    if (nr == SYS_SCREEN_GET_SIZE) {
+        return sys_screen_get_size();
+    }
+    if (nr == SYS_SCREEN_SET_CURSOR) {
+        return sys_screen_set_cursor(arg1, arg2);
+    }
+    if (nr == SYS_SCREEN_NEWLINE) {
+        return sys_screen_newline();
+    }
+    if (nr == SYS_SCREEN_PRINT_NUM) {
+        return sys_screen_print_num(arg1);
+    }
+    if (nr == SYS_SCREEN_PRINT_HEX) {
+        return sys_screen_print_hex(arg1);
+    }
+    if (nr == SYS_SCREEN_BATCH) {
+        if (arg1 != 0) { return sys_screen_begin_batch(); }
+        return sys_screen_end_batch();
+    }
+    return syscall_unknown(nr);
+}
+
+/// ファイルI/O syscall (20-29): open, read, write, create, size, memcpy
+SyscallResult syscall_dispatch_fs(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_FS_OPEN) {
+        return sys_fs_open(arg1, arg2);
+    }
+    if (nr == SYS_FS_READ) {
+        return sys_fs_read(arg1, arg2, arg3);
+    }
+    if (nr == SYS_FS_WRITE) {
+        return sys_fs_write(arg1, arg2, arg3);
+    }
+    if (nr == SYS_FS_CREATE) {
+        return sys_fs_create(arg1, arg2, arg3);
+    }
+    if (nr == SYS_FS_SIZE) {
+        return sys_fs_size(arg1);
+    }
+    if (nr == SYS_FS_MEMCPY) {
+        return sys_fs_memcpy(arg1, arg2, arg3);
+    }
+    return syscall_unknown(nr);
+}
+
+/// プロセスsyscall (30-39): spawn, kill, wait, getpid
+SyscallResult syscall_dispatch_process(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_SPAWN) {
+        return sys_spawn(arg1);
+    }
+    if (nr == SYS_KILL) {
+        return sys_kill(arg1);
+    }
+    if (nr == SYS_WAIT) {
+        return sys_wait(arg1);
+    }
+    if (nr == SYS_GETPID) {
+        return sys_getpid();
+    }
+    return syscall_unknown(nr);
+}
+
+/// メモリ管理syscall (40-49): sbrk
+SyscallResult syscall_dispatch_memory(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_SBRK) {
+        return sys_sbrk(arg1);
+    }
+    return syscall_unknown(nr);
+}
+
+/// IPC syscall (50-59): send, recv, reply, notify, get_notify
+SyscallResult syscall_dispatch_ipc(SyscallNr nr, ulong arg1, ulong arg2, ulong arg3) {
+    if (nr == SYS_SEND) { return ipc_send(arg1, arg2, arg3); }
+    if (nr == SYS_RECV) { return ipc_recv(arg1); }
+    if (nr == SYS_REPLY) { return ipc_send(arg1, 0xFFFF, arg2); }
+    if (nr == SYS_NOTIFY) { return ipc_notify(arg1, arg2); }
+    if (nr == SYS_GET_NOTIFY) { return ipc_get_notify(); }
+    return syscall_unknown(nr);
+}
+
+/// 未知のsyscall番号のエラーハンドリング
+///
+/// 未登録・未実装のsyscall番号が呼ばれた際にデバッグ情報を出力し、
+/// SYSCALL_ENOSYS (0xFFFFFFFFFFFFFFF8) を返す。
+/// 本番では頻度が高い場合にログレート制限を検討。
+SyscallResult syscall_unknown(SyscallNr nr) {
+    DebugPort debug = {port: 0xE9};
+    SerialPort serial = {port: 0x3F8};
+    ulong category = nr / 10;
+    debug.puts("[SYSCALL] ENOSYS: nr=" as void*);
+    debug.print_hex(nr);
+    debug.puts(" (category=" as void*);
+    debug.print_hex(category);
+    debug.puts(")" as void*);
+    debug.println("" as void*);
+    serial.puts("[SYSCALL] ENOSYS: nr=" as void*);
+    serial.print_hex(nr);
+    serial.println("" as void*);
+    return SYSCALL_ENOSYS;
+}
+
+// ============================================================
+// IPC メッセージパッシング（インライン実装）
+// ============================================================
+// メモリレイアウト:
+//   0x3000: メッセージキュー (8タスク × 4エントリ × 64B = 2KB)
+//   0x3800: 通知ビットマスク (8 × 8B = 64B)
+
+const MemAddr IPC_BASE = 0x3000;
+const ulong IPC_MSG_SZ = 64;
+const ulong IPC_Q_SIZE = 4;
+const ulong IPC_TASK_SZ = 256;
+const ulong MSG_S_SENDER = 0;
+const ulong MSG_S_TYPE = 16;
+const ulong MSG_S_ARG0 = 24;
+const ulong MSG_S_ARG1 = 32;
+const ulong MSG_S_STATUS = 56;
+const MemAddr IPC_NOTIFY = 0x3800;
+const ulong IPC_ANY_PID = 0xFFFFFFFFFFFFFFFF;
+
+ulong ipc_rd(MemAddr a, ulong o) { ulong* p = (a + o) as ulong*; return *p; }
+void ipc_wr(MemAddr a, ulong o, ulong v) { ulong* p = (a + o) as ulong*; *p = v; }
+MemAddr ipc_slot(ulong tid, ulong s) { return IPC_BASE + tid * IPC_TASK_SZ + s * IPC_MSG_SZ; }
+
+export void ipc_init() {
+    ulong i = 0;
+    while (i < 2048) { ulong* p = (IPC_BASE + i) as ulong*; ulong z = 0; *p = z; i = i + 8; }
+    ulong j = 0;
+    while (j < 64) { ulong* p = (IPC_NOTIFY + j) as ulong*; ulong z = 0; *p = z; j = j + 8; }
+}
+
+SyscallResult ipc_send(ulong target, ulong mtype, ulong a0) {
+    TaskId sender = sched_current_id();
+    ulong count = sched_task_count();
+    if (target >= count) { return SYSCALL_EINVAL; }
+    ulong s = 0;
+    while (s < IPC_Q_SIZE) {
+        MemAddr ma = ipc_slot(target, s);
+        if (ipc_rd(ma, MSG_S_STATUS) == 0) {
+            ipc_wr(ma, MSG_S_SENDER, sender);
+            ipc_wr(ma, MSG_S_TYPE, mtype);
+            ipc_wr(ma, MSG_S_ARG0, a0);
+            ulong one = 1;
+            ipc_wr(ma, MSG_S_STATUS, one);
+            // 受信側がBLOCKEDなら起床
+            TaskState st = tcb_read(target, TCB_OFF_STATE);
+            if (st == TASK_BLOCKED) {
+                TaskId wf = tcb_read(target, TCB_OFF_WAIT_FOR);
+                if (wf == IPC_ANY_PID) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+                if (wf == sender) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+            }
+            return 0;
+        }
+        s = s + 1;
+    }
+    return SYSCALL_ERR;  // キュー満杠
+}
+
+SyscallResult ipc_scan(TaskId rcv, ulong filter) {
+    ulong s = 0;
+    while (s < IPC_Q_SIZE) {
+        MemAddr ma = ipc_slot(rcv, s);
+        if (ipc_rd(ma, MSG_S_STATUS) != 0) {
+            ulong sender = ipc_rd(ma, MSG_S_SENDER);
+            ulong ok = 0;
+            if (filter == IPC_ANY_PID) { ok = 1; }
+            if (filter == sender) { ok = 1; }
+            if (ok != 0) {
+                ulong mt = ipc_rd(ma, MSG_S_TYPE);
+                ulong a0 = ipc_rd(ma, MSG_S_ARG0);
+                ulong z = 0;
+                ipc_wr(ma, MSG_S_STATUS, z);
+                return mt * 0x100000000 + a0;
+            }
+        }
+        s = s + 1;
+    }
+    return SYSCALL_ERR;
+}
+
+SyscallResult ipc_recv(ulong filter) {
+    TaskId rcv = sched_current_id();
+    SyscallResult r = ipc_scan(rcv, filter);
+    if (r != SYSCALL_ERR) { return r; }
+    // BLOCKED
+    tcb_write(rcv, TCB_OFF_STATE, TASK_BLOCKED);
+    tcb_write(rcv, TCB_OFF_WAIT_FOR, filter);
+    schedule();
+    return ipc_scan(rcv, filter);
+}
+
+SyscallResult ipc_notify(ulong target, ulong bits) {
+    ulong count = sched_task_count();
+    if (target >= count) { return SYSCALL_EINVAL; }
+    ulong* np = (IPC_NOTIFY + target * 8) as ulong*;
+    ulong cur = *np;
+    ulong upd = cur | bits;
+    *np = upd;
+    TaskState st = tcb_read(target, TCB_OFF_STATE);
+    if (st == TASK_BLOCKED) { tcb_write(target, TCB_OFF_STATE, TASK_READY); }
+    return 0;
+}
+
+SyscallResult ipc_get_notify() {
+    TaskId c = sched_current_id();
+    ulong* np = (IPC_NOTIFY + c * 8) as ulong*;
+    ulong b = *np;
+    ulong z = 0;
+    *np = z;
+    return b;
+}
+
+// ============================================================
+// sys_write — fd, buf, len → bytes_written
+// ============================================================
+
+/// fd=1(stdout) or fd=2(stderr) に書き込む
+export SyscallResult sys_write(Fd fd, MemAddr buf, ulong len) {
+    if (fd == FD_STDOUT) {
+        // FBConsole + シリアルに出力
+        FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+        SerialPort serial = {port: 0x3F8};
+        ulong i = 0;
+        while (i < len) {
+            AsciiChar ch = 0;
+            MemAddr byte_addr = buf + i;
+            __asm__(`
+                movq ${r:byte_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            con.putc(ch);
+            serial.putc(ch);
+            i = i + 1;
+        }
+        return len;
+    }
+    if (fd == FD_STDERR) {
+        // シリアルのみに出力（エラー出力）
+        SerialPort serial = {port: 0x3F8};
+        ulong i = 0;
+        while (i < len) {
+            AsciiChar ch = 0;
+            MemAddr byte_addr = buf + i;
+            __asm__(`
+                movq ${r:byte_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            serial.putc(ch);
+            i = i + 1;
+        }
+        return len;
+    }
+    return SYSCALL_EBADF;
+}
+
+// ============================================================
+// sys_read — fd, buf, len → bytes_read
+// ============================================================
+
+/// fd=0(stdin) から読み込む（現在は未実装、0を返す）
+export SyscallResult sys_read(Fd fd, MemAddr buf, ulong len) {
+    if (fd == FD_STDIN) {
+        // TODO: キーボードバッファから読み取る
+        return 0;
+    }
+    return SYSCALL_EBADF;
+}
+
+// ============================================================
+// sys_exit — プロセス終了
+// ============================================================
+
+/// 現在のプロセスを終了する
+export void sys_exit(ExitCode code) {
+    DebugPort debug = {port: 0xE9};
+    debug.puts("[SYSCALL] sys_exit code=" as void*);
+    debug.print_hex(code);
+    debug.println("" as void*);
+    // プロセスマネージャ経由でタスク終了
+    sys_exit_task(code);
+}
+
+// ============================================================
+// 初期化
+// ============================================================
+
+/// syscallハンドラをIDTベクタ0x80に登録する
+export void syscall_init(uint* idt_table) {
+    IDT idt = {table: idt_table};
+
+    // DPL=3 のTrap Gate (0xEF) を使用
+    // P=1, DPL=3, Trap Gate = 1110_1111 = 0xEF
+    // Trap Gateを使用する理由: syscall中に割り込みを有効に保つ
+    MemAddr handler = fn_addr(syscall_entry as void*);
+    idt.set_gate(0x80, handler, 0xEF);
+
+    DebugPort debug = {port: 0xE9};
+    debug.println("[SYSCALL] handler registered at vector 0x80" as void*);
+}

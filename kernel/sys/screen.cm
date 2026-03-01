@@ -1,0 +1,186 @@
+//! platform: uefi
+// kernel::sys::screen - 画面I/O syscallハンドラ
+//
+// SYS_SCREEN_* syscall を処理する。
+// FBConsole + Serial への出力をカーネル側で管理し、
+// アプリケーションはsyscallのみで画面操作を行う。
+
+import ../drivers/serial;
+import ../lib/print;
+import ../types;
+import ../config;
+import ./syscall_table;
+
+// ============================================================
+// フィールドオフセット定数
+// ============================================================
+
+const ulong SCREEN_FB_ADDR  = 0x00;
+const ulong SCREEN_WIDTH    = 0x08;
+const ulong SCREEN_HEIGHT   = 0x10;
+const ulong SCREEN_STRIDE   = 0x18;
+const ulong SCREEN_CURSOR_X = 0x20;
+const ulong SCREEN_CURSOR_Y = 0x28;
+const ulong SCREEN_FG_COLOR    = 0x30;
+const ulong SCREEN_BATCH_MODE  = 0x60;  // バッチモードフラグ (print.cm の FB_OFF_BATCH_MODE と一致)
+
+// ============================================================
+// 画面I/O syscallハンドラ
+// ============================================================
+
+/// SYS_SCREEN_CLEAR — 画面をクリア
+export SyscallResult sys_screen_clear() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.clear();
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PUTC — 1文字出力（serial + FBConsole）
+export SyscallResult sys_screen_putc(AsciiChar ch) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    // バッチモード中はシリアル出力を抑制
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    if (*batch_p == 0) {
+        SerialPort serial = {port: 0x3F8};
+        serial.putc(ch);
+    }
+    con.putc(ch);
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PUTS — 文字列出力（buf=アドレス, len=長さ）
+export SyscallResult sys_screen_puts(MemAddr buf, ulong len) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    ulong in_batch = *batch_p;
+    SerialPort serial = {port: 0x3F8};
+    ulong i = 0;
+    while (i < len) {
+        AsciiChar ch = 0;
+        MemAddr byte_addr = buf + i;
+        __asm__(`
+            movq ${r:byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        if (in_batch == 0) { serial.putc(ch); }
+        con.putc(ch);
+        i = i + 1;
+    }
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_SET_COLOR — 描画色を設定
+export SyscallResult sys_screen_set_color(Color color) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.set_color(color);
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_GET_SIZE — 画面サイズを返す（rows<<32 | cols）
+export SyscallResult sys_screen_get_size() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong rows = con.max_rows();
+    ulong cols = con.max_cols();
+    // rows を上位32ビット、cols を下位32ビットにパック
+    ulong result = 0;
+    __asm__(`
+        movq ${r:rows}, %rax;
+        shlq $$32, %rax;
+        orq ${r:cols}, %rax;
+        movq %rax, ${=r:result}
+    `);
+    return result;
+}
+
+/// SYS_SCREEN_SET_CURSOR — カーソル位置を設定
+export SyscallResult sys_screen_set_cursor(ulong x, ulong y) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* px = (con.addr + SCREEN_CURSOR_X) as ulong*;
+    *px = x;
+    ulong* py = (con.addr + SCREEN_CURSOR_Y) as ulong*;
+    *py = y;
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_NEWLINE — 改行出力
+export SyscallResult sys_screen_newline() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    // バッチモード中はシリアル出力を抑制
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    if (*batch_p == 0) {
+        SerialPort serial = {port: 0x3F8};
+        serial.println("" as void*);
+    }
+    con.newline();
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PRINT_NUM — 10進数出力
+export SyscallResult sys_screen_print_num(ulong value) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    ulong in_batch = *batch_p;
+    SerialPort serial = {port: 0x3F8};
+    if (value == 0) {
+        if (in_batch == 0) { serial.putc(0x30); }
+        con.putc(0x30);
+        return SYSCALL_OK;
+    }
+    // 一時バッファ 0xCF0 を使用
+    MemAddr tmp_buf = 0xCF0;
+    ulong cnt = 0;
+    ulong n = value;
+    while (n > 0) {
+        ulong rem = n - ((n / 10) * 10);
+        MemAddr addr = tmp_buf + cnt;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:rem}, %rax;
+            addb $$0x30, %al;
+            movb %al, (%rdi)
+        `);
+        n = n / 10;
+        cnt = cnt + 1;
+    }
+    ulong i = cnt;
+    while (i > 0) {
+        i = i - 1;
+        MemAddr raddr = tmp_buf + i;
+        AsciiChar ch = 0;
+        __asm__(`
+            movq ${r:raddr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        if (in_batch == 0) { serial.putc(ch); }
+        con.putc(ch);
+    }
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_PRINT_HEX — 16進数出力
+export SyscallResult sys_screen_print_hex(ulong value) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* batch_p = (GLOBAL_FB_CONSOLE_ADDR + SCREEN_BATCH_MODE) as ulong*;
+    if (*batch_p == 0) {
+        SerialPort serial = {port: 0x3F8};
+        serial.print_hex(value);
+    }
+    con.print_hex(value);
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_BEGIN_BATCH — バッチ描画開始
+export SyscallResult sys_screen_begin_batch() {
+    fb_begin_batch();
+    return SYSCALL_OK;
+}
+
+/// SYS_SCREEN_END_BATCH — バッチ描画終了+フラッシュ
+export SyscallResult sys_screen_end_batch() {
+    fb_end_batch();
+    return SYSCALL_OK;
+}

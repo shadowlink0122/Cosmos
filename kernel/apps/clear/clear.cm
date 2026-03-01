@@ -1,0 +1,17 @@
+//! platform: uefi
+// kernel::apps::clear - clearコマンド（画面クリア）
+
+import ../../drivers/serial;
+import ../../lib/print;
+
+/// clearコマンド: 画面クリア
+export ulong app_clear(ulong argc, ulong argv) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.puts("\x1B[2J\x1B[H" as void*);
+    con.clear();
+    con.set_color(0x00FFFFFF);
+    con.println("  CosmOS v0.6.0" as void*);
+    con.newline();
+    return 0;
+}

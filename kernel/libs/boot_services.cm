@@ -1,0 +1,122 @@
+//! platform: uefi
+// kernel::libs::boot_services - UEFI ブートサービス共通処理
+//
+// efi_main.cm と efi_main_test.cm の両方から使用される
+// ExitBootServices・GOP・メモリマップ収集処理を集約。
+
+import ./efi_core;
+import ./efi_gop;
+import ./efi_memmap;
+import ../drivers/serial;
+import ../drivers/debug_port;
+import ../arch/boot_info;
+
+// ============================================================
+// ExitBootServices
+// ============================================================
+
+/// ExitBootServices (BootServices + 0xE8)
+export ulong efi_exit_boot_services(void* system_table, void* image_handle, ulong map_key) {
+    ulong* st = system_table as ulong*;
+    ulong bs_addr = *(st + 12);  // offset 0x60 = BootServices
+    ulong* bs = bs_addr as ulong*;
+
+    ulong exit_fn = *(bs + 29);
+
+    ulong fn_val = exit_fn;
+    ulong ih_val = image_handle as ulong;
+
+    ulong result = 0;
+    __asm__(`
+        pushq ${r:fn_val};
+        pushq ${r:ih_val};
+        pushq ${r:map_key};
+        popq %rdx;
+        popq %rcx;
+        popq %r10;
+        subq $$32, %rsp;
+        callq *%r10;
+        addq $$32, %rsp;
+        movq %rax, ${=r:result}
+    `);
+    return result;
+}
+
+// ============================================================
+// BootInfo収集
+// ============================================================
+
+/// GOP情報をBootInfoに収集する
+export void collect_fb_info(void* system_table, BootInfo* info) {
+    SerialPort serial = {port: 0x3F8};
+
+    ulong fb_base = 0;
+    ulong width = 0;
+    ulong height = 0;
+    ulong stride = 0;
+
+    ulong status = gop_init(system_table, &fb_base, &width, &height, &stride);
+    long signed_status = status as long;
+    if (signed_status < 0) {
+        serial.println("[CosmOS] WARNING: GOP init failed" as void*);
+        return;
+    }
+
+    info->fb.base_addr = fb_base;
+    info->fb.width = width as uint;
+    info->fb.height = height as uint;
+    info->fb.stride = stride as uint;
+    info->fb.pixel_format = 0;  // BGRA（デフォルト）
+    info->fb.size = height * stride * 4;
+
+    serial.println("[CosmOS] Framebuffer info collected" as void*);
+    serial.puts("[CosmOS]   Resolution: " as void*);
+    serial.print_hex(width);
+    serial.puts(" x " as void*);
+    serial.print_hex(height);
+    serial.putc(10);
+}
+
+/// メモリマップを取得してBootInfoに格納する
+export ulong collect_memory_map(void* system_table, BootInfo* info) {
+    DebugPort debug(0xE9);
+    SerialPort serial = {port: 0x3F8};
+    debug.println("[BOOT] collect_memory_map: start" as void*);
+
+    ulong map_size = 0;
+    ulong map_key = 0;
+    ulong desc_size = 0;
+    ulong desc_ver = 0;
+
+    ulong status = efi_get_memory_map(system_table, &map_size, 0 as void*, &map_key, &desc_size, &desc_ver);
+
+    ulong alloc_size = map_size + 4096;
+
+    void* map_buffer = 0 as void*;
+    status = efi_alloc_pool(system_table, alloc_size, &map_buffer);
+
+    long signed_status = status as long;
+    if (signed_status < 0) {
+        debug.println("[BOOT] collect_memory_map: FAIL alloc" as void*);
+        return status;
+    }
+
+    ulong actual_map_size = alloc_size;
+    status = efi_get_memory_map(system_table, &actual_map_size, map_buffer, &map_key, &desc_size, &desc_ver);
+
+    signed_status = status as long;
+    if (signed_status < 0) {
+        debug.println("[BOOT] collect_memory_map: FAIL get_map" as void*);
+        return status;
+    }
+
+    info->mmap.map_buffer = map_buffer;
+    info->mmap.map_size = actual_map_size;
+    info->mmap.map_key = map_key;
+    info->mmap.desc_size = desc_size;
+    info->mmap.desc_version = desc_ver as uint;
+    info->mmap.entry_count = (actual_map_size / desc_size) as uint;
+
+    debug.println("[BOOT] collect_memory_map: OK" as void*);
+    return 0;
+}

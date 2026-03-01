@@ -1,0 +1,45 @@
+//! platform: uefi
+// kernel::tests::test_pit - PIT タイマー割り込みテスト
+
+import ../../drivers/serial;
+import ../../drivers/pit;
+import ../test_runner;
+
+// ============================================================
+// PIT テスト
+// ============================================================
+
+/// PIT割り込みテストを実行する
+/// 前提: PIT初期化済み、sti実行済み
+export void test_pit(TestRunner* runner, PIT* pit) {
+    SerialPort serial = {port: 0x3F8};
+    serial.println("[TEST] === PIT Tests ===" as void*);
+
+    // テスト1: 割り込み有効化後にtickがインクリメントされる
+    ulong tick_before = pit->get_ticks();
+
+    // HLTで10回分の割り込みを待つ
+    ulong wait_count = 0;
+    ulong ten = 10 as ulong;
+    while (wait_count < ten) {
+        __asm__("hlt");
+        wait_count = wait_count + 1;
+    }
+
+    ulong tick_after = pit->get_ticks();
+
+    serial.puts("[PIT] tick: before=0x" as void*);
+    serial.print_hex(tick_before);
+    serial.puts(", after=0x" as void*);
+    serial.print_hex(tick_after);
+    serial.putc(10);
+
+    runner->assert_gt(tick_after, tick_before, "PIT tick counter increments" as void*);
+
+    // テスト2: tickカウンタが少なくとも5進んでいる
+    ulong diff = tick_after - tick_before;
+    ulong min_ticks = 5 as ulong;
+    runner->assert_gt(diff, min_ticks, "PIT tick count >= 5 after 10 HLTs" as void*);
+
+    serial.println("[TEST] PIT tests complete" as void*);
+}

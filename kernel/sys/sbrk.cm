@@ -1,0 +1,50 @@
+//! platform: uefi
+// kernel::sys::sbrk - ユーザ空間ヒープ管理syscall
+//
+// ユーザプロセスからのメモリ確保要求を処理する。
+// カーネルヒープから指定サイズのメモリを割り当てて返す。
+//
+// API:
+//   sys_sbrk(increment) → addr or INVALID_VALUE
+
+import ../config;
+import ../drivers/debug_port;
+import ../mm/heap;
+import ../sys/syscall_table;
+
+// ============================================================
+// sys_sbrk — ユーザ空間ヒープ拡張
+// ============================================================
+// increment: 確保するバイト数
+// 戻り値: 確保されたメモリアドレス（失敗時は INVALID_VALUE）
+
+export SyscallResult sys_sbrk(ulong increment) {
+    DebugPort debug(0xE9);
+
+    if (increment == 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    // カーネルヒープから代理割当
+    ulong* heap_ptr = ADDR_GLOBAL_HEAP as ulong*;
+    MemAddr heap_addr = *heap_ptr;
+    if (heap_addr == 0) {
+        debug.println("[SBRK] error: heap not initialized" as void*);
+        return INVALID_VALUE;
+    }
+
+    Heap* heap = heap_addr as Heap*;
+    MemAddr addr = heap->alloc(increment);
+    if (addr == 0) {
+        debug.println("[SBRK] error: alloc failed" as void*);
+        return INVALID_VALUE;
+    }
+
+    debug.puts("[SBRK] alloc " as void*);
+    debug.print_hex(increment);
+    debug.puts(" bytes at 0x" as void*);
+    debug.print_hex(addr);
+    debug.println("" as void*);
+
+    return addr;
+}

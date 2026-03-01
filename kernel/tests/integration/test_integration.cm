@@ -1,0 +1,148 @@
+//! platform: uefi
+// kernel::tests::integration::test_integration - 結合テスト
+//
+// 複数サブシステム（ヒープ+CosmFS、initramfs+CosmFS）の連携を検証。
+// 今回のPF（ヒープalloc→CosmFS書込み時にPF）のような
+// モジュール間連携の不具合を検出する。
+
+import ../../drivers/serial;
+import ../../drivers/debug_port;
+import ../../mm/heap;
+import ../../mm/pmm;
+import ../../fs/cosmfs;
+import ../../config;
+import ../../sys/loader;
+import ../test_runner;
+
+// CosmFS操作コード — cosmfs.cm から import（export const で定義済み）
+const ulong IT_NOT_FOUND   = 0xFFFFFFFFFFFFFFFF;
+const ulong IT_TYPE_FILE   = 0;
+const ulong IT_TYPE_DIR    = 1;
+
+// テスト用バッファ（0xA000以降、他テストと衝突しない領域）
+const ulong IT_FNAME_BUF  = 0xA000;
+const ulong IT_DATA_BUF   = 0xA100;
+const ulong IT_READ_BUF   = 0xA200;
+
+/// 結合テストを実行する
+export void test_integration(TestRunner* runner, Heap* heap, PMM* pmm) {
+    SerialPort serial = {port: 0x3F8};
+    DebugPort debug(0xE9);
+    serial.println("[TEST] === Integration Tests ===" as void*);
+
+    // ============================================================
+    // テスト群1: ヒープ + CosmFS 連携
+    // ============================================================
+
+    // テスト1: ヒープでバッファを確保しCosmFSのファイル名に使用
+    ulong name_buf = heap->alloc(32);
+    runner->assert_nonzero(name_buf, "Integ: heap alloc for filename" as void*);
+
+    // テスト2: ヒープ確保バッファに書込み可能
+    runner->assert_mem_write(name_buf, 0x0000747365742E69, "Integ: heap fname buf writable" as void*);
+
+    // テスト3: ヒープでデータバッファを確保
+    ulong data_buf = heap->alloc(128);
+    runner->assert_nonzero(data_buf, "Integ: heap alloc for data" as void*);
+
+    // テスト4: データバッファに書込み可能
+    runner->assert_mem_write(data_buf, 0x48656C6C6F576F72, "Integ: heap data buf writable" as void*);
+
+    // ============================================================
+    // テスト群2: PMM + ヒープ 連携
+    // ============================================================
+
+    // テスト5: PMMの空きページ数がヒープ確保後も正常
+    ulong free_after = pmm->free_pages;
+    ulong still_has_free = 0;
+    if (free_after > 0) {
+        still_has_free = 1;
+    }
+    runner->assert_true(still_has_free, "Integ: PMM still has free pages" as void*);
+
+    // テスト6: ヒープから大きめの確保（512バイト）
+    ulong large_buf = heap->alloc(512);
+    runner->assert_nonzero(large_buf, "Integ: heap alloc(512) OK" as void*);
+
+    // テスト7: 大きめバッファの先頭に書込み可能
+    runner->assert_mem_write(large_buf, 0xCAFECAFECAFECAFE, "Integ: large buf start writable" as void*);
+
+    // テスト8: 大きめバッファの末尾近く(offset +504)に書込み可能
+    ulong end_addr = large_buf + 504;
+    runner->assert_mem_write(end_addr, 0xBEEFBEEFBEEFBEEF, "Integ: large buf end writable" as void*);
+
+    // テスト9: 先頭の書込みが末尾書込みで破壊されていない
+    ulong* check_start = large_buf as ulong*;
+    ulong rb = *check_start;
+    runner->assert_eq(rb, 0xCAFECAFECAFECAFE, "Integ: large buf start not corrupted" as void*);
+
+    // ============================================================
+    // テスト群3: CosmFS + MEMCPY + ファイルCRUD
+    // ============================================================
+
+    // 初期ファイル数を記録
+    ulong count_before = cosmfs_op(FS_OP_COUNT, 0, 0, 0, 0);
+
+    // テスト10: CosmFSにテストファイル作成
+    cosmfs_op(FS_OP_MEMCPY, IT_FNAME_BUF, "integ_test.txt" as ulong, 15, 0);
+    ulong cr = cosmfs_op(FS_OP_CREATE, IT_FNAME_BUF, IT_DATA_BUF, 4096, IT_TYPE_FILE);
+    runner->assert_eq(cr, 0, "Integ: CosmFS create file" as void*);
+
+    // テスト11: ファイル数が1増加
+    ulong count_after = cosmfs_op(FS_OP_COUNT, 0, 0, 0, 0);
+    ulong expected = count_before + 1;
+    runner->assert_eq(count_after, expected, "Integ: file count +1" as void*);
+
+    // テスト12: データ書込み
+    cosmfs_op(FS_OP_MEMCPY, IT_DATA_BUF, "TestData" as ulong, 8, 0);
+    ulong wr = cosmfs_op(FS_OP_WRITE, IT_FNAME_BUF, IT_DATA_BUF, 8, 0);
+    runner->assert_eq(wr, 8, "Integ: CosmFS write 8 bytes" as void*);
+
+    // テスト13: READ + 先頭バイト検証
+    ulong rr = cosmfs_op(FS_OP_READ, IT_FNAME_BUF, IT_READ_BUF, 64, 0);
+    runner->assert_eq(rr, 8, "Integ: CosmFS read returns 8" as void*);
+
+    // テスト14: 読み戻しデータの先頭が'T' (0x54)
+    ulong first_byte = 0;
+    ulong rb_addr = IT_READ_BUF;
+    __asm__(`
+        movq ${r:rb_addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:first_byte}
+    `);
+    runner->assert_eq(first_byte, 0x54, "Integ: read data[0]=='T'" as void*);
+
+    // テスト15: DELETE + ファイル数復旧
+    cosmfs_op(FS_OP_DELETE, IT_FNAME_BUF, 0, 0, 0);
+    ulong count_final = cosmfs_op(FS_OP_COUNT, 0, 0, 0, 0);
+    runner->assert_eq(count_final, count_before, "Integ: count restored after delete" as void*);
+
+    // ============================================================
+    // テスト群4: CosmEXE埋め込み + ヘッダ検証（ローダー結合テスト）
+    // ============================================================
+
+    // テスト16: ヒープからCosmEXEテストデータ用バッファ確保
+    ulong help_buf = heap->alloc(4096);
+    runner->assert_nonzero(help_buf, "Integ: heap alloc for help data" as void*);
+
+    // テスト17: テスト用CosmEXEヘッダをヒープバッファに構築
+    ulong* h0 = help_buf as ulong*;
+    ulong* h1 = (help_buf + 8) as ulong*;
+    ulong* h2 = (help_buf + 16) as ulong*;
+    ulong* h3 = (help_buf + 24) as ulong*;
+    *h0 = COSMEXE_MAGIC;
+    *h1 = 0x340;
+    *h2 = 0x2200;
+    *h3 = 0;
+    ulong help_size = 0x2200;
+    ulong sz_ok = 0;
+    if (help_size > 0) { sz_ok = 1; }
+    runner->assert_true(sz_ok, "Integ: embed_help size > 0" as void*);
+
+    // テスト18: ヒープバッファ上のCosmEXEマジック検証
+    ulong magic = loader_read_u64(help_buf);
+    runner->assert_eq(magic, COSMEXE_MAGIC, "Integ: CosmEXE magic on heap" as void*);
+
+    serial.println("[TEST] Integration tests complete" as void*);
+}

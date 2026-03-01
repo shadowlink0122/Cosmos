@@ -1,0 +1,396 @@
+//! platform: uefi
+// kernel::apps::aria::aria_render - Aria画面描画
+//
+// OS標準コンソールAPI (lib/console.cm) を使用。
+// アプリ独自のレンダリング実装は不要になった。
+//
+// 最適化:
+//   - バッチモード: con_begin_batch() でバックバッファ描画
+//   - ダーティフラグ: カーソル移動時は前回行+新行の2行のみ再描画
+//   - 増分行スキャン: scroll_top行目までの1回スキャン
+//   - con_batch_putc()で行単位の一括出力
+
+import ./aria_const;
+import ../../lib/console;
+
+// ============================================================
+// メモリ書込みヘルパー
+// ============================================================
+
+/// 行バッファの指定位置に1バイト書き込む
+void lb_write(MemAddr base, ulong pos, ulong ch) {
+    MemAddr la = base + pos;
+    __asm__(`
+        movq ${r:la}, %rdi;
+        movq ${r:ch}, %rax;
+        movb %al, (%rdi)
+    `);
+}
+
+/// 行バッファの指定位置にスペースを書き込む
+void lb_write_space(MemAddr base, ulong pos) {
+    MemAddr la = base + pos;
+    __asm__(` movq ${r:la}, %rdi; movb $$0x20, (%rdi) `);
+}
+
+/// テキストバッファから1バイト読み取る
+ulong buf_read(ulong scan_pos) {
+    ulong ch = 0;
+    ulong ba = ADDR_ARIA_BUFFER + scan_pos;
+    __asm__(` movq ${r:ba}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+    return ch;
+}
+
+/// 行バッファから1バイト読み取る
+ulong lb_read(MemAddr base, ulong pos) {
+    ulong ch = 0;
+    MemAddr la = base + pos;
+    __asm__(` movq ${r:la}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:ch} `);
+    return ch;
+}
+
+// ============================================================
+// 行バッファ一括出力（con_batch_putc使用）
+// ============================================================
+
+/// 行バッファの指定範囲をFBConsoleに出力（バッチモード中）
+void lb_puts(MemAddr base, ulong start, ulong len) {
+    ulong i = 0;
+    while (i < len) {
+        ulong ch = lb_read(base, start + i);
+        con_batch_putc(ch);
+        i = i + 1;
+    }
+}
+
+// ============================================================
+// 10進数 → 行バッファ書込み
+// ============================================================
+
+/// 数値を行バッファに10進数で書き込み、桁数を返す
+ulong lb_write_decimal(MemAddr base, ulong pos, ulong value) {
+    ulong n_tmp = value;
+    ulong d0 = 0; ulong d1 = 0; ulong d2 = 0; ulong d3 = 0;
+    ulong n_digits = 0;
+    d0 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 1;
+    if (n_tmp > 0) { d1 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 2; }
+    if (n_tmp > 0) { d2 = n_tmp - ((n_tmp / 10) * 10); n_tmp = n_tmp / 10; n_digits = 3; }
+    if (n_tmp > 0) { d3 = n_tmp - ((n_tmp / 10) * 10); n_digits = 4; }
+
+    ulong p = pos;
+    if (n_digits >= 4) { lb_write(base, p, d3 + 0x30); p = p + 1; }
+    if (n_digits >= 3) { lb_write(base, p, d2 + 0x30); p = p + 1; }
+    if (n_digits >= 2) { lb_write(base, p, d1 + 0x30); p = p + 1; }
+    lb_write(base, p, d0 + 0x30); p = p + 1;
+    return n_digits;
+}
+
+// ============================================================
+// 画面描画
+// ============================================================
+
+export ulong aria_render_op(FsOpCode op, ulong arg1, ulong arg2, ulong arg3, ulong arg4) {
+    if (op != 1) { return 0; }
+
+    // バッチ描画開始（バックバッファ描画、シリアル出力抑制）
+    con_begin_batch();
+
+    // 画面サイズ取得（コンソールAPI）
+    ulong screen_rows = con_get_rows();
+    ulong screen_cols = con_get_cols();
+    ulong text_rows = screen_rows - 2;
+    if (text_rows > screen_rows) { text_rows = 1; }
+
+    // カーソル・スクロール
+    ulong* cy_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_Y) as ulong*;
+    ulong* cx_ptr = (ADDR_ARIA_STATE + OFF_CURSOR_X) as ulong*;
+    ulong cur_y = *cy_ptr;
+    ulong cur_x = *cx_ptr;
+    ulong* st_ptr = (ADDR_ARIA_STATE + OFF_SCROLL_TOP) as ulong*;
+    ulong scroll_top = *st_ptr;
+    ulong old_scroll_top = scroll_top;
+    if (cur_y < scroll_top) { scroll_top = cur_y; *st_ptr = scroll_top; }
+    ulong scroll_bottom = scroll_top + text_rows;
+    if (cur_y >= scroll_bottom) { scroll_top = cur_y - text_rows + 1; *st_ptr = scroll_top; }
+
+    // ダーティフラグ
+    ulong* dirty_ptr = (ADDR_ARIA_STATE + OFF_DIRTY) as ulong*;
+    ulong dirty = *dirty_ptr;
+    ulong* pcyp = (ADDR_ARIA_STATE + OFF_PREV_CUR_Y) as ulong*;
+    ulong prev_cur_y = *pcyp;
+    if (scroll_top != old_scroll_top) { dirty = DIRTY_FULL; }
+
+    // 定数
+    Color hdr_color = COLOR_HEADER;
+    Color out_color = COLOR_OUTPUT;
+    MemAddr lb_base = ADDR_ARIA_LINEBUF;
+
+    // カーソルリセット（フル描画時のみ）
+    if (dirty != DIRTY_CURSOR) {
+        con_set_cursor(0, 0);
+    }
+
+    // ================================================================
+    // ヘッダー行
+    // ================================================================
+    if (dirty != DIRTY_CURSOR) {
+        con_set_color(hdr_color);
+        ulong hp = 0;
+        lb_write_space(lb_base, hp); hp = hp + 1;
+        lb_write(lb_base, hp, 0x41); hp = hp + 1;  // 'A'
+        lb_write(lb_base, hp, 0x72); hp = hp + 1;  // 'r'
+        lb_write(lb_base, hp, 0x69); hp = hp + 1;  // 'i'
+        lb_write(lb_base, hp, 0x61); hp = hp + 1;  // 'a'
+        lb_write(lb_base, hp, 0x3A); hp = hp + 1;  // ':'
+        lb_write_space(lb_base, hp); hp = hp + 1;
+
+        // ファイル名
+        ulong* fn_len_p = (ADDR_ARIA_STATE + OFF_FNAME_LEN) as ulong*;
+        ulong fn_len = *fn_len_p;
+        ulong fn_idx = 0;
+        while (fn_idx < fn_len) {
+            ulong fnch = 0;
+            ulong fna = ADDR_ARIA_FILENAME + fn_idx;
+            __asm__(` movq ${r:fna}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:fnch} `);
+            lb_write(lb_base, hp, fnch);
+            hp = hp + 1;
+            fn_idx = fn_idx + 1;
+        }
+
+        // 変更フラグ " [+]"
+        ulong* mod_ptr = (ADDR_ARIA_STATE + OFF_MODIFIED) as ulong*;
+        ulong modified = *mod_ptr;
+        if (modified != 0) {
+            lb_write_space(lb_base, hp); hp = hp + 1;
+            lb_write(lb_base, hp, 0x5B); hp = hp + 1;
+            lb_write(lb_base, hp, 0x2B); hp = hp + 1;
+            lb_write(lb_base, hp, 0x5D); hp = hp + 1;
+        }
+
+        while (hp < screen_cols) {
+            lb_write_space(lb_base, hp); hp = hp + 1;
+        }
+        lb_puts(lb_base, 0, hp);
+    }
+
+    // ================================================================
+    // テキスト領域
+    // ================================================================
+    ulong* bs = (ADDR_ARIA_STATE + OFF_BUF_SIZE) as ulong*;
+    ulong buf_size = *bs;
+    ulong* nlp = (ADDR_ARIA_STATE + OFF_NUM_LINES) as ulong*;
+    ulong num_lines = *nlp;
+
+    // 増分行スキャン
+    ulong scan_pos = 0;
+    ulong scan_line = 0;
+    while (scan_line < scroll_top) {
+        if (scan_pos >= buf_size) { scan_line = scroll_top; }
+        else {
+            ulong sch = buf_read(scan_pos);
+            scan_pos = scan_pos + 1;
+            if (sch == 0x0A) { scan_line = scan_line + 1; }
+        }
+    }
+
+    ulong screen_line = 0;
+    while (screen_line < text_rows) {
+        ulong file_line = scroll_top + screen_line;
+
+        // ダーティスキップ
+        ulong skip_line = 0;
+        if (dirty == DIRTY_CURSOR) {
+            if (file_line != prev_cur_y) {
+                if (file_line != cur_y) { skip_line = 1; }
+            }
+        }
+
+        if (skip_line != 0) {
+            if (file_line < num_lines) {
+                while (scan_pos < buf_size) {
+                    ulong skch = buf_read(scan_pos);
+                    scan_pos = scan_pos + 1;
+                    if (skch == 0x0A) { break; }
+                }
+            }
+            screen_line = screen_line + 1;
+        } else {
+            if (dirty == DIRTY_CURSOR) {
+                ulong sc_y = screen_line + 1;
+                con_set_cursor(0, sc_y);
+            }
+
+            ulong lp = 0;
+
+            if (file_line < num_lines) {
+                // テキスト行: 行番号
+                ulong display_num = file_line + 1;
+                ulong n_digits = lb_write_decimal(lb_base, 0, display_num);
+                lp = n_digits;
+                lb_write_space(lb_base, lp); lp = lp + 1;
+
+                // テキスト内容
+                ulong col = 0;
+                ulong cursor_col = 0xFFFFFFFF;
+                ulong line_done = 0;
+                while (line_done == 0) {
+                    if (scan_pos >= buf_size) { line_done = 1; }
+                    else {
+                        ulong ch = buf_read(scan_pos);
+                        if (ch == 0x0A) { scan_pos = scan_pos + 1; line_done = 1; }
+                        else {
+                            if (file_line == cur_y) {
+                                if (col == cur_x) { cursor_col = lp; }
+                            }
+                            lb_write(lb_base, lp, ch);
+                            col = col + 1;
+                            lp = lp + 1;
+                            scan_pos = scan_pos + 1;
+                        }
+                    }
+                }
+
+                // 行末カーソル
+                if (file_line == cur_y) {
+                    if (cur_x >= col) {
+                        cursor_col = lp;
+                        lb_write(lb_base, lp, 0x5F);
+                        lp = lp + 1;
+                    }
+                }
+
+                // スペース埋め
+                while (lp < screen_cols) {
+                    lb_write_space(lb_base, lp); lp = lp + 1;
+                }
+
+                // 色分割出力
+                ulong linenum_len = n_digits + 1;
+                if (cursor_col != 0xFFFFFFFF) {
+                    con_set_color(hdr_color);
+                    lb_puts(lb_base, 0, linenum_len);
+
+                    con_set_color(out_color);
+                    if (cursor_col > linenum_len) {
+                        ulong before_len = cursor_col - linenum_len;
+                        lb_puts(lb_base, linenum_len, before_len);
+                    }
+
+                    ulong cursor_ch = lb_read(lb_base, cursor_col);
+                    con_set_color(COLOR_GREEN);
+                    con_batch_putc(cursor_ch);
+
+                    con_set_color(out_color);
+                    ulong after_start = cursor_col + 1;
+                    ulong after_len = screen_cols - after_start;
+                    if (after_len > 0) {
+                        lb_puts(lb_base, after_start, after_len);
+                    }
+                } else {
+                    con_set_color(hdr_color);
+                    lb_puts(lb_base, 0, linenum_len);
+                    con_set_color(out_color);
+                    ulong rest_len = screen_cols - linenum_len;
+                    lb_puts(lb_base, linenum_len, rest_len);
+                }
+
+            } else {
+                // 空行: "~"
+                lb_write(lb_base, 0, 0x7E); lp = 1;
+                while (lp < screen_cols) {
+                    lb_write_space(lb_base, lp); lp = lp + 1;
+                }
+                con_set_color(hdr_color);
+                lb_puts(lb_base, 0, lp);
+            }
+
+            screen_line = screen_line + 1;
+        }
+    }
+
+    // ================================================================
+    // ステータスバー
+    // ================================================================
+    Color prompt_color = COLOR_PROMPT;
+    con_set_color(prompt_color);
+
+    ulong sp = 0;
+    ulong* mp = (ADDR_ARIA_STATE + OFF_MODE) as ulong*;
+    ulong mode = *mp;
+
+    if (mode == MODE_NORMAL) {
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4E); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4F); sp = sp + 1;
+        lb_write(lb_base, sp, 0x52); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4D); sp = sp + 1;
+        lb_write(lb_base, sp, 0x41); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4C); sp = sp + 1;
+        lb_write_space(lb_base, sp); sp = sp + 1;
+    }
+    if (mode == MODE_INSERT) {
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x49); sp = sp + 1;
+        lb_write(lb_base, sp, 0x4E); sp = sp + 1;
+        lb_write(lb_base, sp, 0x53); sp = sp + 1;
+        lb_write(lb_base, sp, 0x45); sp = sp + 1;
+        lb_write(lb_base, sp, 0x52); sp = sp + 1;
+        lb_write(lb_base, sp, 0x54); sp = sp + 1;
+        lb_write_space(lb_base, sp); sp = sp + 1;
+    }
+    if (mode == MODE_COMMAND) {
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x3A); sp = sp + 1;
+        ulong* clp = (ADDR_ARIA_STATE + OFF_CMD_LEN) as ulong*;
+        ulong clen = *clp;
+        ulong ci = 0;
+        while (ci < clen) {
+            ulong cc = 0;
+            ulong ca = ADDR_ARIA_CMDLINE + ci;
+            __asm__(` movq ${r:ca}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:cc} `);
+            lb_write(lb_base, sp, cc);
+            sp = sp + 1; ci = ci + 1;
+        }
+        lb_write_space(lb_base, sp); sp = sp + 1;
+    }
+
+    // カーソル位置
+    lb_write_space(lb_base, sp); sp = sp + 1;
+    lb_write(lb_base, sp, 0x4C); sp = sp + 1;
+    ulong dy = lb_write_decimal(lb_base, sp, cur_y + 1);
+    sp = sp + dy;
+    lb_write(lb_base, sp, 0x2C); sp = sp + 1;
+    lb_write(lb_base, sp, 0x43); sp = sp + 1;
+    ulong dx = lb_write_decimal(lb_base, sp, cur_x + 1);
+    sp = sp + dx;
+
+    // ステータスメッセージ
+    ulong* sm_ptr = (ADDR_ARIA_STATE + OFF_STATUS_MSG) as ulong*;
+    ulong smsg = *sm_ptr;
+    if (smsg == 1) {
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x57); sp = sp + 1;
+        lb_write(lb_base, sp, 0x72); sp = sp + 1;
+        lb_write(lb_base, sp, 0x69); sp = sp + 1;
+        lb_write(lb_base, sp, 0x74); sp = sp + 1;
+        lb_write(lb_base, sp, 0x74); sp = sp + 1;
+        lb_write(lb_base, sp, 0x65); sp = sp + 1;
+        lb_write(lb_base, sp, 0x6E); sp = sp + 1;
+        ulong zero_s = 0; *sm_ptr = zero_s;
+    }
+    if (smsg == 2) {
+        lb_write_space(lb_base, sp); sp = sp + 1;
+        lb_write(lb_base, sp, 0x46); sp = sp + 1;
+        lb_write(lb_base, sp, 0x61); sp = sp + 1;
+        lb_write(lb_base, sp, 0x69); sp = sp + 1;
+        lb_write(lb_base, sp, 0x6C); sp = sp + 1;
+        ulong zero_s2 = 0; *sm_ptr = zero_s2;
+    }
+
+    lb_puts(lb_base, 0, sp);
+
+    // バッチ終了 → VRAM一括転送
+    con_end_batch();
+
+    return 0;
+}

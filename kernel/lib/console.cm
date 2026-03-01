@@ -1,0 +1,188 @@
+//! platform: uefi
+// kernel::lib::console - OS標準コンソールAPI
+//
+// CosmOS の全アプリケーション・シェルが共有する統一コンソールI/O。
+// FBConsole（フレームバッファ）と Serial（デバッグ）への同時出力を管理。
+//
+// アプリケーションは本モジュールを import するだけで画面操作が可能。
+// 独自のレンダリング実装は不要。
+//
+// API一覧:
+//   con_putc(ch)              — 1文字出力
+//   con_puts(msg)             — NUL終端文字列出力
+//   con_println(msg)          — 改行付き文字列出力
+//   con_newline()             — 改行出力
+//   con_set_color(color)      — 前景色設定
+//   con_clear()               — 画面クリア
+//   con_set_cursor(x, y)      — カーソル位置設定（文字単位）
+//   con_get_rows()            — 画面行数取得
+//   con_get_cols()            — 画面列数取得
+//   con_print_num(n)          — 10進数出力
+//   con_print_hex(n)          — 16進数出力
+//   con_begin_batch()         — バッチ描画開始（バックバッファ描画）
+//   con_end_batch()           — バッチ描画終了（VRAM一括転送）
+//   con_draw_char_at(x, y, ch) — 指定ピクセル座標に1文字描画
+
+import ../drivers/serial;
+import ./print;
+import ../config;
+
+// ============================================================
+// 基本出力
+// ============================================================
+
+/// 1文字を serial + FBConsole に出力
+export void con_putc(AsciiChar ch) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.putc(ch);
+    con.putc(ch);
+}
+
+/// NUL終端文字列を serial + FBConsole に出力
+export void con_puts(void* msg) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.puts(msg);
+    con.puts(msg);
+}
+
+/// 改行付き文字列を serial + FBConsole に出力
+export void con_println(void* msg) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.println(msg);
+    con.println(msg);
+}
+
+/// 改行を serial + FBConsole に出力
+export void con_newline() {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.println("" as void*);
+    con.newline();
+}
+
+// ============================================================
+// 画面制御
+// ============================================================
+
+/// 前景色を設定（FBConsole のみ）
+export void con_set_color(Color color) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.set_color(color);
+}
+
+/// 画面をクリアしカーソルをリセット
+export void con_clear() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.clear();
+}
+
+/// カーソル位置を設定（文字単位）
+export void con_set_cursor(ulong x, ulong y) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    ulong* px = (con.addr + 0x20) as ulong*;  // FB_OFF_CURSOR_X
+    *px = x;
+    ulong* py = (con.addr + 0x28) as ulong*;  // FB_OFF_CURSOR_Y
+    *py = y;
+}
+
+/// 画面の行数を取得
+export ulong con_get_rows() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    return con.max_rows();
+}
+
+/// 画面の列数を取得
+export ulong con_get_cols() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    return con.max_cols();
+}
+
+// ============================================================
+// 数値出力
+// ============================================================
+
+/// 16進数値を serial + FBConsole に出力
+export void con_print_hex(ulong value) {
+    SerialPort serial = {port: 0x3F8};
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    serial.print_hex(value);
+    con.print_hex(value);
+}
+
+/// 10進数値を serial + FBConsole に出力
+export void con_print_num(ulong value) {
+    if (value == 0) {
+        con_putc(0x30);  // '0'
+        return;
+    }
+    // 0xCF0を一時バッファとして使用
+    MemAddr tmp_buf = 0xCF0;
+    ulong cnt = 0;
+    ulong n = value;
+
+    // 桁を逆順でバッファに格納
+    while (n > 0) {
+        ulong rem = n - ((n / 10) * 10);  // n % 10
+        MemAddr addr = tmp_buf + cnt;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:rem}, %rax;
+            addb $$0x30, %al;
+            movb %al, (%rdi)
+        `);
+        n = n / 10;
+        cnt = cnt + 1;
+    }
+
+    // 逆順で出力
+    ulong i = cnt;
+    while (i > 0) {
+        i = i - 1;
+        MemAddr raddr = tmp_buf + i;
+        AsciiChar ch = 0;
+        __asm__(`
+            movq ${r:raddr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        con_putc(ch);
+    }
+}
+
+// ============================================================
+// バッチ描画（高速描画用）
+// ============================================================
+
+/// バッチ描画開始: バックバッファに描画し、シリアル出力を抑制
+export void con_begin_batch() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.begin_batch();
+}
+
+/// バッチ描画終了: バックバッファ→VRAMに一括転送
+export void con_end_batch() {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.end_batch();
+}
+
+/// 指定ピクセル座標に1文字を描画（バッチモード対応）
+/// 高速パスで使用: カーソル位置の文字だけ更新する場合に
+export void con_draw_char_at(ulong px, ulong py, ulong ch) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.draw_char(px, py, ch);
+}
+
+// ============================================================
+// FBConsole直接バッチ出力（行バッファ用）
+// ============================================================
+
+/// バッチモード中にFBConsoleへ直接1文字出力（シリアル出力なし）
+/// バッチ描画中の大量文字出力（行全体の描画等）に使用
+export void con_batch_putc(AsciiChar ch) {
+    FBConsole con = {addr: GLOBAL_FB_CONSOLE_ADDR};
+    con.putc(ch);
+}
