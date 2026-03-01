@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::include::page_alloc - ページアロケータインターフェース
 //
 // 物理ページの割り当て・解放を抽象化する。

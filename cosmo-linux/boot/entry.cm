@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::boot::entry - カーネルエントリポイント
 //
 // header.S → start_kernel() → 各サブシステム初期化 → idle loop
@@ -8,7 +8,7 @@ import ../include/types;
 import ../include/config;
 import ../include/scheduler;
 import ../drivers/serial;
-import ../lib/string;
+import ../lib/kstring;
 import ../lib/printk;
 import ../arch/x86_64/cpu;
 import ../arch/x86_64/gdt;
@@ -56,7 +56,7 @@ void print_system_info(SerialPort* w, BootInfo* info) {
 // ============================================================
 
 /// header.Sから呼び出されるカーネルメインエントリ
-export void start_kernel(ulong mb2_info, ulong mb2_magic) {
+void main(ulong mb2_info, ulong mb2_magic) {
     // === 1. シリアルコンソール確立 ===
     SerialPort serial(COM1);
     DebugPort debug(DEBUGCON);

@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::include::config - カーネル設定定数
 //
 // 全カーネルモジュールが参照する定数を一元管理する。

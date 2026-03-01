@@ -1,13 +1,13 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::arch::x86_64::gdt - GDT設定
 //
 // 64ビットLong Mode用GDT。5セグメント + TSSスロット。
 // 参照: linux/arch/x86/kernel/cpu/common.c
 
-import ../include/types;
-import ../include/config;
-import ../drivers/serial;
-import ../lib/printk;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
 
 // ============================================================
 // セグメントセレクタ定数

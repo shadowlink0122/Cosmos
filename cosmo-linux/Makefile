@@ -16,7 +16,7 @@ LD ?= ld
 QEMU ?= qemu-system-x86_64
 
 # Cmフラグ（baremetalターゲット = ELF出力）
-CM_FLAGS = --target=uefi
+CM_FLAGS = --target=baremetal-x86
 
 # NASMフラグ
 NASM_FLAGS = -f elf64

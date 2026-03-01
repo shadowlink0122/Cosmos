@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::sched::process - プロセス管理
 //
 // Process 構造体のメソッド実装。
@@ -12,7 +12,7 @@ import ../include/scheduler;
 import ../include/page_alloc;
 import ../drivers/serial;
 import ../lib/printk;
-import ../lib/string;
+import ../lib/kstring;
 import ../mm/pmm;
 
 // ============================================================

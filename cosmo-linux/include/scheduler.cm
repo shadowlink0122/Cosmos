@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::include::scheduler - スケジューラインターフェース
 //
 // プロセススケジューリングの抽象化。

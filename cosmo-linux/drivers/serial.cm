@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::drivers::serial - UART 16550A シリアルドライバ
 //
 // COM1 (0x3F8) シリアルポートを操作する。
@@ -108,7 +108,7 @@ impl SerialPort for Writer {
         ulong addr = data as ulong;
         ulong i = 0;
         while (true) {
-            AsciiChar byte_val = 0 as utiny;
+            ulong byte_val = 0;
             ulong cur = addr + i;
             __asm__(`
                 movq ${r:cur}, %r10;
@@ -116,10 +116,10 @@ impl SerialPort for Writer {
                 movzbl (%r10), %eax;
                 movq %rax, ${=r:byte_val}
             `);
-            if (byte_val == 0 as utiny) { break; }
+            if (byte_val == 0) { break; }
             // LFの前にCRを挿入
-            if (byte_val == 10 as utiny) { self.putc(13 as utiny); }
-            self.putc(byte_val);
+            if (byte_val == 10) { self.putc(13 as utiny); }
+            self.putc(byte_val as utiny);
             i += 1;
         }
     }
@@ -175,7 +175,7 @@ impl DebugPort for Writer {
         ulong addr = data as ulong;
         ulong i = 0;
         while (true) {
-            AsciiChar byte_val = 0 as utiny;
+            ulong byte_val = 0;
             ulong cur = addr + i;
             __asm__(`
                 movq ${r:cur}, %r10;
@@ -183,8 +183,8 @@ impl DebugPort for Writer {
                 movzbl (%r10), %eax;
                 movq %rax, ${=r:byte_val}
             `);
-            if (byte_val == 0 as utiny) { break; }
-            self.putc(byte_val);
+            if (byte_val == 0) { break; }
+            self.putc(byte_val as utiny);
             i += 1;
         }
     }

@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::sys::syscall_table - Linux x86_64 syscall 番号定義
 //
 // Linux互換のsyscall番号テーブル。

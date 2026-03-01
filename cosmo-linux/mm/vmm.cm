@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::mm::vmm - 仮想メモリマネージャ
 //
 // x86_64 4レベルページテーブル管理。
@@ -11,7 +11,7 @@ import ../include/config;
 import ../include/page_alloc;
 import ../drivers/serial;
 import ../lib/printk;
-import ../lib/string;
+import ../lib/kstring;
 
 // ============================================================
 // ページテーブルフラグ

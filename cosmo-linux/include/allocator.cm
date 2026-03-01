@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::include::allocator - カーネルメモリアロケータインターフェース
 //
 // 任意サイズのカーネル内部メモリ割り当てを抽象化する。

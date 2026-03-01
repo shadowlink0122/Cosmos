@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::include::writer - テキスト出力 共通インターフェース
 //
 // シリアルポート、デバッグポート等の出力デバイスが

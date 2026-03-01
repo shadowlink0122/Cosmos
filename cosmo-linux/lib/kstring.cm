@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::lib::string - メモリ・文字列操作ユーティリティ
 //
 // memcpy, memset, strlen 等の基本関数。
@@ -94,7 +94,7 @@ export void memzero(void* dest, Size n) {
 export Size strlen(void* str) {
     ulong addr = str as ulong;
     Size len = 0;
-    AsciiChar ch = 0;
+    ulong ch = 0;
     __asm__(`
         movq ${r:addr}, %rdi;
         xorq %rax, %rax;
@@ -120,8 +120,8 @@ export long strcmp(void* s1, void* s2) {
     ulong a2 = s2 as ulong;
     ulong i = 0;
     while (true) {
-        AsciiChar c1 = 0;
-        AsciiChar c2 = 0;
+        ulong c1 = 0;
+        ulong c2 = 0;
         ulong addr1 = a1 + i;
         ulong addr2 = a2 + i;
         __asm__(`

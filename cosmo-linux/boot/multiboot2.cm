@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::boot::multiboot2 - Multiboot2 情報パーサ
 //
 // GRUB/QEMUから渡されるMultiboot2情報を解析し、

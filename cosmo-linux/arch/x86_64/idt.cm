@@ -1,13 +1,13 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::arch::x86_64::idt - IDT設定
 //
 // 256ベクタのIDT。例外ハンドラ（#DE, #DF, #GP, #PF）を登録。
 // 参照: linux/arch/x86/kernel/idt.c
 
-import ../include/types;
-import ../include/config;
-import ../drivers/serial;
-import ../lib/printk;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
 
 // ============================================================
 // ゲートタイプ定数
@@ -103,7 +103,7 @@ export void idt_init(SerialPort* w) {
     }
 
     // 全ベクタにデフォルトハンドラ登録
-    ulong def = fn_addr(exc_default as void*);
+    ulong def = exc_default as ulong;
     Vector v = 0;
     while (v < 256) {
         idt_set_gate(v, def, GATE_INT);
@@ -111,10 +111,10 @@ export void idt_init(SerialPort* w) {
     }
 
     // 主要例外ハンドラ
-    idt_set_gate(0,  fn_addr(exc_divide_error as void*),       GATE_TRAP);
-    idt_set_gate(8,  fn_addr(exc_double_fault as void*),       GATE_TRAP);
-    idt_set_gate(13, fn_addr(exc_general_protection as void*), GATE_TRAP);
-    idt_set_gate(14, fn_addr(exc_page_fault as void*),         GATE_TRAP);
+    idt_set_gate(0,  exc_divide_error as ulong,       GATE_TRAP);
+    idt_set_gate(8,  exc_double_fault as ulong,       GATE_TRAP);
+    idt_set_gate(13, exc_general_protection as ulong, GATE_TRAP);
+    idt_set_gate(14, exc_page_fault as ulong,         GATE_TRAP);
 
     // IDTR構築・ロード
     ulong* idtr_lim = IDTR_ADDR as ulong*;

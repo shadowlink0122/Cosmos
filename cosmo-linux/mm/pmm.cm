@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::mm::pmm - 物理メモリマネージャ (Buddy System)
 //
 // Multiboot2から受け取ったメモリマップに基づき、
@@ -13,7 +13,7 @@ import ../include/config;
 import ../include/page_alloc;
 import ../drivers/serial;
 import ../lib/printk;
-import ../lib/string;
+import ../lib/kstring;
 
 // ============================================================
 // Buddy System 定数
@@ -32,8 +32,8 @@ const PhysAddr PMM_DATA_BASE = 0x200000;
 // ページ状態
 // ============================================================
 
-const utiny PAGE_FREE = 0 as utiny;
-const utiny PAGE_USED = 1 as utiny;
+const ulong PAGE_FREE = 0;
+const ulong PAGE_USED = 1;
 
 // ============================================================
 // BuddyAllocator 構造体
@@ -116,9 +116,9 @@ impl BuddyAllocator {
     }
 
     /// ページ番号からページ状態を取得
-    utiny get_page_state(ulong pfn) {
+    ulong get_page_state(ulong pfn) {
         ulong addr = self.bitmap_base + pfn;
-        utiny state = 0 as utiny;
+        ulong state = 0;
         __asm__(`
             movq ${r:addr}, %rdi;
             xorq %rax, %rax;
@@ -129,7 +129,7 @@ impl BuddyAllocator {
     }
 
     /// ページ番号のページ状態を設定
-    void set_page_state(ulong pfn, utiny state) {
+    void set_page_state(ulong pfn, ulong state) {
         ulong addr = self.bitmap_base + pfn;
         ulong val = state as ulong;
         __asm__(`
@@ -277,7 +277,7 @@ impl BuddyAllocator for PageAllocator {
             ulong buddy_pfn = buddy_addr / PAGE_SIZE;
 
             // バディが空きかチェック
-            utiny buddy_state = self.get_page_state(buddy_pfn);
+            ulong buddy_state = self.get_page_state(buddy_pfn);
             if (buddy_state != PAGE_FREE) { break; }
 
             // バディをフリーリストから除去し結合

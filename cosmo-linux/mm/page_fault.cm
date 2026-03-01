@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::mm::page_fault - ページフォルトハンドラ
 //
 // IDTベクタ14 (#PF) の拡張ハンドラ。

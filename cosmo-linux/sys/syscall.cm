@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::sys::syscall - syscall エントリポイント
 //
 // x86_64 LSTAR MSR を設定し、syscall命令でカーネルに遷移する。
@@ -70,7 +70,7 @@ long sys_write(ulong fd, ulong buf_addr, ulong count) {
         SerialPort serial(COM1);
         ulong i = 0;
         while (i < count) {
-            AsciiChar ch = 0 as utiny;
+            ulong ch = 0;
             ulong addr = buf_addr + i;
             __asm__(`
                 movq ${r:addr}, %rdi;
@@ -78,7 +78,7 @@ long sys_write(ulong fd, ulong buf_addr, ulong count) {
                 movb (%rdi), %al;
                 movq %rax, ${=r:ch}
             `);
-            serial.putc(ch);
+            serial.putc(ch as utiny);
             i = i + 1;
         }
         return count as long;
@@ -87,7 +87,7 @@ long sys_write(ulong fd, ulong buf_addr, ulong count) {
         SerialPort serial(COM1);
         ulong i = 0;
         while (i < count) {
-            AsciiChar ch = 0 as utiny;
+            ulong ch = 0;
             ulong addr = buf_addr + i;
             __asm__(`
                 movq ${r:addr}, %rdi;
@@ -95,7 +95,7 @@ long sys_write(ulong fd, ulong buf_addr, ulong count) {
                 movb (%rdi), %al;
                 movq %rax, ${=r:ch}
             `);
-            serial.putc(ch);
+            serial.putc(ch as utiny);
             i = i + 1;
         }
         return count as long;
@@ -135,7 +135,7 @@ export void syscall_init(SerialPort* w) {
     wrmsr(MSR_STAR, star);
 
     // LSTAR: syscallエントリアドレス
-    ulong entry = fn_addr(syscall_entry_stub as void*);
+    ulong entry = syscall_entry_stub as ulong;
     wrmsr(MSR_LSTAR, entry);
 
     // SFMASK: syscall時にIFとDFをクリア

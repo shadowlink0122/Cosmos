@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::lib::printk - カーネルログ出力
 //
 // Linux printk() 互換のログ出力。

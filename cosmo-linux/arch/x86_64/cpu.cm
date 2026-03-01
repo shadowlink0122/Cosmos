@@ -1,13 +1,13 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::arch::x86_64::cpu - CPU制御・情報取得
 //
 // I/O操作、CPUID、MSR、割り込み制御のラッパー。
 // 参照: linux/arch/x86/kernel/cpu/common.c
 
-import ../include/types;
-import ../include/config;
-import ../drivers/serial;
-import ../lib/printk;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
 
 // ============================================================
 // CPU制御

@@ -42,7 +42,7 @@ header_end:
 ; =============================================================================
 section .text
 global _start
-extern start_kernel
+extern main
 
 _start:
     cli
@@ -133,7 +133,7 @@ long_mode_entry:
     ; Cm エントリ呼出し
     movzx rdi, edi                ; MB2 info (32→64bit)
     movzx rsi, esi                ; MB2 magic
-    call start_kernel
+    call main
 
 .halt:
     hlt

@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::include::errno - Linuxエラーコード定数
 //
 // Linux互換エラーコード。syscallの戻り値として負値で返される。

@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::mm::kmalloc - カーネルヒープアロケータ
 //
 // サイズクラス別フリーリスト方式の簡易SLABアロケータ。
@@ -14,7 +14,7 @@ import ../include/allocator;
 import ../include/page_alloc;
 import ../drivers/serial;
 import ../lib/printk;
-import ../lib/string;
+import ../lib/kstring;
 
 // ============================================================
 // サイズクラス定数

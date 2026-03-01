@@ -1,4 +1,4 @@
-//! platform: baremetal
+//! platform: baremetal-x86
 // cosmo-linux::include::types - Linux互換型定義
 //
 // Cm の typedef でカーネル全体の型を一元定義する。
