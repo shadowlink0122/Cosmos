@@ -8,11 +8,13 @@ import ../include/types;
 import ../include/config;
 import ../include/scheduler;
 import ../drivers/serial;
+import ../drivers/pit;
 import ../lib/kstring;
 import ../lib/printk;
 import ../arch/x86_64/cpu;
 import ../arch/x86_64/gdt;
 import ../arch/x86_64/idt;
+import ../arch/x86_64/context;
 import ./multiboot2;
 import ../mm/pmm;
 import ../mm/vmm;
@@ -49,6 +51,46 @@ void print_system_info(SerialPort* w, BootInfo* info) {
     }
 
     cpu_print_vendor(w);
+}
+
+// ============================================================
+// デモタスク — マルチタスク動作確認
+// ============================================================
+
+/// デモタスクA: 周期的にメッセージを出力
+void demo_task_a() {
+    SerialPort serial(COM1);
+    ulong count = 0;
+    while (true) {
+        serial.puts("[TaskA] tick " as void*);
+        print_dec(&serial, count);
+        serial.println("" as void*);
+        count = count + 1;
+
+        // 短いビジーウェイト（スケジューラに譲らせるため）
+        ulong i = 0;
+        while (i < 500000) { i = i + 1; }
+
+        schedule();
+    }
+}
+
+/// デモタスクB: 周期的にメッセージを出力
+void demo_task_b() {
+    SerialPort serial(COM1);
+    ulong count = 0;
+    while (true) {
+        serial.puts("[TaskB] tick " as void*);
+        print_dec(&serial, count);
+        serial.println("" as void*);
+        count = count + 1;
+
+        // 短いビジーウェイト
+        ulong i = 0;
+        while (i < 500000) { i = i + 1; }
+
+        schedule();
+    }
 }
 
 // ============================================================
@@ -139,20 +181,57 @@ void main(ulong mb2_info, ulong mb2_magic) {
     syscall_init(&serial);
     debug.println("[BOOT] syscall initialized" as void*);
 
-    // === 8. システム情報出力 ===
+    // === 8. PIT タイマー初期化 ===
+    pit_init(&serial);
+    debug.println("[BOOT] PIT initialized" as void*);
+
+    // === 9. デモタスク生成 ===
+    pr_info(&serial, "Creating demo tasks..." as void*);
+
+    // タスクA: カーネルスタックを確保してコンテキスト初期化
+    Process task_a(alloc_pid(), 0);
+    task_a.alloc_stack(&pmm);
+    if (task_a.kernel_stack != 0) {
+        init_task_context(&task_a, task_a.kernel_stack, demo_task_a as ulong);
+        sched_add(&task_a);
+        serial.puts("  Task A (PID " as void*);
+        print_dec(&serial, task_a.pid as ulong);
+        serial.println(") created" as void*);
+    }
+
+    // タスクB: カーネルスタックを確保してコンテキスト初期化
+    Process task_b(alloc_pid(), 0);
+    task_b.alloc_stack(&pmm);
+    if (task_b.kernel_stack != 0) {
+        init_task_context(&task_b, task_b.kernel_stack, demo_task_b as ulong);
+        sched_add(&task_b);
+        serial.puts("  Task B (PID " as void*);
+        print_dec(&serial, task_b.pid as ulong);
+        serial.println(") created" as void*);
+    }
+
+    debug.println("[BOOT] demo tasks created" as void*);
+
+    // === 10. システム情報出力 ===
     print_system_info(&serial, &boot_info);
 
-    // === 9. 初期化完了 ===
+    // === 11. 割り込み有効化＆初期化完了 ===
     serial.println("" as void*);
     pr_info(&serial, "Kernel initialization complete" as void*);
-    pr_info(&serial, "Entering idle loop..." as void*);
+    pr_info(&serial, "Entering idle loop with scheduler..." as void*);
     debug.println("[BOOT] entering idle loop" as void*);
 
-    // QEMUテスト用: isa-debug-exit で正常終了
-    outb(QEMU_EXIT_PORT, 0);
+    // 割り込み有効化
+    sti();
 
-    // idle loop
+    // idle loop（PIT割り込み + タイマーベーススケジューリング）
     while (true) {
         hlt();
+
+        // PIT割り込み後: リスケジュール要求を確認
+        ulong need_resched = pit_check_resched();
+        if (need_resched != 0) {
+            sched_tick();
+        }
     }
 }

@@ -1,0 +1,132 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::pit - PIT 8254 タイマードライバ
+//
+// チャンネル0をレートジェネレータモードで設定し、
+// IRQ0（ベクタ32）を定期的に発生させる。
+//
+// 参照: linux/arch/x86/kernel/i8253.c
+
+import ../include/types;
+import ../include/config;
+import ../arch/x86_64/cpu;
+import ../arch/x86_64/idt;
+import ../drivers/serial;
+import ../lib/printk;
+
+// ============================================================
+// PIT状態（固定メモリに配置）
+// ============================================================
+
+/// PITティックカウンタ配置アドレス
+const PhysAddr PIT_TICK_ADDR = 0x90000;
+
+/// スケジュール要求フラグ
+const PhysAddr PIT_NEED_SCHED_ADDR = 0x90008;
+
+// ============================================================
+// PIT初期化
+// ============================================================
+
+/// PIT Ch0 をレートジェネレータモードで初期化 (100Hz)
+export void pit_init(SerialPort* w) {
+    // === PIC 8259A 初期化（IRQリマップ） ===
+    // デフォルト: IRQ0-7→ベクタ8-15（CPU例外と衝突）
+    // リマップ: IRQ0-7→ベクタ32-39, IRQ8-15→ベクタ40-47
+
+    // ICW1: 初期化開始（カスケード、ICW4必要）
+    outb(PIC1_CMD, 0x11);
+    outb(PIC2_CMD, 0x11);
+
+    // ICW2: ベクタオフセット
+    outb(PIC1_DATA, 32);   // IRQ 0-7  → ベクタ 32-39
+    outb(PIC2_DATA, 40);   // IRQ 8-15 → ベクタ 40-47
+
+    // ICW3: マスター/スレーブ接続
+    outb(PIC1_DATA, 4);    // IRQ2にスレーブPIC接続
+    outb(PIC2_DATA, 2);    // スレーブID = 2
+
+    // ICW4: 8086モード
+    outb(PIC1_DATA, 1);
+    outb(PIC2_DATA, 1);
+
+    // 全IRQマスク（全て無効化）
+    outb(PIC1_DATA, 0xFF);
+    outb(PIC2_DATA, 0xFF);
+
+    pr_info(w, "PIC remapped (IRQ0-7 -> vec 32-39)" as void*);
+
+    // === PIT 8254 初期化 ===
+    // コマンド: Channel 0, lobyte/hibyte, rate generator
+    outb(PIT_CMD, 0x34);
+
+    // 分周値 = PIT_FREQ / PIT_HZ
+    ulong divisor = PIT_FREQ / PIT_HZ;
+    outb(PIT_CH0, divisor & 0xFF);
+    outb(PIT_CH0, (divisor >> 8) & 0xFF);
+
+    // ティックカウンタ初期化
+    ulong* tick_ptr = PIT_TICK_ADDR as ulong*;
+    *tick_ptr = 0;
+    ulong* sched_ptr = PIT_NEED_SCHED_ADDR as ulong*;
+    *sched_ptr = 0;
+
+    // IRQ0ハンドラ登録（ベクタ32）
+    idt_set_gate(32, pit_irq_handler as ulong, GATE_INT);
+
+    // PICでIRQ0のマスクを解除
+    ulong mask = inb(PIC1_DATA);
+    outb(PIC1_DATA, mask & 0xFE);  // bit 0 = IRQ0
+
+    pr_info(w, "PIT initialized (100Hz, IRQ0 -> vector 32)" as void*);
+}
+
+/// PIT IRQ0 ハンドラ（純ASM naked関数）
+/// PIT_TICK_ADDR(0x90000)のカウンタをインクリメントし、
+/// 10tick毎にPIT_NEED_SCHED_ADDR(0x90008)にスケジュール要求を設定
+export void pit_irq_handler() {
+    __asm__(`
+        pushq %rax;
+        pushq %rcx;
+        pushq %rdx;
+        pushq %rdi;
+
+        movq $$0x90000, %rdi;
+        movq (%rdi), %rax;
+        addq $$1, %rax;
+        movq %rax, (%rdi);
+
+        xorq %rdx, %rdx;
+        movq $$10, %rcx;
+        divq %rcx;
+        testq %rdx, %rdx;
+        jnz 1f;
+        movq $$0x90008, %rdi;
+        movq $$1, (%rdi);
+        1:;
+
+        movb $$0x20, %al;
+        outb %al, $$0x20;
+
+        popq %rdi;
+        popq %rdx;
+        popq %rcx;
+        popq %rax;
+        iretq
+    `);
+}
+
+/// 現在のティックカウントを取得
+export ulong pit_get_ticks() {
+    ulong* tick_ptr = PIT_TICK_ADDR as ulong*;
+    return *tick_ptr;
+}
+
+/// スケジュール要求フラグを確認＆クリア
+export ulong pit_check_resched() {
+    ulong* sched_ptr = PIT_NEED_SCHED_ADDR as ulong*;
+    ulong val = *sched_ptr;
+    if (val != 0) {
+        *sched_ptr = 0;
+    }
+    return val;
+}

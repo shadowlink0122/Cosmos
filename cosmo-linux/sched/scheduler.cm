@@ -11,6 +11,7 @@
 import ../include/types;
 import ../include/config;
 import ../include/scheduler;
+import ../arch/x86_64/context;
 import ../drivers/serial;
 import ../lib/printk;
 
@@ -146,5 +147,92 @@ export void scheduler_init(RoundRobinScheduler* sched, Process* idle, SerialPort
     sched->add_process(idle);
     sched->current_pid = idle->pid;
 
+    // グローバルスケジューラポインタを固定メモリに保存
+    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+    *sched_ptr_addr = sched as ulong;
+
+    // 現在プロセスポインタを保存
+    ulong* cur_proc_addr = CURRENT_PROC_ADDR as ulong*;
+    *cur_proc_addr = idle as ulong;
+
     pr_info(w, "Scheduler initialized (Round-Robin)" as void*);
 }
+
+// ============================================================
+// グローバルスケジューラ固定メモリ
+// ============================================================
+
+/// スケジューラポインタ配置アドレス
+const PhysAddr SCHED_PTR_ADDR = 0x91000;
+
+/// 現在プロセスポインタ配置アドレス
+const PhysAddr CURRENT_PROC_ADDR = 0x91008;
+
+// ============================================================
+// グローバルスケジュール関数
+// ============================================================
+
+/// 現在のプロセスポインタを取得
+export Process* current_process() {
+    ulong* addr = CURRENT_PROC_ADDR as ulong*;
+    return (*addr) as Process*;
+}
+
+/// プロセスをスケジューラに登録
+export void sched_add(Process* proc) {
+    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+    RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+    sched->add_process(proc);
+}
+
+/// スケジュール実行（コンテキストスイッチ含む）
+export void schedule() {
+    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+    RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+
+    // cur_pidをpick_next()の前に保存（pick_nextがcurrent_pidを更新するため）
+    Pid cur_pid = sched->current_pid;
+
+    // 次のプロセスを選択
+    Pid next_pid = sched->pick_next();
+
+    // 同じプロセスなら何もしない
+    if (next_pid == cur_pid) { return; }
+
+    // 次のプロセスのポインタを取得
+    ulong next_proc_addr = sched->get_proc(sched->current_idx);
+    if (next_proc_addr == 0) { return; }
+
+    Process* prev = current_process();
+    Process* next = next_proc_addr as Process*;
+
+    // プロセス状態を更新
+    if (prev->state == TASK_RUNNING) {
+        prev->state = TASK_READY;
+    }
+    next->state = TASK_RUNNING;
+
+    // タイムスライスをリセット
+    next->time_slice = 10;
+
+    // 現在プロセスを更新
+    ulong* cur_proc = CURRENT_PROC_ADDR as ulong*;
+    *cur_proc = next as ulong;
+
+    // コンテキストスイッチ実行
+    context_switch(prev, next);
+}
+
+/// タイマーtick処理
+export void sched_tick() {
+    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+    RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+    sched->tick();
+
+    // タイムスライスが0になったらスケジュール要求
+    Process* cur = current_process();
+    if (cur->time_slice == 0) {
+        schedule();
+    }
+}
+

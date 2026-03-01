@@ -1,0 +1,88 @@
+//! platform: baremetal-x86
+// cosmo-linux::arch::x86_64::context - コンテキストスイッチ
+//
+// プロセス間のCPUレジスタ切り替え。
+// callee-saved レジスタ (rbx, rbp, r12-r15, rsp) を保存・復帰。
+//
+// 参照: linux/arch/x86/kernel/process_64.c
+
+import ../../include/types;
+import ../../include/scheduler;
+
+// ============================================================
+// コンテキストスイッチ実装
+// ============================================================
+
+/// 2つのProcess間でコンテキストスイッチを実行
+/// prev(RDI): 現在のプロセスのProcessポインタ
+/// next(RSI): 次のプロセスのProcessポインタ
+///
+/// Process構造体レイアウト:
+///   +0:  pid (8B)
+///   +8:  parent_pid (8B)
+///   +16: state (8B)
+///   +24: kernel_stack (8B)
+///   +32: page_table (8B)
+///   +40: exit_code (8B)
+///   +48: context.rsp (8B)
+///   +56: context.rbp (8B)
+///   +64: context.rbx (8B)
+///   +72: context.r12 (8B)
+///   +80: context.r13 (8B)
+///   +88: context.r14 (8B)
+///   +96: context.r15 (8B)
+///   +104: context.rip (8B)
+///   +112: context.rflags (8B)
+export void context_switch(Process* prev, Process* next) {
+    __asm__(`
+        // prev_ctx = RDI + 48 (CpuContextオフセット)
+        // next_ctx = RSI + 48
+        movq ${r:prev}, %rdi;
+        addq $$48, %rdi;
+        movq ${r:next}, %rsi;
+        addq $$48, %rsi;
+
+        // === 現在のレジスタを prev->context に保存 ===
+        movq %rsp, (%rdi);
+        movq %rbp, 8(%rdi);
+        movq %rbx, 16(%rdi);
+        movq %r12, 24(%rdi);
+        movq %r13, 32(%rdi);
+        movq %r14, 40(%rdi);
+        movq %r15, 48(%rdi);
+
+        // === next->context からレジスタ復帰 ===
+        movq 48(%rsi), %r15;
+        movq 40(%rsi), %r14;
+        movq 32(%rsi), %r13;
+        movq 24(%rsi), %r12;
+        movq 16(%rsi), %rbx;
+        movq 8(%rsi), %rbp;
+        movq (%rsi), %rsp;
+
+        // 新しいスタックからリターン（新タスクのエントリポイントに遷移）
+        ret
+    `);
+}
+
+/// 新しいカーネルタスクのコンテキストを初期化
+/// stack_top: カーネルスタックの先頭アドレス
+/// entry_fn: タスクのエントリポイント関数アドレス
+export void init_task_context(Process* proc, ulong stack_top, ulong entry_fn) {
+    // スタック上にリターンアドレスを積む
+    // context_switchがRSPを復帰→retすると、このアドレスに遷移する
+    ulong sp = stack_top - 8;
+    ulong* ret_addr = sp as ulong*;
+    *ret_addr = entry_fn;
+
+    // コンテキスト初期化
+    proc->context.rsp = sp;
+    proc->context.rbp = sp;  // RBPもRSPと同じ値に設定
+    proc->context.rbx = 0;
+    proc->context.r12 = 0;
+    proc->context.r13 = 0;
+    proc->context.r14 = 0;
+    proc->context.r15 = 0;
+    proc->context.rip = entry_fn;
+    proc->context.rflags = 0x200;  // IF=1（割り込み有効）
+}
