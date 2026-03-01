@@ -15,31 +15,28 @@ import ../include/config;
 import ../include/writer;
 
 // ============================================================
-// I/O ポート操作（フリー関数）
+// I/O ポート操作（ulong引数 — Cmの小型引数ABIバグ回避）
 // ============================================================
 
 /// I/Oポートにバイトを出力
-export void outb(IoPort port, utiny value) {
-    ulong p = port as ulong;
-    ulong v = value as ulong;
+export void outb(ulong port, ulong value) {
     __asm__(`
-        movq ${r:v}, %rax;
-        movq ${r:p}, %rdx;
+        movq ${r:value}, %rax;
+        movq ${r:port}, %rdx;
         outb %al, %dx
     `);
 }
 
 /// I/Oポートからバイトを入力
-export utiny inb(IoPort port) {
-    ulong p = port as ulong;
+export ulong inb(ulong port) {
     ulong result = 0;
     __asm__(`
-        movq ${r:p}, %rdx;
+        movq ${r:port}, %rdx;
         xorq %rax, %rax;
         inb %dx, %al;
         movq %rax, ${=r:result}
     `);
-    return result as utiny;
+    return result;
 }
 
 // ============================================================
@@ -48,7 +45,7 @@ export utiny inb(IoPort port) {
 
 /// UART 16550A シリアルポート
 export struct SerialPort {
-    IoPort port;    // ベースI/Oポートアドレス
+    ulong port;    // ベースI/Oポートアドレス (ulong化)
 }
 
 // ============================================================
@@ -57,37 +54,37 @@ export struct SerialPort {
 
 impl SerialPort {
     /// コンストラクタ: ポート初期化（115200bps, 8N1, FIFO有効）
-    overload self(IoPort port_addr) {
+    overload self(ulong port_addr) {
         self.port = port_addr;
 
         // 割り込み無効化
-        outb(port_addr + 1 as ushort, 0x00 as utiny);
+        outb(port_addr + 1, 0x00);
         // DLAB設定 → ボーレート除数設定
-        outb(port_addr + 3 as ushort, 0x80 as utiny);
-        outb(port_addr, 0x01 as utiny);       // 除数低位 (115200bps)
-        outb(port_addr + 1 as ushort, 0x00 as utiny);   // 除数高位
+        outb(port_addr + 3, 0x80);
+        outb(port_addr, 0x01);       // 除数低位 (115200bps)
+        outb(port_addr + 1, 0x00);   // 除数高位
         // 8N1: 8ビット, パリティなし, 1ストップビット
-        outb(port_addr + 3 as ushort, 0x03 as utiny);
+        outb(port_addr + 3, 0x03);
         // FIFO有効化（14バイトトリガ）
-        outb(port_addr + 2 as ushort, 0xC7 as utiny);
+        outb(port_addr + 2, 0xC7);
         // DTR + RTS + OUT2
-        outb(port_addr + 4 as ushort, 0x0B as utiny);
+        outb(port_addr + 4, 0x0B);
         // ループバックテスト
-        outb(port_addr + 4 as ushort, 0x1E as utiny);
-        outb(port_addr, 0xAE as utiny);
-        utiny test_val = inb(port_addr);
+        outb(port_addr + 4, 0x1E);
+        outb(port_addr, 0xAE);
+        ulong test_val = inb(port_addr);
         // 通常モードに戻す
-        outb(port_addr + 4 as ushort, 0x0F as utiny);
+        outb(port_addr + 4, 0x0F);
     }
 
     /// 送信バッファが空になるまで待機
     void wait_ready() {
-        IoPort lsr = self.port + 5 as ushort;
-        utiny status = inb(lsr);
-        ulong ready = (status as ulong) & 0x20;
+        ulong lsr_port = self.port + 5;
+        ulong status = inb(lsr_port);
+        ulong ready = status & 0x20;
         while (ready == 0) {
-            status = inb(lsr);
-            ready = (status as ulong) & 0x20;
+            status = inb(lsr_port);
+            ready = status & 0x20;
         }
     }
 }
@@ -100,7 +97,7 @@ impl SerialPort for Writer {
     /// 1文字出力
     void putc(AsciiChar ch) {
         self.wait_ready();
-        outb(self.port, ch);
+        outb(self.port, ch as ulong);
     }
 
     /// NULL終端文字列出力
@@ -155,12 +152,12 @@ impl SerialPort for Writer {
 
 /// QEMU debugcon (isa-debugcon, ポート0xE9)
 export struct DebugPort {
-    IoPort port;
+    ulong port;
 }
 
 impl DebugPort {
     /// コンストラクタ
-    overload self(IoPort port_addr) {
+    overload self(ulong port_addr) {
         self.port = port_addr;
     }
 }
@@ -168,7 +165,7 @@ impl DebugPort {
 /// DebugPort の Writer インターフェース実装
 impl DebugPort for Writer {
     void putc(AsciiChar ch) {
-        outb(self.port, ch);
+        outb(self.port, ch as ulong);
     }
 
     void puts(void* data) {

@@ -14,26 +14,26 @@ export const ulong VERSION_MINOR = 1;
 export const ulong VERSION_PATCH = 0;
 
 // ============================================================
-// I/Oポート定数（IoPort = ushort）
+// I/Oポート定数（ulong化 — Cm ABI互換）
 // ============================================================
 
 /// COM1 シリアルポート
-export const IoPort COM1 = 0x3F8 as ushort;
+export const ulong COM1 = 0x3F8;
 
 /// QEMUデバッグコンソール
-export const IoPort DEBUGCON = 0xE9 as ushort;
+export const ulong DEBUGCON = 0xE9;
 
 /// QEMU isa-debug-exit ポート
-export const IoPort QEMU_EXIT_PORT = 0xF4 as ushort;
+export const ulong QEMU_EXIT_PORT = 0xF4;
 
 // ============================================================
 // PIC (8259A) 定数
 // ============================================================
 
-export const IoPort PIC1_CMD  = 0x20 as ushort;
-export const IoPort PIC1_DATA = 0x21 as ushort;
-export const IoPort PIC2_CMD  = 0xA0 as ushort;
-export const IoPort PIC2_DATA = 0xA1 as ushort;
+export const ulong PIC1_CMD  = 0x20;
+export const ulong PIC1_DATA = 0x21;
+export const ulong PIC2_CMD  = 0xA0;
+export const ulong PIC2_DATA = 0xA1;
 
 /// IRQリマップ先ベクタ
 export const Vector IRQ_BASE = 32;
@@ -42,8 +42,8 @@ export const Vector IRQ_BASE = 32;
 // PIT (8254) 定数
 // ============================================================
 
-export const IoPort PIT_CH0 = 0x40 as ushort;
-export const IoPort PIT_CMD = 0x43 as ushort;
+export const ulong PIT_CH0 = 0x40;
+export const ulong PIT_CMD = 0x43;
 export const ulong PIT_FREQ = 1193182;
 export const ulong PIT_HZ   = 100;
 

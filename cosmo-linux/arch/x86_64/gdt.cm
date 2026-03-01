@@ -13,11 +13,11 @@ import ../../lib/printk;
 // セグメントセレクタ定数
 // ============================================================
 
-export const Selector KERNEL_CS = 0x08 as ushort;
-export const Selector KERNEL_DS = 0x10 as ushort;
-export const Selector USER_CS   = 0x18 as ushort;
-export const Selector USER_DS   = 0x20 as ushort;
-export const Selector TSS_SEL   = 0x28 as ushort;
+export const ulong KERNEL_CS = 0x08;
+export const ulong KERNEL_DS = 0x10;
+export const ulong USER_CS   = 0x18;
+export const ulong USER_DS   = 0x20;
+export const ulong TSS_SEL   = 0x28;
 
 // GDTエントリ数（TSS用2スロット含む）
 const ulong GDT_ENTRIES = 7;

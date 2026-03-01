@@ -29,6 +29,7 @@ LD_FLAGS = -T linker.ld -nostdlib -static -z noexecstack
 # ============================================================
 
 BUILD = ../.tmp/cosmo-linux
+ELF64 = $(BUILD)/cosmo-linux64.elf
 ELF   = $(BUILD)/cosmo-linux.elf
 
 # ソース
@@ -70,9 +71,13 @@ $(KERNEL_OBJ): $(CM_SOURCES)
 	@echo "[CM]   $(KERNEL_SRC)"
 	$(CM) compile $(CM_FLAGS) -o $@ $(KERNEL_SRC)
 
-$(ELF): $(BOOT_OBJ) $(KERNEL_OBJ)
+$(ELF64): $(BOOT_OBJ) $(KERNEL_OBJ)
 	@echo "[LD]   → $@"
 	$(LD) $(LD_FLAGS) -o $@ $(BOOT_OBJ) $(KERNEL_OBJ)
+
+$(ELF): $(ELF64)
+	@echo "[CONV] elf64 → elf32 (QEMU Multiboot互換)"
+	x86_64-elf-objcopy -O elf32-i386 $(ELF64) $(ELF)
 	@echo "✓ ビルド完了: $@"
 
 # ============================================================

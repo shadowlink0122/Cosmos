@@ -1,5 +1,5 @@
 /* Cosmo Linux リンカスクリプト
- * 1MiBベース（Multiboot2仕様）
+ * 64bit ELF → 最終的にobjcopyで32bit ELFに変換
  * 参照: linux/arch/x86/kernel/vmlinux.lds.S
  */
 
@@ -47,5 +47,8 @@ SECTIONS
     {
         *(.comment)
         *(.note.*)
+        *(.eh_frame*)
+        *(.pdata)
+        *(.xdata)
     }
 }

@@ -65,11 +65,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
     pr_info(&serial, "start_kernel() entered" as void*);
     debug.println("[BOOT] start_kernel entered" as void*);
 
-    // === 2. Multiboot2マジック検証 ===
-    if (mb2_magic != MB2_MAGIC) {
-        pr_err(&serial, "Invalid Multiboot2 magic!" as void*);
+    // === 2. Multiboot1マジック検証 ===
+    if (mb2_magic != MB_MAGIC) {
+        pr_err(&serial, "Invalid Multiboot1 magic!" as void*);
         serial.puts("  Expected: " as void*);
-        serial.print_hex(MB2_MAGIC);
+        serial.print_hex(MB_MAGIC);
         serial.println("" as void*);
         serial.puts("  Got:      " as void*);
         serial.print_hex(mb2_magic);
@@ -89,8 +89,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
         total_memory: 0
     };
 
-    if (mb2_magic == MB2_MAGIC) {
-        mb2_parse(mb2_info, &boot_info, &serial);
+    if (mb2_magic == MB_MAGIC) {
+        mb_parse(mb2_info, &boot_info, &serial);
     }
 
     // === 4. アーキテクチャ初期化 ===
@@ -149,7 +149,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     debug.println("[BOOT] entering idle loop" as void*);
 
     // QEMUテスト用: isa-debug-exit で正常終了
-    outb(QEMU_EXIT_PORT, 0 as utiny);
+    outb(QEMU_EXIT_PORT, 0);
 
     // idle loop
     while (true) {

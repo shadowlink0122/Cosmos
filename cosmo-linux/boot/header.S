@@ -1,8 +1,8 @@
 ; =============================================================================
-; Cosmo Linux - Multiboot2 ブートヘッダ + Long Mode 遷移
+; Cosmo Linux - Multiboot1 ブートヘッダ + Long Mode 遷移
 ;
-; GRUB2/qemuがMultiboot2ヘッダを検出 → 32bit保護モード → 64bit Long Mode
-; → Cm言語の start_kernel() を呼び出す。
+; QEMUが直接 -kernel でロード可能なMultiboot1形式。
+; 32bit保護モード → 64bit Long Mode → Cm言語の main() を呼び出す。
 ;
 ; 参照: linux/arch/x86/boot/header.S
 ; =============================================================================
@@ -10,31 +10,20 @@
 bits 32
 
 ; =============================================================================
-; Multiboot2 ヘッダ
+; Multiboot1 ヘッダ
 ; =============================================================================
 section .multiboot_header
-align 8
+align 4
+
+MULTIBOOT_MAGIC   equ 0x1BADB002
+; ビット0: アラインメント, ビット1: メモリ情報要求
+MULTIBOOT_FLAGS   equ 0x03
+MULTIBOOT_CHECKSUM equ -(MULTIBOOT_MAGIC + MULTIBOOT_FLAGS)
 
 header_start:
-    dd 0xE85250D6                 ; Multiboot2 マジック
-    dd 0                          ; アーキテクチャ: i386
-    dd header_end - header_start  ; ヘッダ長
-    dd -(0xE85250D6 + 0 + (header_end - header_start)) ; チェックサム
-
-    ; フレームバッファ要求タグ（オプション）
-    align 8
-    dw 5                          ; タグ: フレームバッファ
-    dw 1                          ; フラグ: optional
-    dd 20                         ; サイズ
-    dd 0                          ; 幅: 自動
-    dd 0                          ; 高さ: 自動
-    dd 32                         ; BPP: 32
-
-    ; 終端タグ
-    align 8
-    dw 0
-    dw 0
-    dd 8
+    dd MULTIBOOT_MAGIC
+    dd MULTIBOOT_FLAGS
+    dd MULTIBOOT_CHECKSUM
 header_end:
 
 ; =============================================================================
@@ -47,9 +36,10 @@ extern main
 _start:
     cli
 
-    ; Multiboot2情報を保存
-    mov edi, ebx                  ; RDI = MB2 info
-    mov esi, eax                  ; RSI = MB2 magic
+    ; Multiboot1情報を保存
+    ; EAX = マジック (0x2BADB002), EBX = Multiboot info構造体ポインタ
+    mov edi, ebx                  ; RDI = MB info
+    mov esi, eax                  ; RSI = MB magic
 
     ; ページテーブル初期化 (0-1GiB アイデンティティマッピング)
     ; PML4[0] → PDPT
@@ -131,8 +121,8 @@ long_mode_entry:
     mov rsp, stack_top
 
     ; Cm エントリ呼出し
-    movzx rdi, edi                ; MB2 info (32→64bit)
-    movzx rsi, esi                ; MB2 magic
+    movzx rdi, edi                ; MB info (32→64bit)
+    movzx rsi, esi                ; MB magic
     call main
 
 .halt:
