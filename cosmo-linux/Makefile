@@ -12,7 +12,7 @@
 
 CM ?= cm
 NASM ?= nasm
-LD ?= ld
+LD := x86_64-elf-ld
 QEMU ?= qemu-system-x86_64
 
 # Cmフラグ（baremetalターゲット = ELF出力）
