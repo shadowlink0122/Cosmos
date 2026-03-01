@@ -1,0 +1,226 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::keyboard - PS/2 キーボードドライバ
+//
+// IRQ1（ベクタ33）でスキャンコードを受信し、
+// ASCII変換後にリングバッファに格納する。
+//
+// 参照: linux/drivers/input/keyboard/atkbd.c
+
+import ../include/types;
+import ../include/config;
+import ../arch/x86_64/idt;
+import ../drivers/serial;
+import ../lib/printk;
+
+// ============================================================
+// キーボード定数
+// ============================================================
+
+/// PS/2データポート
+const ulong KBD_DATA = 0x60;
+
+/// キーバッファ（固定メモリ、64バイトリングバッファ）
+const PhysAddr KBD_BUF_ADDR  = 0x93000;  // バッファ本体 (64B)
+const PhysAddr KBD_HEAD_ADDR = 0x93040;  // 読み取り位置
+const PhysAddr KBD_TAIL_ADDR = 0x93048;  // 書き込み位置
+const ulong KBD_BUF_SIZE = 64;
+
+// ============================================================
+// スキャンコード → ASCII 変換テーブル (US配列, Set 1)
+// ============================================================
+
+/// スキャンコードテーブル格納アドレス（128エントリ, 各1バイト）
+const PhysAddr SCANCODE_TABLE_ADDR = 0x93100;
+
+/// スキャンコードテーブルを初期化
+void init_scancode_table() {
+    utiny* tbl = SCANCODE_TABLE_ADDR as utiny*;
+
+    // 全エントリをゼロ初期化
+    ulong i = 0;
+    while (i < 128) {
+        *(tbl + i) = 0;
+        i = i + 1;
+    }
+
+    // 主要キーのマッピング (Scancode Set 1, make code)
+    *(tbl + 0x02) = 49;   // '1'
+    *(tbl + 0x03) = 50;   // '2'
+    *(tbl + 0x04) = 51;   // '3'
+    *(tbl + 0x05) = 52;   // '4'
+    *(tbl + 0x06) = 53;   // '5'
+    *(tbl + 0x07) = 54;   // '6'
+    *(tbl + 0x08) = 55;   // '7'
+    *(tbl + 0x09) = 56;   // '8'
+    *(tbl + 0x0A) = 57;   // '9'
+    *(tbl + 0x0B) = 48;   // '0'
+    *(tbl + 0x0C) = 45;   // '-'
+    *(tbl + 0x0D) = 61;   // '='
+
+    *(tbl + 0x0E) = 8;    // Backspace
+    *(tbl + 0x0F) = 9;    // Tab
+
+    *(tbl + 0x10) = 113;  // 'q'
+    *(tbl + 0x11) = 119;  // 'w'
+    *(tbl + 0x12) = 101;  // 'e'
+    *(tbl + 0x13) = 114;  // 'r'
+    *(tbl + 0x14) = 116;  // 't'
+    *(tbl + 0x15) = 121;  // 'y'
+    *(tbl + 0x16) = 117;  // 'u'
+    *(tbl + 0x17) = 105;  // 'i'
+    *(tbl + 0x18) = 111;  // 'o'
+    *(tbl + 0x19) = 112;  // 'p'
+    *(tbl + 0x1A) = 91;   // '['
+    *(tbl + 0x1B) = 93;   // ']'
+
+    *(tbl + 0x1C) = 10;   // Enter
+
+    *(tbl + 0x1E) = 97;   // 'a'
+    *(tbl + 0x1F) = 115;  // 's'
+    *(tbl + 0x20) = 100;  // 'd'
+    *(tbl + 0x21) = 102;  // 'f'
+    *(tbl + 0x22) = 103;  // 'g'
+    *(tbl + 0x23) = 104;  // 'h'
+    *(tbl + 0x24) = 106;  // 'j'
+    *(tbl + 0x25) = 107;  // 'k'
+    *(tbl + 0x26) = 108;  // 'l'
+    *(tbl + 0x27) = 59;   // ';'
+    *(tbl + 0x28) = 39;   // '''
+    *(tbl + 0x29) = 96;   // '`'
+
+    *(tbl + 0x2B) = 92;   // '\'
+
+    *(tbl + 0x2C) = 122;  // 'z'
+    *(tbl + 0x2D) = 120;  // 'x'
+    *(tbl + 0x2E) = 99;   // 'c'
+    *(tbl + 0x2F) = 118;  // 'v'
+    *(tbl + 0x30) = 98;   // 'b'
+    *(tbl + 0x31) = 110;  // 'n'
+    *(tbl + 0x32) = 109;  // 'm'
+    *(tbl + 0x33) = 44;   // ','
+    *(tbl + 0x34) = 46;   // '.'
+    *(tbl + 0x35) = 47;   // '/'
+
+    *(tbl + 0x39) = 32;   // Space
+}
+
+// ============================================================
+// キーバッファ操作
+// ============================================================
+
+/// キーバッファにASCIIコードを追加
+void kbd_buf_push(ulong ascii) {
+    ulong* tail_ptr = KBD_TAIL_ADDR as ulong*;
+    ulong tail = *tail_ptr;
+    ulong next_tail = (tail + 1) % KBD_BUF_SIZE;
+
+    // バッファフルチェック
+    ulong* head_ptr = KBD_HEAD_ADDR as ulong*;
+    if (next_tail == *head_ptr) { return; }  // バッファフル、ドロップ
+
+    utiny* buf = KBD_BUF_ADDR as utiny*;
+    *(buf + tail) = ascii & 0xFF;
+    *tail_ptr = next_tail;
+}
+
+/// キーバッファからASCIIコードを取得（0=空）
+export ulong kbd_getchar() {
+    ulong* head_ptr = KBD_HEAD_ADDR as ulong*;
+    ulong* tail_ptr = KBD_TAIL_ADDR as ulong*;
+    ulong head = *head_ptr;
+    ulong tail = *tail_ptr;
+
+    if (head == tail) { return 0; }  // バッファ空
+
+    utiny* buf = KBD_BUF_ADDR as utiny*;
+    ulong ch = *(buf + head);
+    *head_ptr = (head + 1) % KBD_BUF_SIZE;
+    return ch;
+}
+
+// ============================================================
+// IRQ1 ハンドラ
+// ============================================================
+
+/// PS/2 キーボード IRQ1 ハンドラ (naked ASM)
+/// スキャンコードを読み取り、ASCIIに変換してバッファに格納
+export void kbd_irq_handler() {
+    __asm__(`
+        pushq %rax;
+        pushq %rbx;
+        pushq %rcx;
+        pushq %rdx;
+        pushq %rdi;
+
+        // スキャンコード読み取り
+        xorq %rax, %rax;
+        inb $$0x60, %al;
+
+        // ブレークコード（bit 7 set）は無視
+        testb $$0x80, %al;
+        jnz 2f;
+
+        // スキャンコード → ASCII変換
+        // テーブルアドレス = 0x93100
+        movq $$0x93100, %rbx;
+        andq $$0x7F, %rax;
+        movzbq (%rbx,%rax,1), %rcx;
+        testq %rcx, %rcx;
+        jz 2f;
+
+        // バッファに格納
+        // tail = *(0x93048)
+        movq $$0x93048, %rdi;
+        movq (%rdi), %rax;
+        // next_tail = (tail + 1) % 64
+        movq %rax, %rdx;
+        addq $$1, %rdx;
+        andq $$63, %rdx;
+        // head = *(0x93040)
+        movq $$0x93040, %rbx;
+        cmpq (%rbx), %rdx;
+        je 2f;
+        // buf[tail] = ascii
+        movq $$0x93000, %rbx;
+        movb %cl, (%rbx,%rax,1);
+        // *tail = next_tail
+        movq %rdx, (%rdi);
+
+        2:;
+        // PIC EOI
+        movb $$0x20, %al;
+        outb %al, $$0x20;
+
+        popq %rdi;
+        popq %rdx;
+        popq %rcx;
+        popq %rbx;
+        popq %rax;
+        iretq
+    `);
+}
+
+// ============================================================
+// キーボード初期化
+// ============================================================
+
+/// PS/2キーボードを初期化
+export void kbd_init(SerialPort* w) {
+    // スキャンコードテーブル初期化
+    init_scancode_table();
+
+    // キーバッファ初期化
+    ulong* head_ptr = KBD_HEAD_ADDR as ulong*;
+    *head_ptr = 0;
+    ulong* tail_ptr = KBD_TAIL_ADDR as ulong*;
+    *tail_ptr = 0;
+
+    // IRQ1ハンドラ登録（ベクタ33 = IRQ_BASE + 1）
+    idt_set_gate(33, kbd_irq_handler as ulong, GATE_INT);
+
+    // PICでIRQ1のマスクを解除
+    ulong mask = inb(PIC1_DATA);
+    outb(PIC1_DATA, mask & 0xFD);  // bit 1 = IRQ1
+
+    pr_info(w, "PS/2 keyboard initialized (IRQ1 -> vector 33)" as void*);
+}

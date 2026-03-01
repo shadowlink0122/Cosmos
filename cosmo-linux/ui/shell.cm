@@ -1,0 +1,484 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell - カーネルシェル
+//
+// VGA直接バッファ操作 + シリアル出力 + キーボード入力
+// Cm言語のutiny*ポインタ読み取りバグを回避するため全て
+// インラインASM (movzbl) でバイト読み取りを行う
+//
+// 参照: linux/kernel/sys.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../drivers/serial;
+import ../drivers/pit;
+import ../drivers/keyboard;
+import ../sched/scheduler;
+import ../mm/pmm;
+import ../lib/printk;
+
+// ============================================================
+// シェル用固定メモリ
+// ============================================================
+
+const PhysAddr SHELL_SERIAL_ADDR = 0x95008;
+const PhysAddr SHELL_PMM_ADDR = 0x95010;
+
+/// VGA直接操作用状態
+const PhysAddr SH_VGA_COL_ADDR   = 0x95020;
+const PhysAddr SH_VGA_ROW_ADDR   = 0x95028;
+const PhysAddr SH_VGA_COLOR_ADDR = 0x95030;
+
+/// コマンドバッファ
+const PhysAddr CMD_BUF_ADDR = 0x94000;
+const PhysAddr CMD_LEN_ADDR = 0x94080;
+const ulong CMD_BUF_SIZE = 128;
+
+/// VGAバッファ
+const PhysAddr VGA_BUF = 0xB8000;
+const ulong VGA_COLS = 80;
+const ulong VGA_ROWS = 25;
+
+// ============================================================
+// バイト読み取りヘルパー（Cm utinyバグ回避）
+// ============================================================
+
+/// アドレスから1バイト読み取り
+ulong read_byte(ulong addr) {
+    ulong val = 0;
+    __asm__(`
+        movq ${r:addr}, %r10;
+        xorq %rax, %rax;
+        movzbl (%r10), %eax;
+        movq %rax, ${=r:val}
+    `);
+    return val;
+}
+
+/// アドレスに1バイト書き込み
+void write_byte(ulong addr, ulong val) {
+    __asm__(`
+        movq ${r:addr}, %r10;
+        movq ${r:val}, %rax;
+        movb %al, (%r10)
+    `);
+}
+
+// ============================================================
+// VGA直接バッファ操作
+// ============================================================
+
+/// 指定位置に文字を書き込み
+void vga_write_at(ulong row, ulong col, ulong ch, ulong color) {
+    ulong offset = (row * VGA_COLS + col) * 2;
+    write_byte(VGA_BUF + offset, ch & 0xFF);
+    write_byte(VGA_BUF + offset + 1, color & 0xFF);
+}
+
+/// カーソル更新
+void vga_update_cursor() {
+    ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+    ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+    ulong pos = (*row_ptr) * VGA_COLS + (*col_ptr);
+    outb(0x3D4, 0x0E);
+    outb(0x3D5, (pos >> 8) & 0xFF);
+    outb(0x3D4, 0x0F);
+    outb(0x3D5, pos & 0xFF);
+}
+
+/// 1行スクロール
+void vga_scroll() {
+    ulong r = 1;
+    while (r < VGA_ROWS) {
+        ulong c = 0;
+        while (c < VGA_COLS) {
+            ulong src_off = (r * VGA_COLS + c) * 2;
+            ulong dst_off = ((r - 1) * VGA_COLS + c) * 2;
+            ulong ch_val = read_byte(VGA_BUF + src_off);
+            ulong at_val = read_byte(VGA_BUF + src_off + 1);
+            write_byte(VGA_BUF + dst_off, ch_val);
+            write_byte(VGA_BUF + dst_off + 1, at_val);
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+    ulong c = 0;
+    while (c < VGA_COLS) {
+        vga_write_at(VGA_ROWS - 1, c, 32, *color_ptr);
+        c = c + 1;
+    }
+}
+
+/// 改行
+void vga_newline() {
+    ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+    ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+    *col_ptr = 0;
+    ulong row = *row_ptr + 1;
+    if (row >= VGA_ROWS) {
+        vga_scroll();
+        row = VGA_ROWS - 1;
+    }
+    *row_ptr = row;
+}
+
+/// 1文字出力
+void vga_putc(ulong ch) {
+    ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+    ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+    ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+
+    if (ch == 10) {
+        vga_newline();
+    } else if (ch == 8) {
+        ulong col = *col_ptr;
+        if (col > 0) {
+            *col_ptr = col - 1;
+            vga_write_at(*row_ptr, col - 1, 32, *color_ptr);
+        }
+    } else if (ch >= 32) {
+        vga_write_at(*row_ptr, *col_ptr, ch, *color_ptr);
+        ulong col = *col_ptr + 1;
+        if (col >= VGA_COLS) {
+            vga_newline();
+        } else {
+            *col_ptr = col;
+        }
+    }
+    vga_update_cursor();
+}
+
+/// 文字列出力
+void vga_puts(void* msg) {
+    ulong addr = msg as ulong;
+    ulong i = 0;
+    while (true) {
+        ulong byte_val = read_byte(addr + i);
+        if (byte_val == 0) { return; }
+        vga_putc(byte_val);
+        i = i + 1;
+    }
+}
+
+/// 画面クリア
+void vga_clear_screen() {
+    ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+    ulong r = 0;
+    while (r < VGA_ROWS) {
+        ulong c = 0;
+        while (c < VGA_COLS) {
+            vga_write_at(r, c, 32, *color_ptr);
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+    ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+    *col_ptr = 0;
+    *row_ptr = 0;
+    vga_update_cursor();
+}
+
+// ============================================================
+// シェル出力ヘルパー（VGA + シリアル同時出力）
+// ============================================================
+
+void sh_putc(ulong ch) {
+    vga_putc(ch);
+    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+    SerialPort* ser = (*ser_ptr) as SerialPort*;
+    ser->putc(ch);
+}
+
+void sh_print(void* msg) {
+    vga_puts(msg);
+    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+    SerialPort* ser = (*ser_ptr) as SerialPort*;
+    ser->puts(msg);
+}
+
+void sh_println(void* msg) {
+    sh_print(msg);
+    sh_putc(10);
+}
+
+void sh_set_color(ulong fg, ulong bg) {
+    ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+    *color_ptr = ((bg & 0x0F) << 4) | (fg & 0x0F);
+}
+
+void sh_print_dec(ulong value) {
+    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+    SerialPort* ser = (*ser_ptr) as SerialPort*;
+    if (value == 0) {
+        vga_putc(48);
+        ser->putc(48);
+        return;
+    }
+    ulong buf0 = 0; ulong buf1 = 0; ulong buf2 = 0; ulong buf3 = 0;
+    ulong buf4 = 0; ulong buf5 = 0; ulong buf6 = 0; ulong buf7 = 0;
+    ulong buf8 = 0; ulong buf9 = 0;
+    ulong count = 0;
+    ulong tmp = value;
+    while (tmp != 0) {
+        ulong digit = tmp % 10;
+        if (count == 0) { buf0 = digit; }
+        if (count == 1) { buf1 = digit; }
+        if (count == 2) { buf2 = digit; }
+        if (count == 3) { buf3 = digit; }
+        if (count == 4) { buf4 = digit; }
+        if (count == 5) { buf5 = digit; }
+        if (count == 6) { buf6 = digit; }
+        if (count == 7) { buf7 = digit; }
+        if (count == 8) { buf8 = digit; }
+        if (count == 9) { buf9 = digit; }
+        tmp = tmp / 10;
+        count = count + 1;
+    }
+    ulong i = count;
+    while (i != 0) {
+        i = i - 1;
+        ulong d = 0;
+        if (i == 0) { d = buf0; }
+        if (i == 1) { d = buf1; }
+        if (i == 2) { d = buf2; }
+        if (i == 3) { d = buf3; }
+        if (i == 4) { d = buf4; }
+        if (i == 5) { d = buf5; }
+        if (i == 6) { d = buf6; }
+        if (i == 7) { d = buf7; }
+        if (i == 8) { d = buf8; }
+        if (i == 9) { d = buf9; }
+        vga_putc(d + 48);
+        ser->putc(d + 48);
+    }
+}
+
+// ============================================================
+// 文字列比較（ASMベースのバイト読み取り）
+// ============================================================
+
+ulong streq(void* a_ptr, void* b_ptr) {
+    ulong a_addr = a_ptr as ulong;
+    ulong b_addr = b_ptr as ulong;
+    ulong i = 0;
+    while (true) {
+        ulong ca = read_byte(a_addr + i);
+        ulong cb = read_byte(b_addr + i);
+        if (ca != cb) { return 0; }
+        if (ca == 0) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ============================================================
+// 組み込みコマンド
+// ============================================================
+
+void cmd_help() {
+    sh_println("" as void*);
+    sh_println("=== Cosmo Linux Shell ===" as void*);
+    sh_println("  help    - Show this help" as void*);
+    sh_println("  ps      - List processes" as void*);
+    sh_println("  free    - Show memory usage" as void*);
+    sh_println("  uptime  - Show system uptime" as void*);
+    sh_println("  clear   - Clear screen" as void*);
+    sh_println("  reboot  - Reboot system" as void*);
+    sh_println("" as void*);
+}
+
+void cmd_ps() {
+    sh_println("" as void*);
+    sh_println("  PID  STATE    NAME" as void*);
+    sh_println("  ---  -------  --------" as void*);
+
+    ulong* sched_ptr_addr = 0x91000 as ulong*;
+    RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+
+    ulong i = 0;
+    while (i < sched->count) {
+        ulong proc_addr = sched->get_proc(i);
+        if (proc_addr != 0) {
+            Process* proc = proc_addr as Process*;
+            sh_print("  " as void*);
+            sh_print_dec(proc->pid as ulong);
+            sh_print("    " as void*);
+
+            if (proc->state == TASK_RUNNING) {
+                sh_print("RUNNING  " as void*);
+            }
+            if (proc->state == TASK_READY) {
+                sh_print("READY    " as void*);
+            }
+            if (proc->state == TASK_BLOCKED) {
+                sh_print("BLOCKED  " as void*);
+            }
+            if (proc->state == TASK_ZOMBIE) {
+                sh_print("ZOMBIE   " as void*);
+            }
+
+            if (proc->pid == 0) { sh_println("idle" as void*); }
+            if (proc->pid == 1) { sh_println("shell" as void*); }
+            if (proc->pid > 1) { sh_println("task" as void*); }
+        }
+        i = i + 1;
+    }
+    sh_println("" as void*);
+}
+
+void cmd_free() {
+    ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+    BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+    ulong total = pmm->total_pages;
+    ulong free_p = pmm->free_pages;
+    ulong used = total - free_p;
+    sh_println("" as void*);
+    sh_print("  Total:  " as void*);
+    sh_print_dec(total * 4);
+    sh_println(" KiB" as void*);
+    sh_print("  Used:   " as void*);
+    sh_print_dec(used * 4);
+    sh_println(" KiB" as void*);
+    sh_print("  Free:   " as void*);
+    sh_print_dec(free_p * 4);
+    sh_println(" KiB" as void*);
+    sh_println("" as void*);
+}
+
+void cmd_uptime() {
+    ulong ticks = pit_get_ticks();
+    ulong seconds = ticks / 100;
+    ulong minutes = seconds / 60;
+    ulong secs = seconds % 60;
+    sh_println("" as void*);
+    sh_print("  Uptime: " as void*);
+    sh_print_dec(minutes);
+    sh_print("m " as void*);
+    sh_print_dec(secs);
+    sh_println("s" as void*);
+    sh_print("  Ticks:  " as void*);
+    sh_print_dec(ticks);
+    sh_println("" as void*);
+    sh_println("" as void*);
+}
+
+void cmd_reboot() {
+    sh_println("Rebooting..." as void*);
+    outb(0x64, 0xFE);
+    __asm__(`cli; 1: hlt; jmp 1b`);
+}
+
+// ============================================================
+// シェルメインループ
+// ============================================================
+
+export void shell_main() {
+    // VGA画面クリア＆ウェルカムバナー
+    sh_set_color(7, 0);
+    vga_clear_screen();
+
+    sh_set_color(11, 0);
+    sh_println("========================================" as void*);
+    sh_println("  Cosmo Linux v0.1.0" as void*);
+    sh_println("  Written in Cm - A Linux reimagined" as void*);
+    sh_println("========================================" as void*);
+
+    sh_set_color(7, 0);
+    sh_println("" as void*);
+    sh_println("Welcome to Cosmo Linux!" as void*);
+    sh_println("Type 'help' for available commands." as void*);
+    sh_println("" as void*);
+
+    // コマンドバッファ長初期化
+    ulong* len_ptr = CMD_LEN_ADDR as ulong*;
+    *len_ptr = 0;
+
+    // REPLループ
+    while (true) {
+        // プロンプト表示
+        sh_set_color(10, 0);
+        sh_print("cosmo" as void*);
+        sh_set_color(7, 0);
+        sh_print("> " as void*);
+
+        // キー入力ループ
+        while (true) {
+            ulong ch = kbd_getchar();
+            if (ch == 0) {
+                __asm__(`hlt`);
+                continue;
+            }
+
+            if (ch == 10) {
+                // Enter: コマンド実行
+                sh_putc(10);
+                ulong len = *len_ptr;
+                // NUL終端
+                write_byte(CMD_BUF_ADDR + len, 0);
+
+                if (len > 0) {
+                    if (streq(CMD_BUF_ADDR as void*, "help" as void*) != 0) {
+                        cmd_help();
+                    } else if (streq(CMD_BUF_ADDR as void*, "ps" as void*) != 0) {
+                        cmd_ps();
+                    } else if (streq(CMD_BUF_ADDR as void*, "free" as void*) != 0) {
+                        cmd_free();
+                    } else if (streq(CMD_BUF_ADDR as void*, "uptime" as void*) != 0) {
+                        cmd_uptime();
+                    } else if (streq(CMD_BUF_ADDR as void*, "clear" as void*) != 0) {
+                        vga_clear_screen();
+                    } else if (streq(CMD_BUF_ADDR as void*, "reboot" as void*) != 0) {
+                        cmd_reboot();
+                    } else {
+                        sh_print("Unknown command: " as void*);
+                        sh_println(CMD_BUF_ADDR as void*);
+                    }
+                }
+
+                *len_ptr = 0;
+                break;
+            }
+
+            if (ch == 8) {
+                // Backspace
+                ulong len = *len_ptr;
+                if (len > 0) {
+                    *len_ptr = len - 1;
+                    vga_putc(8);
+                    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+                    SerialPort* ser = (*ser_ptr) as SerialPort*;
+                    ser->putc(8);
+                    ser->putc(32);
+                    ser->putc(8);
+                }
+                continue;
+            }
+
+            // 表示可能文字
+            ulong len = *len_ptr;
+            if (len < CMD_BUF_SIZE - 1) {
+                write_byte(CMD_BUF_ADDR + len, ch & 0xFF);
+                *len_ptr = len + 1;
+                sh_putc(ch);
+            }
+        }
+    }
+}
+
+/// シェル初期化
+export void shell_init(ulong serial_addr, ulong pmm_addr) {
+    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+    *ser_ptr = serial_addr;
+    ulong* pmm_ptr = SHELL_PMM_ADDR as ulong*;
+    *pmm_ptr = pmm_addr;
+    ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+    *col_ptr = 0;
+    ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+    *row_ptr = 0;
+    ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+    *color_ptr = 0x07;
+    ulong* len_ptr = CMD_LEN_ADDR as ulong*;
+    *len_ptr = 0;
+}

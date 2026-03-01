@@ -91,7 +91,6 @@ run: $(ELF)
 		-m $(QEMU_MEM) \
 		-smp 1 \
 		-serial stdio \
-		-display none \
 		-no-reboot
 
 test: $(ELF)
