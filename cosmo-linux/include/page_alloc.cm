@@ -1,0 +1,32 @@
+//! platform: baremetal
+// cosmo-linux::include::page_alloc - ページアロケータインターフェース
+//
+// 物理ページの割り当て・解放を抽象化する。
+// impl BuddyAllocator for PageAllocator で実装。
+//
+// 参照: linux/include/linux/gfp.h
+
+import ./types;
+
+// ============================================================
+// ページ割り当てフラグ
+// ============================================================
+
+/// 通常のカーネルメモリ
+export const ulong GFP_KERNEL = 0;
+
+/// ゼロクリア要求
+export const ulong GFP_ZERO = 1;
+
+// ============================================================
+// PageAllocator インターフェース
+// ============================================================
+
+/// 物理ページアロケータの共通インターフェース
+///
+/// alloc_pages — 2^order ページを連続確保し物理アドレスを返す
+/// free_pages  — alloc_pagesで取得した領域を解放
+export interface PageAllocator {
+    PhysAddr alloc_pages(ulong order);
+    void free_pages(PhysAddr addr, ulong order);
+}

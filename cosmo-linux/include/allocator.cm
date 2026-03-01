@@ -1,0 +1,22 @@
+//! platform: baremetal
+// cosmo-linux::include::allocator - カーネルメモリアロケータインターフェース
+//
+// 任意サイズのカーネル内部メモリ割り当てを抽象化する。
+// impl KernelHeap for Allocator で実装。
+//
+// 参照: linux/include/linux/slab.h
+
+import ./types;
+
+// ============================================================
+// Allocator インターフェース
+// ============================================================
+
+/// カーネルメモリアロケータの共通インターフェース
+///
+/// alloc — sizeバイトのメモリを割り当て、アドレスを返す
+/// free  — allocで取得したメモリを解放
+export interface Allocator {
+    VirtAddr alloc(Size size);
+    void free(VirtAddr ptr);
+}

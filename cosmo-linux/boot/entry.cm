@@ -13,6 +13,9 @@ import ../arch/x86_64/cpu;
 import ../arch/x86_64/gdt;
 import ../arch/x86_64/idt;
 import ./multiboot2;
+import ../mm/pmm;
+import ../mm/vmm;
+import ../mm/kmalloc;
 
 // ============================================================
 // カーネルバナー
@@ -92,10 +95,39 @@ export void start_kernel(ulong mb2_info, ulong mb2_magic) {
     idt_init(&serial);
     debug.println("[BOOT] arch initialized" as void*);
 
-    // === 5. システム情報出力 ===
+    // === 5. メモリ管理初期化 ===
+    pr_info(&serial, "Initializing memory management..." as void*);
+
+    // 5a. PMM (Buddy System)
+    BuddyAllocator pmm();
+    if (boot_info.mmap_count > 0) {
+        pmm_init(&pmm, boot_info.mmap_addr, boot_info.mmap_entry_size,
+                 boot_info.mmap_count, &serial);
+    } else {
+        pr_warn(&serial, "No memory map available, PMM skipped" as void*);
+    }
+
+    // 5b. VMM (現在のPML4を流用)
+    ulong cr3_val = 0;
+    __asm__(`
+        movq %cr3, %rax;
+        movq %rax, ${=r:cr3_val}
+    `);
+    PageTable vmm(cr3_val);
+    vmm_init(&vmm, &serial);
+
+    // 5c. カーネルヒープ
+    KernelHeap heap();
+    if (pmm.total_pages > 0) {
+        kmalloc_init(&heap, &pmm, &serial);
+    }
+
+    debug.println("[BOOT] memory management initialized" as void*);
+
+    // === 6. システム情報出力 ===
     print_system_info(&serial, &boot_info);
 
-    // === 6. 初期化完了 ===
+    // === 7. 初期化完了 ===
     serial.println("" as void*);
     pr_info(&serial, "Kernel initialization complete" as void*);
     pr_info(&serial, "Entering idle loop..." as void*);

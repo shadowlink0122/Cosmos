@@ -1,0 +1,98 @@
+//! platform: baremetal
+// cosmo-linux::mm::page_fault - ページフォルトハンドラ
+//
+// IDTベクタ14 (#PF) の拡張ハンドラ。
+// CR2（フォルト仮想アドレス）とエラーコードを解析し、
+// 適切な処理（Demand Paging等）を行う。
+//
+// 参照: linux/arch/x86/mm/fault.c
+
+import ../include/types;
+import ../include/config;
+import ../drivers/serial;
+import ../lib/printk;
+
+// ============================================================
+// ページフォルトエラーコードビット
+// ============================================================
+
+export const ulong PF_PRESENT   = 1;   // 0=非存在, 1=権限違反
+export const ulong PF_WRITE     = 2;   // 0=読み込み, 1=書き込み
+export const ulong PF_USER      = 4;   // 0=カーネル, 1=ユーザー
+export const ulong PF_RESERVED  = 8;   // 予約ビット違反
+export const ulong PF_INSN      = 16;  // 命令フェッチ
+
+// ============================================================
+// ページフォルト情報
+// ============================================================
+
+/// ページフォルト情報構造体
+export struct PageFaultInfo {
+    VirtAddr fault_addr;    // CR2: フォルトアドレス
+    ulong error_code;       // エラーコード
+    ulong is_present;       // 存在ビット
+    ulong is_write;         // 書き込みフォルトか
+    ulong is_user;          // ユーザーモードか
+}
+
+// ============================================================
+// ページフォルトハンドラ
+// ============================================================
+
+/// 拡張ページフォルトハンドラ（IDTから呼ばれる）
+export void handle_page_fault(ulong error_code) {
+    // CR2取得
+    VirtAddr cr2 = 0;
+    __asm__(`
+        movq %cr2, %rax;
+        movq %rax, ${=r:cr2}
+    `);
+
+    // フォルト情報構築
+    PageFaultInfo info = {
+        fault_addr: cr2,
+        error_code: error_code,
+        is_present: error_code & PF_PRESENT,
+        is_write: (error_code >> 1) & 1,
+        is_user: (error_code >> 2) & 1
+    };
+
+    // エラー出力
+    SerialPort serial(COM1);
+    serial.println("" as void*);
+    pr_err(&serial, "PAGE FAULT (#PF)" as void*);
+
+    serial.puts("  Address: " as void*);
+    serial.print_hex(info.fault_addr);
+    serial.println("" as void*);
+
+    serial.puts("  Error:   " as void*);
+    serial.print_hex(info.error_code);
+    serial.puts("  [" as void*);
+
+    if (info.is_present != 0) {
+        serial.puts("PROTECTION" as void*);
+    } else {
+        serial.puts("NOT-PRESENT" as void*);
+    }
+    serial.putc(32 as utiny);  // ' '
+
+    if (info.is_write != 0) {
+        serial.puts("WRITE" as void*);
+    } else {
+        serial.puts("READ" as void*);
+    }
+    serial.putc(32 as utiny);
+
+    if (info.is_user != 0) {
+        serial.puts("USER" as void*);
+    } else {
+        serial.puts("KERNEL" as void*);
+    }
+    serial.putc(93 as utiny);  // ']'
+    serial.println("" as void*);
+
+    // カーネルパニック（Phase 1ではDemand Paging未実装）
+    pr_err(&serial, "Kernel panic - not syncing: unhandled page fault" as void*);
+    __asm__(`cli; 1: hlt; jmp 1b`);
+}

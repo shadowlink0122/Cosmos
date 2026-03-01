@@ -1,0 +1,217 @@
+//! platform: baremetal
+// cosmo-linux::mm::vmm - 仮想メモリマネージャ
+//
+// x86_64 4レベルページテーブル管理。
+// PML4 → PDPT → PD → PT の階層構造でページマッピングを制御。
+//
+// 参照: linux/arch/x86/mm/pgtable.c
+
+import ../include/types;
+import ../include/config;
+import ../include/page_alloc;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/string;
+
+// ============================================================
+// ページテーブルフラグ
+// ============================================================
+
+export const ulong PTE_PRESENT  = 1;       // 存在ビット
+export const ulong PTE_WRITE    = 2;       // 書き込み許可
+export const ulong PTE_USER     = 4;       // ユーザーアクセス許可
+export const ulong PTE_PWT      = 8;       // ライトスルー
+export const ulong PTE_PCD      = 16;      // キャッシュ無効
+export const ulong PTE_ACCESSED = 32;      // アクセス済み
+export const ulong PTE_DIRTY    = 64;      // 変更済み
+export const ulong PTE_HUGE     = 128;     // 2MiB ヒュージページ
+export const ulong PTE_GLOBAL   = 256;     // TLBフラッシュ対象外
+export const ulong PTE_NX       = 0x8000000000000000; // No-Execute
+
+/// カーネルページフラグ: Present + Write + Global
+export const ulong KERNEL_PAGE_FLAGS = 3;  // PRESENT | WRITE
+
+/// ユーザーページフラグ: Present + Write + User
+export const ulong USER_PAGE_FLAGS = 7;    // PRESENT | WRITE | USER
+
+// ============================================================
+// アドレスマスク
+// ============================================================
+
+/// 物理アドレスマスク (52ビット物理アドレス空間)
+const ulong ADDR_MASK = 0x000FFFFFFFFFF000;
+
+// ============================================================
+// PageTable 構造体
+// ============================================================
+
+/// 仮想メモリマネージャ
+export struct PageTable {
+    PhysAddr pml4;          // PML4テーブル物理アドレス
+}
+
+// ============================================================
+// impl PageTable
+// ============================================================
+
+impl PageTable {
+    /// コンストラクタ: 既存PML4を使用
+    overload self(PhysAddr pml4_addr) {
+        self.pml4 = pml4_addr;
+    }
+
+    /// 仮想アドレスからPML4インデックスを抽出
+    ulong pml4_index(VirtAddr virt) {
+        return (virt >> 39) & 0x1FF;
+    }
+
+    /// 仮想アドレスからPDPTインデックスを抽出
+    ulong pdpt_index(VirtAddr virt) {
+        return (virt >> 30) & 0x1FF;
+    }
+
+    /// 仮想アドレスからPDインデックスを抽出
+    ulong pd_index(VirtAddr virt) {
+        return (virt >> 21) & 0x1FF;
+    }
+
+    /// 仮想アドレスからPTインデックスを抽出
+    ulong pt_index(VirtAddr virt) {
+        return (virt >> 12) & 0x1FF;
+    }
+
+    /// テーブルエントリを読む
+    ulong read_entry(PhysAddr table, ulong index) {
+        PhysAddr addr = table + index * 8;
+        ulong* ptr = addr as ulong*;
+        return *ptr;
+    }
+
+    /// テーブルエントリに書く
+    void write_entry(PhysAddr table, ulong index, ulong value) {
+        PhysAddr addr = table + index * 8;
+        ulong* ptr = addr as ulong*;
+        *ptr = value;
+    }
+
+    /// テーブルエントリが存在するか
+    ulong entry_present(ulong entry) {
+        return entry & PTE_PRESENT;
+    }
+
+    /// テーブルエントリから物理アドレスを取得
+    PhysAddr entry_addr(ulong entry) {
+        return entry & ADDR_MASK;
+    }
+
+    /// 1ページをマッピング（中間テーブルはPMMから確保）
+    void map_page(VirtAddr virt, PhysAddr phys, ulong flags, BuddyAllocator* pmm) {
+        // PML4 → PDPT
+        ulong pml4_idx = self.pml4_index(virt);
+        ulong pml4_entry = self.read_entry(self.pml4, pml4_idx);
+
+        PhysAddr pdpt = 0;
+        if (self.entry_present(pml4_entry) != 0) {
+            pdpt = self.entry_addr(pml4_entry);
+        } else {
+            pdpt = pmm->alloc_pages(0);
+            memzero(pdpt as void*, PAGE_SIZE);
+            self.write_entry(self.pml4, pml4_idx, pdpt | flags | PTE_PRESENT | PTE_WRITE);
+        }
+
+        // PDPT → PD
+        ulong pdpt_idx = self.pdpt_index(virt);
+        ulong pdpt_entry = self.read_entry(pdpt, pdpt_idx);
+
+        PhysAddr pd = 0;
+        if (self.entry_present(pdpt_entry) != 0) {
+            pd = self.entry_addr(pdpt_entry);
+        } else {
+            pd = pmm->alloc_pages(0);
+            memzero(pd as void*, PAGE_SIZE);
+            self.write_entry(pdpt, pdpt_idx, pd | flags | PTE_PRESENT | PTE_WRITE);
+        }
+
+        // PD → PT
+        ulong pd_idx = self.pd_index(virt);
+        ulong pd_entry = self.read_entry(pd, pd_idx);
+
+        PhysAddr pt = 0;
+        if (self.entry_present(pd_entry) != 0) {
+            pt = self.entry_addr(pd_entry);
+        } else {
+            pt = pmm->alloc_pages(0);
+            memzero(pt as void*, PAGE_SIZE);
+            self.write_entry(pd, pd_idx, pt | flags | PTE_PRESENT | PTE_WRITE);
+        }
+
+        // PT → ページ
+        ulong pt_idx = self.pt_index(virt);
+        self.write_entry(pt, pt_idx, phys | flags);
+    }
+
+    /// ページのマッピングを解除
+    void unmap_page(VirtAddr virt) {
+        ulong pml4_idx = self.pml4_index(virt);
+        ulong pml4_entry = self.read_entry(self.pml4, pml4_idx);
+        if (self.entry_present(pml4_entry) == 0) { return; }
+
+        PhysAddr pdpt = self.entry_addr(pml4_entry);
+        ulong pdpt_idx = self.pdpt_index(virt);
+        ulong pdpt_entry = self.read_entry(pdpt, pdpt_idx);
+        if (self.entry_present(pdpt_entry) == 0) { return; }
+
+        PhysAddr pd = self.entry_addr(pdpt_entry);
+        ulong pd_idx = self.pd_index(virt);
+        ulong pd_entry = self.read_entry(pd, pd_idx);
+        if (self.entry_present(pd_entry) == 0) { return; }
+
+        PhysAddr pt = self.entry_addr(pd_entry);
+        ulong pt_idx = self.pt_index(virt);
+        self.write_entry(pt, pt_idx, 0);
+
+        // TLBフラッシュ
+        __asm__(`
+            movq ${r:virt}, %rax;
+            invlpg (%rax)
+        `);
+    }
+
+    /// 仮想アドレスの物理アドレスを取得（マッピング確認用）
+    PhysAddr translate(VirtAddr virt) {
+        ulong pml4_idx = self.pml4_index(virt);
+        ulong pml4_entry = self.read_entry(self.pml4, pml4_idx);
+        if (self.entry_present(pml4_entry) == 0) { return 0; }
+
+        PhysAddr pdpt = self.entry_addr(pml4_entry);
+        ulong pdpt_idx = self.pdpt_index(virt);
+        ulong pdpt_entry = self.read_entry(pdpt, pdpt_idx);
+        if (self.entry_present(pdpt_entry) == 0) { return 0; }
+
+        PhysAddr pd = self.entry_addr(pdpt_entry);
+        ulong pd_idx = self.pd_index(virt);
+        ulong pd_entry = self.read_entry(pd, pd_idx);
+        if (self.entry_present(pd_entry) == 0) { return 0; }
+
+        PhysAddr pt = self.entry_addr(pd_entry);
+        ulong pt_idx = self.pt_index(virt);
+        ulong pt_entry = self.read_entry(pt, pt_idx);
+        if (self.entry_present(pt_entry) == 0) { return 0; }
+
+        PhysAddr page_base = self.entry_addr(pt_entry);
+        ulong offset = virt & 0xFFF;
+        return page_base + offset;
+    }
+}
+
+// ============================================================
+// VMM初期化
+// ============================================================
+
+/// VMMを現在のCR3ベースで初期化
+export void vmm_init(PageTable* vmm, SerialPort* w) {
+    pr_info(w, "VMM initialized (4-level paging)" as void*);
+    w->puts("  PML4: " as void*);
+    w->print_hex(vmm->pml4);
+    w->println("" as void*);
+}
