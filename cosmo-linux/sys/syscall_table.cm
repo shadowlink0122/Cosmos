@@ -1,0 +1,52 @@
+//! platform: baremetal
+// cosmo-linux::sys::syscall_table - Linux x86_64 syscall 番号定義
+//
+// Linux互換のsyscall番号テーブル。
+// 参照: linux/arch/x86/entry/syscalls/syscall_64.tbl
+
+import ../include/types;
+
+// ============================================================
+// Linux x86_64 Syscall 番号
+// ============================================================
+
+export const ulong SYS_READ       = 0;
+export const ulong SYS_WRITE      = 1;
+export const ulong SYS_OPEN       = 2;
+export const ulong SYS_CLOSE      = 3;
+export const ulong SYS_STAT       = 4;
+export const ulong SYS_FSTAT      = 5;
+export const ulong SYS_LSTAT      = 6;
+export const ulong SYS_POLL       = 7;
+export const ulong SYS_LSEEK      = 8;
+export const ulong SYS_MMAP       = 9;
+export const ulong SYS_MPROTECT   = 10;
+export const ulong SYS_MUNMAP     = 11;
+export const ulong SYS_BRK        = 12;
+export const ulong SYS_IOCTL      = 16;
+export const ulong SYS_PIPE       = 22;
+export const ulong SYS_DUP        = 32;
+export const ulong SYS_DUP2       = 33;
+export const ulong SYS_GETPID     = 39;
+export const ulong SYS_FORK       = 57;
+export const ulong SYS_VFORK      = 58;
+export const ulong SYS_EXECVE     = 59;
+export const ulong SYS_EXIT       = 60;
+export const ulong SYS_WAIT4      = 61;
+export const ulong SYS_KILL       = 62;
+export const ulong SYS_UNAME      = 63;
+export const ulong SYS_GETCWD     = 79;
+export const ulong SYS_CHDIR      = 80;
+export const ulong SYS_MKDIR      = 83;
+export const ulong SYS_RMDIR      = 84;
+export const ulong SYS_UNLINK     = 87;
+export const ulong SYS_GETUID     = 102;
+export const ulong SYS_GETGID     = 104;
+export const ulong SYS_GETPPID    = 110;
+export const ulong SYS_ARCH_PRCTL = 158;
+export const ulong SYS_CLOCK_GETTIME = 228;
+export const ulong SYS_EXIT_GROUP = 231;
+export const ulong SYS_OPENAT     = 257;
+
+/// 最大syscall番号
+export const ulong NR_SYSCALLS = 512;

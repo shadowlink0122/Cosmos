@@ -1,0 +1,169 @@
+//! platform: baremetal
+// cosmo-linux::sys::syscall - syscall エントリポイント
+//
+// x86_64 LSTAR MSR を設定し、syscall命令でカーネルに遷移する。
+// Linux ABI: RAX=番号, RDI/RSI/RDX/R10/R8/R9=引数
+//
+// 参照: linux/arch/x86/entry/entry_64.S
+
+import ../include/types;
+import ../include/config;
+import ../include/errno;
+import ../drivers/serial;
+import ../lib/printk;
+import ../arch/x86_64/cpu;
+import ./syscall_table;
+
+// ============================================================
+// MSR定数
+// ============================================================
+
+/// STAR MSR: syscall/sysret セグメント設定
+const ulong MSR_STAR  = 0xC0000081;
+
+/// LSTAR MSR: syscall エントリアドレス
+const ulong MSR_LSTAR = 0xC0000082;
+
+/// SFMASK MSR: syscall時のRFLAGSマスク
+const ulong MSR_SFMASK = 0xC0000084;
+
+/// EFER MSR: syscall有効化ビット
+const ulong MSR_EFER = 0xC0000080;
+const ulong EFER_SCE = 1;
+
+// ============================================================
+// Syscall結果
+// ============================================================
+
+/// Syscallディスパッチ結果
+export struct SyscallResult {
+    long value;
+}
+
+// ============================================================
+// Syscallハンドラ
+// ============================================================
+
+/// syscall エントリ（ASMスタブから呼ばれる）
+export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
+                             ulong arg3, ulong arg4, ulong arg5) {
+    // 基本的なsyscallのみ実装
+    if (nr == SYS_WRITE) {
+        return sys_write(arg0, arg1, arg2);
+    }
+    if (nr == SYS_EXIT) {
+        sys_exit(arg0 as long);
+        return 0;
+    }
+    if (nr == SYS_GETPID) {
+        return sys_getpid();
+    }
+
+    // 未実装syscall
+    return (0 - ENOSYS);
+}
+
+/// sys_write: fdに書き込み
+long sys_write(ulong fd, ulong buf_addr, ulong count) {
+    // fd 1 (stdout) と fd 2 (stderr) → シリアルに出力
+    if (fd == 1) {
+        SerialPort serial(COM1);
+        ulong i = 0;
+        while (i < count) {
+            AsciiChar ch = 0 as utiny;
+            ulong addr = buf_addr + i;
+            __asm__(`
+                movq ${r:addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            serial.putc(ch);
+            i = i + 1;
+        }
+        return count as long;
+    }
+    if (fd == 2) {
+        SerialPort serial(COM1);
+        ulong i = 0;
+        while (i < count) {
+            AsciiChar ch = 0 as utiny;
+            ulong addr = buf_addr + i;
+            __asm__(`
+                movq ${r:addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+            serial.putc(ch);
+            i = i + 1;
+        }
+        return count as long;
+    }
+    return (0 - EBADF);
+}
+
+/// sys_exit: プロセス終了
+void sys_exit(long code) {
+    SerialPort serial(COM1);
+    serial.puts("[EXIT] code=" as void*);
+    print_dec(&serial, code as ulong);
+    serial.println("" as void*);
+    // Phase 2ではhalt
+    __asm__(`cli; 1: hlt; jmp 1b`);
+}
+
+/// sys_getpid: PID取得
+long sys_getpid() {
+    // Phase 2: 常に1を返す（init）
+    return 1;
+}
+
+// ============================================================
+// syscall初期化 (LSTAR設定)
+// ============================================================
+
+/// syscall/sysretを初期化
+export void syscall_init(SerialPort* w) {
+    // EFER.SCE (System Call Extension) を有効化
+    ulong efer = rdmsr(MSR_EFER);
+    wrmsr(MSR_EFER, efer | EFER_SCE);
+
+    // STAR: syscall時のCS/SS = 0x08/0x10, sysret時のCS/SS = 0x18/0x20
+    // ビット配置: [63:48]=sysret CS base, [47:32]=syscall CS base
+    ulong star = (0x0018 << 48) | (0x0008 << 32);
+    wrmsr(MSR_STAR, star);
+
+    // LSTAR: syscallエントリアドレス
+    ulong entry = fn_addr(syscall_entry_stub as void*);
+    wrmsr(MSR_LSTAR, entry);
+
+    // SFMASK: syscall時にIFとDFをクリア
+    wrmsr(MSR_SFMASK, 0x700);
+
+    pr_info(w, "Syscall initialized (LSTAR set)" as void*);
+}
+
+/// syscall ASMスタブ（RCX=RIP, R11=RFLAGS を保存）
+export void syscall_entry_stub() {
+    __asm__(`
+        // ユーザースタック保存 → カーネルスタック
+        // 簡易版: レジスタを保存してCmハンドラを呼ぶ
+        pushq %rcx;
+        pushq %r11;
+        pushq %rbp;
+        movq %rsp, %rbp;
+
+        // syscall_handler(nr=rax, arg0=rdi, arg1=rsi, arg2=rdx, arg3=r10, arg4=r8, arg5=r9)
+        // x86_64 Cm ABI: rdi, rsi, rdx, rcx, r8, r9
+        movq %rax, %rdi;
+        // arg0は元のrdi → 保存が必要だが簡易版では省略
+        movq %r10, %rcx;
+
+        // ハンドラを直接callはできないので、sysretで戻る
+        popq %rbp;
+        popq %r11;
+        popq %rcx;
+        sysretq
+    `);
+}

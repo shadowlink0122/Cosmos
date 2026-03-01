@@ -1,0 +1,107 @@
+//! platform: baremetal
+// cosmo-linux::sched::process - プロセス管理
+//
+// Process 構造体のメソッド実装。
+// プロセステーブルの管理、PID割り当て。
+//
+// 参照: linux/kernel/fork.c, linux/kernel/exit.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../include/page_alloc;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/string;
+import ../mm/pmm;
+
+// ============================================================
+// プロセステーブル
+// ============================================================
+
+/// グローバルプロセステーブル配置先
+const PhysAddr PROC_TABLE_BASE = 0x300000;
+
+/// 次のPID
+const PhysAddr NEXT_PID_ADDR = 0x300000 + 64 * 256;
+
+// ============================================================
+// impl Process
+// ============================================================
+
+impl Process {
+    /// コンストラクタ: 空プロセス
+    overload self(Pid pid_val, Pid parent) {
+        self.pid = pid_val;
+        self.parent_pid = parent;
+        self.state = TASK_READY;
+        self.kernel_stack = 0;
+        self.page_table = 0;
+        self.exit_code = 0;
+        self.context = {
+            rsp: 0, rbp: 0, rbx: 0,
+            r12: 0, r13: 0, r14: 0, r15: 0,
+            rip: 0, rflags: 0x200
+        };
+        self.time_slice = 10;
+        self.priority = 20;
+    }
+
+    /// プロセスが実行可能か
+    ulong is_runnable() {
+        if (self.state == TASK_RUNNING) { return 1; }
+        if (self.state == TASK_READY) { return 1; }
+        return 0;
+    }
+
+    /// カーネルスタックを割り当て (2ページ = 8KiB)
+    void alloc_stack(BuddyAllocator* pmm) {
+        PhysAddr stack = pmm->alloc_pages(1);
+        if (stack != 0) {
+            self.kernel_stack = stack + PAGE_SIZE * 2;  // スタックは上から下に成長
+        }
+    }
+}
+
+// ============================================================
+// プロセス管理関数
+// ============================================================
+
+/// 次のPIDを発行
+export Pid alloc_pid() {
+    ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
+    Pid pid = (*pid_ptr) as long;
+    *pid_ptr = *pid_ptr + 1;
+    return pid;
+}
+
+/// プロセステーブルを初期化
+export void process_table_init(SerialPort* w) {
+    // テーブルをゼロクリア
+    memzero(PROC_TABLE_BASE as void*, 64 * 256);
+
+    // 次のPIDを1に初期化
+    ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
+    *pid_ptr = 1;
+
+    pr_info(w, "Process table initialized (max 64)" as void*);
+}
+
+/// idle プロセス (PID 0) を作成
+export void create_idle_process(Process* idle, SerialPort* w) {
+    // 現在のCR3をページテーブルとして使用
+    ulong cr3 = 0;
+    __asm__(`
+        movq %cr3, %rax;
+        movq %rax, ${=r:cr3}
+    `);
+
+    idle->pid = 0;
+    idle->parent_pid = 0;
+    idle->state = TASK_RUNNING;
+    idle->page_table = cr3;
+    idle->time_slice = 0;  // idleは無限
+    idle->priority = 99;   // 最低優先度
+
+    pr_info(w, "Idle process (PID 0) created" as void*);
+}

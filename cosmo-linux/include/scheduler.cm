@@ -1,0 +1,70 @@
+//! platform: baremetal
+// cosmo-linux::include::scheduler - スケジューラインターフェース
+//
+// プロセススケジューリングの抽象化。
+// impl RoundRobinScheduler for Scheduler で実装。
+//
+// 参照: linux/include/linux/sched.h
+
+import ./types;
+
+// ============================================================
+// プロセス状態定数
+// ============================================================
+
+export const ulong TASK_RUNNING  = 0;
+export const ulong TASK_READY    = 1;
+export const ulong TASK_BLOCKED  = 2;
+export const ulong TASK_ZOMBIE   = 3;
+export const ulong TASK_STOPPED  = 4;
+
+/// 最大プロセス数
+export const ulong MAX_PROCESSES = 64;
+
+/// カーネルPID (idle)
+export const Pid IDLE_PID = 0;
+
+// ============================================================
+// レジスタ保存構造体 (コンテキストスイッチ用)
+// ============================================================
+
+/// x86_64 レジスタコンテキスト
+export struct CpuContext {
+    ulong rsp;
+    ulong rbp;
+    ulong rbx;
+    ulong r12;
+    ulong r13;
+    ulong r14;
+    ulong r15;
+    ulong rip;
+    ulong rflags;
+}
+
+// ============================================================
+// Process 構造体 (Linux task_struct 互換)
+// ============================================================
+
+/// プロセス制御ブロック
+export struct Process {
+    Pid pid;
+    Pid parent_pid;
+    ulong state;              // TASK_RUNNING, TASK_READY, ...
+    VirtAddr kernel_stack;     // カーネルスタック先頭
+    PhysAddr page_table;       // CR3値 (アドレス空間)
+    long exit_code;
+    CpuContext context;        // レジスタ保存域
+    ulong time_slice;          // 残りタイムスライス
+    ulong priority;            // 優先度 (0=最高)
+}
+
+// ============================================================
+// Scheduler インターフェース
+// ============================================================
+
+/// プロセススケジューラの共通インターフェース
+export interface Scheduler {
+    void add_process(Process* proc);
+    Pid pick_next();
+    void tick();
+}
