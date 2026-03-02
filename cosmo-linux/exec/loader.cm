@@ -1,0 +1,190 @@
+//! platform: baremetal-x86
+// cosmo-linux::exec::loader - ELF ローダー
+//
+// RamFS上のELFファイルをメモリにロードし、
+// カーネルスレッドとして実行する。
+//
+// 参照: linux/fs/binfmt_elf.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../include/page_alloc;
+import ../include/vfs;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ../fs/ramfs;
+import ../mm/pmm;
+import ../mm/vmm;
+import ../sched/process;
+import ../sched/scheduler;
+import ../arch/x86_64/context;
+import ./elf;
+
+// ============================================================
+// ローダー定数
+// ============================================================
+
+/// ELFロード先仮想アドレス (ユーザー空間ベース)
+const VirtAddr ELF_LOAD_BASE = 0x400000;
+
+/// ELFデータ読み込み一時バッファ
+const PhysAddr ELF_TMP_BUF = 0x600000;
+
+/// ローダー用PMMポインタアドレス
+const PhysAddr LOADER_PMM_PTR = 0x95010;
+
+// ============================================================
+// Loader struct/impl
+// ============================================================
+
+/// Loader — ELFローダー
+export struct Loader {}
+
+impl Loader {
+    /// ELFファイルをRamFSからロードしてプロセスとして実行
+    /// 戻り値: 新プロセスのPID（失敗時 -1）
+    static Pid exec(void* filename, SerialPort* w) {
+        // RamFSからファイル検索
+        Ino ino = RamFs::lookup(filename);
+        if (ino == 0) {
+            pr_err(w, "exec: file not found" as void*);
+            return 0 - 1;
+        }
+
+        ulong fsize = RamFs::file_size(ino);
+        if (fsize < 64) {
+            pr_err(w, "exec: file too small for ELF" as void*);
+            return 0 - 1;
+        }
+
+        // 一時バッファに読み込み
+        long bytes = RamFs::read(ino, ELF_TMP_BUF, 0, fsize);
+        if (bytes <= 0) {
+            pr_err(w, "exec: failed to read file" as void*);
+            return 0 - 1;
+        }
+
+        // ELFヘッダ検証
+        if (Elf::validate(ELF_TMP_BUF) == 0) {
+            pr_err(w, "exec: invalid ELF64 binary" as void*);
+            return 0 - 1;
+        }
+
+        // エントリポイント取得
+        ulong entry = Elf::get_entry(ELF_TMP_BUF);
+        ulong phoff = Elf::get_phoff(ELF_TMP_BUF);
+        ulong phentsize = Elf::get_phentsize(ELF_TMP_BUF);
+        ulong phnum = Elf::get_phnum(ELF_TMP_BUF);
+
+        w->puts("[INFO] ELF entry=0x" as void*);
+        w->print_hex(entry);
+        w->puts(" phnum=" as void*);
+        print_dec(w, phnum);
+        w->println("" as void*);
+
+        // PMMを取得
+        ulong* pmm_ptr = LOADER_PMM_PTR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+        // CR3取得
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        PageTable pt(cr3);
+
+        // PT_LOADセグメントをメモリにロード
+        ulong i = 0;
+        while (i < phnum) {
+            ulong ph_addr = ELF_TMP_BUF + phoff + i * phentsize;
+            ulong p_type = Elf::ph_type(ph_addr);
+
+            if (p_type == PT_LOAD) {
+                ulong p_offset = Elf::ph_offset(ph_addr);
+                ulong p_vaddr  = Elf::ph_vaddr(ph_addr);
+                ulong p_filesz = Elf::ph_filesz(ph_addr);
+                ulong p_memsz  = Elf::ph_memsz(ph_addr);
+
+                // ページマッピング
+                ulong page_start = p_vaddr & ~0xFFF;
+                ulong page_end = (p_vaddr + p_memsz + 0xFFF) & ~0xFFF;
+                ulong page = page_start;
+                while (page < page_end) {
+                    PhysAddr phys_page = pmm->alloc_pages(0);
+                    if (phys_page != 0) {
+                        memzero(phys_page as void*, PAGE_SIZE);
+                        pt.map_page(page, phys_page, KERNEL_PAGE_FLAGS, pmm);
+                    }
+                    page = page + PAGE_SIZE;
+                }
+
+                // ファイルデータをコピー
+                ulong src = ELF_TMP_BUF + p_offset;
+                ulong dst = p_vaddr;
+                ulong j = 0;
+                while (j < p_filesz) {
+                    ulong byte_val = 0;
+                    ulong s = src + j;
+                    __asm__(`
+                        movq ${r:s}, %rdi;
+                        xorq %rax, %rax;
+                        movb (%rdi), %al;
+                        movq %rax, ${=r:byte_val}
+                    `);
+                    ulong d = dst + j;
+                    __asm__(`
+                        movq ${r:d}, %rdi;
+                        movq ${r:byte_val}, %rax;
+                        movb %al, (%rdi)
+                    `);
+                    j = j + 1;
+                }
+
+                w->puts("[INFO] Loaded segment: vaddr=0x" as void*);
+                w->print_hex(p_vaddr);
+                w->puts(" size=" as void*);
+                print_dec(w, p_filesz);
+                w->println("" as void*);
+            }
+            i = i + 1;
+        }
+
+        // プロセス作成
+        Pid new_pid = ProcessTable::alloc_pid();
+        // プロセス用メモリ確保（固定アドレスに配置）
+        PhysAddr proc_mem = pmm->alloc_pages(0);
+        if (proc_mem == 0) {
+            pr_err(w, "exec: failed to allocate process memory" as void*);
+            return 0 - 1;
+        }
+        memzero(proc_mem as void*, PAGE_SIZE);
+        Process* proc = proc_mem as Process*;
+        Process new_proc(new_pid, 1);  // parent=shell(PID 1)
+        // 構造体コピー
+        ulong k = 0;
+        while (k < 16) {
+            ulong* src_f = (((&new_proc) as ulong) + k * 8) as ulong*;
+            ulong* dst_f = (proc_mem + k * 8) as ulong*;
+            *dst_f = *src_f;
+            k = k + 1;
+        }
+
+        // カーネルスタック割り当て
+        proc->alloc_stack(pmm);
+        proc->page_table = cr3;
+
+        // コンテキスト初期化（エントリポイントへジャンプ）
+        Context::init_task(proc, proc->kernel_stack, entry);
+
+        // スケジューラに登録
+        Sched::add(proc);
+
+        w->puts("[INFO] Process created: PID=" as void*);
+        print_dec(w, new_pid as ulong);
+        w->puts(" entry=0x" as void*);
+        w->print_hex(entry);
+        w->println("" as void*);
+
+        return new_pid;
+    }
+}

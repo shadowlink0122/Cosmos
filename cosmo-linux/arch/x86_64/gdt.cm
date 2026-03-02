@@ -90,4 +90,84 @@ impl Gdt {
 
         pr_info(w, "GDT initialized (5 segments + TSS)" as void*);
     }
+
+    /// TSS (Task State Segment) を初期化
+    static void setup_tss(ulong kernel_stack_top, SerialPort* w) {
+        // TSS配置アドレス
+        PhysAddr tss_addr = 0x83000;
+
+        // TSS構造をゼロクリア (104バイト)
+        memzero(tss_addr as void*, 104);
+
+        // RSP0 (Ring 0スタック) を設定 — offset 4
+        ulong* rsp0 = (tss_addr + 4) as ulong*;
+        *rsp0 = kernel_stack_top;
+
+        // IOPB offset — offset 102 (2バイト = 104)
+        ulong iopb_addr = tss_addr + 102;
+        ulong iopb_val = 104;
+        __asm__(`
+            movq ${r:iopb_addr}, %rdi;
+            movq ${r:iopb_val}, %rax;
+            movw %ax, (%rdi)
+        `);
+
+        // GDT TSSディスクリプタ (エントリ5-6, 計16バイト)
+        // バイト単位で直接書き込み（ビットシフトOR回避）
+        PhysAddr gdt_tss = GDT_ADDR + 40;  // エントリ5の先頭
+
+        // Byte 0-1: limit[15:0] = 103 (0x0067)
+        __asm__(`
+            movq ${r:gdt_tss}, %rdi;
+            movw $$0x0067, (%rdi)
+        `);
+
+        // Byte 2-3: base[15:0] = 0x3000
+        ulong b2 = gdt_tss + 2;
+        __asm__(`
+            movq ${r:b2}, %rdi;
+            movw $$0x3000, (%rdi)
+        `);
+
+        // Byte 4: base[23:16] = 0x08
+        ulong b4 = gdt_tss + 4;
+        __asm__(`
+            movq ${r:b4}, %rdi;
+            movb $$0x08, (%rdi)
+        `);
+
+        // Byte 5: access = 0x89 (Present, Available 64-bit TSS)
+        ulong b5 = gdt_tss + 5;
+        __asm__(`
+            movq ${r:b5}, %rdi;
+            movb $$0x89, (%rdi)
+        `);
+
+        // Byte 6: flags(4) + limit[19:16](4) = 0x00
+        ulong b6 = gdt_tss + 6;
+        __asm__(`
+            movq ${r:b6}, %rdi;
+            movb $$0x00, (%rdi)
+        `);
+
+        // Byte 7: base[31:24] = 0x00
+        ulong b7 = gdt_tss + 7;
+        __asm__(`
+            movq ${r:b7}, %rdi;
+            movb $$0x00, (%rdi)
+        `);
+
+        // エントリ6 (上位8バイト): base[63:32] = 0x00000000
+        ulong* e6 = (gdt_tss + 8) as ulong*;
+        *e6 = 0;
+
+        // ltr (Load Task Register)
+        ulong tss_sel = TSS_SEL;
+        __asm__(`
+            movq ${r:tss_sel}, %rax;
+            ltr %ax
+        `);
+
+        pr_info(w, "TSS initialized (RSP0 set)" as void*);
+    }
 }

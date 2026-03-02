@@ -28,6 +28,7 @@ import ../fs/procfs;
 import ../init/init;
 import ../sys/signal;
 import ../mm/mmap;
+import ../exec/loader;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -42,7 +43,7 @@ impl Cmd {
         Shell::writeln("  ls cat touch write cp mv rm mkdir" as void*);
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
         Shell::writeln("  echo cd pwd env export history kill" as void*);
-        Shell::writeln("  vmstat  cmd1 | cmd2  Tab=complete" as void*);
+        Shell::writeln("  vmstat exec  cmd1 | cmd2  Tab=complete" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
 
@@ -746,6 +747,23 @@ impl Cmd {
         Shell::writeln("" as void*);
     }
 
+    /// exec コマンド: ELFバイナリをロードして実行
+    static void exec_cmd(ulong arg_addr) {
+        if (arg_addr == 0) {
+            Shell::writeln("Usage: exec <filename>" as void*);
+            return;
+        }
+        SerialPort serial(COM1);
+        Pid pid = Loader::exec(arg_addr as void*, &serial);
+        if (pid >= 0) {
+            Shell::write("Started process PID " as void*);
+            Shell::print_dec(pid as ulong);
+            Shell::putc(10);
+        } else {
+            Shell::writeln("exec: failed to load ELF" as void*);
+        }
+    }
+
     /// history コマンド: コマンド履歴表示
     static void show_history() {
         ulong* count = HIST_COUNT as ulong*;
@@ -1192,6 +1210,11 @@ impl Cmd {
         }
         if (streq(CMD_BUF_ADDR as void*, "vmstat" as void*) != 0) {
             Cmd::vmstat();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "exec " as void*) != 0) {
+            ulong arg = Cmd::arg(CMD_BUF_ADDR);
+            Cmd::exec_cmd(arg);
             return;
         }
         Shell::write("Unknown command: " as void*);

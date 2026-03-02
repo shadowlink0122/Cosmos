@@ -115,7 +115,10 @@ void main(ulong mb2_info, ulong mb2_magic) {
     RoundRobinScheduler sched();
     Sched::setup(&sched, &idle, &serial);
 
-    // === 9. syscall初期化 ===
+    // === 9. TSS初期化 ===
+    Gdt::setup_tss(0x94000, &serial);
+
+    // === 10. syscall初期化 ===
     Syscall::setup(&serial);
 
     // === 10. PIC/PIT/キーボード初期化 ===
