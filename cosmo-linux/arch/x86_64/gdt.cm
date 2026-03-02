@@ -2,6 +2,7 @@
 // cosmo-linux::arch::x86_64::gdt - GDT設定
 //
 // 64ビットLong Mode用GDT。5セグメント + TSSスロット。
+// Gdt struct/impl パターンで実装。
 // 参照: linux/arch/x86/kernel/cpu/common.c
 
 import ../../include/types;
@@ -9,10 +10,7 @@ import ../../include/config;
 import ../../drivers/serial;
 import ../../lib/printk;
 
-// ============================================================
 // セグメントセレクタ定数
-// ============================================================
-
 export const ulong KERNEL_CS = 0x08;
 export const ulong KERNEL_DS = 0x10;
 export const ulong USER_CS   = 0x18;
@@ -22,77 +20,74 @@ export const ulong TSS_SEL   = 0x28;
 // GDTエントリ数（TSS用2スロット含む）
 const ulong GDT_ENTRIES = 7;
 
-// ============================================================
-// GDTエントリ構築
-// ============================================================
+/// Gdt — GDT管理
+export struct Gdt {}
 
-/// 64ビットGDTディスクリプタを構築
-ulong gdt_make_entry(ulong type_attr, ulong flags) {
-    ulong entry = 0;
-    entry = entry | (type_attr << 40);
-    entry = entry | (flags << 52);
-    return entry;
-}
+impl Gdt {
+    /// 64ビットGDTディスクリプタを構築
+    static ulong make_entry(ulong type_attr, ulong flags) {
+        ulong entry = 0;
+        entry = entry | (type_attr << 40);
+        entry = entry | (flags << 52);
+        return entry;
+    }
 
-// ============================================================
-// GDT初期化
-// ============================================================
+    /// GDTを初期化してロード
+    static void setup(SerialPort* w) {
+        PhysAddr base = GDT_ADDR;
+        ulong* gdt = base as ulong*;
 
-/// GDTを初期化してロード
-export void gdt_init(SerialPort* w) {
-    PhysAddr base = GDT_ADDR;
-    ulong* gdt = base as ulong*;
+        // エントリ 0: NULL
+        ulong* e0 = base as ulong*;
+        *e0 = 0;
 
-    // エントリ 0: NULL
-    ulong* e0 = base as ulong*;
-    *e0 = 0;
+        // エントリ 1: カーネルコード (0x08)
+        ulong* e1 = (base + 8) as ulong*;
+        *e1 = Gdt::make_entry(0x9A, 0x2);
 
-    // エントリ 1: カーネルコード (0x08) — L=1, D=0, Execute/Read, DPL=0
-    ulong* e1 = (base + 8) as ulong*;
-    *e1 = gdt_make_entry(0x9A, 0x2);
+        // エントリ 2: カーネルデータ (0x10)
+        ulong* e2 = (base + 16) as ulong*;
+        *e2 = Gdt::make_entry(0x92, 0x0);
 
-    // エントリ 2: カーネルデータ (0x10) — Read/Write, DPL=0
-    ulong* e2 = (base + 16) as ulong*;
-    *e2 = gdt_make_entry(0x92, 0x0);
+        // エントリ 3: ユーザーコード (0x18)
+        ulong* e3 = (base + 24) as ulong*;
+        *e3 = Gdt::make_entry(0xFA, 0x2);
 
-    // エントリ 3: ユーザーコード (0x18) — L=1, Execute/Read, DPL=3
-    ulong* e3 = (base + 24) as ulong*;
-    *e3 = gdt_make_entry(0xFA, 0x2);
+        // エントリ 4: ユーザーデータ (0x20)
+        ulong* e4 = (base + 32) as ulong*;
+        *e4 = Gdt::make_entry(0xF2, 0x0);
 
-    // エントリ 4: ユーザーデータ (0x20) — Read/Write, DPL=3
-    ulong* e4 = (base + 32) as ulong*;
-    *e4 = gdt_make_entry(0xF2, 0x0);
+        // エントリ 5-6: TSS（後でtss_init()で設定）
+        ulong* e5 = (base + 40) as ulong*;
+        *e5 = 0;
+        ulong* e6 = (base + 48) as ulong*;
+        *e6 = 0;
 
-    // エントリ 5-6: TSS（後でtss_init()で設定）
-    ulong* e5 = (base + 40) as ulong*;
-    *e5 = 0;
-    ulong* e6 = (base + 48) as ulong*;
-    *e6 = 0;
+        // GDTR構築: [limit:16][base:64]
+        PhysAddr gdtr = base + GDT_ENTRIES * 8;
+        ulong* gdtr_lim = gdtr as ulong*;
+        *gdtr_lim = GDT_ENTRIES * 8 - 1;
+        ulong* gdtr_base = (gdtr + 2) as ulong*;
+        *gdtr_base = base;
 
-    // GDTR構築: [limit:16][base:64]
-    PhysAddr gdtr = base + GDT_ENTRIES * 8;
-    ulong* gdtr_lim = gdtr as ulong*;
-    *gdtr_lim = GDT_ENTRIES * 8 - 1;
-    ulong* gdtr_base = (gdtr + 2) as ulong*;
-    *gdtr_base = base;
+        // lgdt + セグメントレジスタ更新
+        ulong gdtr_addr = gdtr;
+        __asm__(`
+            movq ${r:gdtr_addr}, %rax;
+            lgdt (%rax);
+            movw $$0x10, %ax;
+            movw %ax, %ds;
+            movw %ax, %es;
+            movw %ax, %fs;
+            movw %ax, %gs;
+            movw %ax, %ss;
+            pushq $$0x08;
+            leaq 1f(%rip), %rax;
+            pushq %rax;
+            lretq;
+            1:
+        `);
 
-    // lgdt + セグメントレジスタ更新
-    ulong gdtr_addr = gdtr;
-    __asm__(`
-        movq ${r:gdtr_addr}, %rax;
-        lgdt (%rax);
-        movw $$0x10, %ax;
-        movw %ax, %ds;
-        movw %ax, %es;
-        movw %ax, %fs;
-        movw %ax, %gs;
-        movw %ax, %ss;
-        pushq $$0x08;
-        leaq 1f(%rip), %rax;
-        pushq %rax;
-        lretq;
-        1:
-    `);
-
-    pr_info(w, "GDT initialized (5 segments + TSS)" as void*);
+        pr_info(w, "GDT initialized (5 segments + TSS)" as void*);
+    }
 }

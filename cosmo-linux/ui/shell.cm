@@ -386,7 +386,7 @@ void cmd_free() {
 }
 
 void cmd_uptime() {
-    ulong ticks = pit_get_ticks();
+    ulong ticks = PIT::get_ticks();
     ulong seconds = ticks / 100;
     ulong minutes = seconds / 60;
     ulong secs = seconds % 60;
@@ -464,17 +464,17 @@ ulong cmd_arg2(ulong buf_addr) {
 
 /// ls コマンド: ファイル一覧表示
 void cmd_ls() {
-    ulong count = ramfs_dir_count();
+    ulong count = RamFs::dir_count();
     sh_println("" as void*);
     if (count == 0) {
         sh_println("  (no files)" as void*);
     } else {
         ulong i = 0;
         while (i < count) {
-            ulong name_addr = ramfs_dir_name(i);
+            ulong name_addr = RamFs::dir_name(i);
             if (name_addr != 0) {
-                ulong dtype = ramfs_dir_type(i);
-                Ino ino = ramfs_dir_ino(i);
+                ulong dtype = RamFs::dir_type(i);
+                Ino ino = RamFs::dir_ino(i);
                 sh_print("  " as void*);
 
                 // ディレクトリは色変更
@@ -486,7 +486,7 @@ void cmd_ls() {
                 } else {
                     // ファイルサイズ表示
                     sh_print(name_addr as void*);
-                    ulong fsize = ramfs_file_size(ino);
+                    ulong fsize = RamFs::file_size(ino);
                     sh_print("  (" as void*);
                     sh_print_dec(fsize);
                     sh_print(" bytes)" as void*);
@@ -510,7 +510,7 @@ void cmd_cat(ulong name_addr) {
     if (startswith(name_addr as void*, "/proc/" as void*) != 0) {
         ulong proc_name = name_addr + 6;  // "/proc/" の後
         ulong read_buf = 0x94100;
-        ulong bytes = procfs_read_file(proc_name as void*, read_buf);
+        ulong bytes = ProcFs::read_file(proc_name as void*, read_buf);
         if (bytes > 0) {
             sh_println(read_buf as void*);
         } else {
@@ -520,14 +520,14 @@ void cmd_cat(ulong name_addr) {
         return;
     }
 
-    Ino ino = ramfs_lookup(name_addr as void*);
+    Ino ino = RamFs::lookup(name_addr as void*);
     if (ino == 0) {
         sh_print("cat: file not found: " as void*);
         sh_println(name_addr as void*);
         return;
     }
 
-    ulong fsize = ramfs_file_size(ino);
+    ulong fsize = RamFs::file_size(ino);
     if (fsize == 0) {
         sh_println("(empty file)" as void*);
         return;
@@ -535,7 +535,7 @@ void cmd_cat(ulong name_addr) {
 
     // 読み出しバッファ: CMD_BUFの後半を使用 (0x94100)
     ulong read_buf = 0x94100;
-    long bytes_read = ramfs_read(ino, read_buf, 0, fsize);
+    long bytes_read = RamFs::read(ino, read_buf, 0, fsize);
     if (bytes_read > 0) {
         // ヌル終端して出力
         write_byte(read_buf + (bytes_read as ulong), 0);
@@ -557,7 +557,7 @@ void cmd_touch(ulong name_addr) {
         memzero(data_page as void*, PAGE_SIZE);
     }
 
-    Ino ino = ramfs_create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+    Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1B6, data_page);
     if (ino == 0) {
         sh_println("touch: failed to create file" as void*);
     } else {
@@ -584,7 +584,7 @@ void cmd_write(ulong name_addr, ulong text_addr) {
     if (data_page != 0) {
         memzero(data_page as void*, PAGE_SIZE);
     }
-    Ino ino = ramfs_create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+    Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1B6, data_page);
     if (ino == 0) {
         sh_println("write: failed to create file" as void*);
         return;
@@ -599,8 +599,8 @@ void cmd_write(ulong name_addr, ulong text_addr) {
     }
 
     // 書き込み（先頭から上書き）
-    ramfs_truncate(ino);
-    long written = ramfs_write(ino, text_addr, 0, text_len);
+    RamFs::truncate(ino);
+    long written = RamFs::write(ino, text_addr, 0, text_len);
     if (written > 0) {
         sh_print("Wrote " as void*);
         sh_print_dec(written as ulong);
@@ -630,7 +630,7 @@ void cmd_rm(ulong name_addr) {
         sh_println("Usage: rm <filename>" as void*);
         return;
     }
-    long result = ramfs_unlink(name_addr as void*);
+    long result = RamFs::unlink(name_addr as void*);
     if (result == 0) {
         sh_print("Removed: " as void*);
         sh_println(name_addr as void*);
@@ -648,7 +648,7 @@ void cmd_mkdir(ulong name_addr) {
         sh_println("Usage: mkdir <dirname>" as void*);
         return;
     }
-    Ino ino = ramfs_mkdir(name_addr as void*);
+    Ino ino = RamFs::mkdir(name_addr as void*);
     if (ino != 0) {
         sh_print("Created directory: " as void*);
         sh_println(name_addr as void*);
@@ -663,18 +663,18 @@ void cmd_wc(ulong name_addr) {
         sh_println("Usage: wc <filename>" as void*);
         return;
     }
-    Ino ino = ramfs_lookup(name_addr as void*);
+    Ino ino = RamFs::lookup(name_addr as void*);
     if (ino == 0) {
         sh_print("wc: file not found: " as void*);
         sh_println(name_addr as void*);
         return;
     }
-    ulong fsize = ramfs_file_size(ino);
+    ulong fsize = RamFs::file_size(ino);
     // 行数カウント: ファイルを読み出して\nを数える
     ulong lines = 0;
     ulong read_buf = 0x94100;
     if (fsize > 0) {
-        long bytes = ramfs_read(ino, read_buf, 0, fsize);
+        long bytes = RamFs::read(ino, read_buf, 0, fsize);
         if (bytes > 0) {
             ulong j = 0;
             while (j < (bytes as ulong)) {
@@ -703,13 +703,13 @@ void cmd_hexdump(ulong name_addr) {
         sh_println("Usage: hexdump <filename>" as void*);
         return;
     }
-    Ino ino = ramfs_lookup(name_addr as void*);
+    Ino ino = RamFs::lookup(name_addr as void*);
     if (ino == 0) {
         sh_print("hexdump: file not found: " as void*);
         sh_println(name_addr as void*);
         return;
     }
-    ulong fsize = ramfs_file_size(ino);
+    ulong fsize = RamFs::file_size(ino);
     if (fsize == 0) {
         sh_println("(empty file)" as void*);
         return;
@@ -718,7 +718,7 @@ void cmd_hexdump(ulong name_addr) {
     ulong show_size = fsize;
     if (show_size > 256) { show_size = 256; }
     ulong read_buf = 0x94100;
-    long bytes = ramfs_read(ino, read_buf, 0, show_size);
+    long bytes = RamFs::read(ino, read_buf, 0, show_size);
     if (bytes <= 0) { return; }
     ulong row = 0;
     while (row < (bytes as ulong)) {
@@ -800,7 +800,7 @@ void cmd_uname(ulong flags_addr) {
 
 /// date コマンド: 時刻表示（PIT ticksからの簡易計算）
 void cmd_date() {
-    ulong ticks = pit_get_ticks();
+    ulong ticks = PIT::get_ticks();
     ulong total_secs = ticks / 100;
     ulong hours = total_secs / 3600;
     ulong mins = (total_secs % 3600) / 60;
@@ -842,13 +842,13 @@ void cmd_cp(ulong src_addr, ulong dst_addr) {
     write_byte(end, 0);
 
     // ソース検索
-    Ino src_ino = ramfs_lookup(src_addr as void*);
+    Ino src_ino = RamFs::lookup(src_addr as void*);
     if (src_ino == 0) {
         sh_print("cp: source not found: " as void*);
         sh_println(src_addr as void*);
         return;
     }
-    ulong fsize = ramfs_file_size(src_ino);
+    ulong fsize = RamFs::file_size(src_ino);
 
     // デスティネーション作成
     ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
@@ -857,7 +857,7 @@ void cmd_cp(ulong src_addr, ulong dst_addr) {
     if (data_page != 0) {
         memzero(data_page as void*, PAGE_SIZE);
     }
-    Ino dst_ino = ramfs_create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
+    Ino dst_ino = RamFs::create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
     if (dst_ino == 0) {
         sh_println("cp: failed to create destination" as void*);
         return;
@@ -866,9 +866,9 @@ void cmd_cp(ulong src_addr, ulong dst_addr) {
     // データコピー
     if (fsize > 0) {
         ulong read_buf = 0x94100;
-        long bytes = ramfs_read(src_ino, read_buf, 0, fsize);
+        long bytes = RamFs::read(src_ino, read_buf, 0, fsize);
         if (bytes > 0) {
-            ramfs_write(dst_ino, read_buf, 0, bytes as ulong);
+            RamFs::write(dst_ino, read_buf, 0, bytes as ulong);
         }
     }
     sh_print("Copied: " as void*);
@@ -901,13 +901,13 @@ void cmd_mv(ulong src_addr, ulong dst_addr) {
     write_byte(end, 0);
 
     // cpと同じ処理
-    Ino src_ino = ramfs_lookup(src_addr as void*);
+    Ino src_ino = RamFs::lookup(src_addr as void*);
     if (src_ino == 0) {
         sh_print("mv: source not found: " as void*);
         sh_println(src_addr as void*);
         return;
     }
-    ulong fsize = ramfs_file_size(src_ino);
+    ulong fsize = RamFs::file_size(src_ino);
 
     ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
     BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
@@ -915,20 +915,20 @@ void cmd_mv(ulong src_addr, ulong dst_addr) {
     if (data_page != 0) {
         memzero(data_page as void*, PAGE_SIZE);
     }
-    Ino dst_ino = ramfs_create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
+    Ino dst_ino = RamFs::create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
     if (dst_ino == 0) {
         sh_println("mv: failed to create destination" as void*);
         return;
     }
     if (fsize > 0) {
         ulong read_buf = 0x94100;
-        long bytes = ramfs_read(src_ino, read_buf, 0, fsize);
+        long bytes = RamFs::read(src_ino, read_buf, 0, fsize);
         if (bytes > 0) {
-            ramfs_write(dst_ino, read_buf, 0, bytes as ulong);
+            RamFs::write(dst_ino, read_buf, 0, bytes as ulong);
         }
     }
     // ソース削除
-    ramfs_unlink(src_addr as void*);
+    RamFs::unlink(src_addr as void*);
     sh_print("Moved: " as void*);
     sh_print(src_addr as void*);
     sh_print(" -> " as void*);
@@ -941,19 +941,19 @@ void cmd_head(ulong name_addr) {
         sh_println("Usage: head <filename>" as void*);
         return;
     }
-    Ino ino = ramfs_lookup(name_addr as void*);
+    Ino ino = RamFs::lookup(name_addr as void*);
     if (ino == 0) {
         sh_print("head: file not found: " as void*);
         sh_println(name_addr as void*);
         return;
     }
-    ulong fsize = ramfs_file_size(ino);
+    ulong fsize = RamFs::file_size(ino);
     if (fsize == 0) {
         sh_println("(empty file)" as void*);
         return;
     }
     ulong read_buf = 0x94100;
-    long bytes = ramfs_read(ino, read_buf, 0, fsize);
+    long bytes = RamFs::read(ino, read_buf, 0, fsize);
     if (bytes > 0) {
         ulong lines = 0;
         ulong j = 0;
@@ -1009,7 +1009,7 @@ void cmd_cd(ulong dir_addr) {
     }
     // 相対パス → CWD + "/" + dir で合成（簡易版: ルート直下のみ）
     // ramfsでディレクトリ存在確認
-    Ino ino = ramfs_lookup(dir_addr as void*);
+    Ino ino = RamFs::lookup(dir_addr as void*);
     if (ino == 0) {
         sh_print("cd: no such directory: " as void*);
         sh_println(dir_addr as void*);
@@ -1172,12 +1172,12 @@ void cmd_grep(ulong pat_addr, ulong file_addr) {
     while (read_byte(pat_addr + pat_len) != 0) { pat_len = pat_len + 1; }
     if (pat_len == 0) { return; }
     // ファイル読み出し
-    Ino ino = ramfs_lookup(file_addr as void*);
+    Ino ino = RamFs::lookup(file_addr as void*);
     if (ino == 0) { sh_print("grep: not found: " as void*); sh_println(file_addr as void*); return; }
-    ulong fsize = ramfs_file_size(ino);
+    ulong fsize = RamFs::file_size(ino);
     if (fsize == 0) { return; }
     ulong buf = 0x94100;
-    long bytes = ramfs_read(ino, buf, 0, fsize);
+    long bytes = RamFs::read(ino, buf, 0, fsize);
     if (bytes <= 0) { return; }
     // 行ごと検索
     ulong ls = 0;
@@ -1216,12 +1216,12 @@ void cmd_grep(ulong pat_addr, ulong file_addr) {
 
 void cmd_sort(ulong file_addr) {
     if (file_addr == 0) { sh_println("Usage: sort <file>" as void*); return; }
-    Ino ino = ramfs_lookup(file_addr as void*);
+    Ino ino = RamFs::lookup(file_addr as void*);
     if (ino == 0) { sh_print("sort: not found: " as void*); sh_println(file_addr as void*); return; }
-    ulong fsize = ramfs_file_size(ino);
+    ulong fsize = RamFs::file_size(ino);
     if (fsize == 0) { return; }
     ulong buf = 0x94100;
-    long bytes = ramfs_read(ino, buf, 0, fsize);
+    long bytes = RamFs::read(ino, buf, 0, fsize);
     if (bytes <= 0) { return; }
     // 行開始アドレスを収集 (max 64行)
     ulong line_starts = 0x96000;
@@ -1561,7 +1561,7 @@ export void shell_main() {
         // キー入力ループ
         ulong input_done = 0;
         while (input_done == 0) {
-            ulong ch = kbd_getchar();
+            ulong ch = Kbd::getchar();
             if (ch == 0) {
                 __asm__(`hlt`);
             } else if (ch == 10) {

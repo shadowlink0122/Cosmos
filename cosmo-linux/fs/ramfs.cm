@@ -1,7 +1,7 @@
 //! platform: baremetal-x86
 // cosmo-linux::fs::ramfs - メモリ上ファイルシステム + VFS
 //
-// 最小構成: ramfs + ディレクトリ操作 + ファイル読み書き
+// RamFs struct/impl パターンで実装
 
 import ../include/types;
 import ../include/config;
@@ -28,23 +28,7 @@ const PhysAddr NAME_BASE = 0x404000;
 const PhysAddr NEXT_INO  = 0x405000;
 const PhysAddr DIR_CNT   = 0x405008;
 
-export void vfs_init(SerialPort* w) {
-    memzero(INO_BASE as void*, 7168);
-    memzero(DIR_BASE as void*, 2048);
-    memzero(NAME_BASE as void*, 2048);
-    ulong* ni = NEXT_INO as ulong*; *ni = 2;
-    ulong* dc = DIR_CNT as ulong*;  *dc = 0;
-    // ルートinode
-    ulong* p0 = INO_BASE as ulong*;             *p0 = 1;
-    ulong* p1 = (INO_BASE + 8) as ulong*;       *p1 = S_IFDIR | 0x1FF;
-    ulong* p2 = (INO_BASE + 16) as ulong*;      *p2 = 0;
-    ulong* p3 = (INO_BASE + 24) as ulong*;      *p3 = 2;
-    ulong* p4 = (INO_BASE + 32) as ulong*;      *p4 = 0;
-    ulong* p5 = (INO_BASE + 40) as ulong*;      *p5 = FS_RAMFS;
-    ulong* p6 = (INO_BASE + 48) as ulong*;      *p6 = 1;
-    pr_info(w, "VFS initialized (ramfs)" as void*);
-}
-
+// 内部ヘルパー
 ulong find_ino(Ino ino) {
     ulong i = 0;
     while (i < MAX_INODES) {
@@ -95,171 +79,202 @@ ulong name_eq(ulong a, ulong b) {
     return 1;
 }
 
-export Ino ramfs_lookup(void* name) {
-    ulong* dc = DIR_CNT as ulong*;
-    ulong i = 0;
-    while (i < *dc) {
-        ulong o = i * 32;
-        ulong* u = (DIR_BASE + o + 24) as ulong*;
-        if (*u != 0) {
-            ulong* na = (DIR_BASE + o) as ulong*;
-            if (name_eq(*na, name as ulong) != 0) {
-                ulong* ip = (DIR_BASE + o + 8) as ulong*;
-                return (*ip) as long;
-            }
-        }
-        i = i + 1;
+/// RamFS — メモリ上ファイルシステム
+export struct RamFs {}
+
+impl RamFs {
+    /// VFS初期化
+    static void setup(SerialPort* w) {
+        memzero(INO_BASE as void*, 7168);
+        memzero(DIR_BASE as void*, 2048);
+        memzero(NAME_BASE as void*, 2048);
+        ulong* ni = NEXT_INO as ulong*; *ni = 2;
+        ulong* dc = DIR_CNT as ulong*;  *dc = 0;
+        // ルートinode
+        ulong* p0 = INO_BASE as ulong*;             *p0 = 1;
+        ulong* p1 = (INO_BASE + 8) as ulong*;       *p1 = S_IFDIR | 0x1FF;
+        ulong* p2 = (INO_BASE + 16) as ulong*;      *p2 = 0;
+        ulong* p3 = (INO_BASE + 24) as ulong*;      *p3 = 2;
+        ulong* p4 = (INO_BASE + 32) as ulong*;      *p4 = 0;
+        ulong* p5 = (INO_BASE + 40) as ulong*;      *p5 = FS_RAMFS;
+        ulong* p6 = (INO_BASE + 48) as ulong*;      *p6 = 1;
+        pr_info(w, "VFS initialized (ramfs)" as void*);
     }
-    return 0;
-}
 
-export Ino ramfs_create(void* name, ulong mode, ulong data_addr) {
-    Ino ex = ramfs_lookup(name);
-    if (ex != 0) { return ex; }
-    ulong* dc = DIR_CNT as ulong*;
-    if (*dc >= MAX_DIR_ENTRIES) { return 0; }
-    Ino ino = alloc_ino(mode, data_addr);
-    if (ino == 0) { return 0; }
-    ulong cnt = *dc;
-    ulong o = cnt * 32;
-    ulong ns = NAME_BASE + cnt * MAX_NAME_LEN;
-    // 名前コピー
-    ulong k = 0;
-    ulong done = 0;
-    while (k < MAX_NAME_LEN - 1) {
-        if (done == 0) {
-            ulong c = rb((name as ulong) + k);
-            wb(ns + k, c);
-            if (c == 0) { done = 1; }
-        }
-        k = k + 1;
-    }
-    wb(ns + MAX_NAME_LEN - 1, 0);
-    ulong* dn = (DIR_BASE + o) as ulong*;      *dn = ns;
-    ulong* di = (DIR_BASE + o + 8) as ulong*;  *di = ino as ulong;
-    ulong* dt = (DIR_BASE + o + 16) as ulong*; *dt = mode & S_IFMT;
-    ulong* du = (DIR_BASE + o + 24) as ulong*; *du = 1;
-    *dc = cnt + 1;
-    return ino;
-}
-
-export long ramfs_read(Ino ino, ulong buf, ulong off, ulong cnt) {
-    ulong io = find_ino(ino);
-    if (io == 0xFFFFFFFFFFFFFFFF) { return -1; }
-    ulong* sp = (INO_BASE + io + 16) as ulong*;
-    if (off >= *sp) { return 0; }
-    ulong av = *sp - off;
-    if (cnt > av) { cnt = av; }
-    ulong* dp = (INO_BASE + io + 32) as ulong*;
-    if (*dp == 0) { return 0; }
-    ulong i = 0;
-    while (i < cnt) {
-        wb(buf + i, rb(*dp + off + i));
-        i = i + 1;
-    }
-    return cnt as long;
-}
-
-export long ramfs_write(Ino ino, ulong buf, ulong off, ulong cnt) {
-    ulong io = find_ino(ino);
-    if (io == 0xFFFFFFFFFFFFFFFF) { return -1; }
-    if (off + cnt > MAX_FILE_SIZE) { cnt = MAX_FILE_SIZE - off; }
-    if (cnt == 0) { return 0; }
-    ulong* dp = (INO_BASE + io + 32) as ulong*;
-    if (*dp == 0) { return -1; }
-    ulong i = 0;
-    while (i < cnt) {
-        wb(*dp + off + i, rb(buf + i));
-        i = i + 1;
-    }
-    ulong* sp = (INO_BASE + io + 16) as ulong*;
-    ulong ne = off + cnt;
-    if (ne > *sp) { *sp = ne; }
-    return cnt as long;
-}
-
-export void ramfs_truncate(Ino ino) {
-    ulong io = find_ino(ino);
-    if (io != 0xFFFFFFFFFFFFFFFF) {
-        ulong* sp = (INO_BASE + io + 16) as ulong*;
-        *sp = 0;
-    }
-}
-
-export ulong ramfs_dir_count() {
-    ulong* dc = DIR_CNT as ulong*;
-    return *dc;
-}
-
-export ulong ramfs_dir_name(ulong idx) {
-    ulong* dc = DIR_CNT as ulong*;
-    if (idx >= *dc) { return 0; }
-    ulong o = idx * 32;
-    ulong* u = (DIR_BASE + o + 24) as ulong*;
-    if (*u == 0) { return 0; }
-    ulong* n = (DIR_BASE + o) as ulong*;
-    return *n;
-}
-
-export ulong ramfs_dir_type(ulong idx) {
-    ulong* dc = DIR_CNT as ulong*;
-    if (idx >= *dc) { return 0; }
-    ulong* t = (DIR_BASE + idx * 32 + 16) as ulong*;
-    return *t;
-}
-
-export Ino ramfs_dir_ino(ulong idx) {
-    ulong* dc = DIR_CNT as ulong*;
-    if (idx >= *dc) { return 0; }
-    ulong* ip = (DIR_BASE + idx * 32 + 8) as ulong*;
-    return (*ip) as long;
-}
-
-export ulong ramfs_file_size(Ino ino) {
-    ulong io = find_ino(ino);
-    if (io == 0xFFFFFFFFFFFFFFFF) { return 0; }
-    ulong* sp = (INO_BASE + io + 16) as ulong*;
-    return *sp;
-}
-
-/// ファイル削除（inode解放 + direntry削除）
-export long ramfs_unlink(void* name) {
-    ulong* dc = DIR_CNT as ulong*;
-    ulong i = 0;
-    while (i < *dc) {
-        ulong o = i * 32;
-        ulong* u = (DIR_BASE + o + 24) as ulong*;
-        if (*u != 0) {
-            ulong* na = (DIR_BASE + o) as ulong*;
-            if (name_eq(*na, name as ulong) != 0) {
-                // ディレクトリは削除不可
-                ulong* dt = (DIR_BASE + o + 16) as ulong*;
-                if (*dt == S_IFDIR) { return 0 - 21; }  // -EISDIR
-
-                // inode解放
-                ulong* ip = (DIR_BASE + o + 8) as ulong*;
-                Ino ino = (*ip) as long;
-                ulong io = find_ino(ino);
-                if (io != 0xFFFFFFFFFFFFFFFF) {
-                    ulong* iu = (INO_BASE + io + 48) as ulong*;
-                    *iu = 0;  // used = 0
+    /// 名前からinode検索
+    static Ino lookup(void* name) {
+        ulong* dc = DIR_CNT as ulong*;
+        ulong i = 0;
+        while (i < *dc) {
+            ulong o = i * 32;
+            ulong* u = (DIR_BASE + o + 24) as ulong*;
+            if (*u != 0) {
+                ulong* na = (DIR_BASE + o) as ulong*;
+                if (name_eq(*na, name as ulong) != 0) {
+                    ulong* ip = (DIR_BASE + o + 8) as ulong*;
+                    return (*ip) as long;
                 }
-
-                // direntry削除
-                *u = 0;
-                return 0;
             }
+            i = i + 1;
         }
-        i = i + 1;
+        return 0;
     }
-    return 0 - 2;  // -ENOENT
-}
 
-/// ディレクトリ作成
-export Ino ramfs_mkdir(void* name) {
-    // 既存チェック
-    Ino ex = ramfs_lookup(name);
-    if (ex != 0) { return ex; }
+    /// ファイル作成
+    static Ino create(void* name, ulong mode, ulong data_addr) {
+        Ino ex = RamFs::lookup(name);
+        if (ex != 0) { return ex; }
+        ulong* dc = DIR_CNT as ulong*;
+        if (*dc >= MAX_DIR_ENTRIES) { return 0; }
+        Ino ino = alloc_ino(mode, data_addr);
+        if (ino == 0) { return 0; }
+        ulong cnt = *dc;
+        ulong o = cnt * 32;
+        ulong ns = NAME_BASE + cnt * MAX_NAME_LEN;
+        // 名前コピー
+        ulong k = 0;
+        ulong done = 0;
+        while (k < MAX_NAME_LEN - 1) {
+            if (done == 0) {
+                ulong c = rb((name as ulong) + k);
+                wb(ns + k, c);
+                if (c == 0) { done = 1; }
+            }
+            k = k + 1;
+        }
+        wb(ns + MAX_NAME_LEN - 1, 0);
+        ulong* dn = (DIR_BASE + o) as ulong*;      *dn = ns;
+        ulong* di = (DIR_BASE + o + 8) as ulong*;  *di = ino as ulong;
+        ulong* dt = (DIR_BASE + o + 16) as ulong*; *dt = mode & S_IFMT;
+        ulong* du = (DIR_BASE + o + 24) as ulong*; *du = 1;
+        *dc = cnt + 1;
+        return ino;
+    }
 
-    return ramfs_create(name, S_IFDIR | 0x1FF, 0);
+    /// ファイル読み出し
+    static long read(Ino ino, ulong buf, ulong off, ulong cnt) {
+        ulong io = find_ino(ino);
+        if (io == 0xFFFFFFFFFFFFFFFF) { return -1; }
+        ulong* sp = (INO_BASE + io + 16) as ulong*;
+        if (off >= *sp) { return 0; }
+        ulong av = *sp - off;
+        if (cnt > av) { cnt = av; }
+        ulong* dp = (INO_BASE + io + 32) as ulong*;
+        if (*dp == 0) { return 0; }
+        ulong i = 0;
+        while (i < cnt) {
+            wb(buf + i, rb(*dp + off + i));
+            i = i + 1;
+        }
+        return cnt as long;
+    }
+
+    /// ファイル書き込み
+    static long write(Ino ino, ulong buf, ulong off, ulong cnt) {
+        ulong io = find_ino(ino);
+        if (io == 0xFFFFFFFFFFFFFFFF) { return -1; }
+        if (off + cnt > MAX_FILE_SIZE) { cnt = MAX_FILE_SIZE - off; }
+        if (cnt == 0) { return 0; }
+        ulong* dp = (INO_BASE + io + 32) as ulong*;
+        if (*dp == 0) { return -1; }
+        ulong i = 0;
+        while (i < cnt) {
+            wb(*dp + off + i, rb(buf + i));
+            i = i + 1;
+        }
+        ulong* sp = (INO_BASE + io + 16) as ulong*;
+        ulong ne = off + cnt;
+        if (ne > *sp) { *sp = ne; }
+        return cnt as long;
+    }
+
+    /// ファイル内容の切り詰め
+    static void truncate(Ino ino) {
+        ulong io = find_ino(ino);
+        if (io != 0xFFFFFFFFFFFFFFFF) {
+            ulong* sp = (INO_BASE + io + 16) as ulong*;
+            *sp = 0;
+        }
+    }
+
+    /// ディレクトリエントリ数
+    static ulong dir_count() {
+        ulong* dc = DIR_CNT as ulong*;
+        return *dc;
+    }
+
+    /// ディレクトリエントリの名前
+    static ulong dir_name(ulong idx) {
+        ulong* dc = DIR_CNT as ulong*;
+        if (idx >= *dc) { return 0; }
+        ulong o = idx * 32;
+        ulong* u = (DIR_BASE + o + 24) as ulong*;
+        if (*u == 0) { return 0; }
+        ulong* n = (DIR_BASE + o) as ulong*;
+        return *n;
+    }
+
+    /// ディレクトリエントリのタイプ
+    static ulong dir_type(ulong idx) {
+        ulong* dc = DIR_CNT as ulong*;
+        if (idx >= *dc) { return 0; }
+        ulong* t = (DIR_BASE + idx * 32 + 16) as ulong*;
+        return *t;
+    }
+
+    /// ディレクトリエントリのinode番号
+    static Ino dir_ino(ulong idx) {
+        ulong* dc = DIR_CNT as ulong*;
+        if (idx >= *dc) { return 0; }
+        ulong* ip = (DIR_BASE + idx * 32 + 8) as ulong*;
+        return (*ip) as long;
+    }
+
+    /// ファイルサイズ取得
+    static ulong file_size(Ino ino) {
+        ulong io = find_ino(ino);
+        if (io == 0xFFFFFFFFFFFFFFFF) { return 0; }
+        ulong* sp = (INO_BASE + io + 16) as ulong*;
+        return *sp;
+    }
+
+    /// ファイル削除（inode解放 + direntry削除）
+    static long unlink(void* name) {
+        ulong* dc = DIR_CNT as ulong*;
+        ulong i = 0;
+        while (i < *dc) {
+            ulong o = i * 32;
+            ulong* u = (DIR_BASE + o + 24) as ulong*;
+            if (*u != 0) {
+                ulong* na = (DIR_BASE + o) as ulong*;
+                if (name_eq(*na, name as ulong) != 0) {
+                    // ディレクトリは削除不可
+                    ulong* dt = (DIR_BASE + o + 16) as ulong*;
+                    if (*dt == S_IFDIR) { return 0 - 21; }  // -EISDIR
+
+                    // inode解放
+                    ulong* ip = (DIR_BASE + o + 8) as ulong*;
+                    Ino ino = (*ip) as long;
+                    ulong io = find_ino(ino);
+                    if (io != 0xFFFFFFFFFFFFFFFF) {
+                        ulong* iu = (INO_BASE + io + 48) as ulong*;
+                        *iu = 0;  // used = 0
+                    }
+
+                    // direntry削除
+                    *u = 0;
+                    return 0;
+                }
+            }
+            i = i + 1;
+        }
+        return 0 - 2;  // -ENOENT
+    }
+
+    /// ディレクトリ作成
+    static Ino mkdir(void* name) {
+        Ino ex = RamFs::lookup(name);
+        if (ex != 0) { return ex; }
+        return RamFs::create(name, S_IFDIR | 0x1FF, 0);
+    }
 }

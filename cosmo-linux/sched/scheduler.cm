@@ -220,7 +220,7 @@ export void schedule() {
     *cur_proc = next as ulong;
 
     // コンテキストスイッチ実行
-    context_switch(prev, next);
+    Context::switch_to(prev, next);
 }
 
 /// タイマーtick処理

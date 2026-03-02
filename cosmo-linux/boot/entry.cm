@@ -73,8 +73,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     // === 5. アーキテクチャ初期化 ===
     pr_info(&serial, "Initializing architecture..." as void*);
-    gdt_init(&serial);
-    idt_init(&serial);
+    Gdt::setup(&serial);
+    Idt::setup(&serial);
 
     // === 6. メモリ管理初期化 ===
     pr_info(&serial, "Initializing memory management..." as void*);
@@ -100,8 +100,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     // === 7. VFS初期化 ===
     pr_info(&serial, "Initializing VFS..." as void*);
-    vfs_init(&serial);
-    fd_table_init();
+    RamFs::setup(&serial);
+    FdTable::setup();
     cwd_init();
     pr_info(&serial, "VFS initialized (ramfs + fd + cwd)" as void*);
 
@@ -121,8 +121,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     // === 10. PIC/PIT/キーボード初期化 ===
     pr_info(&serial, "Initializing hardware drivers..." as void*);
-    pit_init(&serial);
-    kbd_init(&serial);
+    PIT::setup(&serial);
+    Kbd::setup(&serial);
 
     // === 11. initプロセス & シェルタスク生成 ===
     init_banner(&serial);
@@ -133,7 +133,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Process shell(alloc_pid(), 0);
     shell.alloc_stack(&pmm);
     if (shell.kernel_stack != 0) {
-        init_task_context(&shell, shell.kernel_stack, shell_main as ulong);
+        Context::init_task(&shell, shell.kernel_stack, shell_main as ulong);
         sched_add(&shell);
         pr_info(&serial, "Shell task created" as void*);
     }
@@ -153,7 +153,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     while (true) {
         hlt();
 
-        ulong need_resched = pit_check_resched();
+        ulong need_resched = PIT::check_resched();
         if (need_resched != 0) {
             sched_tick();
         }

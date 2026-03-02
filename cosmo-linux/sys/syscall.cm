@@ -129,17 +129,17 @@ long sys_read(ulong fd, ulong buf_addr, ulong count) {
     if (fd == 0) { return 0; }
 
     // ramfsファイル → VFS経由
-    return vfs_read(fd as long, buf_addr, count);
+    return Vfs::read(fd as long, buf_addr, count);
 }
 
 /// sys_open: ファイルをオープン
 long sys_open(ulong name_addr, ulong flags) {
-    return vfs_open(name_addr as void*, flags);
+    return Vfs::open(name_addr as void*, flags);
 }
 
 /// sys_close: FDを閉じる
 long sys_close(ulong fd) {
-    return vfs_close(fd as long);
+    return Vfs::close(fd as long);
 }
 
 /// sys_exit: プロセス終了

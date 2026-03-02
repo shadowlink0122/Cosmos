@@ -13,110 +13,102 @@ import ./fd_table;
 import ./ramfs;
 import ../lib/kstring;
 
-// ============================================================
-// VFS API
-// ============================================================
+/// Vfs — 仮想ファイルシステムAPI
+export struct Vfs {}
 
-/// ファイルをオープンしFDを返す
-/// 成功=fd番号(≥0)、失敗=負のerrno
-export Fd vfs_open(void* name, ulong flags) {
-    // ファイル名がNULLなら無効
-    if (name as ulong == 0) { return 0 - EINVAL; }
+impl Vfs {
+    /// ファイルをオープンしFDを返す
+    /// 成功=fd番号(≥0)、失敗=負のerrno
+    static Fd open(void* name, ulong flags) {
+        if (name as ulong == 0) { return 0 - EINVAL; }
 
-    // ramfsで検索
-    Ino ino = ramfs_lookup(name);
+        // ramfsで検索
+        Ino ino = RamFs::lookup(name);
 
-    if (ino == 0) {
-        // ファイルが存在しない
-        if ((flags & O_CREAT) != 0) {
-            // O_CREAT: 新規作成（データページなし — touchで確保）
-            ino = ramfs_create(name, S_IFREG | 0x1B6, 0);
-            if (ino == 0) { return 0 - ENOSPC; }
-        } else {
-            return 0 - ENOENT;
+        if (ino == 0) {
+            if ((flags & O_CREAT) != 0) {
+                ino = RamFs::create(name, S_IFREG | 0x1B6, 0);
+                if (ino == 0) { return 0 - ENOSPC; }
+            } else {
+                return 0 - ENOENT;
+            }
         }
-    }
 
-    // FD割り当て
-    Fd fd = fd_alloc(ino, flags, FS_RAMFS);
-    if (fd < 0) { return fd; }
+        // FD割り当て
+        Fd fd = FdTable::alloc(ino, flags, FS_RAMFS);
+        if (fd < 0) { return fd; }
 
-    // O_TRUNC: ファイル切り詰め
-    if ((flags & O_TRUNC) != 0) {
-        ramfs_truncate(ino);
-    }
-
-    // O_APPEND: オフセットをファイル末尾に設定
-    if ((flags & O_APPEND) != 0) {
-        ulong fsize = ramfs_file_size(ino);
-        fd_set_offset(fd, fsize);
-    }
-
-    return fd;
-}
-
-/// FDからデータを読み出し
-/// 成功=読み出しバイト数、失敗=負のerrno
-export long vfs_read(Fd fd, ulong buf, ulong count) {
-    if (fd_is_valid(fd) == 0) { return 0 - EBADF; }
-
-    ulong fs_type = fd_get_fs_type(fd);
-
-    // コンソール (stdin) — 未実装: 0を返す
-    if (fs_type == FS_CONSOLE) { return 0; }
-
-    // ramfs
-    if (fs_type == FS_RAMFS) {
-        Ino ino = fd_get_ino(fd);
-        ulong offset = fd_get_offset(fd);
-        long bytes = ramfs_read(ino, buf, offset, count);
-        if (bytes > 0) {
-            fd_set_offset(fd, offset + (bytes as ulong));
+        // O_TRUNC: ファイル切り詰め
+        if ((flags & O_TRUNC) != 0) {
+            RamFs::truncate(ino);
         }
-        return bytes;
-    }
 
-    return 0 - EBADF;
-}
-
-/// FDにデータを書き込み
-/// 成功=書き込みバイト数、失敗=負のerrno
-export long vfs_write(Fd fd, ulong buf, ulong count) {
-    if (fd_is_valid(fd) == 0) { return 0 - EBADF; }
-
-    ulong fs_type = fd_get_fs_type(fd);
-
-    // コンソール (stdout/stderr) — シリアル出力
-    if (fs_type == FS_CONSOLE) {
-        // syscall.cmのsys_writeが直接処理するので、ここでは-EBADFを返さない
-        // 呼び出し元がconsole処理済みなら到達しない
-        return count as long;
-    }
-
-    // ramfs
-    if (fs_type == FS_RAMFS) {
-        Ino ino = fd_get_ino(fd);
-        ulong offset = fd_get_offset(fd);
-        long bytes = ramfs_write(ino, buf, offset, count);
-        if (bytes > 0) {
-            fd_set_offset(fd, offset + (bytes as ulong));
+        // O_APPEND: オフセットをファイル末尾に設定
+        if ((flags & O_APPEND) != 0) {
+            ulong fsize = RamFs::file_size(ino);
+            FdTable::set_offset(fd, fsize);
         }
-        return bytes;
+
+        return fd;
     }
 
-    return 0 - EBADF;
-}
+    /// FDからデータを読み出し
+    static long read(Fd fd, ulong buf, ulong count) {
+        if (FdTable::is_valid(fd) == 0) { return 0 - EBADF; }
 
-/// FDを閉じる
-/// 成功=0、失敗=負のerrno
-export long vfs_close(Fd fd) {
-    if (fd_is_valid(fd) == 0) { return 0 - EBADF; }
-    fd_free(fd);
-    return 0;
-}
+        ulong fs_type = FdTable::get_fs_type(fd);
 
-/// ディレクトリエントリを読み出し（簡易版）
-/// idx番目のエントリの名前アドレスを返す（0=終端）
-export ulong vfs_readdir(ulong idx) {
-    return ramfs_dir_name(idx);
+        // コンソール (stdin) — 未実装: 0を返す
+        if (fs_type == FS_CONSOLE) { return 0; }
+
+        // ramfs
+        if (fs_type == FS_RAMFS) {
+            Ino ino = FdTable::get_ino(fd);
+            ulong offset = FdTable::get_offset(fd);
+            long bytes = RamFs::read(ino, buf, offset, count);
+            if (bytes > 0) {
+                FdTable::set_offset(fd, offset + (bytes as ulong));
+            }
+            return bytes;
+        }
+
+        return 0 - EBADF;
+    }
+
+    /// FDにデータを書き込み
+    static long write(Fd fd, ulong buf, ulong count) {
+        if (FdTable::is_valid(fd) == 0) { return 0 - EBADF; }
+
+        ulong fs_type = FdTable::get_fs_type(fd);
+
+        // コンソール (stdout/stderr) — シリアル出力
+        if (fs_type == FS_CONSOLE) {
+            return count as long;
+        }
+
+        // ramfs
+        if (fs_type == FS_RAMFS) {
+            Ino ino = FdTable::get_ino(fd);
+            ulong offset = FdTable::get_offset(fd);
+            long bytes = RamFs::write(ino, buf, offset, count);
+            if (bytes > 0) {
+                FdTable::set_offset(fd, offset + (bytes as ulong));
+            }
+            return bytes;
+        }
+
+        return 0 - EBADF;
+    }
+
+    /// FDを閉じる
+    static long close(Fd fd) {
+        if (FdTable::is_valid(fd) == 0) { return 0 - EBADF; }
+        FdTable::free(fd);
+        return 0;
+    }
+
+    /// ディレクトリエントリを読み出し（簡易版）
+    static ulong readdir(ulong idx) {
+        return RamFs::dir_name(idx);
+    }
 }

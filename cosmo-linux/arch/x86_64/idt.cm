@@ -2,6 +2,7 @@
 // cosmo-linux::arch::x86_64::idt - IDT設定
 //
 // 256ベクタのIDT。例外ハンドラ（#DE, #DF, #GP, #PF）を登録。
+// Idt struct/impl パターンで実装。
 // 参照: linux/arch/x86/kernel/idt.c
 
 import ../../include/types;
@@ -9,74 +10,42 @@ import ../../include/config;
 import ../../drivers/serial;
 import ../../lib/printk;
 
-// ============================================================
 // ゲートタイプ定数
-// ============================================================
-
 export const ulong GATE_INT  = 0x8E;  // Interrupt Gate, DPL=0
 export const ulong GATE_TRAP = 0x8F;  // Trap Gate, DPL=0
 export const ulong GATE_USER = 0xEF;  // Trap Gate, DPL=3
 
 // ============================================================
-// IDTエントリ設定
+// 例外ハンドラ（関数ポインタとして使うためモジュールレベル）
 // ============================================================
 
-/// IDTエントリを設定
-export void idt_set_gate(Vector vec, ulong handler, ulong gate_type) {
-    PhysAddr entry = IDT_ADDR + vec * 16;
-
-    // 下位8バイト
-    ulong low = 0;
-    low = low | (handler & 0xFFFF);                      // offset[15:0]
-    low = low | (0x08 << 16);                             // selector = 0x08
-    low = low | (gate_type << 40);                        // type_attr
-    low = low | (((handler >> 16) & 0xFFFF) << 48);       // offset[31:16]
-    ulong* lp = entry as ulong*;
-    *lp = low;
-
-    // 上位8バイト
-    ulong high = (handler >> 32) & 0xFFFFFFFF;            // offset[63:32]
-    ulong* hp = (entry + 8) as ulong*;
-    *hp = high;
-}
-
-// ============================================================
-// 例外ハンドラ
-// ============================================================
-
-/// 汎用例外ハンドラ（未登録ベクタ用）
 export void exc_default() {
     SerialPort serial(COM1);
     serial.println("!!! UNHANDLED EXCEPTION !!!" as void*);
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
-/// #DE ゼロ除算
 export void exc_divide_error() {
     SerialPort serial(COM1);
     serial.println("!!! DIVIDE ERROR (#DE) !!!" as void*);
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
-/// #DF ダブルフォルト
 export void exc_double_fault() {
     SerialPort serial(COM1);
     serial.println("!!! DOUBLE FAULT (#DF) !!!" as void*);
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
-/// #GP 一般保護例外
 export void exc_general_protection() {
     SerialPort serial(COM1);
     serial.println("!!! GENERAL PROTECTION (#GP) !!!" as void*);
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
-/// #PF ページフォルト
 export void exc_page_fault() {
     SerialPort serial(COM1);
     serial.println("!!! PAGE FAULT (#PF) !!!" as void*);
-    // CR2取得
     ulong cr2 = 0;
     __asm__(`
         movq %cr2, %rax;
@@ -88,45 +57,62 @@ export void exc_page_fault() {
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
-// ============================================================
-// IDT初期化
-// ============================================================
+/// Idt — IDT管理
+export struct Idt {}
 
-/// IDTを初期化してロード
-export void idt_init(SerialPort* w) {
-    // 全エントリをゼロクリア
-    ulong i = 0;
-    while (i < 256 * 16) {
-        ulong* p = (IDT_ADDR + i) as ulong*;
-        *p = 0;
-        i = i + 8;
+impl Idt {
+    /// IDTエントリを設定
+    static void set_gate(Vector vec, ulong handler, ulong gate_type) {
+        PhysAddr entry = IDT_ADDR + vec * 16;
+
+        ulong low = 0;
+        low = low | (handler & 0xFFFF);
+        low = low | (0x08 << 16);
+        low = low | (gate_type << 40);
+        low = low | (((handler >> 16) & 0xFFFF) << 48);
+        ulong* lp = entry as ulong*;
+        *lp = low;
+
+        ulong high = (handler >> 32) & 0xFFFFFFFF;
+        ulong* hp = (entry + 8) as ulong*;
+        *hp = high;
     }
 
-    // 全ベクタにデフォルトハンドラ登録
-    ulong def = exc_default as ulong;
-    Vector v = 0;
-    while (v < 256) {
-        idt_set_gate(v, def, GATE_INT);
-        v = v + 1;
+    /// IDTを初期化してロード
+    static void setup(SerialPort* w) {
+        ulong i = 0;
+        while (i < 256 * 16) {
+            ulong* p = (IDT_ADDR + i) as ulong*;
+            *p = 0;
+            i = i + 8;
+        }
+
+        // 全ベクタにデフォルトハンドラ登録
+        ulong def = exc_default as ulong;
+        Vector v = 0;
+        while (v < 256) {
+            Idt::set_gate(v, def, GATE_INT);
+            v = v + 1;
+        }
+
+        // 主要例外ハンドラ
+        Idt::set_gate(0,  exc_divide_error as ulong,       GATE_TRAP);
+        Idt::set_gate(8,  exc_double_fault as ulong,       GATE_TRAP);
+        Idt::set_gate(13, exc_general_protection as ulong, GATE_TRAP);
+        Idt::set_gate(14, exc_page_fault as ulong,         GATE_TRAP);
+
+        // IDTR構築・ロード
+        ulong* idtr_lim = IDTR_ADDR as ulong*;
+        *idtr_lim = 256 * 16 - 1;
+        ulong* idtr_base = (IDTR_ADDR + 2) as ulong*;
+        *idtr_base = IDT_ADDR;
+
+        ulong idtr = IDTR_ADDR;
+        __asm__(`
+            movq ${r:idtr}, %rax;
+            lidt (%rax)
+        `);
+
+        pr_info(w, "IDT initialized (256 vectors)" as void*);
     }
-
-    // 主要例外ハンドラ
-    idt_set_gate(0,  exc_divide_error as ulong,       GATE_TRAP);
-    idt_set_gate(8,  exc_double_fault as ulong,       GATE_TRAP);
-    idt_set_gate(13, exc_general_protection as ulong, GATE_TRAP);
-    idt_set_gate(14, exc_page_fault as ulong,         GATE_TRAP);
-
-    // IDTR構築・ロード
-    ulong* idtr_lim = IDTR_ADDR as ulong*;
-    *idtr_lim = 256 * 16 - 1;
-    ulong* idtr_base = (IDTR_ADDR + 2) as ulong*;
-    *idtr_base = IDT_ADDR;
-
-    ulong idtr = IDTR_ADDR;
-    __asm__(`
-        movq ${r:idtr}, %rax;
-        lidt (%rax)
-    `);
-
-    pr_info(w, "IDT initialized (256 vectors)" as void*);
 }
