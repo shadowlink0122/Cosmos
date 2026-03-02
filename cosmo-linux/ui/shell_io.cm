@@ -1,0 +1,112 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell_io - シェル出力ユーティリティ
+//
+// VGA + シリアル同時出力。Shell struct/impl。
+
+import ./shell_const;
+import ./mem;
+import ./vga;
+import ../drivers/serial;
+
+/// Shell — シェル出力ユーティリティ（VGA + シリアル同時出力）
+export struct Shell {}
+
+impl Shell {
+    static void putc(ulong ch) {
+        Vga::putc(ch);
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->putc(ch);
+    }
+
+    static void write(void* msg) {
+        Vga::puts(msg);
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->puts(msg);
+    }
+
+    static void writeln(void* msg) {
+        Shell::write(msg);
+        Shell::putc(10);
+    }
+
+    static void set_color(ulong fg, ulong bg) {
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        *color_ptr = ((bg & 0x0F) << 4) | (fg & 0x0F);
+    }
+
+    static void print_dec(ulong value) {
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        if (value == 0) {
+            Vga::putc(48);
+            ser->putc(48);
+            return;
+        }
+        ulong buf0 = 0;
+        ulong buf1 = 0;
+        ulong buf2 = 0;
+        ulong buf3 = 0;
+        ulong buf4 = 0;
+        ulong buf5 = 0;
+        ulong buf6 = 0;
+        ulong buf7 = 0;
+        ulong buf8 = 0;
+        ulong buf9 = 0;
+        ulong count = 0;
+        ulong tmp = value;
+        while (tmp != 0) {
+            ulong digit = tmp % 10;
+            if (count == 0) { buf0 = digit; }
+            if (count == 1) { buf1 = digit; }
+            if (count == 2) { buf2 = digit; }
+            if (count == 3) { buf3 = digit; }
+            if (count == 4) { buf4 = digit; }
+            if (count == 5) { buf5 = digit; }
+            if (count == 6) { buf6 = digit; }
+            if (count == 7) { buf7 = digit; }
+            if (count == 8) { buf8 = digit; }
+            if (count == 9) { buf9 = digit; }
+            tmp = tmp / 10;
+            count = count + 1;
+        }
+        ulong i = count;
+        while (i != 0) {
+            i = i - 1;
+            ulong d = 0;
+            if (i == 0) { d = buf0; }
+            if (i == 1) { d = buf1; }
+            if (i == 2) { d = buf2; }
+            if (i == 3) { d = buf3; }
+            if (i == 4) { d = buf4; }
+            if (i == 5) { d = buf5; }
+            if (i == 6) { d = buf6; }
+            if (i == 7) { d = buf7; }
+            if (i == 8) { d = buf8; }
+            if (i == 9) { d = buf9; }
+            Vga::putc(d + 48);
+            ser->putc(d + 48);
+        }
+    }
+
+    /// 1バイト16進表示 (2桁)
+    static void print_hex_byte(ulong val) {
+        ulong hi = (val >> 4) & 0xF;
+        ulong lo = val & 0xF;
+        if (hi < 10) { Shell::putc(48 + hi); } else { Shell::putc(87 + hi); }
+        if (lo < 10) { Shell::putc(48 + lo); } else { Shell::putc(87 + lo); }
+    }
+
+    /// 16進表示 (8桁)
+    static void print_hex(ulong val) {
+        ulong i = 0;
+        while (i < 8) {
+            ulong shift = (7 - i) * 4;
+            ulong nibble = (val >> shift) & 0xF;
+            if (nibble < 10) { Shell::putc(48 + nibble); } else { Shell::putc(87 + nibble); }
+            i = i + 1;
+        }
+    }
+
+}

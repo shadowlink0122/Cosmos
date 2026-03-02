@@ -1,0 +1,127 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::vga - VGAテキストモードドライバ
+//
+// VGAバッファ (0xB8000) への直接書き込み。
+// カーソル更新、スクロール、画面クリアを提供。
+
+import ./shell_const;
+import ./mem;
+import ../drivers/serial;
+
+/// Vga — VGAテキストモードドライバ
+export struct Vga {}
+
+impl Vga {
+    /// 指定位置に文字を書き込み
+    static void write_at(ulong row, ulong col, ulong ch, ulong color) {
+        ulong offset = (row * VGA_COLS + col) * 2;
+        Mem::write_byte(VGA_BUF + offset, ch & 0xFF);
+        Mem::write_byte(VGA_BUF + offset + 1, color & 0xFF);
+    }
+
+    /// カーソル更新
+    static void update_cursor() {
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        ulong pos = (*row_ptr) * VGA_COLS + (*col_ptr);
+        outb(0x3D4, 0x0E);
+        outb(0x3D5, (pos >> 8) & 0xFF);
+        outb(0x3D4, 0x0F);
+        outb(0x3D5, pos & 0xFF);
+    }
+
+    /// 1行スクロール
+    static void scroll() {
+        ulong r = 1;
+        while (r < VGA_ROWS) {
+            ulong c = 0;
+            while (c < VGA_COLS) {
+                ulong src_off = (r * VGA_COLS + c) * 2;
+                ulong dst_off = ((r - 1) * VGA_COLS + c) * 2;
+                ulong ch_val = Mem::read_byte(VGA_BUF + src_off);
+                ulong at_val = Mem::read_byte(VGA_BUF + src_off + 1);
+                Mem::write_byte(VGA_BUF + dst_off, ch_val);
+                Mem::write_byte(VGA_BUF + dst_off + 1, at_val);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        ulong c = 0;
+        while (c < VGA_COLS) {
+            Vga::write_at(VGA_ROWS - 1, c, 32, *color_ptr);
+            c = c + 1;
+        }
+    }
+
+    /// 改行
+    static void newline() {
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        *col_ptr = 0;
+        ulong row = *row_ptr + 1;
+        if (row >= VGA_ROWS) {
+            Vga::scroll();
+            row = VGA_ROWS - 1;
+        }
+        *row_ptr = row;
+    }
+
+    /// 1文字出力
+    static void putc(ulong ch) {
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+
+        if (ch == 10) {
+            Vga::newline();
+        } else if (ch == 8) {
+            ulong col = *col_ptr;
+            if (col > 0) {
+                *col_ptr = col - 1;
+                Vga::write_at(*row_ptr, col - 1, 32, *color_ptr);
+            }
+        } else if (ch >= 32) {
+            Vga::write_at(*row_ptr, *col_ptr, ch, *color_ptr);
+            ulong col = *col_ptr + 1;
+            if (col >= VGA_COLS) {
+                Vga::newline();
+            } else {
+                *col_ptr = col;
+            }
+        }
+        Vga::update_cursor();
+    }
+
+    /// 文字列出力
+    static void puts(void* msg) {
+        ulong addr = msg as ulong;
+        ulong i = 0;
+        while (true) {
+            ulong byte_val = Mem::read_byte(addr + i);
+            if (byte_val == 0) { return; }
+            Vga::putc(byte_val);
+            i = i + 1;
+        }
+    }
+
+    /// 画面クリア
+    static void clear_screen() {
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        ulong r = 0;
+        while (r < VGA_ROWS) {
+            ulong c = 0;
+            while (c < VGA_COLS) {
+                Vga::write_at(r, c, 32, *color_ptr);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        *col_ptr = 0;
+        *row_ptr = 0;
+        Vga::update_cursor();
+    }
+
+}
