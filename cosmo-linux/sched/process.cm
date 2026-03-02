@@ -51,6 +51,8 @@ impl Process {
         self.priority = 20;
         self.pending_signal = 0;
         self.brk_addr = 0x800000;
+        self.user_stack = 0;
+        self.is_user = 0;
     }
 
     /// プロセスが実行可能か
@@ -104,6 +106,8 @@ impl ProcessTable {
         idle->priority = 99;
         idle->pending_signal = 0;
         idle->brk_addr = 0x800000;
+        idle->user_stack = 0;
+        idle->is_user = 0;
         pr_info(w, "Idle process (PID 0) created" as void*);
     }
 

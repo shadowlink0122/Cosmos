@@ -20,6 +20,7 @@ import ../mm/vmm;
 import ../sched/process;
 import ../sched/scheduler;
 import ../arch/x86_64/context;
+import ../arch/x86_64/usermode;
 import ./elf;
 
 // ============================================================
@@ -175,6 +176,10 @@ impl Loader {
 
         // コンテキスト初期化（エントリポイントへジャンプ）
         Context::init_task(proc, proc->kernel_stack, entry);
+
+        // ユーザープロセスフラグ設定
+        proc->is_user = 1;
+        proc->user_stack = Usermode::alloc_user_stack();
 
         // スケジューラに登録
         Sched::add(proc);

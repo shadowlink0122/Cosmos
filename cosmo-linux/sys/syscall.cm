@@ -61,9 +61,9 @@ impl Syscall {
         ulong efer = Cpu::rdmsr(MSR_EFER);
         Cpu::wrmsr(MSR_EFER, efer | EFER_SCE);
 
-        // STAR: syscall時のCS/SS = 0x08/0x10, sysret時のCS/SS = 0x18/0x20
-        // ビット配置: [63:48]=sysret CS base, [47:32]=syscall CS base
-        ulong star = (0x0018 << 48) | (0x0008 << 32);
+        // STAR: syscall時のCS/SS = 0x08/0x10, sysret時のCS/SS base = 0x10
+        // sysret: User DS = base+8 = 0x18|3, User CS(64) = base+16 = 0x20|3
+        ulong star = (0x0010 << 48) | (0x0008 << 32);
         Cpu::wrmsr(MSR_STAR, star);
 
         // LSTAR: syscallエントリアドレス

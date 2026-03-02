@@ -1,0 +1,82 @@
+//! platform: baremetal-x86
+// cosmo-linux::arch::x86_64::usermode - ユーザーモード遷移
+//
+// iretq を使用して Ring 0 → Ring 3 に遷移する。
+// 参照: linux/arch/x86/kernel/process_64.c
+
+import ../../include/types;
+import ../../include/scheduler;
+import ../../include/page_alloc;
+import ../../mm/vmm;
+import ../../mm/pmm;
+import ../../lib/kstring;
+import ./gdt;
+
+// ============================================================
+// ユーザーモード定数
+// ============================================================
+
+/// ユーザースタック仮想アドレス（4KiBスタック）
+const VirtAddr USER_STACK_BASE = 0x7FFFFF000;
+
+/// ユーザースタックサイズ
+const ulong USER_STACK_SIZE = 4096;
+
+/// PMMポインタアドレス
+const PhysAddr UM_PMM_PTR = 0x95010;
+
+// ============================================================
+// Usermode struct/impl
+// ============================================================
+
+/// Usermode — ユーザーモード遷移管理
+export struct Usermode {}
+
+impl Usermode {
+    /// ユーザースタックを確保してマッピング
+    static VirtAddr alloc_user_stack() {
+        ulong* pmm_ptr = UM_PMM_PTR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        PageTable pt(cr3);
+
+        // ユーザースタック用物理ページ確保
+        PhysAddr phys = pmm->alloc_pages(0);
+        if (phys == 0) { return 0; }
+        memzero(phys as void*, PAGE_SIZE);
+
+        // ユーザーアクセス可能にマッピング
+        pt.map_page(USER_STACK_BASE, phys, USER_PAGE_FLAGS, pmm);
+
+        // スタックはトップから成長するので先頭を返す
+        return USER_STACK_BASE + USER_STACK_SIZE;
+    }
+
+    /// iretq で Ring 3 に遷移
+    /// entry: ユーザープログラムのエントリポイント
+    /// user_rsp: ユーザースタック先頭
+    static void jump_to_usermode(ulong entry, ulong user_rsp) {
+        ulong user_cs = USER_CS | 3;  // RPL = 3
+        ulong user_ds = USER_DS | 3;  // RPL = 3
+        ulong rflags = 0x200;         // IF=1 (割り込み有効)
+
+        __asm__(`
+            // データセグメントをユーザーDSに設定
+            movq ${r:user_ds}, %rax;
+            movw %ax, %ds;
+            movw %ax, %es;
+            movw %ax, %fs;
+            movw %ax, %gs;
+
+            // iretqフレームをスタックに構築
+            pushq ${r:user_ds};   // SS
+            pushq ${r:user_rsp};  // RSP
+            pushq ${r:rflags};    // RFLAGS
+            pushq ${r:user_cs};   // CS
+            pushq ${r:entry};     // RIP
+            iretq
+        `);
+    }
+}

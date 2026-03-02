@@ -55,13 +55,22 @@
 ## 計画中
 
 ### v0.0.8 — DevFS + パイプ + I/Oリダイレクト
-- [ ] /dev/null, /dev/zero, /dev/random
-- [ ] DevFS 実装
-- [ ] pipe() syscall
-- [ ] dup2() syscall
+- [x] /dev/null, /dev/zero, /dev/random
+- [x] DevFS 実装
+- [x] pipe() syscall
+- [x] dup2() syscall
 
-### v0.1.0 — ELF ローダーとユーザー空間
-- [ ] ELF64 バイナリパーサ
-- [ ] ユーザー空間プロセス実行
-- [ ] Ring 3 遷移
+### v0.1.0 — ELF ローダーとTSS
+- [x] ELF64 バイナリパーサ
+- [x] ELFローダー (RamFS→プロセス生成)
+- [x] TSS初期化 (RSP0設定)
+- [x] exec コマンド
+
+---
+
+## 計画中
+
+### v0.2.0 — ユーザー空間とRing3遷移
+- [ ] Ring 3 遷移 (iretq)
 - [ ] ユーザースタック/カーネルスタック分離
+- [ ] syscall Ring3対応

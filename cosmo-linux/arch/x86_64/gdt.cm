@@ -10,11 +10,11 @@ import ../../include/config;
 import ../../drivers/serial;
 import ../../lib/printk;
 
-// セグメントセレクタ定数
+// セグメントセレクタ定数（sysret互換配置）
 export const ulong KERNEL_CS = 0x08;
 export const ulong KERNEL_DS = 0x10;
-export const ulong USER_CS   = 0x18;
-export const ulong USER_DS   = 0x20;
+export const ulong USER_DS   = 0x18;  // STAR sysret base + 8
+export const ulong USER_CS   = 0x20;  // STAR sysret base + 16
 export const ulong TSS_SEL   = 0x28;
 
 // GDTエントリ数（TSS用2スロット含む）
@@ -49,13 +49,13 @@ impl Gdt {
         ulong* e2 = (base + 16) as ulong*;
         *e2 = Gdt::make_entry(0x92, 0x0);
 
-        // エントリ 3: ユーザーコード (0x18)
+        // エントリ 3: ユーザーデータ (0x18) — sysret base + 8
         ulong* e3 = (base + 24) as ulong*;
-        *e3 = Gdt::make_entry(0xFA, 0x2);
+        *e3 = Gdt::make_entry(0xF2, 0x0);
 
-        // エントリ 4: ユーザーデータ (0x20)
+        // エントリ 4: ユーザーコード (0x20) — sysret base + 16
         ulong* e4 = (base + 32) as ulong*;
-        *e4 = Gdt::make_entry(0xF2, 0x0);
+        *e4 = Gdt::make_entry(0xFA, 0x2);
 
         // エントリ 5-6: TSS（後でtss_init()で設定）
         ulong* e5 = (base + 40) as ulong*;

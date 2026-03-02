@@ -58,6 +58,8 @@ export struct Process {
     ulong priority;        // 優先度 (0=最高)
     ulong pending_signal;  // 保留中シグナル（ビットマスク）
     VirtAddr brk_addr;     // ヒープ上限アドレス
+    VirtAddr user_stack;   // ユーザースタック先頭
+    ulong is_user;         // ユーザープロセスフラグ (1=Ring3)
 }
 
 // ============================================================
