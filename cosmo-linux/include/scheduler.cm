@@ -49,13 +49,14 @@ export struct CpuContext {
 export struct Process {
     Pid pid;
     Pid parent_pid;
-    ulong state;              // TASK_RUNNING, TASK_READY, ...
-    VirtAddr kernel_stack;     // カーネルスタック先頭
-    PhysAddr page_table;       // CR3値 (アドレス空間)
+    ulong state;            // TASK_RUNNING, TASK_READY, ...
+    VirtAddr kernel_stack;  // カーネルスタック先頭
+    PhysAddr page_table;    // CR3値 (アドレス空間)
     long exit_code;
-    CpuContext context;        // レジスタ保存域
-    ulong time_slice;          // 残りタイムスライス
-    ulong priority;            // 優先度 (0=最高)
+    CpuContext context;    // レジスタ保存域
+    ulong time_slice;      // 残りタイムスライス
+    ulong priority;        // 優先度 (0=最高)
+    ulong pending_signal;  // 保留中シグナル（ビットマスク）
 }
 
 // ============================================================

@@ -14,6 +14,7 @@ import ../drivers/serial;
 import ../lib/printk;
 import ../lib/kstring;
 import ../mm/pmm;
+import ./scheduler;
 
 // ============================================================
 // プロセステーブル
@@ -24,6 +25,9 @@ const PhysAddr PROC_TABLE_BASE = 0x300000;
 
 /// 次のPID
 const PhysAddr NEXT_PID_ADDR = 0x300000 + 64 * 256;
+
+/// スケジューラポインタ配置アドレス（scheduler.cmと共有）
+const PhysAddr SCHED_PTR_ADDR = 0x91000;
 
 // ============================================================
 // impl Process
@@ -45,6 +49,7 @@ impl Process {
         };
         self.time_slice = 10;
         self.priority = 20;
+        self.pending_signal = 0;
     }
 
     /// プロセスが実行可能か
@@ -77,33 +82,91 @@ impl ProcessTable {
 
     /// プロセステーブルを初期化
     static void setup(SerialPort* w) {
-        // テーブルをゼロクリア
         memzero(PROC_TABLE_BASE as void*, 64 * 256);
-
-        // 次のPIDを1に初期化
         ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
         *pid_ptr = 1;
-
         pr_info(w, "Process table initialized (max 64)" as void*);
     }
 
     /// idle プロセス (PID 0) を作成
     static void create_idle(Process* idle, SerialPort* w) {
-        // 現在のCR3をページテーブルとして使用
         ulong cr3 = 0;
         __asm__(`
             movq %cr3, %rax;
             movq %rax, ${=r:cr3}
         `);
-
         idle->pid = 0;
         idle->parent_pid = 0;
         idle->state = TASK_RUNNING;
         idle->page_table = cr3;
-        idle->time_slice = 0;  // idleは無限
-        idle->priority = 99;   // 最低優先度
-
+        idle->time_slice = 0;
+        idle->priority = 99;
+        idle->pending_signal = 0;
         pr_info(w, "Idle process (PID 0) created" as void*);
+    }
+
+    /// PIDからプロセスを検索（スケジューラ内を走査）
+    static Process* find_by_pid(Pid target_pid) {
+        ulong* sched_ptr = SCHED_PTR_ADDR as ulong*;
+        if (*sched_ptr == 0) { return 0 as Process*; }
+        RoundRobinScheduler* sched = (*sched_ptr) as RoundRobinScheduler*;
+        ulong i = 0;
+        while (i < sched->count) {
+            ulong proc_addr = sched->get_proc(i);
+            if (proc_addr != 0) {
+                Process* proc = proc_addr as Process*;
+                if (proc->pid == target_pid) {
+                    return proc;
+                }
+            }
+            i = i + 1;
+        }
+        return 0 as Process*;
+    }
+
+    /// プロセス終了: ZOMBIE状態に遷移し、親にSIGCHLDを送信
+    static void do_exit(Process* proc, long code) {
+        proc->exit_code = code;
+        proc->state = TASK_ZOMBIE;
+        // 親プロセスにSIGCHLDを送信
+        Process* parent = ProcessTable::find_by_pid(proc->parent_pid);
+        ulong parent_addr = parent as ulong;
+        if (parent_addr != 0) {
+            // SIGCHLD = 17, ビット17をセット
+            parent->pending_signal = parent->pending_signal | (1 << 17);
+            // 親がBLOCKED（waitで待機中）ならREADYに復帰
+            if (parent->state == TASK_BLOCKED) {
+                parent->state = TASK_READY;
+            }
+        }
+    }
+
+    /// 子プロセスの終了を待つ (wait4相当)
+    /// 戻り値: 子プロセスのexit_code。子がなければ -ECHILD。
+    static long do_wait(Process* parent, Pid wait_pid) {
+        ulong* sched_ptr = SCHED_PTR_ADDR as ulong*;
+        if (*sched_ptr == 0) { return 0 - 10; }  // -ECHILD
+        RoundRobinScheduler* sched = (*sched_ptr) as RoundRobinScheduler*;
+        // ZOMBIEの子プロセスを検索
+        ulong i = 0;
+        while (i < sched->count) {
+            ulong proc_addr = sched->get_proc(i);
+            if (proc_addr != 0) {
+                Process* child = proc_addr as Process*;
+                if (child->parent_pid == parent->pid) {
+                    if (child->state == TASK_ZOMBIE) {
+                        if (wait_pid == 0 - 1 || child->pid == wait_pid) {
+                            long code = child->exit_code;
+                            // ZOMBIEプロセスを回収（スロットを無効化）
+                            child->state = TASK_STOPPED;
+                            return code;
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return 0 - 10;  // -ECHILD
     }
 }
 

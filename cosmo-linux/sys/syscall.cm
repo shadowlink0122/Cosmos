@@ -10,13 +10,17 @@
 import ../include/types;
 import ../include/config;
 import ../include/errno;
+import ../include/signal;
 import ../drivers/serial;
 import ../lib/printk;
 import ../arch/x86_64/cpu;
 import ./syscall_table;
+import ./signal;
 import ../fs/vfs;
 import ../fs/fd_table;
 import ../init/init;
+import ../sched/process;
+import ../sched/scheduler;
 
 // ============================================================
 // MSR定数
@@ -130,16 +134,44 @@ impl Syscall {
 
     /// sys_exit: プロセス終了
     static void exit(long code) {
-        SerialPort serial(COM1);
-        serial.puts("[EXIT] code=" as void*);
-        print_dec(&serial, code as ulong);
-        serial.println("" as void*);
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0 && cur->pid != 0) {
+            ProcessTable::do_exit(cur, code);
+            // スケジュール実行して他のプロセスに切り替え
+            Sched::run();
+        }
+        // idleプロセスまたはフォールバック
         __asm__(`cli; 1: hlt; jmp 1b`);
     }
 
     /// sys_getpid: PID取得
     static long getpid() {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) { return cur->pid; }
         return 1;
+    }
+
+    /// sys_getppid: 親プロセスPID取得
+    static long getppid() {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) { return cur->parent_pid; }
+        return 0;
+    }
+
+    /// sys_kill: シグナル送信
+    static long kill(ulong pid, ulong sig) {
+        return Signal::send(pid as long, sig);
+    }
+
+    /// sys_wait4: 子プロセス終了待ち
+    static long wait4(long wait_pid) {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr == 0) { return 0 - ECHILD; }
+        return ProcessTable::do_wait(cur, wait_pid);
     }
 
     /// sys_uname: システム情報取得 (Linux utsname構造体に書き込み)
@@ -217,6 +249,15 @@ ulong arg3, ulong arg4, ulong arg5) {
     }
     if (nr == SYS_GETPID) {
         return Syscall::getpid();
+    }
+    if (nr == SYS_GETPPID) {
+        return Syscall::getppid();
+    }
+    if (nr == SYS_KILL) {
+        return Syscall::kill(arg0, arg1);
+    }
+    if (nr == SYS_WAIT4) {
+        return Syscall::wait4(arg0 as long);
     }
     if (nr == SYS_UNAME) {
         return Syscall::uname(arg0);

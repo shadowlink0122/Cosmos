@@ -7,6 +7,8 @@ import ../include/types;
 import ../include/config;
 import ../include/scheduler;
 import ../include/vfs;
+import ../include/signal;
+import ../include/errno;
 import ./shell_const;
 import ./mem;
 import ./vga;
@@ -16,6 +18,7 @@ import ./env;
 import ./history;
 import ../drivers/serial;
 import ../drivers/pit;
+import ../sched/process;
 import ../sched/scheduler;
 import ../mm/pmm;
 import ../lib/printk;
@@ -23,6 +26,7 @@ import ../lib/kstring;
 import ../fs/ramfs;
 import ../fs/procfs;
 import ../init/init;
+import ../sys/signal;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -36,7 +40,7 @@ impl Cmd {
         Shell::writeln("  help ps free uptime uname date clear reboot" as void*);
         Shell::writeln("  ls cat touch write cp mv rm mkdir" as void*);
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
-        Shell::writeln("  echo cd pwd env export history" as void*);
+        Shell::writeln("  echo cd pwd env export history kill" as void*);
         Shell::writeln("  cmd1 | cmd2  Tab=complete" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
@@ -643,6 +647,63 @@ impl Cmd {
         if (last != 10) { Shell::putc(10); }
     }
 
+    /// kill コマンド: プロセスにシグナル送信
+    /// kill <pid> — SIGTERM送信
+    /// kill -9 <pid> — SIGKILL送信
+    static void kill(ulong arg_addr) {
+        if (arg_addr == 0) {
+            Shell::writeln("Usage: kill [-9] <pid>" as void*);
+            return;
+        }
+        ulong sig = SIGTERM;
+        ulong pid_addr = arg_addr;
+        // -9 フラグチェック
+        if (Mem::read_byte(arg_addr) == 45) {          // '-'
+            if (Mem::read_byte(arg_addr + 1) == 57) {  // '9'
+                sig = SIGKILL;
+                // スペース後のPIDを取得
+                pid_addr = Cmd::arg(arg_addr);
+                if (pid_addr == 0) {
+                    Shell::writeln("Usage: kill -9 <pid>" as void*);
+                    return;
+                }
+            }
+        }
+        // PID文字列を数値に変換
+        ulong pid_val = 0;
+        ulong pi = 0;
+        while (true) {
+            ulong ch = Mem::read_byte(pid_addr + pi);
+            if (ch == 0 || ch == 32) { break; }
+            if (ch >= 48 && ch <= 57) {
+                pid_val = pid_val * 10 + (ch - 48);
+            } else {
+                Shell::writeln("kill: invalid pid" as void*);
+                return;
+            }
+            pi = pi + 1;
+        }
+        if (pi == 0) {
+            Shell::writeln("kill: missing pid" as void*);
+            return;
+        }
+        // PID 0 (idle) は kill 不可
+        if (pid_val == 0) {
+            Shell::writeln("kill: cannot kill idle process" as void*);
+            return;
+        }
+        long result = Signal::send(pid_val as long, sig);
+        if (result == 0) {
+            Shell::write("Signal " as void*);
+            Shell::print_dec(sig);
+            Shell::write(" sent to PID " as void*);
+            Shell::print_dec(pid_val);
+            Shell::putc(10);
+        } else {
+            Shell::writeln("kill: no such process" as void*);
+        }
+    }
+
     /// history コマンド: コマンド履歴表示
     static void show_history() {
         ulong* count = HIST_COUNT as ulong*;
@@ -1080,6 +1141,11 @@ impl Cmd {
         }
         if (streq(CMD_BUF_ADDR as void*, "history" as void*) != 0) {
             Cmd::show_history();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "kill " as void*) != 0) {
+            ulong arg = Cmd::arg(CMD_BUF_ADDR);
+            Cmd::kill(arg);
             return;
         }
         Shell::write("Unknown command: " as void*);

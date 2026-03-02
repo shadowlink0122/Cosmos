@@ -1,0 +1,62 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::signal - シグナル送受信
+//
+// Signal struct/impl — プロセス間シグナル送信とチェック。
+// 参照: linux/kernel/signal.c
+
+import ../include/types;
+import ../include/scheduler;
+import ../include/signal;
+import ../include/errno;
+import ../sched/process;
+import ../sched/scheduler;
+
+/// Signal — シグナル管理
+export struct Signal {}
+
+impl Signal {
+    /// プロセスにシグナルを送信
+    static long send(Pid target_pid, ulong sig) {
+        if (sig == 0 || sig >= NSIG) { return 0 - EINVAL; }
+        Process* proc = ProcessTable::find_by_pid(target_pid);
+        ulong proc_addr = proc as ulong;
+        if (proc_addr == 0) { return 0 - ESRCH; }
+        // SIGKILL / SIGSTOP は無視不可
+        if (sig == SIGKILL) {
+            // 即座にプロセスを終了
+            ProcessTable::do_exit(proc, 0 - 9);  // シグナル番号を負値で記録
+            return 0;
+        }
+        if (sig == SIGSTOP) {
+            proc->state = TASK_STOPPED;
+            return 0;
+        }
+        if (sig == SIGCONT) {
+            if (proc->state == TASK_STOPPED) {
+                proc->state = TASK_READY;
+            }
+            return 0;
+        }
+        // 通常シグナル: pending_signalにビットセット
+        proc->pending_signal = proc->pending_signal | (1 << sig);
+        // SIGTERM はデフォルト動作 = 終了
+        if (sig == SIGTERM) {
+            ProcessTable::do_exit(proc, 0 - 15);
+        }
+        return 0;
+    }
+
+    /// 保留中シグナルをチェック
+    static ulong is_pending(Process* proc, ulong sig) {
+        if (sig >= NSIG) { return 0; }
+        return (proc->pending_signal >> sig) & 1;
+    }
+
+    /// シグナルをクリア
+    static void clear(Process* proc, ulong sig) {
+        if (sig < NSIG) {
+            ulong mask = ~(1 << sig);
+            proc->pending_signal = proc->pending_signal & mask;
+        }
+    }
+}
