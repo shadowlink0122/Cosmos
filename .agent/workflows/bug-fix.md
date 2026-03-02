@@ -37,6 +37,14 @@ description: バグ修正の手順
 2. シリアルログで正常動作を確認
 3. バグドキュメントに修正内容と確認結果を追記
 
+## 5.1 Cmコンパイラの修正を含む場合
+// turbo
+1. 回帰テスト（`.cm` + `.expect`）を `tests/programs/` 以下に追加
+2. `make tl0` でCm全テスト実行（PASS数が増加すること）
+3. `make install` でインストール
+4. `cm -v` でバージョン番号が正しいことを確認
+5. Cosmo Linux を `make -C cosmo-linux` でリビルド確認
+
 ## 6. コミット
 // turbo
 1. `fix: <バグ概要>` でコミット（日本語）

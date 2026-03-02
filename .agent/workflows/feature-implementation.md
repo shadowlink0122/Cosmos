@@ -35,6 +35,14 @@ description: 新機能の実装手順
 1. `make -C cosmo-linux` でビルド確認
 2. `make -C cosmo-linux test` でテスト
 
+## 4.1 Cmコンパイラの修正を含む場合
+// turbo
+1. 回帰テスト（`.cm` + `.expect`）を `tests/programs/` 以下に追加
+2. `make tl0` でCm全テスト実行（PASS数が増加すること）
+3. `make install` でインストール
+4. `cm -v` でバージョン番号が正しいことを確認
+5. Cosmo Linux を再ビルドして動作確認
+
 ## 5. ドキュメント更新
 // turbo
 1. `docs/cosmo-linux/005_phase0_checklist.md` を更新

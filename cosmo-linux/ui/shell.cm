@@ -52,6 +52,13 @@ const PhysAddr SCROLL_COUNT = 0x97FA8;
 const ulong SCROLL_MAX = 50;
 const ulong SCROLL_COLS = 80;
 
+/// 環境変数テーブル (16エントリ × 128バイト = 2048B)
+const PhysAddr ENV_TABLE = 0x98000;
+const ulong ENV_MAX = 16;
+const ulong ENV_KEY_LEN = 32;
+const ulong ENV_VAL_LEN = 96;
+const ulong ENV_ENTRY_SIZE = 128;   // key(32) + val(96)
+
 /// VGAバッファ
 const PhysAddr VGA_BUF = 0xB8000;
 const ulong VGA_COLS = 80;
@@ -67,6 +74,34 @@ ulong read_byte(ulong addr) {
 
 void write_byte(ulong addr, ulong val) {
     __asm__(`movq ${r:addr}, %r10; movq ${r:val}, %rax; movb %al, (%r10)`);
+}
+
+void write_qword(ulong addr, ulong val) {
+    __asm__(`movq ${r:addr}, %r10; movq ${r:val}, %rax; movq %rax, (%r10)`);
+}
+
+ulong read_qword(ulong addr) {
+    ulong val = 0;
+    __asm__(`movq ${r:addr}, %r10; movq (%r10), %rax; movq %rax, ${=r:val}`);
+    return val;
+}
+
+/// 文字列比較 (辞書順): 負=s1<s2, 0=等しい, 正=s1>s2
+long strcmp(void* s1, void* s2) {
+    ulong a = s1 as ulong;
+    ulong b = s2 as ulong;
+    ulong i = 0;
+    while (true) {
+        ulong c1 = read_byte(a + i);
+        ulong c2 = read_byte(b + i);
+        if (c1 != c2) {
+            if (c1 < c2) { return 0 - 1; }
+            return 1;
+        }
+        if (c1 == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
 }
 
 // ============================================================
@@ -288,7 +323,8 @@ void cmd_help() {
     sh_set_color(7, 0);
     sh_println("  help ps free uptime uname date clear reboot" as void*);
     sh_println("  ls cat touch write cp mv rm mkdir head wc hexdump" as void*);
-    sh_println("  echo cd pwd cat /proc/* [Up/Down]=history" as void*);
+    sh_println("  echo cd pwd grep sort env export cmd>file" as void*);
+    sh_println("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
 }
 
 void cmd_ps() {
@@ -999,6 +1035,237 @@ void cmd_pwd() {
     sh_println(addr as void*);
 }
 
+// ============================================================
+// 環境変数
+// ============================================================
+
+/// 環境変数初期化
+void env_init() {
+    memzero(ENV_TABLE as void*, ENV_MAX * ENV_ENTRY_SIZE);
+    // デフォルト変数設定
+    env_set("HOME" as void*, "/" as void*);
+    env_set("SHELL" as void*, "/bin/sh" as void*);
+    env_set("PATH" as void*, "/bin:/usr/bin" as void*);
+}
+
+/// 環境変数設定
+void env_set(void* key, void* val) {
+    ulong k_addr = key as ulong;
+    ulong v_addr = val as ulong;
+    // 既存エントリを検索
+    ulong i = 0;
+    while (i < ENV_MAX) {
+        ulong entry = ENV_TABLE + i * ENV_ENTRY_SIZE;
+        ulong first = read_byte(entry);
+        if (first != 0) {
+            if (streq(entry as void*, key) != 0) {
+                // 値を更新
+                ulong vdest = entry + ENV_KEY_LEN;
+                ulong j = 0;
+                while (j < ENV_VAL_LEN - 1) {
+                    ulong c = read_byte(v_addr + j);
+                    write_byte(vdest + j, c);
+                    if (c == 0) { break; }
+                    j = j + 1;
+                }
+                write_byte(vdest + j, 0);
+                return;
+            }
+        }
+        i = i + 1;
+    }
+    // 空きエントリに追加
+    i = 0;
+    while (i < ENV_MAX) {
+        ulong entry = ENV_TABLE + i * ENV_ENTRY_SIZE;
+        if (read_byte(entry) == 0) {
+            // キーコピー
+            ulong j = 0;
+            while (j < ENV_KEY_LEN - 1) {
+                ulong c = read_byte(k_addr + j);
+                write_byte(entry + j, c);
+                if (c == 0) { break; }
+                j = j + 1;
+            }
+            write_byte(entry + j, 0);
+            // 値コピー
+            ulong vdest = entry + ENV_KEY_LEN;
+            j = 0;
+            while (j < ENV_VAL_LEN - 1) {
+                ulong c = read_byte(v_addr + j);
+                write_byte(vdest + j, c);
+                if (c == 0) { break; }
+                j = j + 1;
+            }
+            write_byte(vdest + j, 0);
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+/// 環境変数取得 (見つからない場合は0を返す)
+ulong env_get(void* key) {
+    ulong i = 0;
+    while (i < ENV_MAX) {
+        ulong entry = ENV_TABLE + i * ENV_ENTRY_SIZE;
+        if (read_byte(entry) != 0) {
+            if (streq(entry as void*, key) != 0) {
+                return entry + ENV_KEY_LEN;
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+/// env コマンド: 環境変数一覧表示
+void cmd_env() {
+    ulong i = 0;
+    while (i < ENV_MAX) {
+        ulong entry = ENV_TABLE + i * ENV_ENTRY_SIZE;
+        if (read_byte(entry) != 0) {
+            sh_print(entry as void*);
+            sh_putc(61);  // '='
+            sh_println((entry + ENV_KEY_LEN) as void*);
+        }
+        i = i + 1;
+    }
+}
+
+/// export コマンド: 環境変数設定 (export KEY=VALUE)
+void cmd_export(ulong arg_addr) {
+    if (arg_addr == 0) { cmd_env(); return; }
+    // '=' を探す
+    ulong pos = 0;
+    while (true) {
+        ulong c = read_byte(arg_addr + pos);
+        if (c == 0) { break; }
+        if (c == 61) {  // '='
+            write_byte(arg_addr + pos, 0);
+            env_set(arg_addr as void*, (arg_addr + pos + 1) as void*);
+            return;
+        }
+        pos = pos + 1;
+    }
+    // '=' がない場合: 値を表示
+    ulong val = env_get(arg_addr as void*);
+    if (val != 0) {
+        sh_print(arg_addr as void*);
+        sh_putc(61);
+        sh_println(val as void*);
+    } else {
+        sh_println("undefined" as void*);
+    }
+}
+
+// ============================================================
+// grep コマンド
+// ============================================================
+
+void cmd_grep(ulong pat_addr, ulong file_addr) {
+    if (pat_addr == 0 || file_addr == 0) {
+        sh_println("Usage: grep <pattern> <file>" as void*); return;
+    }
+    // パターン長
+    ulong pat_len = 0;
+    while (read_byte(pat_addr + pat_len) != 0) { pat_len = pat_len + 1; }
+    if (pat_len == 0) { return; }
+    // ファイル読み出し
+    Ino ino = ramfs_lookup(file_addr as void*);
+    if (ino == 0) { sh_print("grep: not found: " as void*); sh_println(file_addr as void*); return; }
+    ulong fsize = ramfs_file_size(ino);
+    if (fsize == 0) { return; }
+    ulong buf = 0x94100;
+    long bytes = ramfs_read(ino, buf, 0, fsize);
+    if (bytes <= 0) { return; }
+    // 行ごと検索
+    ulong ls = 0;
+    ulong p = 0;
+    while (p <= (bytes as ulong)) {
+        ulong ch = 0;
+        if (p < (bytes as ulong)) { ch = read_byte(buf + p); }
+        if (ch == 10 || p == (bytes as ulong)) {
+            ulong ll = p - ls;
+            if (ll >= pat_len) {
+                ulong s = 0;
+                while (s <= ll - pat_len) {
+                    ulong m = 1;
+                    ulong k = 0;
+                    while (k < pat_len) {
+                        if (read_byte(buf + ls + s + k) != read_byte(pat_addr + k)) { m = 0; break; }
+                        k = k + 1;
+                    }
+                    if (m != 0) {
+                        ulong q = ls;
+                        while (q < p) { sh_putc(read_byte(buf + q)); q = q + 1; }
+                        sh_putc(10); break;
+                    }
+                    s = s + 1;
+                }
+            }
+            ls = p + 1;
+        }
+        p = p + 1;
+    }
+}
+
+// ============================================================
+// sort コマンド (簡易版)
+// ============================================================
+
+void cmd_sort(ulong file_addr) {
+    if (file_addr == 0) { sh_println("Usage: sort <file>" as void*); return; }
+    Ino ino = ramfs_lookup(file_addr as void*);
+    if (ino == 0) { sh_print("sort: not found: " as void*); sh_println(file_addr as void*); return; }
+    ulong fsize = ramfs_file_size(ino);
+    if (fsize == 0) { return; }
+    ulong buf = 0x94100;
+    long bytes = ramfs_read(ino, buf, 0, fsize);
+    if (bytes <= 0) { return; }
+    // 行開始アドレスを収集 (max 64行)
+    ulong line_starts = 0x96000;
+    ulong line_count = 0;
+    write_qword(line_starts, buf);
+    line_count = 1;
+    ulong i = 0;
+    while (i < (bytes as ulong)) {
+        if (read_byte(buf + i) == 10 && i + 1 < (bytes as ulong) && line_count < 64) {
+            write_byte(buf + i, 0);
+            write_qword(line_starts + line_count * 8, buf + i + 1);
+            line_count = line_count + 1;
+        }
+        i = i + 1;
+    }
+    // 最後の改行をNULに
+    if (bytes > 0 && read_byte(buf + (bytes as ulong) - 1) == 10) {
+        write_byte(buf + (bytes as ulong) - 1, 0);
+    }
+    // バブルソート
+    ulong n = line_count;
+    ulong a = 0;
+    while (a < n) {
+        ulong b = 0;
+        while (b < n - 1 - a) {
+            ulong s1 = read_qword(line_starts + b * 8);
+            ulong s2 = read_qword(line_starts + (b + 1) * 8);
+            if (strcmp(s1 as void*, s2 as void*) > 0) {
+                write_qword(line_starts + b * 8, s2);
+                write_qword(line_starts + (b + 1) * 8, s1);
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    // 出力
+    i = 0;
+    while (i < line_count) {
+        ulong addr = read_qword(line_starts + i * 8);
+        sh_println(addr as void*);
+        i = i + 1;
+    }
+}
+
 
 // ============================================================
 // コマンド履歴
@@ -1214,6 +1481,30 @@ void dispatch_cmd() {
         cmd_pwd();
         return;
     }
+    if (streq(CMD_BUF_ADDR as void*, "env" as void*) != 0) {
+        cmd_env();
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "export " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_export(arg);
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "export" as void*) != 0) {
+        cmd_env();
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "grep " as void*) != 0) {
+        ulong arg1 = cmd_arg(CMD_BUF_ADDR);
+        ulong arg2 = cmd_arg2(CMD_BUF_ADDR);
+        cmd_grep(arg1, arg2);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "sort " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_sort(arg);
+        return;
+    }
     sh_print("Unknown command: " as void*);
     sh_println(CMD_BUF_ADDR as void*);
 }
@@ -1245,6 +1536,9 @@ export void shell_main() {
 
     // 履歴初期化
     hist_init();
+
+    // 環境変数初期化
+    env_init();
 
     // 履歴ナビゲーション位置
     ulong hist_pos = 0;
