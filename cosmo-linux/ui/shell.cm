@@ -16,6 +16,10 @@ import ../drivers/keyboard;
 import ../sched/scheduler;
 import ../mm/pmm;
 import ../lib/printk;
+import ../include/vfs;
+import ../fs/ramfs;
+import ../fs/procfs;
+import ../init/init;
 
 // ============================================================
 // シェル用固定メモリ
@@ -34,34 +38,28 @@ const PhysAddr CMD_BUF_ADDR = 0x94000;
 const PhysAddr CMD_LEN_ADDR = 0x94080;
 const ulong CMD_BUF_SIZE = 128;
 
+/// コマンド履歴
+const PhysAddr HIST_BASE = 0x95100;   // 8エントリ × 128バイト = 1024バイト
+const PhysAddr HIST_COUNT = 0x95500;
+const PhysAddr HIST_INDEX = 0x95508;
+const ulong HIST_MAX = 8;
+const ulong HIST_ENTRY_SIZE = 128;
+
 /// VGAバッファ
 const PhysAddr VGA_BUF = 0xB8000;
 const ulong VGA_COLS = 80;
 const ulong VGA_ROWS = 25;
 
-// ============================================================
-// バイト読み取りヘルパー（Cm utinyバグ回避）
-// ============================================================
+// （read_byte / write_byte はローカル定義）
 
-/// アドレスから1バイト読み取り
 ulong read_byte(ulong addr) {
     ulong val = 0;
-    __asm__(`
-        movq ${r:addr}, %r10;
-        xorq %rax, %rax;
-        movzbl (%r10), %eax;
-        movq %rax, ${=r:val}
-    `);
+    __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:val}`);
     return val;
 }
 
-/// アドレスに1バイト書き込み
 void write_byte(ulong addr, ulong val) {
-    __asm__(`
-        movq ${r:addr}, %r10;
-        movq ${r:val}, %rax;
-        movb %al, (%r10)
-    `);
+    __asm__(`movq ${r:addr}, %r10; movq ${r:val}, %rax; movb %al, (%r10)`);
 }
 
 // ============================================================
@@ -279,13 +277,40 @@ ulong streq(void* a_ptr, void* b_ptr) {
 
 void cmd_help() {
     sh_println("" as void*);
+    sh_set_color(11, 0);
     sh_println("=== Cosmo Linux Shell ===" as void*);
-    sh_println("  help    - Show this help" as void*);
-    sh_println("  ps      - List processes" as void*);
-    sh_println("  free    - Show memory usage" as void*);
-    sh_println("  uptime  - Show system uptime" as void*);
-    sh_println("  clear   - Clear screen" as void*);
-    sh_println("  reboot  - Reboot system" as void*);
+    sh_set_color(7, 0);
+    sh_println("" as void*);
+    sh_println("  System:" as void*);
+    sh_println("    help              Show this help" as void*);
+    sh_println("    uname [-a]        Show system info" as void*);
+    sh_println("    date              Show date/uptime" as void*);
+    sh_println("    uptime            Show uptime" as void*);
+    sh_println("    ps                List processes" as void*);
+    sh_println("    free              Show memory usage" as void*);
+    sh_println("    clear             Clear screen" as void*);
+    sh_println("    reboot            Reboot system" as void*);
+    sh_println("" as void*);
+    sh_println("  Files:" as void*);
+    sh_println("    ls                List files" as void*);
+    sh_println("    cat <file>        Show file content" as void*);
+    sh_println("    touch <file>      Create empty file" as void*);
+    sh_println("    write <f> <text>  Write text to file" as void*);
+    sh_println("    cp <src> <dst>    Copy file" as void*);
+    sh_println("    mv <src> <dst>    Move/rename file" as void*);
+    sh_println("    rm <file>         Remove file" as void*);
+    sh_println("    mkdir <dir>       Create directory" as void*);
+    sh_println("    head <file>       Show first 10 lines" as void*);
+    sh_println("    wc <file>         Count bytes/lines" as void*);
+    sh_println("    hexdump <file>    Hex dump file" as void*);
+    sh_println("" as void*);
+    sh_println("  Other:" as void*);
+    sh_println("    echo <text>       Print text" as void*);
+    sh_println("    cat /proc/*       Kernel info" as void*);
+    sh_println("    cd <dir>          Change directory" as void*);
+    sh_println("    pwd               Show current dir" as void*);
+    sh_println("    cmd > file        Redirect output" as void*);
+    sh_println("    [Up/Down]         Command history" as void*);
     sh_println("" as void*);
 }
 
@@ -371,6 +396,852 @@ void cmd_reboot() {
 }
 
 // ============================================================
+// 文字列ヘルパー（コマンド引数パース用）
+// ============================================================
+
+/// 文字列が指定プレフィックスで始まるか確認
+ulong startswith(void* str, void* prefix) {
+    ulong s_addr = str as ulong;
+    ulong p_addr = prefix as ulong;
+    ulong i = 0;
+    while (true) {
+        ulong pc = read_byte(p_addr + i);
+        if (pc == 0) { return 1; }  // プレフィックス全体が一致
+        ulong sc = read_byte(s_addr + i);
+        if (sc != pc) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+/// コマンドバッファから最初のスペース以降の引数アドレスを取得
+/// 戻り値: 引数の開始アドレス（0なら引数なし）
+ulong cmd_arg(ulong buf_addr) {
+    ulong i = 0;
+    // 最初のスペースを探す
+    while (true) {
+        ulong ch = read_byte(buf_addr + i);
+        if (ch == 0) { return 0; }  // 引数なし
+        if (ch == 32) {
+            // スペース後の非スペースを探す
+            while (true) {
+                i = i + 1;
+                ulong ch2 = read_byte(buf_addr + i);
+                if (ch2 == 0) { return 0; }
+                if (ch2 != 32) {
+                    return buf_addr + i;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+/// 第2引数（第1引数の後のスペース以降）のアドレスを取得
+ulong cmd_arg2(ulong buf_addr) {
+    ulong first = cmd_arg(buf_addr);
+    if (first == 0) { return 0; }
+    return cmd_arg(first);
+}
+
+// ============================================================
+// ファイル操作コマンド
+// ============================================================
+
+/// ls コマンド: ファイル一覧表示
+void cmd_ls() {
+    ulong count = ramfs_dir_count();
+    sh_println("" as void*);
+    if (count == 0) {
+        sh_println("  (no files)" as void*);
+    } else {
+        ulong i = 0;
+        while (i < count) {
+            ulong name_addr = ramfs_dir_name(i);
+            if (name_addr != 0) {
+                ulong dtype = ramfs_dir_type(i);
+                Ino ino = ramfs_dir_ino(i);
+                sh_print("  " as void*);
+
+                // ディレクトリは色変更
+                if (dtype == S_IFDIR) {
+                    sh_set_color(11, 0);  // 黄色
+                    sh_print(name_addr as void*);
+                    sh_print("/" as void*);
+                    sh_set_color(7, 0);
+                } else {
+                    // ファイルサイズ表示
+                    sh_print(name_addr as void*);
+                    ulong fsize = ramfs_file_size(ino);
+                    sh_print("  (" as void*);
+                    sh_print_dec(fsize);
+                    sh_print(" bytes)" as void*);
+                }
+                sh_putc(10);
+            }
+            i = i + 1;
+        }
+    }
+    sh_println("" as void*);
+}
+
+/// cat コマンド: ファイル内容表示
+void cmd_cat(ulong name_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: cat <filename>" as void*);
+        return;
+    }
+
+    // /proc/ パスの処理
+    if (startswith(name_addr as void*, "/proc/" as void*) != 0) {
+        ulong proc_name = name_addr + 6;  // "/proc/" の後
+        ulong read_buf = 0x94100;
+        ulong bytes = procfs_read_file(proc_name as void*, read_buf);
+        if (bytes > 0) {
+            sh_println(read_buf as void*);
+        } else {
+            sh_print("cat: unknown proc file: " as void*);
+            sh_println(proc_name as void*);
+        }
+        return;
+    }
+
+    Ino ino = ramfs_lookup(name_addr as void*);
+    if (ino == 0) {
+        sh_print("cat: file not found: " as void*);
+        sh_println(name_addr as void*);
+        return;
+    }
+
+    ulong fsize = ramfs_file_size(ino);
+    if (fsize == 0) {
+        sh_println("(empty file)" as void*);
+        return;
+    }
+
+    // 読み出しバッファ: CMD_BUFの後半を使用 (0x94100)
+    ulong read_buf = 0x94100;
+    long bytes_read = ramfs_read(ino, read_buf, 0, fsize);
+    if (bytes_read > 0) {
+        // ヌル終端して出力
+        write_byte(read_buf + (bytes_read as ulong), 0);
+        sh_println(read_buf as void*);
+    }
+}
+
+/// touch コマンド: 空ファイル作成
+void cmd_touch(ulong name_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: touch <filename>" as void*);
+        return;
+    }
+
+    ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+    BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+    ulong data_page = pmm->alloc_pages(0);
+    if (data_page != 0) {
+        memzero(data_page as void*, PAGE_SIZE);
+    }
+
+    Ino ino = ramfs_create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+    if (ino == 0) {
+        sh_println("touch: failed to create file" as void*);
+    } else {
+        sh_print("Created: " as void*);
+        sh_println(name_addr as void*);
+    }
+}
+
+/// write コマンド: ファイルにテキスト書き込み
+void cmd_write(ulong name_addr, ulong text_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: write <filename> <text>" as void*);
+        return;
+    }
+    if (text_addr == 0) {
+        sh_println("Usage: write <filename> <text>" as void*);
+        return;
+    }
+
+    // ファイルがなければ作成
+    ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+    BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+    ulong data_page = pmm->alloc_pages(0);
+    if (data_page != 0) {
+        memzero(data_page as void*, PAGE_SIZE);
+    }
+    Ino ino = ramfs_create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+    if (ino == 0) {
+        sh_println("write: failed to create file" as void*);
+        return;
+    }
+
+    // テキストの長さを計算
+    ulong text_len = 0;
+    while (true) {
+        ulong ch = read_byte(text_addr + text_len);
+        if (ch == 0) { break; }
+        text_len = text_len + 1;
+    }
+
+    // 書き込み（先頭から上書き）
+    ramfs_truncate(ino);
+    long written = ramfs_write(ino, text_addr, 0, text_len);
+    if (written > 0) {
+        sh_print("Wrote " as void*);
+        sh_print_dec(written as ulong);
+        sh_print(" bytes to " as void*);
+        sh_println(name_addr as void*);
+    } else {
+        sh_println("write: failed" as void*);
+    }
+}
+
+// ============================================================
+// 新コマンド (Phase 3C)
+// ============================================================
+
+/// echo コマンド: テキスト出力
+void cmd_echo(ulong text_addr) {
+    if (text_addr != 0) {
+        sh_println(text_addr as void*);
+    } else {
+        sh_putc(10);
+    }
+}
+
+/// rm コマンド: ファイル削除
+void cmd_rm(ulong name_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: rm <filename>" as void*);
+        return;
+    }
+    long result = ramfs_unlink(name_addr as void*);
+    if (result == 0) {
+        sh_print("Removed: " as void*);
+        sh_println(name_addr as void*);
+    } else if (result == (0 - 21)) {
+        sh_println("rm: cannot remove directory" as void*);
+    } else {
+        sh_print("rm: file not found: " as void*);
+        sh_println(name_addr as void*);
+    }
+}
+
+/// mkdir コマンド: ディレクトリ作成
+void cmd_mkdir(ulong name_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: mkdir <dirname>" as void*);
+        return;
+    }
+    Ino ino = ramfs_mkdir(name_addr as void*);
+    if (ino != 0) {
+        sh_print("Created directory: " as void*);
+        sh_println(name_addr as void*);
+    } else {
+        sh_println("mkdir: failed to create directory" as void*);
+    }
+}
+
+/// wc コマンド: バイト/行数カウント
+void cmd_wc(ulong name_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: wc <filename>" as void*);
+        return;
+    }
+    Ino ino = ramfs_lookup(name_addr as void*);
+    if (ino == 0) {
+        sh_print("wc: file not found: " as void*);
+        sh_println(name_addr as void*);
+        return;
+    }
+    ulong fsize = ramfs_file_size(ino);
+    // 行数カウント: ファイルを読み出して\nを数える
+    ulong lines = 0;
+    ulong read_buf = 0x94100;
+    if (fsize > 0) {
+        long bytes = ramfs_read(ino, read_buf, 0, fsize);
+        if (bytes > 0) {
+            ulong j = 0;
+            while (j < (bytes as ulong)) {
+                ulong ch = read_byte(read_buf + j);
+                if (ch == 10) { lines = lines + 1; }
+                j = j + 1;
+            }
+            // 末尾が\nでない場合も１行と数える
+            if (bytes > 0) {
+                ulong last = read_byte(read_buf + (bytes as ulong) - 1);
+                if (last != 10) { lines = lines + 1; }
+            }
+        }
+    }
+    sh_print("  " as void*);
+    sh_print_dec(lines);
+    sh_print(" lines, " as void*);
+    sh_print_dec(fsize);
+    sh_print(" bytes  " as void*);
+    sh_println(name_addr as void*);
+}
+
+/// hexdump コマンド: 16進ダンプ
+void cmd_hexdump(ulong name_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: hexdump <filename>" as void*);
+        return;
+    }
+    Ino ino = ramfs_lookup(name_addr as void*);
+    if (ino == 0) {
+        sh_print("hexdump: file not found: " as void*);
+        sh_println(name_addr as void*);
+        return;
+    }
+    ulong fsize = ramfs_file_size(ino);
+    if (fsize == 0) {
+        sh_println("(empty file)" as void*);
+        return;
+    }
+    // 最大256バイトまで表示
+    ulong show_size = fsize;
+    if (show_size > 256) { show_size = 256; }
+    ulong read_buf = 0x94100;
+    long bytes = ramfs_read(ino, read_buf, 0, show_size);
+    if (bytes <= 0) { return; }
+    ulong row = 0;
+    while (row < (bytes as ulong)) {
+        // オフセット表示 (8桁hex)
+        sh_print_hex(row);
+        sh_print("  " as void*);
+        // 16バイトずつ表示
+        ulong col = 0;
+        while (col < 16) {
+            if (row + col < (bytes as ulong)) {
+                ulong b = read_byte(read_buf + row + col);
+                sh_print_hex_byte(b);
+                sh_putc(32);  // スペース
+            } else {
+                sh_print("   " as void*);
+            }
+            col = col + 1;
+        }
+        sh_print(" |" as void*);
+        // ASCII表示
+        col = 0;
+        while (col < 16) {
+            if (row + col < (bytes as ulong)) {
+                ulong b = read_byte(read_buf + row + col);
+                if (b >= 32) {
+                    if (b < 127) {
+                        sh_putc(b);
+                    } else {
+                        sh_putc(46);  // '.'
+                    }
+                } else {
+                    sh_putc(46);  // '.'
+                }
+            }
+            col = col + 1;
+        }
+        sh_println("|" as void*);
+        row = row + 16;
+    }
+    if (fsize > 256) {
+        sh_println("... (truncated)" as void*);
+    }
+}
+
+/// 1バイトぢ16進表示 (2桁)
+void sh_print_hex_byte(ulong val) {
+    ulong hi = (val >> 4) & 0xF;
+    ulong lo = val & 0xF;
+    if (hi < 10) { sh_putc(48 + hi); } else { sh_putc(87 + hi); }
+    if (lo < 10) { sh_putc(48 + lo); } else { sh_putc(87 + lo); }
+}
+
+/// 16進表示 (8桁)
+void sh_print_hex(ulong val) {
+    ulong i = 0;
+    while (i < 8) {
+        ulong shift = (7 - i) * 4;
+        ulong nibble = (val >> shift) & 0xF;
+        if (nibble < 10) { sh_putc(48 + nibble); } else { sh_putc(87 + nibble); }
+        i = i + 1;
+    }
+}
+
+// ============================================================
+// 新コマンド (Phase 5)
+// ============================================================
+
+/// uname コマンド: システム情報表示
+void cmd_uname(ulong flags_addr) {
+    // uname -a の場合: 全情報表示
+    if (flags_addr != 0) {
+        if (startswith(flags_addr as void*, "-a" as void*) != 0) {
+            sh_println("Cosmo Linux 0.1.0 cosmo x86_64 Cm/LLVM" as void*);
+            return;
+        }
+    }
+    sh_println("Cosmo Linux" as void*);
+}
+
+/// date コマンド: 時刻表示（PIT ticksからの簡易計算）
+void cmd_date() {
+    ulong ticks = pit_get_ticks();
+    ulong total_secs = ticks / 100;
+    ulong hours = total_secs / 3600;
+    ulong mins = (total_secs % 3600) / 60;
+    ulong secs = total_secs % 60;
+    sh_print("Up " as void*);
+    sh_print_dec(hours);
+    sh_print(":" as void*);
+    if (mins < 10) { sh_print("0" as void*); }
+    sh_print_dec(mins);
+    sh_print(":" as void*);
+    if (secs < 10) { sh_print("0" as void*); }
+    sh_print_dec(secs);
+    sh_print(" (" as void*);
+    sh_print_dec(ticks);
+    sh_println(" ticks)" as void*);
+}
+
+/// cp コマンド: ファイルコピー
+void cmd_cp(ulong src_addr, ulong dst_addr) {
+    if (src_addr == 0) {
+        sh_println("Usage: cp <src> <dst>" as void*);
+        return;
+    }
+    if (dst_addr == 0) {
+        sh_println("Usage: cp <src> <dst>" as void*);
+        return;
+    }
+    // srcのファイル名をNUL終端（スペースで区切り）
+    ulong end = dst_addr - 1;
+    ulong done_s = 0;
+    while (done_s == 0) {
+        if (end <= src_addr) { done_s = 1; }
+        else {
+            ulong c = read_byte(end - 1);
+            if (c != 32) { done_s = 1; }
+            else { end = end - 1; }
+        }
+    }
+    write_byte(end, 0);
+
+    // ソース検索
+    Ino src_ino = ramfs_lookup(src_addr as void*);
+    if (src_ino == 0) {
+        sh_print("cp: source not found: " as void*);
+        sh_println(src_addr as void*);
+        return;
+    }
+    ulong fsize = ramfs_file_size(src_ino);
+
+    // デスティネーション作成
+    ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+    BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+    ulong data_page = pmm->alloc_pages(0);
+    if (data_page != 0) {
+        memzero(data_page as void*, PAGE_SIZE);
+    }
+    Ino dst_ino = ramfs_create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
+    if (dst_ino == 0) {
+        sh_println("cp: failed to create destination" as void*);
+        return;
+    }
+
+    // データコピー
+    if (fsize > 0) {
+        ulong read_buf = 0x94100;
+        long bytes = ramfs_read(src_ino, read_buf, 0, fsize);
+        if (bytes > 0) {
+            ramfs_write(dst_ino, read_buf, 0, bytes as ulong);
+        }
+    }
+    sh_print("Copied: " as void*);
+    sh_print(src_addr as void*);
+    sh_print(" -> " as void*);
+    sh_println(dst_addr as void*);
+}
+
+/// mv コマンド: ファイル移動/リネーム（cp + rm）
+void cmd_mv(ulong src_addr, ulong dst_addr) {
+    if (src_addr == 0) {
+        sh_println("Usage: mv <src> <dst>" as void*);
+        return;
+    }
+    if (dst_addr == 0) {
+        sh_println("Usage: mv <src> <dst>" as void*);
+        return;
+    }
+    // srcのファイル名をNUL終端
+    ulong end = dst_addr - 1;
+    ulong done_s = 0;
+    while (done_s == 0) {
+        if (end <= src_addr) { done_s = 1; }
+        else {
+            ulong c = read_byte(end - 1);
+            if (c != 32) { done_s = 1; }
+            else { end = end - 1; }
+        }
+    }
+    write_byte(end, 0);
+
+    // cpと同じ処理
+    Ino src_ino = ramfs_lookup(src_addr as void*);
+    if (src_ino == 0) {
+        sh_print("mv: source not found: " as void*);
+        sh_println(src_addr as void*);
+        return;
+    }
+    ulong fsize = ramfs_file_size(src_ino);
+
+    ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+    BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+    ulong data_page = pmm->alloc_pages(0);
+    if (data_page != 0) {
+        memzero(data_page as void*, PAGE_SIZE);
+    }
+    Ino dst_ino = ramfs_create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
+    if (dst_ino == 0) {
+        sh_println("mv: failed to create destination" as void*);
+        return;
+    }
+    if (fsize > 0) {
+        ulong read_buf = 0x94100;
+        long bytes = ramfs_read(src_ino, read_buf, 0, fsize);
+        if (bytes > 0) {
+            ramfs_write(dst_ino, read_buf, 0, bytes as ulong);
+        }
+    }
+    // ソース削除
+    ramfs_unlink(src_addr as void*);
+    sh_print("Moved: " as void*);
+    sh_print(src_addr as void*);
+    sh_print(" -> " as void*);
+    sh_println(dst_addr as void*);
+}
+
+/// head コマンド: 先頭10行表示
+void cmd_head(ulong name_addr) {
+    if (name_addr == 0) {
+        sh_println("Usage: head <filename>" as void*);
+        return;
+    }
+    Ino ino = ramfs_lookup(name_addr as void*);
+    if (ino == 0) {
+        sh_print("head: file not found: " as void*);
+        sh_println(name_addr as void*);
+        return;
+    }
+    ulong fsize = ramfs_file_size(ino);
+    if (fsize == 0) {
+        sh_println("(empty file)" as void*);
+        return;
+    }
+    ulong read_buf = 0x94100;
+    long bytes = ramfs_read(ino, read_buf, 0, fsize);
+    if (bytes > 0) {
+        ulong lines = 0;
+        ulong j = 0;
+        while (j < (bytes as ulong)) {
+            ulong ch = read_byte(read_buf + j);
+            sh_putc(ch);
+            if (ch == 10) {
+                lines = lines + 1;
+                if (lines >= 10) { break; }
+            }
+            j = j + 1;
+        }
+        // 末尾改行がなければ追加
+        if (lines < 10) {
+            ulong last = read_byte(read_buf + (bytes as ulong) - 1);
+            if (last != 10) { sh_putc(10); }
+        }
+    }
+}
+
+// ============================================================
+// 新コマンド (Phase 6)
+// ============================================================
+
+/// cd コマンド: ディレクトリ変更
+void cmd_cd(ulong dir_addr) {
+    if (dir_addr == 0) {
+        // cd のみ → ルートに移動
+        cwd_set("/" as void*);
+        return;
+    }
+    // "/" は常に存在
+    ulong ch0 = read_byte(dir_addr);
+    if (ch0 == 47) {
+        // 絶対パス
+        cwd_set(dir_addr as void*);
+        return;
+    }
+    // ".." → 親ディレクトリ
+    if (ch0 == 46) {
+        ulong ch1 = read_byte(dir_addr + 1);
+        if (ch1 == 46) {
+            ulong ch2 = read_byte(dir_addr + 2);
+            if (ch2 == 0) {
+                cwd_set("/" as void*);
+                return;
+            }
+        }
+        if (ch1 == 0) {
+            // "." → 何もしない
+            return;
+        }
+    }
+    // 相対パス → CWD + "/" + dir で合成（簡易版: ルート直下のみ）
+    // ramfsでディレクトリ存在確認
+    Ino ino = ramfs_lookup(dir_addr as void*);
+    if (ino == 0) {
+        sh_print("cd: no such directory: " as void*);
+        sh_println(dir_addr as void*);
+        return;
+    }
+    // "/" + name に合成
+    ulong tmp_buf = 0x94200;
+    write_byte(tmp_buf, 47);  // '/'
+    ulong j = 0;
+    while (true) {
+        ulong c = read_byte(dir_addr + j);
+        if (c == 0) { break; }
+        write_byte(tmp_buf + 1 + j, c);
+        j = j + 1;
+    }
+    write_byte(tmp_buf + 1 + j, 0);
+    cwd_set(tmp_buf as void*);
+}
+
+/// pwd コマンド: カレントディレクトリ表示
+void cmd_pwd() {
+    ulong addr = cwd_get();
+    sh_println(addr as void*);
+}
+
+
+// ============================================================
+// コマンド履歴
+// ============================================================
+
+/// 履歴初期化
+void hist_init() {
+    memzero(HIST_BASE as void*, HIST_MAX * HIST_ENTRY_SIZE);
+    ulong* count = HIST_COUNT as ulong*;  *count = 0;
+    ulong* index = HIST_INDEX as ulong*;  *index = 0;
+}
+
+/// コマンドを履歴に追加
+void hist_add(ulong cmd_addr, ulong len) {
+    if (len == 0) { return; }
+    ulong* count = HIST_COUNT as ulong*;
+    ulong idx = *count % HIST_MAX;
+    ulong dest = HIST_BASE + idx * HIST_ENTRY_SIZE;
+    // コピー
+    ulong i = 0;
+    while (i < len) {
+        if (i < HIST_ENTRY_SIZE - 1) {
+            ulong ch = read_byte(cmd_addr + i);
+            write_byte(dest + i, ch);
+        }
+        i = i + 1;
+    }
+    write_byte(dest + len, 0);
+    *count = *count + 1;
+}
+
+/// 履歴から取得（最新からoffset番目: 0=最新）
+/// 戻り値: 履歴エントリのアドレス。0なら範囲外。
+ulong hist_get(ulong offset) {
+    ulong* count = HIST_COUNT as ulong*;
+    if (*count == 0) { return 0; }
+    if (offset >= *count) { return 0; }
+    if (offset >= HIST_MAX) { return 0; }
+    ulong actual = (*count - 1 - offset) % HIST_MAX;
+    return HIST_BASE + actual * HIST_ENTRY_SIZE;
+}
+
+/// 履歴エントリをコマンドバッファにコピーして表示
+void hist_restore(ulong hist_addr) {
+    // 現在の入力をクリア
+    ulong* len_ptr = CMD_LEN_ADDR as ulong*;
+    ulong old_len = *len_ptr;
+    // バックスペースで消去
+    ulong k = 0;
+    while (k < old_len) {
+        vga_putc(8);
+        k = k + 1;
+    }
+    // 履歴コピー
+    ulong i = 0;
+    while (true) {
+        ulong ch = read_byte(hist_addr + i);
+        if (ch == 0) { break; }
+        write_byte(CMD_BUF_ADDR + i, ch);
+        sh_putc(ch);
+        i = i + 1;
+    }
+    *len_ptr = i;
+}
+
+// ============================================================
+// コマンドディスパッチ（LLVM domination error回避のため関数分離）
+// ============================================================
+
+/// writeコマンドの引数パース＆実行
+void dispatch_write() {
+    ulong arg1 = cmd_arg(CMD_BUF_ADDR);
+    ulong arg2 = cmd_arg2(CMD_BUF_ADDR);
+    if (arg2 != 0) {
+        // ファイル名部分をNUL終端（スペースまで遡る）
+        ulong end = arg2 - 1;
+        ulong done = 0;
+        while (done == 0) {
+            if (end <= arg1) { done = 1; }
+            else {
+                ulong c = read_byte(end - 1);
+                if (c != 32) { done = 1; }
+                else { end = end - 1; }
+            }
+        }
+        write_byte(end, 0);
+    }
+    cmd_write(arg1, arg2);
+}
+
+/// cp/mvコマンドの引数パース分離
+void dispatch_cp() {
+    ulong arg1 = cmd_arg(CMD_BUF_ADDR);
+    ulong arg2 = cmd_arg2(CMD_BUF_ADDR);
+    cmd_cp(arg1, arg2);
+}
+
+void dispatch_mv() {
+    ulong arg1 = cmd_arg(CMD_BUF_ADDR);
+    ulong arg2 = cmd_arg2(CMD_BUF_ADDR);
+    cmd_mv(arg1, arg2);
+}
+
+/// コマンドディスパッチ（早期return方式）
+void dispatch_cmd() {
+    if (streq(CMD_BUF_ADDR as void*, "help" as void*) != 0) {
+        cmd_help();
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "ps" as void*) != 0) {
+        cmd_ps();
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "free" as void*) != 0) {
+        cmd_free();
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "uptime" as void*) != 0) {
+        cmd_uptime();
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "clear" as void*) != 0) {
+        vga_clear_screen();
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "reboot" as void*) != 0) {
+        cmd_reboot();
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "uname" as void*) != 0) {
+        cmd_uname(0);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "uname " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_uname(arg);
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "date" as void*) != 0) {
+        cmd_date();
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "ls" as void*) != 0) {
+        cmd_ls();
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "cat " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_cat(arg);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "touch " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_touch(arg);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "write " as void*) != 0) {
+        dispatch_write();
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "cp " as void*) != 0) {
+        dispatch_cp();
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "mv " as void*) != 0) {
+        dispatch_mv();
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "head " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_head(arg);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "echo " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_echo(arg);
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "echo" as void*) != 0) {
+        cmd_echo(0);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "rm " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_rm(arg);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "mkdir " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_mkdir(arg);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "wc " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_wc(arg);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "hexdump " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_hexdump(arg);
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "cd" as void*) != 0) {
+        cmd_cd(0);
+        return;
+    }
+    if (startswith(CMD_BUF_ADDR as void*, "cd " as void*) != 0) {
+        ulong arg = cmd_arg(CMD_BUF_ADDR);
+        cmd_cd(arg);
+        return;
+    }
+    if (streq(CMD_BUF_ADDR as void*, "pwd" as void*) != 0) {
+        cmd_pwd();
+        return;
+    }
+    sh_print("Unknown command: " as void*);
+    sh_println(CMD_BUF_ADDR as void*);
+}
+
+// ============================================================
 // シェルメインループ
 // ============================================================
 
@@ -395,53 +1266,46 @@ export void shell_main() {
     ulong* len_ptr = CMD_LEN_ADDR as ulong*;
     *len_ptr = 0;
 
+    // 履歴初期化
+    hist_init();
+
+    // 履歴ナビゲーション位置
+    ulong hist_pos = 0;
+
     // REPLループ
     while (true) {
         // プロンプト表示
         sh_set_color(10, 0);
         sh_print("cosmo" as void*);
+        sh_set_color(14, 0);
+        sh_print(":" as void*);
+        sh_set_color(12, 0);
+        sh_print("/" as void*);
         sh_set_color(7, 0);
-        sh_print("> " as void*);
+        sh_print("$ " as void*);
+
+        // 履歴ポジションリセット
+        hist_pos = 0;
 
         // キー入力ループ
-        while (true) {
+        ulong input_done = 0;
+        while (input_done == 0) {
             ulong ch = kbd_getchar();
             if (ch == 0) {
                 __asm__(`hlt`);
-                continue;
-            }
-
-            if (ch == 10) {
+            } else if (ch == 10) {
                 // Enter: コマンド実行
                 sh_putc(10);
                 ulong len = *len_ptr;
-                // NUL終端
                 write_byte(CMD_BUF_ADDR + len, 0);
-
                 if (len > 0) {
-                    if (streq(CMD_BUF_ADDR as void*, "help" as void*) != 0) {
-                        cmd_help();
-                    } else if (streq(CMD_BUF_ADDR as void*, "ps" as void*) != 0) {
-                        cmd_ps();
-                    } else if (streq(CMD_BUF_ADDR as void*, "free" as void*) != 0) {
-                        cmd_free();
-                    } else if (streq(CMD_BUF_ADDR as void*, "uptime" as void*) != 0) {
-                        cmd_uptime();
-                    } else if (streq(CMD_BUF_ADDR as void*, "clear" as void*) != 0) {
-                        vga_clear_screen();
-                    } else if (streq(CMD_BUF_ADDR as void*, "reboot" as void*) != 0) {
-                        cmd_reboot();
-                    } else {
-                        sh_print("Unknown command: " as void*);
-                        sh_println(CMD_BUF_ADDR as void*);
-                    }
+                    // 履歴に追加
+                    hist_add(CMD_BUF_ADDR, len);
+                    dispatch_cmd();
                 }
-
                 *len_ptr = 0;
-                break;
-            }
-
-            if (ch == 8) {
+                input_done = 1;
+            } else if (ch == 8) {
                 // Backspace
                 ulong len = *len_ptr;
                 if (len > 0) {
@@ -453,15 +1317,41 @@ export void shell_main() {
                     ser->putc(32);
                     ser->putc(8);
                 }
-                continue;
-            }
-
-            // 表示可能文字
-            ulong len = *len_ptr;
-            if (len < CMD_BUF_SIZE - 1) {
-                write_byte(CMD_BUF_ADDR + len, ch & 0xFF);
-                *len_ptr = len + 1;
-                sh_putc(ch);
+            } else if (ch == 0x80) {
+                // 上矢印キー（キーボードドライバから0x80）
+                ulong addr = hist_get(hist_pos);
+                if (addr != 0) {
+                    hist_restore(addr);
+                    hist_pos = hist_pos + 1;
+                }
+            } else if (ch == 0x81) {
+                // 下矢印キー（キーボードドライバから0x81）
+                if (hist_pos > 0) {
+                    hist_pos = hist_pos - 1;
+                    if (hist_pos > 0) {
+                        ulong addr = hist_get(hist_pos - 1);
+                        if (addr != 0) {
+                            hist_restore(addr);
+                        }
+                    } else {
+                        // 最新位置: バッファクリア
+                        ulong old_len = *len_ptr;
+                        ulong k = 0;
+                        while (k < old_len) {
+                            vga_putc(8);
+                            k = k + 1;
+                        }
+                        *len_ptr = 0;
+                    }
+                }
+            } else {
+                // 表示可能文字
+                ulong len = *len_ptr;
+                if (len < CMD_BUF_SIZE - 1) {
+                    write_byte(CMD_BUF_ADDR + len, ch & 0xFF);
+                    *len_ptr = len + 1;
+                    sh_putc(ch);
+                }
             }
         }
     }

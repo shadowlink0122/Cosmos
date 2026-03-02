@@ -25,6 +25,10 @@ import ../sched/process;
 import ../sched/scheduler;
 import ../sys/syscall;
 import ../ui/shell;
+import ../fs/ramfs;
+import ../fs/fd_table;
+import ../fs/vfs;
+import ../init/init;
 
 // ============================================================
 // start_kernel — エントリポイント
@@ -94,7 +98,14 @@ void main(ulong mb2_info, ulong mb2_magic) {
         kmalloc_init(&heap, &pmm, &serial);
     }
 
-    // === 7. プロセス管理初期化 ===
+    // === 7. VFS初期化 ===
+    pr_info(&serial, "Initializing VFS..." as void*);
+    vfs_init(&serial);
+    fd_table_init();
+    cwd_init();
+    pr_info(&serial, "VFS initialized (ramfs + fd + cwd)" as void*);
+
+    // === 8. プロセス管理初期化 ===
     pr_info(&serial, "Initializing process management..." as void*);
 
     process_table_init(&serial);
@@ -105,15 +116,16 @@ void main(ulong mb2_info, ulong mb2_magic) {
     RoundRobinScheduler sched();
     scheduler_init(&sched, &idle, &serial);
 
-    // === 8. syscall初期化 ===
+    // === 9. syscall初期化 ===
     syscall_init(&serial);
 
-    // === 9. PIC/PIT/キーボード初期化 ===
+    // === 10. PIC/PIT/キーボード初期化 ===
     pr_info(&serial, "Initializing hardware drivers..." as void*);
     pit_init(&serial);
     kbd_init(&serial);
 
-    // === 10. シェルタスク生成 ===
+    // === 11. initプロセス & シェルタスク生成 ===
+    init_banner(&serial);
     pr_info(&serial, "Creating shell task..." as void*);
 
     shell_init(&serial as ulong, &pmm as ulong);
@@ -126,7 +138,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
         pr_info(&serial, "Shell task created" as void*);
     }
 
-    // === 11. 初期化完了 ===
+    // === 12. 初期化完了 ===
     serial.puts("  Memory: " as void*);
     print_dec(&serial, boot_info.total_memory / 1048576);
     serial.println(" MiB" as void*);

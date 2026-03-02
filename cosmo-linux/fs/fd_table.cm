@@ -1,0 +1,153 @@
+//! platform: baremetal-x86
+// cosmo-linux::fs::fd_table - ファイルディスクリプタテーブル
+//
+// プロセスごとのopenファイルを管理する。
+// fd 0/1/2 はstdin/stdout/stderrとしてpre-open。
+// 参照: linux/fs/file.c
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../include/errno;
+
+// ============================================================
+// FDテーブル メモリレイアウト
+// ============================================================
+// 固定メモリ配置:
+//   FD_TABLE_BASE: FileDesc[MAX_FD] = 16エントリ × 40バイト = 640バイト
+//
+// FileDesc構造: ino(8) + offset(8) + flags(8) + fs_type(8) + used(8) = 40バイト
+
+const PhysAddr FD_TABLE_BASE = 0x406000;
+const ulong    FD_ENTRY_SIZE = 40;
+
+// ============================================================
+// FDテーブル初期化
+// ============================================================
+
+/// FDテーブルを初期化。stdin/stdout/stderrをpre-open。
+export void fd_table_init() {
+    // 全エントリをゼロクリア
+    memzero(FD_TABLE_BASE as void*, FD_ENTRY_SIZE * MAX_FD);
+
+    // fd 0: stdin (console)
+    ulong o0 = FD_TABLE_BASE;
+    ulong* p0_ino = o0 as ulong*;             *p0_ino = 0;
+    ulong* p0_off = (o0 + 8) as ulong*;       *p0_off = 0;
+    ulong* p0_flg = (o0 + 16) as ulong*;      *p0_flg = O_RDONLY;
+    ulong* p0_fs  = (o0 + 24) as ulong*;      *p0_fs  = FS_CONSOLE;
+    ulong* p0_use = (o0 + 32) as ulong*;      *p0_use = 1;
+
+    // fd 1: stdout (console)
+    ulong o1 = FD_TABLE_BASE + FD_ENTRY_SIZE;
+    ulong* p1_ino = o1 as ulong*;             *p1_ino = 0;
+    ulong* p1_off = (o1 + 8) as ulong*;       *p1_off = 0;
+    ulong* p1_flg = (o1 + 16) as ulong*;      *p1_flg = O_WRONLY;
+    ulong* p1_fs  = (o1 + 24) as ulong*;      *p1_fs  = FS_CONSOLE;
+    ulong* p1_use = (o1 + 32) as ulong*;      *p1_use = 1;
+
+    // fd 2: stderr (console)
+    ulong o2 = FD_TABLE_BASE + FD_ENTRY_SIZE * 2;
+    ulong* p2_ino = o2 as ulong*;             *p2_ino = 0;
+    ulong* p2_off = (o2 + 8) as ulong*;       *p2_off = 0;
+    ulong* p2_flg = (o2 + 16) as ulong*;      *p2_flg = O_WRONLY;
+    ulong* p2_fs  = (o2 + 24) as ulong*;      *p2_fs  = FS_CONSOLE;
+    ulong* p2_use = (o2 + 32) as ulong*;      *p2_use = 1;
+}
+
+// ============================================================
+// FDテーブル操作
+// ============================================================
+
+/// 空きFDを割り当てて初期化。成功=fd番号、失敗=-EMFILE
+export Fd fd_alloc(Ino ino, ulong flags, ulong fs_type) {
+    ulong i = 3;  // 0,1,2は予約済み
+    while (i < MAX_FD) {
+        ulong o = FD_TABLE_BASE + i * FD_ENTRY_SIZE;
+        ulong* used_flag = (o + 32) as ulong*;
+        if (*used_flag == 0) {
+            ulong* p_ino = o as ulong*;         *p_ino = ino;
+            ulong* p_off = (o + 8) as ulong*;   *p_off = 0;
+            ulong* p_flg = (o + 16) as ulong*;  *p_flg = flags;
+            ulong* p_fs  = (o + 24) as ulong*;  *p_fs  = fs_type;
+            *used_flag = 1;
+            return i as long;
+        }
+        i = i + 1;
+    }
+    return 0 - EMFILE;
+}
+
+/// FDを解放
+export void fd_free(Fd fd) {
+    if (fd < 0) { return; }
+    ulong ufd = fd as ulong;
+    if (ufd >= MAX_FD) { return; }
+    // stdin/stdout/stderrは解放禁止
+    if (ufd < 3) { return; }
+    ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
+    ulong* used_flag = (o + 32) as ulong*;
+    *used_flag = 0;
+}
+
+/// FDからinode番号を取得。無効fd=-EBADF
+export Ino fd_get_ino(Fd fd) {
+    if (fd < 0) { return 0; }
+    ulong ufd = fd as ulong;
+    if (ufd >= MAX_FD) { return 0; }
+    ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
+    ulong* used_flag = (o + 32) as ulong*;
+    if (*used_flag == 0) { return 0; }
+    ulong* p_ino = o as ulong*;
+    return *p_ino;
+}
+
+/// FDからオフセットを取得
+export ulong fd_get_offset(Fd fd) {
+    if (fd < 0) { return 0; }
+    ulong ufd = fd as ulong;
+    if (ufd >= MAX_FD) { return 0; }
+    ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
+    ulong* p_off = (o + 8) as ulong*;
+    return *p_off;
+}
+
+/// FDのオフセットを更新
+export void fd_set_offset(Fd fd, ulong offset) {
+    if (fd < 0) { return; }
+    ulong ufd = fd as ulong;
+    if (ufd >= MAX_FD) { return; }
+    ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
+    ulong* p_off = (o + 8) as ulong*;
+    *p_off = offset;
+}
+
+/// FDからフラグを取得
+export ulong fd_get_flags(Fd fd) {
+    if (fd < 0) { return 0; }
+    ulong ufd = fd as ulong;
+    if (ufd >= MAX_FD) { return 0; }
+    ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
+    ulong* p_flg = (o + 16) as ulong*;
+    return *p_flg;
+}
+
+/// FDからFS種別を取得
+export ulong fd_get_fs_type(Fd fd) {
+    if (fd < 0) { return 0; }
+    ulong ufd = fd as ulong;
+    if (ufd >= MAX_FD) { return 0; }
+    ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
+    ulong* p_fs = (o + 24) as ulong*;
+    return *p_fs;
+}
+
+/// FDが有効かチェック
+export ulong fd_is_valid(Fd fd) {
+    if (fd < 0) { return 0; }
+    ulong ufd = fd as ulong;
+    if (ufd >= MAX_FD) { return 0; }
+    ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
+    ulong* used_flag = (o + 32) as ulong*;
+    return *used_flag;
+}

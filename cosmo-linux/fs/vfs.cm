@@ -1,0 +1,122 @@
+//! platform: baremetal-x86
+// cosmo-linux::fs::vfs - VFS コア API
+//
+// ファイルシステム抽象化レイヤ。
+// FDテーブルとramfsを統合し、open/read/write/close APIを提供。
+// 参照: linux/fs/open.c, linux/fs/read_write.c
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../include/errno;
+import ./fd_table;
+import ./ramfs;
+import ../lib/kstring;
+
+// ============================================================
+// VFS API
+// ============================================================
+
+/// ファイルをオープンしFDを返す
+/// 成功=fd番号(≥0)、失敗=負のerrno
+export Fd vfs_open(void* name, ulong flags) {
+    // ファイル名がNULLなら無効
+    if (name as ulong == 0) { return 0 - EINVAL; }
+
+    // ramfsで検索
+    Ino ino = ramfs_lookup(name);
+
+    if (ino == 0) {
+        // ファイルが存在しない
+        if ((flags & O_CREAT) != 0) {
+            // O_CREAT: 新規作成（データページなし — touchで確保）
+            ino = ramfs_create(name, S_IFREG | 0x1B6, 0);
+            if (ino == 0) { return 0 - ENOSPC; }
+        } else {
+            return 0 - ENOENT;
+        }
+    }
+
+    // FD割り当て
+    Fd fd = fd_alloc(ino, flags, FS_RAMFS);
+    if (fd < 0) { return fd; }
+
+    // O_TRUNC: ファイル切り詰め
+    if ((flags & O_TRUNC) != 0) {
+        ramfs_truncate(ino);
+    }
+
+    // O_APPEND: オフセットをファイル末尾に設定
+    if ((flags & O_APPEND) != 0) {
+        ulong fsize = ramfs_file_size(ino);
+        fd_set_offset(fd, fsize);
+    }
+
+    return fd;
+}
+
+/// FDからデータを読み出し
+/// 成功=読み出しバイト数、失敗=負のerrno
+export long vfs_read(Fd fd, ulong buf, ulong count) {
+    if (fd_is_valid(fd) == 0) { return 0 - EBADF; }
+
+    ulong fs_type = fd_get_fs_type(fd);
+
+    // コンソール (stdin) — 未実装: 0を返す
+    if (fs_type == FS_CONSOLE) { return 0; }
+
+    // ramfs
+    if (fs_type == FS_RAMFS) {
+        Ino ino = fd_get_ino(fd);
+        ulong offset = fd_get_offset(fd);
+        long bytes = ramfs_read(ino, buf, offset, count);
+        if (bytes > 0) {
+            fd_set_offset(fd, offset + (bytes as ulong));
+        }
+        return bytes;
+    }
+
+    return 0 - EBADF;
+}
+
+/// FDにデータを書き込み
+/// 成功=書き込みバイト数、失敗=負のerrno
+export long vfs_write(Fd fd, ulong buf, ulong count) {
+    if (fd_is_valid(fd) == 0) { return 0 - EBADF; }
+
+    ulong fs_type = fd_get_fs_type(fd);
+
+    // コンソール (stdout/stderr) — シリアル出力
+    if (fs_type == FS_CONSOLE) {
+        // syscall.cmのsys_writeが直接処理するので、ここでは-EBADFを返さない
+        // 呼び出し元がconsole処理済みなら到達しない
+        return count as long;
+    }
+
+    // ramfs
+    if (fs_type == FS_RAMFS) {
+        Ino ino = fd_get_ino(fd);
+        ulong offset = fd_get_offset(fd);
+        long bytes = ramfs_write(ino, buf, offset, count);
+        if (bytes > 0) {
+            fd_set_offset(fd, offset + (bytes as ulong));
+        }
+        return bytes;
+    }
+
+    return 0 - EBADF;
+}
+
+/// FDを閉じる
+/// 成功=0、失敗=負のerrno
+export long vfs_close(Fd fd) {
+    if (fd_is_valid(fd) == 0) { return 0 - EBADF; }
+    fd_free(fd);
+    return 0;
+}
+
+/// ディレクトリエントリを読み出し（簡易版）
+/// idx番目のエントリの名前アドレスを返す（0=終端）
+export ulong vfs_readdir(ulong idx) {
+    return ramfs_dir_name(idx);
+}

@@ -1,0 +1,114 @@
+//! platform: baremetal-x86
+// cosmo-linux::fs::procfs - /proc 仮想ファイルシステム
+//
+// Linux /proc に相当する仮想FS。
+// 参照: linux/fs/proc/
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../drivers/serial;
+import ../drivers/pit;
+import ../lib/printk;
+import ../lib/kstring;
+import ../mm/pmm;
+
+// ============================================================
+// procfs ヘルパー
+// ============================================================
+
+void procfs_wb(ulong a, ulong v) {
+    __asm__(`movq ${r:a}, %r10; movq ${r:v}, %rax; movb %al, (%r10)`);
+}
+
+ulong write_dec(ulong buf, ulong val) {
+    if (val == 0) {
+        procfs_wb(buf, 48);
+        return buf + 1;
+    }
+    ulong digits = 0;
+    ulong tmp = val;
+    while (tmp > 0) { digits = digits + 1; tmp = tmp / 10; }
+    ulong pos = buf + digits;
+    tmp = val;
+    while (tmp > 0) {
+        ulong d = tmp % 10;
+        pos = pos - 1;
+        procfs_wb(pos, 48 + d);
+        tmp = tmp / 10;
+    }
+    return buf + digits;
+}
+
+ulong write_str(ulong buf, void* str) {
+    ulong src = str as ulong;
+    ulong dst = buf;
+    ulong i = 0;
+    while (true) {
+        ulong ch = 0;
+        ulong addr = src + i;
+        __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
+        if (ch == 0) { break; }
+        procfs_wb(dst, ch);
+        dst = dst + 1;
+        i = i + 1;
+    }
+    return dst;
+}
+
+// ============================================================
+// /proc エントリ
+// ============================================================
+
+export ulong procfs_version(ulong buf) {
+    ulong pos = buf;
+    pos = write_str(pos, "Cosmo Linux version 0.1.0 (Cm Compiler v0.14.1)" as void*);
+    procfs_wb(pos, 10); pos = pos + 1;
+    procfs_wb(pos, 0);
+    return pos - buf;
+}
+
+export ulong procfs_meminfo(ulong buf) {
+    ulong* pmm_addr = 0x93008 as ulong*;
+    BuddyAllocator* pmm = (*pmm_addr) as BuddyAllocator*;
+    ulong total_kb = pmm->total_pages * 4;
+    ulong free_kb = pmm->free_pages * 4;
+    ulong used_kb = total_kb - free_kb;
+    ulong pos = buf;
+    pos = write_str(pos, "MemTotal:     " as void*);
+    pos = write_dec(pos, total_kb);
+    pos = write_str(pos, " kB\nMemFree:      " as void*);
+    pos = write_dec(pos, free_kb);
+    pos = write_str(pos, " kB\nMemUsed:      " as void*);
+    pos = write_dec(pos, used_kb);
+    pos = write_str(pos, " kB\n" as void*);
+    procfs_wb(pos, 0);
+    return pos - buf;
+}
+
+export ulong procfs_uptime(ulong buf) {
+    ulong ticks = pit_get_ticks();
+    ulong seconds = ticks / 100;
+    ulong pos = buf;
+    pos = write_dec(pos, seconds);
+    pos = write_str(pos, " seconds\n" as void*);
+    procfs_wb(pos, 0);
+    return pos - buf;
+}
+
+// ============================================================
+// procfs ルックアップ
+// ============================================================
+
+export ulong procfs_read_file(void* name, ulong buf) {
+    if (streq(name, "version" as void*) != 0) {
+        return procfs_version(buf);
+    }
+    if (streq(name, "meminfo" as void*) != 0) {
+        return procfs_meminfo(buf);
+    }
+    if (streq(name, "uptime" as void*) != 0) {
+        return procfs_uptime(buf);
+    }
+    return 0;
+}
