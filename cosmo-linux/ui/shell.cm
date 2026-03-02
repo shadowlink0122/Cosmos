@@ -45,6 +45,13 @@ const PhysAddr HIST_INDEX = 0x95508;
 const ulong HIST_MAX = 8;
 const ulong HIST_ENTRY_SIZE = 128;
 
+/// VGAスクロールバックバッファ (50行×80文字=4000B)
+const PhysAddr SCROLL_BUF = 0x97000;
+const PhysAddr SCROLL_HEAD = 0x97FA0;
+const PhysAddr SCROLL_COUNT = 0x97FA8;
+const ulong SCROLL_MAX = 50;
+const ulong SCROLL_COLS = 80;
+
 /// VGAバッファ
 const PhysAddr VGA_BUF = 0xB8000;
 const ulong VGA_COLS = 80;
@@ -276,42 +283,12 @@ ulong streq(void* a_ptr, void* b_ptr) {
 // ============================================================
 
 void cmd_help() {
-    sh_println("" as void*);
     sh_set_color(11, 0);
-    sh_println("=== Cosmo Linux Shell ===" as void*);
+    sh_println("=== Cosmo Linux Shell (Ctrl+C: cancel) ===" as void*);
     sh_set_color(7, 0);
-    sh_println("" as void*);
-    sh_println("  System:" as void*);
-    sh_println("    help              Show this help" as void*);
-    sh_println("    uname [-a]        Show system info" as void*);
-    sh_println("    date              Show date/uptime" as void*);
-    sh_println("    uptime            Show uptime" as void*);
-    sh_println("    ps                List processes" as void*);
-    sh_println("    free              Show memory usage" as void*);
-    sh_println("    clear             Clear screen" as void*);
-    sh_println("    reboot            Reboot system" as void*);
-    sh_println("" as void*);
-    sh_println("  Files:" as void*);
-    sh_println("    ls                List files" as void*);
-    sh_println("    cat <file>        Show file content" as void*);
-    sh_println("    touch <file>      Create empty file" as void*);
-    sh_println("    write <f> <text>  Write text to file" as void*);
-    sh_println("    cp <src> <dst>    Copy file" as void*);
-    sh_println("    mv <src> <dst>    Move/rename file" as void*);
-    sh_println("    rm <file>         Remove file" as void*);
-    sh_println("    mkdir <dir>       Create directory" as void*);
-    sh_println("    head <file>       Show first 10 lines" as void*);
-    sh_println("    wc <file>         Count bytes/lines" as void*);
-    sh_println("    hexdump <file>    Hex dump file" as void*);
-    sh_println("" as void*);
-    sh_println("  Other:" as void*);
-    sh_println("    echo <text>       Print text" as void*);
-    sh_println("    cat /proc/*       Kernel info" as void*);
-    sh_println("    cd <dir>          Change directory" as void*);
-    sh_println("    pwd               Show current dir" as void*);
-    sh_println("    cmd > file        Redirect output" as void*);
-    sh_println("    [Up/Down]         Command history" as void*);
-    sh_println("" as void*);
+    sh_println("  help ps free uptime uname date clear reboot" as void*);
+    sh_println("  ls cat touch write cp mv rm mkdir head wc hexdump" as void*);
+    sh_println("  echo cd pwd cat /proc/* [Up/Down]=history" as void*);
 }
 
 void cmd_ps() {
@@ -1344,6 +1321,19 @@ export void shell_main() {
                         *len_ptr = 0;
                     }
                 }
+            } else if (ch == 3) {
+                // Ctrl+C: 入力キャンセル
+                sh_set_color(9, 0);
+                sh_print("^C" as void*);
+                sh_set_color(7, 0);
+                sh_putc(10);
+                *len_ptr = 0;
+                input_done = 1;
+            } else if (ch == 12) {
+                // Ctrl+L: 画面クリア
+                vga_clear_screen();
+                *len_ptr = 0;
+                input_done = 1;
             } else {
                 // 表示可能文字
                 ulong len = *len_ptr;

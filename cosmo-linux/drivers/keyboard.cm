@@ -358,6 +358,19 @@ export void kbd_irq_handler() {
         testq %rcx, %rcx;
         jz 9f;
 
+        // Ctrl修飾: a-z → コントロールコード (1-26)
+        movq $$0x93208, %rdi;
+        movq (%rdi), %rbx;
+        testq %rbx, %rbx;
+        jz 43f;
+        // Ctrl押下時: ASCII 97-122 (a-z) → 1-26
+        cmpq $$97, %rcx;
+        jb 43f;
+        cmpq $$122, %rcx;
+        ja 43f;
+        subq $$96, %rcx;
+        43:;
+
         // バッファに格納
         movq $$0x93048, %rdi;
         movq (%rdi), %rax;
