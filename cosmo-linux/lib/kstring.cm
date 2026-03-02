@@ -1,13 +1,14 @@
 //! platform: baremetal-x86
 // cosmo-linux::lib::string - メモリ・文字列操作ユーティリティ
 //
-// memcpy, memset, strlen 等の基本関数。
+// KString struct/impl パターンで実装。
+// memcpy/memsetはLLVM内蔵参照のためexportフリー関数を維持。
 // 参照: linux/lib/string.c
 
 import ../include/types;
 
 // ============================================================
-// メモリ操作
+// メモリ操作（LLVM IRが直接参照するためフリー関数として維持）
 // ============================================================
 
 /// メモリ領域をコピー（重複非対応）
@@ -86,63 +87,68 @@ export void memzero(void* dest, Size n) {
     memset(dest, 0, n);
 }
 
-// ============================================================
-// 文字列操作
-// ============================================================
+/// KString — 文字列操作ユーティリティ
+export struct KString {}
 
-/// NULL終端文字列の長さを返す
-export Size strlen(void* str) {
-    ulong addr = str as ulong;
-    Size len = 0;
-    ulong ch = 0;
-    __asm__(`
-        movq ${r:addr}, %rdi;
-        xorq %rax, %rax;
-        movb (%rdi), %al;
-        movq %rax, ${=r:ch}
-    `);
-    while (ch != 0) {
-        len = len + 1;
-        ulong next = addr + len;
+impl KString {
+    /// NULL終端文字列の長さを返す
+    static Size strlen(void* str) {
+        ulong addr = str as ulong;
+        Size len = 0;
+        ulong ch = 0;
         __asm__(`
-            movq ${r:next}, %rdi;
+            movq ${r:addr}, %rdi;
             xorq %rax, %rax;
             movb (%rdi), %al;
             movq %rax, ${=r:ch}
         `);
+        while (ch != 0) {
+            len = len + 1;
+            ulong next = addr + len;
+            __asm__(`
+                movq ${r:next}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:ch}
+            `);
+        }
+        return len;
     }
-    return len;
+
+    /// 文字列比較（同じなら0）
+    static long strcmp(void* s1, void* s2) {
+        ulong a1 = s1 as ulong;
+        ulong a2 = s2 as ulong;
+        ulong i = 0;
+        while (true) {
+            ulong c1 = 0;
+            ulong c2 = 0;
+            ulong addr1 = a1 + i;
+            ulong addr2 = a2 + i;
+            __asm__(`
+                movq ${r:addr1}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:c1}
+            `);
+            __asm__(`
+                movq ${r:addr2}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:c2}
+            `);
+            if (c1 != c2) {
+                long v1 = c1 as long;
+                long v2 = c2 as long;
+                return v1 - v2;
+            }
+            if (c1 == 0) { return 0; }
+            i = i + 1;
+        }
+        return 0;
+    }
 }
 
-/// 文字列比較（同じなら0）
-export long strcmp(void* s1, void* s2) {
-    ulong a1 = s1 as ulong;
-    ulong a2 = s2 as ulong;
-    ulong i = 0;
-    while (true) {
-        ulong c1 = 0;
-        ulong c2 = 0;
-        ulong addr1 = a1 + i;
-        ulong addr2 = a2 + i;
-        __asm__(`
-            movq ${r:addr1}, %rdi;
-            xorq %rax, %rax;
-            movb (%rdi), %al;
-            movq %rax, ${=r:c1}
-        `);
-        __asm__(`
-            movq ${r:addr2}, %rdi;
-            xorq %rax, %rax;
-            movb (%rdi), %al;
-            movq %rax, ${=r:c2}
-        `);
-        if (c1 != c2) {
-            long v1 = c1 as long;
-            long v2 = c2 as long;
-            return v1 - v2;
-        }
-        if (c1 == 0) { return 0; }
-        i = i + 1;
-    }
-    return 0;
-}
+// 互換ラッパー（strlen/strcmp）
+export Size strlen(void* str) { return KString::strlen(str); }
+export long strcmp(void* s1, void* s2) { return KString::strcmp(s1, s2); }

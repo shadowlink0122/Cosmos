@@ -2,9 +2,7 @@
 // cosmo-linux::sched::scheduler - ラウンドロビンスケジューラ
 //
 // impl RoundRobinScheduler for Scheduler
-//
-// 初期実装はシンプルなラウンドロビン。
-// Phase 2後半でCFS (Completely Fair Scheduler) に拡張予定。
+// Sched struct/impl パターンで実装。
 //
 // 参照: linux/kernel/sched/fair.c
 
@@ -22,14 +20,26 @@ import ../lib/printk;
 /// ラウンドロビンスケジューラ
 export struct RoundRobinScheduler {
     // プロセスポインタ配列（固定サイズ）
-    ulong proc_0;  ulong proc_1;  ulong proc_2;  ulong proc_3;
-    ulong proc_4;  ulong proc_5;  ulong proc_6;  ulong proc_7;
-    ulong proc_8;  ulong proc_9;  ulong proc_10; ulong proc_11;
-    ulong proc_12; ulong proc_13; ulong proc_14; ulong proc_15;
+    ulong proc_0;
+    ulong proc_1;
+    ulong proc_2;
+    ulong proc_3;
+    ulong proc_4;
+    ulong proc_5;
+    ulong proc_6;
+    ulong proc_7;
+    ulong proc_8;
+    ulong proc_9;
+    ulong proc_10;
+    ulong proc_11;
+    ulong proc_12;
+    ulong proc_13;
+    ulong proc_14;
+    ulong proc_15;
 
-    ulong count;         // 登録プロセス数
-    ulong current_idx;   // 現在実行中インデックス
-    Pid   current_pid;   // 現在実行中PID
+    ulong count;        // 登録プロセス数
+    ulong current_idx;  // 現在実行中インデックス
+    Pid   current_pid;  // 現在実行中PID
 }
 
 // ============================================================
@@ -39,10 +49,22 @@ export struct RoundRobinScheduler {
 impl RoundRobinScheduler {
     /// コンストラクタ
     overload self() {
-        self.proc_0  = 0; self.proc_1  = 0; self.proc_2  = 0; self.proc_3  = 0;
-        self.proc_4  = 0; self.proc_5  = 0; self.proc_6  = 0; self.proc_7  = 0;
-        self.proc_8  = 0; self.proc_9  = 0; self.proc_10 = 0; self.proc_11 = 0;
-        self.proc_12 = 0; self.proc_13 = 0; self.proc_14 = 0; self.proc_15 = 0;
+        self.proc_0  = 0;
+        self.proc_1  = 0;
+        self.proc_2  = 0;
+        self.proc_3  = 0;
+        self.proc_4  = 0;
+        self.proc_5  = 0;
+        self.proc_6  = 0;
+        self.proc_7  = 0;
+        self.proc_8  = 0;
+        self.proc_9  = 0;
+        self.proc_10 = 0;
+        self.proc_11 = 0;
+        self.proc_12 = 0;
+        self.proc_13 = 0;
+        self.proc_14 = 0;
+        self.proc_15 = 0;
         self.count = 0;
         self.current_idx = 0;
         self.current_pid = 0;
@@ -139,26 +161,6 @@ impl RoundRobinScheduler for Scheduler {
 }
 
 // ============================================================
-// スケジューラ初期化
-// ============================================================
-
-/// スケジューラ初期化
-export void scheduler_init(RoundRobinScheduler* sched, Process* idle, SerialPort* w) {
-    sched->add_process(idle);
-    sched->current_pid = idle->pid;
-
-    // グローバルスケジューラポインタを固定メモリに保存
-    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
-    *sched_ptr_addr = sched as ulong;
-
-    // 現在プロセスポインタを保存
-    ulong* cur_proc_addr = CURRENT_PROC_ADDR as ulong*;
-    *cur_proc_addr = idle as ulong;
-
-    pr_info(w, "Scheduler initialized (Round-Robin)" as void*);
-}
-
-// ============================================================
 // グローバルスケジューラ固定メモリ
 // ============================================================
 
@@ -168,71 +170,94 @@ const PhysAddr SCHED_PTR_ADDR = 0x91000;
 /// 現在プロセスポインタ配置アドレス
 const PhysAddr CURRENT_PROC_ADDR = 0x91008;
 
-// ============================================================
-// グローバルスケジュール関数
-// ============================================================
+/// Sched — グローバルスケジューラ操作
+export struct Sched {}
 
-/// 現在のプロセスポインタを取得
-export Process* current_process() {
-    ulong* addr = CURRENT_PROC_ADDR as ulong*;
-    return (*addr) as Process*;
-}
+impl Sched {
+    /// スケジューラ初期化
+    static void setup(RoundRobinScheduler* sched, Process* idle, SerialPort* w) {
+        sched->add_process(idle);
+        sched->current_pid = idle->pid;
 
-/// プロセスをスケジューラに登録
-export void sched_add(Process* proc) {
-    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
-    RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
-    sched->add_process(proc);
-}
+        // グローバルスケジューラポインタを固定メモリに保存
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        *sched_ptr_addr = sched as ulong;
 
-/// スケジュール実行（コンテキストスイッチ含む）
-export void schedule() {
-    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
-    RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        // 現在プロセスポインタを保存
+        ulong* cur_proc_addr = CURRENT_PROC_ADDR as ulong*;
+        *cur_proc_addr = idle as ulong;
 
-    // cur_pidをpick_next()の前に保存（pick_nextがcurrent_pidを更新するため）
-    Pid cur_pid = sched->current_pid;
-
-    // 次のプロセスを選択
-    Pid next_pid = sched->pick_next();
-
-    // 同じプロセスなら何もしない
-    if (next_pid == cur_pid) { return; }
-
-    // 次のプロセスのポインタを取得
-    ulong next_proc_addr = sched->get_proc(sched->current_idx);
-    if (next_proc_addr == 0) { return; }
-
-    Process* prev = current_process();
-    Process* next = next_proc_addr as Process*;
-
-    // プロセス状態を更新
-    if (prev->state == TASK_RUNNING) {
-        prev->state = TASK_READY;
+        pr_info(w, "Scheduler initialized (Round-Robin)" as void*);
     }
-    next->state = TASK_RUNNING;
 
-    // タイムスライスをリセット
-    next->time_slice = 10;
+    /// 現在のプロセスポインタを取得
+    static Process* current() {
+        ulong* addr = CURRENT_PROC_ADDR as ulong*;
+        return (*addr) as Process*;
+    }
 
-    // 現在プロセスを更新
-    ulong* cur_proc = CURRENT_PROC_ADDR as ulong*;
-    *cur_proc = next as ulong;
+    /// プロセスをスケジューラに登録
+    static void add(Process* proc) {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        sched->add_process(proc);
+    }
 
-    // コンテキストスイッチ実行
-    Context::switch_to(prev, next);
-}
+    /// スケジュール実行（コンテキストスイッチ含む）
+    static void run() {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
 
-/// タイマーtick処理
-export void sched_tick() {
-    ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
-    RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
-    sched->tick();
+        // cur_pidをpick_next()の前に保存（pick_nextがcurrent_pidを更新するため）
+        Pid cur_pid = sched->current_pid;
 
-    // タイムスライスが0になったらスケジュール要求
-    Process* cur = current_process();
-    if (cur->time_slice == 0) {
-        schedule();
+        // 次のプロセスを選択
+        Pid next_pid = sched->pick_next();
+
+        // 同じプロセスなら何もしない
+        if (next_pid == cur_pid) { return; }
+
+        // 次のプロセスのポインタを取得
+        ulong next_proc_addr = sched->get_proc(sched->current_idx);
+        if (next_proc_addr == 0) { return; }
+
+        Process* prev = Sched::current();
+        Process* next = next_proc_addr as Process*;
+
+        // プロセス状態を更新
+        if (prev->state == TASK_RUNNING) {
+            prev->state = TASK_READY;
+        }
+        next->state = TASK_RUNNING;
+
+        // タイムスライスをリセット
+        next->time_slice = 10;
+
+        // 現在プロセスを更新
+        ulong* cur_proc = CURRENT_PROC_ADDR as ulong*;
+        *cur_proc = next as ulong;
+
+        // コンテキストスイッチ実行
+        Context::switch_to(prev, next);
+    }
+
+    /// タイマーtick処理
+    static void tick() {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        sched->tick();
+
+        // タイムスライスが0になったらスケジュール要求
+        Process* cur = Sched::current();
+        if (cur->time_slice == 0) {
+            Sched::run();
+        }
     }
 }
 
+// 互換ラッパー
+export void scheduler_init(RoundRobinScheduler* sched, Process* idle, SerialPort* w) { Sched::setup(sched, idle, w); }
+export Process* current_process() { return Sched::current(); }
+export void sched_add(Process* proc) { Sched::add(proc); }
+export void schedule() { Sched::run(); }
+export void sched_tick() { Sched::tick(); }

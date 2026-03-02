@@ -2,6 +2,7 @@
 // cosmo-linux::sys::syscall - syscall エントリポイント
 //
 // x86_64 LSTAR MSR を設定し、syscall命令でカーネルに遷移する。
+// Syscall struct/impl パターンで実装。
 // Linux ABI: RAX=番号, RDI/RSI/RDX/R10/R8/R9=引数
 //
 // 参照: linux/arch/x86/entry/entry_64.S
@@ -43,190 +44,192 @@ export struct SyscallResult {
     long value;
 }
 
+/// Syscall — syscall管理
+export struct Syscall {}
+
+impl Syscall {
+    /// syscall/sysretを初期化
+    static void setup(SerialPort* w) {
+        // EFER.SCE (System Call Extension) を有効化
+        ulong efer = Cpu::rdmsr(MSR_EFER);
+        Cpu::wrmsr(MSR_EFER, efer | EFER_SCE);
+
+        // STAR: syscall時のCS/SS = 0x08/0x10, sysret時のCS/SS = 0x18/0x20
+        // ビット配置: [63:48]=sysret CS base, [47:32]=syscall CS base
+        ulong star = (0x0018 << 48) | (0x0008 << 32);
+        Cpu::wrmsr(MSR_STAR, star);
+
+        // LSTAR: syscallエントリアドレス
+        ulong entry = syscall_entry_stub as ulong;
+        Cpu::wrmsr(MSR_LSTAR, entry);
+
+        // SFMASK: syscall時にIFとDFをクリア
+        Cpu::wrmsr(MSR_SFMASK, 0x700);
+
+        pr_info(w, "Syscall initialized (LSTAR set)" as void*);
+    }
+
+    /// sys_write: fdに書き込み
+    static long write(ulong fd, ulong buf_addr, ulong count) {
+        // fd 1 (stdout) と fd 2 (stderr) → シリアルに出力
+        if (fd == 1) {
+            SerialPort serial(COM1);
+            ulong i = 0;
+            while (i < count) {
+                ulong ch = 0;
+                ulong addr = buf_addr + i;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    xorq %rax, %rax;
+                    movb (%rdi), %al;
+                    movq %rax, ${=r:ch}
+                `);
+                serial.putc(ch as utiny);
+                i = i + 1;
+            }
+            return count as long;
+        }
+        if (fd == 2) {
+            SerialPort serial(COM1);
+            ulong i = 0;
+            while (i < count) {
+                ulong ch = 0;
+                ulong addr = buf_addr + i;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    xorq %rax, %rax;
+                    movb (%rdi), %al;
+                    movq %rax, ${=r:ch}
+                `);
+                serial.putc(ch as utiny);
+                i = i + 1;
+            }
+            return count as long;
+        }
+        return (0 - EBADF);
+    }
+
+    /// sys_read: fdから読み出し
+    static long read(ulong fd, ulong buf_addr, ulong count) {
+        // stdin (fd 0) — キーボード入力（未実装: 0バイト返却）
+        if (fd == 0) { return 0; }
+
+        // ramfsファイル → VFS経由
+        return Vfs::read(fd as long, buf_addr, count);
+    }
+
+    /// sys_open: ファイルをオープン
+    static long open(ulong name_addr, ulong flags) {
+        return Vfs::open(name_addr as void*, flags);
+    }
+
+    /// sys_close: FDを閉じる
+    static long close(ulong fd) {
+        return Vfs::close(fd as long);
+    }
+
+    /// sys_exit: プロセス終了
+    static void exit(long code) {
+        SerialPort serial(COM1);
+        serial.puts("[EXIT] code=" as void*);
+        print_dec(&serial, code as ulong);
+        serial.println("" as void*);
+        __asm__(`cli; 1: hlt; jmp 1b`);
+    }
+
+    /// sys_getpid: PID取得
+    static long getpid() {
+        return 1;
+    }
+
+    /// sys_uname: システム情報取得 (Linux utsname構造体に書き込み)
+    static long uname(ulong buf_addr) {
+        if (buf_addr == 0) { return 0 - EFAULT; }
+        // Linux utsname: 5フィールド × 65バイト
+        Syscall::uname_write(buf_addr, "Cosmo Linux" as void*);
+        Syscall::uname_write(buf_addr + 65, "cosmo" as void*);
+        Syscall::uname_write(buf_addr + 130, "0.1.0" as void*);
+        Syscall::uname_write(buf_addr + 195, "Cm/LLVM" as void*);
+        Syscall::uname_write(buf_addr + 260, "x86_64" as void*);
+        return 0;
+    }
+
+    /// uname用文字列書き込みヘルパー
+    static void uname_write(ulong dst, void* src) {
+        ulong s = src as ulong;
+        ulong i = 0;
+        while (i < 64) {
+            ulong ch = 0;
+            ulong addr = s + i;
+            __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
+            __asm__(`movq ${r:dst}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
+            if (ch == 0) { return; }
+            i = i + 1;
+        }
+    }
+
+    /// sys_getcwd: カレントディレクトリ取得
+    static long getcwd(ulong buf_addr, ulong size) {
+        if (buf_addr == 0) { return 0 - EFAULT; }
+        ulong cwd = Cwd::get();
+        ulong i = 0;
+        while (i < size - 1) {
+            ulong ch = 0;
+            ulong addr = cwd + i;
+            __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
+            __asm__(`movq ${r:buf_addr}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
+            if (ch == 0) { return (i + 1) as long; }
+            i = i + 1;
+        }
+        return i as long;
+    }
+
+    /// sys_chdir: カレントディレクトリ変更
+    static long chdir(ulong path_addr) {
+        if (path_addr == 0) { return 0 - EFAULT; }
+        Cwd::set(path_addr as void*);
+        return 0;
+    }
+}
+
 // ============================================================
-// Syscallハンドラ
+// Syscallハンドラ（関数ポインタとして使われるためモジュールレベル）
 // ============================================================
 
 /// syscall エントリ（ASMスタブから呼ばれる）
 export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
 ulong arg3, ulong arg4, ulong arg5) {
     if (nr == SYS_READ) {
-        return sys_read(arg0, arg1, arg2);
+        return Syscall::read(arg0, arg1, arg2);
     }
     if (nr == SYS_WRITE) {
-        return sys_write(arg0, arg1, arg2);
+        return Syscall::write(arg0, arg1, arg2);
     }
     if (nr == SYS_OPEN) {
-        return sys_open(arg0, arg1);
+        return Syscall::open(arg0, arg1);
     }
     if (nr == SYS_CLOSE) {
-        return sys_close(arg0);
+        return Syscall::close(arg0);
     }
     if (nr == SYS_EXIT) {
-        sys_exit(arg0 as long);
+        Syscall::exit(arg0 as long);
         return 0;
     }
     if (nr == SYS_GETPID) {
-        return sys_getpid();
+        return Syscall::getpid();
     }
     if (nr == SYS_UNAME) {
-        return sys_uname(arg0);
+        return Syscall::uname(arg0);
     }
     if (nr == SYS_GETCWD) {
-        return sys_getcwd(arg0, arg1);
+        return Syscall::getcwd(arg0, arg1);
     }
     if (nr == SYS_CHDIR) {
-        return sys_chdir(arg0);
+        return Syscall::chdir(arg0);
     }
 
     // 未実装syscall
     return (0 - ENOSYS);
-}
-
-/// sys_write: fdに書き込み
-long sys_write(ulong fd, ulong buf_addr, ulong count) {
-    // fd 1 (stdout) と fd 2 (stderr) → シリアルに出力
-    if (fd == 1) {
-        SerialPort serial(COM1);
-        ulong i = 0;
-        while (i < count) {
-            ulong ch = 0;
-            ulong addr = buf_addr + i;
-            __asm__(`
-                movq ${r:addr}, %rdi;
-                xorq %rax, %rax;
-                movb (%rdi), %al;
-                movq %rax, ${=r:ch}
-            `);
-            serial.putc(ch as utiny);
-            i = i + 1;
-        }
-        return count as long;
-    }
-    if (fd == 2) {
-        SerialPort serial(COM1);
-        ulong i = 0;
-        while (i < count) {
-            ulong ch = 0;
-            ulong addr = buf_addr + i;
-            __asm__(`
-                movq ${r:addr}, %rdi;
-                xorq %rax, %rax;
-                movb (%rdi), %al;
-                movq %rax, ${=r:ch}
-            `);
-            serial.putc(ch as utiny);
-            i = i + 1;
-        }
-        return count as long;
-    }
-    return (0 - EBADF);
-}
-
-/// sys_read: fdから読み出し
-long sys_read(ulong fd, ulong buf_addr, ulong count) {
-    // stdin (fd 0) — キーボード入力（未実装: 0バイト返却）
-    if (fd == 0) { return 0; }
-
-    // ramfsファイル → VFS経由
-    return Vfs::read(fd as long, buf_addr, count);
-}
-
-/// sys_open: ファイルをオープン
-long sys_open(ulong name_addr, ulong flags) {
-    return Vfs::open(name_addr as void*, flags);
-}
-
-/// sys_close: FDを閉じる
-long sys_close(ulong fd) {
-    return Vfs::close(fd as long);
-}
-
-/// sys_exit: プロセス終了
-void sys_exit(long code) {
-    SerialPort serial(COM1);
-    serial.puts("[EXIT] code=" as void*);
-    print_dec(&serial, code as ulong);
-    serial.println("" as void*);
-    __asm__(`cli; 1: hlt; jmp 1b`);
-}
-
-/// sys_getpid: PID取得
-long sys_getpid() {
-    return 1;
-}
-
-/// sys_uname: システム情報取得 (Linux utsname構造体に書き込み)
-long sys_uname(ulong buf_addr) {
-    if (buf_addr == 0) { return 0 - EFAULT; }
-    // Linux utsname: 5フィールド × 65バイト
-    uname_write(buf_addr, "Cosmo Linux" as void*);
-    uname_write(buf_addr + 65, "cosmo" as void*);
-    uname_write(buf_addr + 130, "0.1.0" as void*);
-    uname_write(buf_addr + 195, "Cm/LLVM" as void*);
-    uname_write(buf_addr + 260, "x86_64" as void*);
-    return 0;
-}
-
-void uname_write(ulong dst, void* src) {
-    ulong s = src as ulong;
-    ulong i = 0;
-    while (i < 64) {
-        ulong ch = 0;
-        ulong addr = s + i;
-        __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
-        __asm__(`movq ${r:dst}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
-        if (ch == 0) { return; }
-        i = i + 1;
-    }
-}
-
-/// sys_getcwd: カレントディレクトリ取得
-long sys_getcwd(ulong buf_addr, ulong size) {
-    if (buf_addr == 0) { return 0 - EFAULT; }
-    ulong cwd = Cwd::get();
-    ulong i = 0;
-    while (i < size - 1) {
-        ulong ch = 0;
-        ulong addr = cwd + i;
-        __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
-        __asm__(`movq ${r:buf_addr}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
-        if (ch == 0) { return (i + 1) as long; }
-        i = i + 1;
-    }
-    return i as long;
-}
-
-/// sys_chdir: カレントディレクトリ変更
-long sys_chdir(ulong path_addr) {
-    if (path_addr == 0) { return 0 - EFAULT; }
-    Cwd::set(path_addr as void*);
-    return 0;
-}
-
-// ============================================================
-// syscall初期化 (LSTAR設定)
-// ============================================================
-
-/// syscall/sysretを初期化
-export void syscall_init(SerialPort* w) {
-    // EFER.SCE (System Call Extension) を有効化
-    ulong efer = Cpu::rdmsr(MSR_EFER);
-    Cpu::wrmsr(MSR_EFER, efer | EFER_SCE);
-
-    // STAR: syscall時のCS/SS = 0x08/0x10, sysret時のCS/SS = 0x18/0x20
-    // ビット配置: [63:48]=sysret CS base, [47:32]=syscall CS base
-    ulong star = (0x0018 << 48) | (0x0008 << 32);
-    Cpu::wrmsr(MSR_STAR, star);
-
-    // LSTAR: syscallエントリアドレス
-    ulong entry = syscall_entry_stub as ulong;
-    Cpu::wrmsr(MSR_LSTAR, entry);
-
-    // SFMASK: syscall時にIFとDFをクリア
-    Cpu::wrmsr(MSR_SFMASK, 0x700);
-
-    pr_info(w, "Syscall initialized (LSTAR set)" as void*);
 }
 
 /// syscall ASMスタブ（RCX=RIP, R11=RFLAGS を保存）
@@ -252,3 +255,6 @@ export void syscall_entry_stub() {
         sysretq
     `);
 }
+
+// 互換ラッパー
+export void syscall_init(SerialPort* w) { Syscall::setup(w); }

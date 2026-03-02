@@ -67,7 +67,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     };
 
     if (mb2_magic == MB_MAGIC) {
-        mb_parse(mb2_info, &boot_info, &serial);
+        Multiboot::parse(mb2_info, &boot_info, &serial);
     }
 
     // === 5. アーキテクチャ初期化 ===
@@ -80,7 +80,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     BuddyAllocator pmm();
     if (boot_info.mmap_count > 0) {
-        pmm_init(&pmm, boot_info.mmap_addr, boot_info.mmap_entry_size,
+        Pmm::setup(&pmm, boot_info.mmap_addr, boot_info.mmap_entry_size,
         boot_info.mmap_count, &serial);
     }
 
@@ -107,16 +107,16 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // === 8. プロセス管理初期化 ===
     pr_info(&serial, "Initializing process management..." as void*);
 
-    process_table_init(&serial);
+    ProcessTable::setup(&serial);
 
     Process idle(0, 0);
-    create_idle_process(&idle, &serial);
+    ProcessTable::create_idle(&idle, &serial);
 
     RoundRobinScheduler sched();
-    scheduler_init(&sched, &idle, &serial);
+    Sched::setup(&sched, &idle, &serial);
 
     // === 9. syscall初期化 ===
-    syscall_init(&serial);
+    Syscall::setup(&serial);
 
     // === 10. PIC/PIT/キーボード初期化 ===
     pr_info(&serial, "Initializing hardware drivers..." as void*);
@@ -129,11 +129,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     shell_init(&serial as ulong, &pmm as ulong);
 
-    Process shell(alloc_pid(), 0);
+    Process shell(ProcessTable::alloc_pid(), 0);
     shell.alloc_stack(&pmm);
     if (shell.kernel_stack != 0) {
         Context::init_task(&shell, shell.kernel_stack, shell_main as ulong);
-        sched_add(&shell);
+        Sched::add(&shell);
         pr_info(&serial, "Shell task created" as void*);
     }
 
@@ -154,7 +154,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
         ulong need_resched = PIT::check_resched();
         if (need_resched != 0) {
-            sched_tick();
+            Sched::tick();
         }
     }
 }

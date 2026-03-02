@@ -2,7 +2,7 @@
 // cosmo-linux::sched::process - プロセス管理
 //
 // Process 構造体のメソッド実装。
-// プロセステーブルの管理、PID割り当て。
+// ProcessTable struct/impl パターンで実装。
 //
 // 参照: linux/kernel/fork.c, linux/kernel/exit.c
 
@@ -63,45 +63,51 @@ impl Process {
     }
 }
 
-// ============================================================
-// プロセス管理関数
-// ============================================================
+/// ProcessTable — プロセステーブル管理
+export struct ProcessTable {}
 
-/// 次のPIDを発行
-export Pid alloc_pid() {
-    ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
-    Pid pid = (*pid_ptr) as long;
-    *pid_ptr = *pid_ptr + 1;
-    return pid;
+impl ProcessTable {
+    /// 次のPIDを発行
+    static Pid alloc_pid() {
+        ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
+        Pid pid = (*pid_ptr) as long;
+        *pid_ptr = *pid_ptr + 1;
+        return pid;
+    }
+
+    /// プロセステーブルを初期化
+    static void setup(SerialPort* w) {
+        // テーブルをゼロクリア
+        memzero(PROC_TABLE_BASE as void*, 64 * 256);
+
+        // 次のPIDを1に初期化
+        ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
+        *pid_ptr = 1;
+
+        pr_info(w, "Process table initialized (max 64)" as void*);
+    }
+
+    /// idle プロセス (PID 0) を作成
+    static void create_idle(Process* idle, SerialPort* w) {
+        // 現在のCR3をページテーブルとして使用
+        ulong cr3 = 0;
+        __asm__(`
+            movq %cr3, %rax;
+            movq %rax, ${=r:cr3}
+        `);
+
+        idle->pid = 0;
+        idle->parent_pid = 0;
+        idle->state = TASK_RUNNING;
+        idle->page_table = cr3;
+        idle->time_slice = 0;  // idleは無限
+        idle->priority = 99;   // 最低優先度
+
+        pr_info(w, "Idle process (PID 0) created" as void*);
+    }
 }
 
-/// プロセステーブルを初期化
-export void process_table_init(SerialPort* w) {
-    // テーブルをゼロクリア
-    memzero(PROC_TABLE_BASE as void*, 64 * 256);
-
-    // 次のPIDを1に初期化
-    ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
-    *pid_ptr = 1;
-
-    pr_info(w, "Process table initialized (max 64)" as void*);
-}
-
-/// idle プロセス (PID 0) を作成
-export void create_idle_process(Process* idle, SerialPort* w) {
-    // 現在のCR3をページテーブルとして使用
-    ulong cr3 = 0;
-    __asm__(`
-        movq %cr3, %rax;
-        movq %rax, ${=r:cr3}
-    `);
-
-    idle->pid = 0;
-    idle->parent_pid = 0;
-    idle->state = TASK_RUNNING;
-    idle->page_table = cr3;
-    idle->time_slice = 0;  // idleは無限
-    idle->priority = 99;   // 最低優先度
-
-    pr_info(w, "Idle process (PID 0) created" as void*);
-}
+// 互換ラッパー
+export Pid alloc_pid() { return ProcessTable::alloc_pid(); }
+export void process_table_init(SerialPort* w) { ProcessTable::setup(w); }
+export void create_idle_process(Process* idle, SerialPort* w) { ProcessTable::create_idle(idle, w); }

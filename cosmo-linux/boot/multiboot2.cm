@@ -3,6 +3,7 @@
 //
 // QEMUから渡されるMultiboot1情報を解析し、
 // BootInfo構造体に格納する。
+// Multiboot struct/impl パターンで実装。
 //
 // Multiboot1 info 構造体レイアウト (オフセット):
 //   0:  flags (u32)
@@ -54,111 +55,115 @@ export struct BootInfo {
     Size     total_memory;
 }
 
-// ============================================================
-// パーサ
-// ============================================================
+/// Multiboot — Multiboot1パーサ
+export struct Multiboot {}
 
-/// Multiboot1情報を解析
-export void mb_parse(ulong mb_info, BootInfo* info, SerialPort* w) {
-    // BootInfo初期化
-    info->mmap_addr = 0;
-    info->mmap_entry_size = 0;
-    info->mmap_count = 0;
-    info->fb_addr = 0;
-    info->fb_width = 0;
-    info->fb_height = 0;
-    info->fb_pitch = 0;
-    info->fb_bpp = 0;
-    info->total_memory = 0;
+impl Multiboot {
+    /// Multiboot1情報を解析
+    static void parse(ulong mb_info, BootInfo* info, SerialPort* w) {
+        // BootInfo初期化
+        info->mmap_addr = 0;
+        info->mmap_entry_size = 0;
+        info->mmap_count = 0;
+        info->fb_addr = 0;
+        info->fb_width = 0;
+        info->fb_height = 0;
+        info->fb_pitch = 0;
+        info->fb_bpp = 0;
+        info->total_memory = 0;
 
-    // flags を読む
-    ulong flags = 0;
-    __asm__(`
-        movq ${r:mb_info}, %rdi;
-        xorq %rax, %rax;
-        movl (%rdi), %eax;
-        movq %rax, ${=r:flags}
-    `);
-
-    pr_info(w, "Parsing Multiboot1 info..." as void*);
-
-    // メモリ情報 (flags bit 0)
-    if ((flags & MB_FLAG_MEM) != 0) {
-        ulong mem_lower = 0;
-        ulong mem_upper = 0;
+        // flags を読む
+        ulong flags = 0;
         __asm__(`
             movq ${r:mb_info}, %rdi;
             xorq %rax, %rax;
-            movl 4(%rdi), %eax;
-            movq %rax, ${=r:mem_lower};
-            xorq %rax, %rax;
-            movl 8(%rdi), %eax;
-            movq %rax, ${=r:mem_upper}
-        `);
-        // mem_upper は 1MiB 以降のKiB数
-        info->total_memory = (mem_upper + 1024) * 1024;
-
-        w->puts("  Memory: " as void*);
-        print_dec(w, info->total_memory / 1048576);
-        w->puts(" MiB (lower " as void*);
-        print_dec(w, mem_lower);
-        w->puts(" KiB, upper " as void*);
-        print_dec(w, mem_upper);
-        w->puts(" KiB)" as void*);
-        w->println("" as void*);
-    }
-
-    // メモリマップ (flags bit 6)
-    if ((flags & MB_FLAG_MMAP) != 0) {
-        ulong mmap_length = 0;
-        ulong mmap_addr = 0;
-        __asm__(`
-            movq ${r:mb_info}, %rdi;
-            xorq %rax, %rax;
-            movl 44(%rdi), %eax;
-            movq %rax, ${=r:mmap_length};
-            xorq %rax, %rax;
-            movl 48(%rdi), %eax;
-            movq %rax, ${=r:mmap_addr}
+            movl (%rdi), %eax;
+            movq %rax, ${=r:flags}
         `);
 
-        info->mmap_addr = mmap_addr;
-        // Multiboot1 mmap entry: [size:u32][base:u64][length:u64][type:u32] = 24バイト
-        info->mmap_entry_size = 24;
+        pr_info(w, "Parsing Multiboot1 info..." as void*);
 
-        // エントリをウォーク (各エントリの先頭4バイトがentryのsize)
-        ulong e = mmap_addr;
-        ulong end = mmap_addr + mmap_length;
-        ulong count = 0;
-        while (e < end) {
-            ulong entry_size = 0;
-            ulong base = 0;
-            ulong length = 0;
-            ulong mtype = 0;
+        // メモリ情報 (flags bit 0)
+        if ((flags & MB_FLAG_MEM) != 0) {
+            ulong mem_lower = 0;
+            ulong mem_upper = 0;
             __asm__(`
-                movq ${r:e}, %rdi;
+                movq ${r:mb_info}, %rdi;
                 xorq %rax, %rax;
-                movl (%rdi), %eax;
-                movq %rax, ${=r:entry_size};
-                movq 4(%rdi), %rax;
-                movq %rax, ${=r:base};
-                movq 12(%rdi), %rax;
-                movq %rax, ${=r:length};
+                movl 4(%rdi), %eax;
+                movq %rax, ${=r:mem_lower};
                 xorq %rax, %rax;
-                movl 20(%rdi), %eax;
-                movq %rax, ${=r:mtype}
+                movl 8(%rdi), %eax;
+                movq %rax, ${=r:mem_upper}
             `);
-            count = count + 1;
-            // entry_size + 4 (size フィールド自体) = 次のエントリ
-            e = e + entry_size + 4;
+            // mem_upper は 1MiB 以降のKiB数
+            info->total_memory = (mem_upper + 1024) * 1024;
+
+            w->puts("  Memory: " as void*);
+            print_dec(w, info->total_memory / 1048576);
+            w->puts(" MiB (lower " as void*);
+            print_dec(w, mem_lower);
+            w->puts(" KiB, upper " as void*);
+            print_dec(w, mem_upper);
+            w->puts(" KiB)" as void*);
+            w->println("" as void*);
         }
-        info->mmap_count = count;
 
-        w->puts("  Memory map: " as void*);
-        print_dec(w, count);
-        w->puts(" entries" as void*);
-        w->println("" as void*);
+        // メモリマップ (flags bit 6)
+        if ((flags & MB_FLAG_MMAP) != 0) {
+            ulong mmap_length = 0;
+            ulong mmap_addr = 0;
+            __asm__(`
+                movq ${r:mb_info}, %rdi;
+                xorq %rax, %rax;
+                movl 44(%rdi), %eax;
+                movq %rax, ${=r:mmap_length};
+                xorq %rax, %rax;
+                movl 48(%rdi), %eax;
+                movq %rax, ${=r:mmap_addr}
+            `);
+
+            info->mmap_addr = mmap_addr;
+            // Multiboot1 mmap entry: [size:u32][base:u64][length:u64][type:u32] = 24バイト
+            info->mmap_entry_size = 24;
+
+            // エントリをウォーク (各エントリの先頭4バイトがentryのsize)
+            ulong e = mmap_addr;
+            ulong end = mmap_addr + mmap_length;
+            ulong count = 0;
+            while (e < end) {
+                ulong entry_size = 0;
+                ulong base = 0;
+                ulong length = 0;
+                ulong mtype = 0;
+                __asm__(`
+                    movq ${r:e}, %rdi;
+                    xorq %rax, %rax;
+                    movl (%rdi), %eax;
+                    movq %rax, ${=r:entry_size};
+                    movq 4(%rdi), %rax;
+                    movq %rax, ${=r:base};
+                    movq 12(%rdi), %rax;
+                    movq %rax, ${=r:length};
+                    xorq %rax, %rax;
+                    movl 20(%rdi), %eax;
+                    movq %rax, ${=r:mtype}
+                `);
+                count = count + 1;
+                // entry_size + 4 (size フィールド自体) = 次のエントリ
+                e = e + entry_size + 4;
+            }
+            info->mmap_count = count;
+
+            w->puts("  Memory map: " as void*);
+            print_dec(w, count);
+            w->puts(" entries" as void*);
+            w->println("" as void*);
+        }
+
+        pr_info(w, "Multiboot1 parsing complete" as void*);
     }
-
-    pr_info(w, "Multiboot1 parsing complete" as void*);
 }
+
+// 互換ラッパー
+export void mb_parse(ulong mb_info, BootInfo* info, SerialPort* w) { Multiboot::parse(mb_info, info, w); }

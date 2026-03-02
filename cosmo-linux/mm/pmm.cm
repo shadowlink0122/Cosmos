@@ -56,9 +56,9 @@ export struct BuddyAllocator {
     PhysAddr free_head_10;
 
     // メモリ管理域
-    PhysAddr bitmap_base;   // ページ状態ビットマップ先頭
-    ulong total_pages;      // 総ページ数
-    ulong free_pages;       // 空きページ数
+    PhysAddr bitmap_base;  // ページ状態ビットマップ先頭
+    ulong total_pages;     // 総ページ数
+    ulong free_pages;      // 空きページ数
 }
 
 // ============================================================
@@ -303,65 +303,66 @@ impl BuddyAllocator for PageAllocator {
     }
 }
 
-// ============================================================
-// PMM初期化
-// ============================================================
+/// Pmm — PMM初期化管理
+export struct Pmm {}
 
-/// PMMをMultiboot1メモリマップで初期化
-/// Multiboot1 mmapエントリ形式:
-///   [size:u32][base_addr:u64][length:u64][type:u32]
-///   offset: 0      4              12          20
-///   各エントリの合計バイト = size + 4 (sizeフィールド自体を含まない)
-export void pmm_init(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size count, SerialPort* w) {
-    pr_info(w, "Initializing PMM (Buddy System)..." as void*);
+impl Pmm {
+    /// PMMをMultiboot1メモリマップで初期化
+    /// Multiboot1 mmapエントリ形式:
+    ///   [size:u32][base_addr:u64][length:u64][type:u32]
+    ///   offset: 0      4              12          20
+    ///   各エントリの合計バイト = size + 4 (sizeフィールド自体を含まない)
+    static void setup(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size count, SerialPort* w) {
+        pr_info(w, "Initializing PMM (Buddy System)..." as void*);
 
-    // ビットマップをゼロクリア
-    memzero(pmm->bitmap_base as void*, MAX_PAGES);
+        // ビットマップをゼロクリア
+        memzero(pmm->bitmap_base as void*, MAX_PAGES);
 
-    // 利用可能メモリ領域を登録
-    // Multiboot1 mmapは可変長エントリ: 各エントリの先頭u32がサイズ
-    ulong e = mmap_addr;
-    ulong idx = 0;
-    while (idx < count) {
-        // Multiboot1 mmapエントリ読み取り
-        // offset 0: size (u32) — エントリサイズ（このフィールド自体を除く）
-        // offset 4: base_addr (u64)
-        // offset 12: length (u64)
-        // offset 20: type (u32)
-        ulong entry_sz = 0;
-        ulong base = 0;
-        ulong length = 0;
-        ulong mtype = 0;
-        __asm__(`
-            movq ${r:e}, %rdi;
-            xorq %rax, %rax;
-            movl (%rdi), %eax;
-            movq %rax, ${=r:entry_sz};
-            movq 4(%rdi), %rax;
-            movq %rax, ${=r:base};
-            movq 12(%rdi), %rax;
-            movq %rax, ${=r:length};
-            xorq %rax, %rax;
-            movl 20(%rdi), %eax;
-            movq %rax, ${=r:mtype}
-        `);
+        // 利用可能メモリ領域を登録
+        // Multiboot1 mmapは可変長エントリ: 各エントリの先頭u32がサイズ
+        ulong e = mmap_addr;
+        ulong idx = 0;
+        while (idx < count) {
+            // Multiboot1 mmapエントリ読み取り
+            ulong entry_sz = 0;
+            ulong base = 0;
+            ulong length = 0;
+            ulong mtype = 0;
+            __asm__(`
+                movq ${r:e}, %rdi;
+                xorq %rax, %rax;
+                movl (%rdi), %eax;
+                movq %rax, ${=r:entry_sz};
+                movq 4(%rdi), %rax;
+                movq %rax, ${=r:base};
+                movq 12(%rdi), %rax;
+                movq %rax, ${=r:length};
+                xorq %rax, %rax;
+                movl 20(%rdi), %eax;
+                movq %rax, ${=r:mtype}
+            `);
 
-        // Type 1 = Available
-        if (mtype == 1) {
-            pmm->add_region(base, length, w);
+            // Type 1 = Available
+            if (mtype == 1) {
+                pmm->add_region(base, length, w);
+            }
+
+            // 次のエントリ: size + 4（sizeフィールド自体の4バイトを加算）
+            e = e + entry_sz + 4;
+            idx = idx + 1;
         }
 
-        // 次のエントリ: size + 4（sizeフィールド自体の4バイトを加算）
-        e = e + entry_sz + 4;
-        idx = idx + 1;
+        w->puts("  PMM: total " as void*);
+        print_dec(w, pmm->total_pages);
+        w->puts(" pages, " as void*);
+        print_dec(w, pmm->free_pages);
+        w->puts(" free" as void*);
+        w->println("" as void*);
+        pr_info(w, "PMM initialized" as void*);
     }
-
-    w->puts("  PMM: total " as void*);
-    print_dec(w, pmm->total_pages);
-    w->puts(" pages, " as void*);
-    print_dec(w, pmm->free_pages);
-    w->puts(" free" as void*);
-    w->println("" as void*);
-    pr_info(w, "PMM initialized" as void*);
 }
 
+// 互換ラッパー
+export void pmm_init(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size count, SerialPort* w) {
+    Pmm::setup(pmm, mmap_addr, entry_size, count, w);
+}
