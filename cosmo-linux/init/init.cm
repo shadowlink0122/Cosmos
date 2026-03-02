@@ -2,7 +2,7 @@
 // cosmo-linux::init::init - initプロセス (PID 1)
 //
 // Linuxの /sbin/init に相当。
-// カーネル起動後、最初に実行されるユーザー空間プロセス。
+// Init/Cwd struct/impl パターンで実装。
 // 参照: linux/init/main.c
 
 import ../include/types;
@@ -10,51 +10,53 @@ import ../include/config;
 import ../drivers/serial;
 import ../lib/printk;
 
-// ============================================================
-// init プロセス
-// ============================================================
+/// Init — initプロセス管理
+export struct Init {}
 
-/// システム初期化情報の表示
-export void init_banner(SerialPort* w) {
-    pr_info(w, "init: Starting Cosmo Linux init process (PID 1)" as void*);
-    pr_info(w, "init: Mounting root filesystem: ramfs" as void*);
-    pr_info(w, "init: Starting /bin/sh..." as void*);
+impl Init {
+    /// システム初期化情報の表示
+    static void banner(SerialPort* w) {
+        pr_info(w, "init: Starting Cosmo Linux init process (PID 1)" as void*);
+        pr_info(w, "init: Mounting root filesystem: ramfs" as void*);
+        pr_info(w, "init: Starting /bin/sh..." as void*);
+    }
 }
 
-// ============================================================
-// カレントディレクトリ管理
-// ============================================================
+/// Cwd — カレントディレクトリ管理
+export struct Cwd {}
 
 /// CWDバッファ（固定メモリ: 64バイト）
 const PhysAddr CWD_BUF = 0x95600;
 
-/// CWDを初期化（ルート "/"）
-export void cwd_init() {
-    __asm__(`
-        movq $$0x95600, %rdi;
-        movb $$47, (%rdi);
-        movb $$0, 1(%rdi)
-    `);
-}
-
-/// CWDを取得（バッファアドレスを返す）
-export ulong cwd_get() {
-    return CWD_BUF;
-}
-
-/// CWDを設定
-export void cwd_set(void* path) {
-    ulong src = path as ulong;
-    ulong dst = CWD_BUF;
-    ulong i = 0;
-    while (i < 62) {
-        ulong ch = 0;
-        ulong addr = src + i;
-        __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
-        if (ch == 0) { break; }
-        __asm__(`movq ${r:dst}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
-        i = i + 1;
+impl Cwd {
+    /// CWDを初期化（ルート "/"）
+    static void setup() {
+        __asm__(`
+            movq $$0x95600, %rdi;
+            movb $$47, (%rdi);
+            movb $$0, 1(%rdi)
+        `);
     }
-    ulong end = dst + i;
-    __asm__(`movq ${r:end}, %r10; movb $$0, (%r10)`);
+
+    /// CWDを取得（バッファアドレスを返す）
+    static ulong get() {
+        return CWD_BUF;
+    }
+
+    /// CWDを設定
+    static void set(void* path) {
+        ulong src = path as ulong;
+        ulong dst = CWD_BUF;
+        ulong i = 0;
+        while (i < 62) {
+            ulong ch = 0;
+            ulong addr = src + i;
+            __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
+            if (ch == 0) { break; }
+            __asm__(`movq ${r:dst}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
+            i = i + 1;
+        }
+        ulong end = dst + i;
+        __asm__(`movq ${r:end}, %r10; movb $$0, (%r10)`);
+    }
 }

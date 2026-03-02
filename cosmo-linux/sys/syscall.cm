@@ -49,7 +49,7 @@ export struct SyscallResult {
 
 /// syscall エントリ（ASMスタブから呼ばれる）
 export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
-                             ulong arg3, ulong arg4, ulong arg5) {
+ulong arg3, ulong arg4, ulong arg5) {
     if (nr == SYS_READ) {
         return sys_read(arg0, arg1, arg2);
     }
@@ -184,7 +184,7 @@ void uname_write(ulong dst, void* src) {
 /// sys_getcwd: カレントディレクトリ取得
 long sys_getcwd(ulong buf_addr, ulong size) {
     if (buf_addr == 0) { return 0 - EFAULT; }
-    ulong cwd = cwd_get();
+    ulong cwd = Cwd::get();
     ulong i = 0;
     while (i < size - 1) {
         ulong ch = 0;
@@ -200,7 +200,7 @@ long sys_getcwd(ulong buf_addr, ulong size) {
 /// sys_chdir: カレントディレクトリ変更
 long sys_chdir(ulong path_addr) {
     if (path_addr == 0) { return 0 - EFAULT; }
-    cwd_set(path_addr as void*);
+    Cwd::set(path_addr as void*);
     return 0;
 }
 
@@ -211,20 +211,20 @@ long sys_chdir(ulong path_addr) {
 /// syscall/sysretを初期化
 export void syscall_init(SerialPort* w) {
     // EFER.SCE (System Call Extension) を有効化
-    ulong efer = rdmsr(MSR_EFER);
-    wrmsr(MSR_EFER, efer | EFER_SCE);
+    ulong efer = Cpu::rdmsr(MSR_EFER);
+    Cpu::wrmsr(MSR_EFER, efer | EFER_SCE);
 
     // STAR: syscall時のCS/SS = 0x08/0x10, sysret時のCS/SS = 0x18/0x20
     // ビット配置: [63:48]=sysret CS base, [47:32]=syscall CS base
     ulong star = (0x0018 << 48) | (0x0008 << 32);
-    wrmsr(MSR_STAR, star);
+    Cpu::wrmsr(MSR_STAR, star);
 
     // LSTAR: syscallエントリアドレス
     ulong entry = syscall_entry_stub as ulong;
-    wrmsr(MSR_LSTAR, entry);
+    Cpu::wrmsr(MSR_LSTAR, entry);
 
     // SFMASK: syscall時にIFとDFをクリア
-    wrmsr(MSR_SFMASK, 0x700);
+    Cpu::wrmsr(MSR_SFMASK, 0x700);
 
     pr_info(w, "Syscall initialized (LSTAR set)" as void*);
 }

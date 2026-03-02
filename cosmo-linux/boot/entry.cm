@@ -70,7 +70,6 @@ void main(ulong mb2_info, ulong mb2_magic) {
         mb_parse(mb2_info, &boot_info, &serial);
     }
 
-
     // === 5. アーキテクチャ初期化 ===
     pr_info(&serial, "Initializing architecture..." as void*);
     Gdt::setup(&serial);
@@ -82,7 +81,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     BuddyAllocator pmm();
     if (boot_info.mmap_count > 0) {
         pmm_init(&pmm, boot_info.mmap_addr, boot_info.mmap_entry_size,
-                 boot_info.mmap_count, &serial);
+        boot_info.mmap_count, &serial);
     }
 
     ulong cr3_val = 0;
@@ -102,7 +101,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     pr_info(&serial, "Initializing VFS..." as void*);
     RamFs::setup(&serial);
     FdTable::setup();
-    cwd_init();
+    Cwd::setup();
     pr_info(&serial, "VFS initialized (ramfs + fd + cwd)" as void*);
 
     // === 8. プロセス管理初期化 ===
@@ -125,7 +124,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Kbd::setup(&serial);
 
     // === 11. initプロセス & シェルタスク生成 ===
-    init_banner(&serial);
+    Init::banner(&serial);
     pr_info(&serial, "Creating shell task..." as void*);
 
     shell_init(&serial as ulong, &pmm as ulong);
@@ -147,11 +146,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
     pr_info(&serial, "Entering idle loop with scheduler..." as void*);
 
     // 割り込み有効化
-    sti();
+    Cpu::sti();
 
     // idle loop（PIT割り込み + タイマーベーススケジューリング）
     while (true) {
-        hlt();
+        Cpu::hlt();
 
         ulong need_resched = PIT::check_resched();
         if (need_resched != 0) {
