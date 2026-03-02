@@ -9,7 +9,7 @@
 .PHONY: build run test clean
 
 build:
-	$(MAKE) -C cosmo-linux
+	$(MAKE) -C cosmo-linux build
 
 run:
 	$(MAKE) -C cosmo-linux run

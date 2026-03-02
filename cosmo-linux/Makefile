@@ -50,9 +50,11 @@ TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || ec
 # ビルド
 # ============================================================
 
-.PHONY: all run test clean help
+.PHONY: all build run test clean help
 
 all: $(ELF)
+
+build: clean all
 
 help:
 	@echo "Cosmo Linux ビルドシステム"
