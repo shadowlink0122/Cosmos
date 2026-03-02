@@ -3,14 +3,19 @@
 //
 // IDTベクタ14 (#PF) の拡張ハンドラ。
 // CR2（フォルト仮想アドレス）とエラーコードを解析し、
-// 適切な処理（Demand Paging等）を行う。
+// VMAテーブルを確認してDemand Pagingを実行する。
 //
 // 参照: linux/arch/x86/mm/fault.c
 
 import ../include/types;
 import ../include/config;
+import ../include/page_alloc;
 import ../drivers/serial;
 import ../lib/printk;
+import ../lib/kstring;
+import ./vmm;
+import ./pmm;
+import ./mmap;
 
 // ============================================================
 // ページフォルトエラーコードビット
@@ -28,16 +33,19 @@ export const ulong PF_INSN      = 16;  // 命令フェッチ
 
 /// ページフォルト情報構造体
 export struct PageFaultInfo {
-    VirtAddr fault_addr;    // CR2: フォルトアドレス
-    ulong error_code;       // エラーコード
-    ulong is_present;       // 存在ビット
-    ulong is_write;         // 書き込みフォルトか
-    ulong is_user;          // ユーザーモードか
+    VirtAddr fault_addr;  // CR2: フォルトアドレス
+    ulong error_code;     // エラーコード
+    ulong is_present;     // 存在ビット
+    ulong is_write;       // 書き込みフォルトか
+    ulong is_user;        // ユーザーモードか
 }
 
 // ============================================================
 // ページフォルトハンドラ
 // ============================================================
+
+/// PMMポインタアドレス
+const PhysAddr PF_PMM_PTR = 0x95010;
 
 /// 拡張ページフォルトハンドラ（IDTから呼ばれる）
 export void handle_page_fault(ulong error_code) {
@@ -57,7 +65,31 @@ export void handle_page_fault(ulong error_code) {
         is_user: (error_code >> 2) & 1
     };
 
-    // エラー出力
+    // 非存在ページフォルト: Demand Paging を試行
+    if (info.is_present == 0) {
+        // VMAテーブルでこのアドレスがマッピング予約済みか確認
+        Vma* vma = Mmap::find_vma(cr2);
+        ulong vma_addr = vma as ulong;
+        if (vma_addr != 0) {
+            // VMA内 → 物理ページを割り当ててマッピング
+            ulong* pmm_ptr = PF_PMM_PTR as ulong*;
+            BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+            ulong page_virt = cr2 & ~0xFFF;  // ページアラインメント
+            PhysAddr page_phys = pmm->alloc_pages(0);
+            if (page_phys != 0) {
+                memzero(page_phys as void*, PAGE_SIZE);
+
+                ulong cr3 = 0;
+                __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+                PageTable pt(cr3);
+                pt.map_page(page_virt, page_phys, KERNEL_PAGE_FLAGS, pmm);
+                return;  // 正常復帰
+            }
+        }
+    }
+
+    // リカバリ不可 → カーネルパニック
     SerialPort serial(COM1);
     serial.println("" as void*);
     pr_err(&serial, "PAGE FAULT (#PF)" as void*);
@@ -75,7 +107,7 @@ export void handle_page_fault(ulong error_code) {
     } else {
         serial.puts("NOT-PRESENT" as void*);
     }
-    serial.putc(32 as utiny);  // ' '
+    serial.putc(32 as utiny);
 
     if (info.is_write != 0) {
         serial.puts("WRITE" as void*);
@@ -89,10 +121,9 @@ export void handle_page_fault(ulong error_code) {
     } else {
         serial.puts("KERNEL" as void*);
     }
-    serial.putc(93 as utiny);  // ']'
+    serial.putc(93 as utiny);
     serial.println("" as void*);
 
-    // カーネルパニック（Phase 1ではDemand Paging未実装）
     pr_err(&serial, "Kernel panic - not syncing: unhandled page fault" as void*);
     __asm__(`cli; 1: hlt; jmp 1b`);
 }

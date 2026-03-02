@@ -21,6 +21,7 @@ import ../fs/fd_table;
 import ../init/init;
 import ../sched/process;
 import ../sched/scheduler;
+import ../mm/mmap;
 
 // ============================================================
 // MSR定数
@@ -222,6 +223,27 @@ impl Syscall {
         Cwd::set(path_addr as void*);
         return 0;
     }
+
+    /// sys_brk: ヒープ上限変更
+    static long brk(ulong new_brk) {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr == 0) { return 0 - ENOMEM; }
+        ulong result = Mmap::do_brk(new_brk, cur);
+        return result as long;
+    }
+
+    /// sys_mmap: メモリマッピング
+    static long mmap(ulong addr, ulong length, ulong prot, ulong flags) {
+        ulong result = Mmap::do_mmap(addr, length, prot, flags);
+        if (result == MAP_FAILED) { return 0 - ENOMEM; }
+        return result as long;
+    }
+
+    /// sys_munmap: メモリマッピング解除
+    static long munmap(ulong addr, ulong length) {
+        return Mmap::do_munmap(addr, length);
+    }
 }
 
 // ============================================================
@@ -267,6 +289,15 @@ ulong arg3, ulong arg4, ulong arg5) {
     }
     if (nr == SYS_CHDIR) {
         return Syscall::chdir(arg0);
+    }
+    if (nr == SYS_BRK) {
+        return Syscall::brk(arg0);
+    }
+    if (nr == SYS_MMAP) {
+        return Syscall::mmap(arg0, arg1, arg2, arg3);
+    }
+    if (nr == SYS_MUNMAP) {
+        return Syscall::munmap(arg0, arg1);
     }
 
     // 未実装syscall

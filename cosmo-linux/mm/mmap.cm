@@ -1,0 +1,257 @@
+//! platform: baremetal-x86
+// cosmo-linux::mm::mmap - 仮想メモリ領域管理 (VMA)
+//
+// Mmap struct/impl — mmap/munmap/brk の実装。
+// VMA テーブルで仮想アドレス範囲を管理し、
+// Demand Paging と連携して物理ページを遅延割当する。
+//
+// 参照: linux/mm/mmap.c
+
+import ../include/types;
+import ../include/config;
+import ../include/page_alloc;
+import ../include/scheduler;
+import ../mm/vmm;
+import ../mm/pmm;
+import ../lib/kstring;
+
+// ============================================================
+// VMA定数
+// ============================================================
+
+/// 匿名マッピング (ファイルなし)
+export const ulong MAP_ANONYMOUS = 0x20;
+
+/// プライベートマッピング
+export const ulong MAP_PRIVATE   = 0x02;
+
+/// 固定アドレスマッピング
+export const ulong MAP_FIXED     = 0x10;
+
+/// マッピング失敗
+export const ulong MAP_FAILED    = 0xFFFFFFFFFFFFFFFF;
+
+/// 保護フラグ
+export const ulong PROT_NONE  = 0;
+export const ulong PROT_READ  = 1;
+export const ulong PROT_WRITE = 2;
+export const ulong PROT_EXEC  = 4;
+
+/// VMAテーブル最大エントリ数
+const ulong VMA_MAX = 32;
+
+/// VMAテーブル固定メモリアドレス (各エントリ32バイト: start/end/flags/used)
+const PhysAddr VMA_TABLE_ADDR = 0x9A000;
+
+/// mmapの開始仮想アドレス (ユーザー空間上位)
+const VirtAddr MMAP_BASE = 0x10000000;
+
+/// ヒープ開始アドレス
+export const VirtAddr HEAP_BASE = 0x800000;
+
+/// PMMポインタアドレス
+const PhysAddr PMM_PTR_ADDR = 0x95010;
+
+/// ページテーブルポインタアドレス
+const PhysAddr VMM_PTR_ADDR = 0x91020;
+
+// ============================================================
+// VMA構造体 (メモリ上レイアウト: 32バイト)
+// ============================================================
+
+/// 仮想メモリ領域
+export struct Vma {
+    ulong start;  // 開始仮想アドレス
+    ulong end;    // 終了仮想アドレス（排他）
+    ulong flags;  // MAP_ANONYMOUS | PROT_*
+    ulong used;   // 1=使用中, 0=空き
+}
+
+// ============================================================
+// Mmap struct/impl
+// ============================================================
+
+/// Mmap — 仮想メモリ領域管理
+export struct Mmap {}
+
+impl Mmap {
+    /// VMAテーブル初期化
+    static void setup() {
+        memzero(VMA_TABLE_ADDR as void*, VMA_MAX * 32);
+    }
+
+    /// VMAエントリを取得
+    static Vma* get_vma(ulong index) {
+        ulong addr = VMA_TABLE_ADDR + index * 32;
+        return addr as Vma*;
+    }
+
+    /// 空きVMAスロットを検索
+    static long find_free_slot() {
+        ulong i = 0;
+        while (i < VMA_MAX) {
+            Vma* vma = Mmap::get_vma(i);
+            if (vma->used == 0) { return i as long; }
+            i = i + 1;
+        }
+        return 0 - 1;
+    }
+
+    /// 仮想アドレスが属するVMAを検索
+    static Vma* find_vma(ulong addr) {
+        ulong i = 0;
+        while (i < VMA_MAX) {
+            Vma* vma = Mmap::get_vma(i);
+            if (vma->used != 0) {
+                if (addr >= vma->start && addr < vma->end) {
+                    return vma;
+                }
+            }
+            i = i + 1;
+        }
+        return 0 as Vma*;
+    }
+
+    /// 使用されていない仮想アドレス範囲を検索
+    static ulong find_free_region(ulong size) {
+        ulong candidate = MMAP_BASE;
+        ulong aligned_size = (size + 0xFFF) & ~0xFFF;  // ページアラインメント
+
+        // 全VMAと衝突しない候補を探す
+        ulong retry = 0;
+        while (retry < VMA_MAX) {
+            ulong conflict = 0;
+            ulong i = 0;
+            while (i < VMA_MAX) {
+                Vma* vma = Mmap::get_vma(i);
+                if (vma->used != 0) {
+                    // 候補が既存VMAと重なるか
+                    if (candidate < vma->end && (candidate + aligned_size) > vma->start) {
+                        candidate = (vma->end + 0xFFF) & ~0xFFF;
+                        conflict = 1;
+                    }
+                }
+                i = i + 1;
+            }
+            if (conflict == 0) { return candidate; }
+            retry = retry + 1;
+        }
+        return 0;
+    }
+
+    /// mmap: 匿名メモリマッピング
+    /// 戻り値: マッピング開始アドレス (失敗時 MAP_FAILED)
+    static ulong do_mmap(ulong addr, ulong length, ulong prot, ulong flags) {
+        if (length == 0) { return MAP_FAILED; }
+
+        ulong aligned_len = (length + 0xFFF) & ~0xFFF;
+
+        // アドレス決定
+        ulong map_addr = addr;
+        if (map_addr == 0) {
+            map_addr = Mmap::find_free_region(aligned_len);
+            if (map_addr == 0) { return MAP_FAILED; }
+        } else {
+            map_addr = map_addr & ~0xFFF;
+        }
+
+        // 空きスロット確保
+        long slot = Mmap::find_free_slot();
+        if (slot < 0) { return MAP_FAILED; }
+
+        // VMA登録
+        Vma* vma = Mmap::get_vma(slot as ulong);
+        vma->start = map_addr;
+        vma->end = map_addr + aligned_len;
+        vma->flags = flags | prot;
+        vma->used = 1;
+
+        // 即時マッピング（Demand Pagingではなく即時確保）
+        ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        PageTable pt(cr3);
+
+        ulong offset = 0;
+        while (offset < aligned_len) {
+            PhysAddr page = pmm->alloc_pages(0);
+            if (page == 0) { return MAP_FAILED; }
+            memzero(page as void*, PAGE_SIZE);
+            pt.map_page(map_addr + offset, page, KERNEL_PAGE_FLAGS, pmm);
+            offset = offset + PAGE_SIZE;
+        }
+
+        return map_addr;
+    }
+
+    /// munmap: メモリマッピング解除
+    static long do_munmap(ulong addr, ulong length) {
+        if (length == 0) { return 0 - 22; }  // -EINVAL
+
+        Vma* vma = Mmap::find_vma(addr);
+        ulong vma_addr = vma as ulong;
+        if (vma_addr == 0) { return 0 - 22; }
+
+        // ページマッピング解除
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        PageTable pt(cr3);
+
+        ulong offset = 0;
+        ulong total = vma->end - vma->start;
+        while (offset < total) {
+            pt.unmap_page(vma->start + offset);
+            offset = offset + PAGE_SIZE;
+        }
+
+        // VMAスロット解放
+        vma->used = 0;
+        return 0;
+    }
+
+    /// brk: ヒープ上限変更
+    static ulong do_brk(ulong new_brk, Process* proc) {
+        if (new_brk == 0) { return proc->brk_addr; }
+        if (new_brk < HEAP_BASE) { return proc->brk_addr; }
+
+        ulong old_brk = proc->brk_addr;
+        ulong aligned_new = (new_brk + 0xFFF) & ~0xFFF;
+        ulong aligned_old = (old_brk + 0xFFF) & ~0xFFF;
+
+        if (aligned_new > aligned_old) {
+            // ヒープ拡張: 新しいページをマッピング
+            ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;
+            BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+            ulong cr3 = 0;
+            __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+            PageTable pt(cr3);
+
+            ulong page_addr = aligned_old;
+            while (page_addr < aligned_new) {
+                PhysAddr page = pmm->alloc_pages(0);
+                if (page == 0) { return old_brk; }
+                memzero(page as void*, PAGE_SIZE);
+                pt.map_page(page_addr, page, KERNEL_PAGE_FLAGS, pmm);
+                page_addr = page_addr + PAGE_SIZE;
+            }
+        }
+
+        proc->brk_addr = new_brk;
+        return new_brk;
+    }
+
+    /// VMA数を取得
+    static ulong count() {
+        ulong cnt = 0;
+        ulong i = 0;
+        while (i < VMA_MAX) {
+            Vma* vma = Mmap::get_vma(i);
+            if (vma->used != 0) { cnt = cnt + 1; }
+            i = i + 1;
+        }
+        return cnt;
+    }
+}

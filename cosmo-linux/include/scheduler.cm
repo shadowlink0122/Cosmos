@@ -57,6 +57,7 @@ export struct Process {
     ulong time_slice;      // 残りタイムスライス
     ulong priority;        // 優先度 (0=最高)
     ulong pending_signal;  // 保留中シグナル（ビットマスク）
+    VirtAddr brk_addr;     // ヒープ上限アドレス
 }
 
 // ============================================================

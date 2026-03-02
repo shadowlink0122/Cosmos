@@ -27,6 +27,7 @@ import ../fs/ramfs;
 import ../fs/procfs;
 import ../init/init;
 import ../sys/signal;
+import ../mm/mmap;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -41,7 +42,7 @@ impl Cmd {
         Shell::writeln("  ls cat touch write cp mv rm mkdir" as void*);
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
         Shell::writeln("  echo cd pwd env export history kill" as void*);
-        Shell::writeln("  cmd1 | cmd2  Tab=complete" as void*);
+        Shell::writeln("  vmstat  cmd1 | cmd2  Tab=complete" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
 
@@ -657,11 +658,9 @@ impl Cmd {
         }
         ulong sig = SIGTERM;
         ulong pid_addr = arg_addr;
-        // -9 フラグチェック
-        if (Mem::read_byte(arg_addr) == 45) {          // '-'
-            if (Mem::read_byte(arg_addr + 1) == 57) {  // '9'
+        if (Mem::read_byte(arg_addr) == 45) {
+            if (Mem::read_byte(arg_addr + 1) == 57) {
                 sig = SIGKILL;
-                // スペース後のPIDを取得
                 pid_addr = Cmd::arg(arg_addr);
                 if (pid_addr == 0) {
                     Shell::writeln("Usage: kill -9 <pid>" as void*);
@@ -669,7 +668,6 @@ impl Cmd {
                 }
             }
         }
-        // PID文字列を数値に変換
         ulong pid_val = 0;
         ulong pi = 0;
         while (true) {
@@ -687,7 +685,6 @@ impl Cmd {
             Shell::writeln("kill: missing pid" as void*);
             return;
         }
-        // PID 0 (idle) は kill 不可
         if (pid_val == 0) {
             Shell::writeln("kill: cannot kill idle process" as void*);
             return;
@@ -702,6 +699,51 @@ impl Cmd {
         } else {
             Shell::writeln("kill: no such process" as void*);
         }
+    }
+
+    /// vmstat コマンド: 仮想メモリ統計表示
+    static void vmstat() {
+        Shell::writeln("" as void*);
+        Shell::set_color(11, 0);
+        Shell::writeln("=== Virtual Memory Statistics ==="  as void*);
+        Shell::set_color(7, 0);
+
+        // VMA一覧
+        ulong vma_count = Mmap::count();
+        Shell::write("  VMA entries: " as void*);
+        Shell::print_dec(vma_count);
+        Shell::writeln("" as void*);
+
+        if (vma_count > 0) {
+            Shell::writeln("  START            END              FLAGS" as void*);
+            ulong i = 0;
+            while (i < 32) {
+                Vma* vma = Mmap::get_vma(i);
+                if (vma->used != 0) {
+                    Shell::write("  " as void*);
+                    Shell::print_hex(vma->start);
+                    Shell::write("  " as void*);
+                    Shell::print_hex(vma->end);
+                    Shell::write("  " as void*);
+                    Shell::print_hex(vma->flags);
+                    Shell::putc(10);
+                }
+                i = i + 1;
+            }
+        }
+
+        // メモリ統計
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+        ulong total = pmm->total_pages;
+        ulong free_p = pmm->free_pages;
+        ulong used = total - free_p;
+        Shell::write("  Physical: " as void*);
+        Shell::print_dec(used * 4);
+        Shell::write("KiB used / " as void*);
+        Shell::print_dec(total * 4);
+        Shell::writeln("KiB total" as void*);
+        Shell::writeln("" as void*);
     }
 
     /// history コマンド: コマンド履歴表示
@@ -1146,6 +1188,10 @@ impl Cmd {
         if (startswith(CMD_BUF_ADDR as void*, "kill " as void*) != 0) {
             ulong arg = Cmd::arg(CMD_BUF_ADDR);
             Cmd::kill(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "vmstat" as void*) != 0) {
+            Cmd::vmstat();
             return;
         }
         Shell::write("Unknown command: " as void*);

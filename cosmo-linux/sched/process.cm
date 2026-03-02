@@ -50,6 +50,7 @@ impl Process {
         self.time_slice = 10;
         self.priority = 20;
         self.pending_signal = 0;
+        self.brk_addr = 0x800000;
     }
 
     /// プロセスが実行可能か
@@ -102,6 +103,7 @@ impl ProcessTable {
         idle->time_slice = 0;
         idle->priority = 99;
         idle->pending_signal = 0;
+        idle->brk_addr = 0x800000;
         pr_info(w, "Idle process (PID 0) created" as void*);
     }
 
