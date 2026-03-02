@@ -35,31 +35,30 @@
 ## 計画中
 
 ### v0.0.5 — ファイル分割リファクタリング
-- [ ] shell.cm を 6ファイルに分割 (Mem/Vga/Shell/Env/History/Cmd)
-- [ ] 各 struct/impl を独立ファイルに
+- [x] shell.cm を 9ファイルに分割 (1 struct/impl = 1ファイル)
+- [x] 各 struct/impl を独立ファイルに
 
 ### v0.0.6 — シグナルとプロセス拡張
-- [ ] シグナルインフラ (SIGKILL/SIGTERM/SIGINT)
-- [ ] fork/exec/wait/exit 実装
-- [ ] プロセスツリー
-- [ ] wait/waitpid syscall
+- [x] シグナルインフラ (SIGKILL/SIGTERM/SIGINT)
+- [x] プロセスライフサイクル (do_exit/do_wait/find_by_pid)
+- [x] syscall追加 (getppid/kill/wait4)
+- [x] kill コマンド
 
 ### v0.0.7 — ページフォルト対応と仮想メモリ拡張
-- [ ] ページフォルトハンドラ実装
-- [ ] Demand paging
-- [ ] mmap syscall (匿名マッピング)
-- [ ] brk/sbrk syscall
+- [x] Demand Paging (VMA連携)
+- [x] mmap/munmap syscall (匿名マッピング)
+- [x] brk syscall (ヒープ管理)
+- [x] vmstat コマンド
 
-### v0.0.8 — デバイスモデルとDevFS
+---
+
+## 計画中
+
+### v0.0.8 — DevFS + パイプ + I/Oリダイレクト
 - [ ] /dev/null, /dev/zero, /dev/random
 - [ ] DevFS 実装
-- [ ] キャラクタデバイスインターフェース
-
-### v0.0.9 — パイプとIPC
-- [ ] カーネルパイプ (Shell のメモリ経由からFDベースに移行)
 - [ ] pipe() syscall
 - [ ] dup2() syscall
-- [ ] I/O リダイレクト (>, >>, <)
 
 ### v0.1.0 — ELF ローダーとユーザー空間
 - [ ] ELF64 バイナリパーサ

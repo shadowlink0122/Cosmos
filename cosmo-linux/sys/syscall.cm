@@ -22,6 +22,8 @@ import ../init/init;
 import ../sched/process;
 import ../sched/scheduler;
 import ../mm/mmap;
+import ../fs/devfs;
+import ../fs/pipe;
 
 // ============================================================
 // MSR定数
@@ -77,7 +79,7 @@ impl Syscall {
     /// sys_write: fdに書き込み
     static long write(ulong fd, ulong buf_addr, ulong count) {
         // fd 1 (stdout) と fd 2 (stderr) → シリアルに出力
-        if (fd == 1) {
+        if (fd == 1 || fd == 2) {
             SerialPort serial(COM1);
             ulong i = 0;
             while (i < count) {
@@ -94,37 +96,47 @@ impl Syscall {
             }
             return count as long;
         }
-        if (fd == 2) {
-            SerialPort serial(COM1);
-            ulong i = 0;
-            while (i < count) {
-                ulong ch = 0;
-                ulong addr = buf_addr + i;
-                __asm__(`
-                    movq ${r:addr}, %rdi;
-                    xorq %rax, %rax;
-                    movb (%rdi), %al;
-                    movq %rax, ${=r:ch}
-                `);
-                serial.putc(ch as utiny);
-                i = i + 1;
-            }
-            return count as long;
+        // DevFSチェック
+        ulong fs_type = FdTable::get_fs_type(fd as long);
+        if (fs_type == FS_DEVFS) {
+            ulong dev_id = FdTable::get_ino(fd as long) as ulong;
+            return DevFs::write(dev_id, buf_addr, count);
+        }
+        if (fs_type == FS_PIPE) {
+            ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
+            return Pipe::write(pipe_id, buf_addr, count);
         }
         return (0 - EBADF);
     }
 
     /// sys_read: fdから読み出し
     static long read(ulong fd, ulong buf_addr, ulong count) {
-        // stdin (fd 0) — キーボード入力（未実装: 0バイト返却）
         if (fd == 0) { return 0; }
-
+        // DevFSチェック
+        ulong fs_type = FdTable::get_fs_type(fd as long);
+        if (fs_type == FS_DEVFS) {
+            ulong dev_id = FdTable::get_ino(fd as long) as ulong;
+            return DevFs::read(dev_id, buf_addr, count);
+        }
+        if (fs_type == FS_PIPE) {
+            ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
+            return Pipe::read(pipe_id, buf_addr, count);
+        }
         // ramfsファイル → VFS経由
         return Vfs::read(fd as long, buf_addr, count);
     }
 
     /// sys_open: ファイルをオープン
     static long open(ulong name_addr, ulong flags) {
+        // /dev/ プレフィックスチェック
+        if (startswith(name_addr as void*, "/dev/" as void*) != 0) {
+            ulong dev_name = name_addr + 5;
+            ulong dev_id = DevFs::lookup(dev_name as void*);
+            if (dev_id != 0) {
+                return FdTable::alloc(dev_id as long, flags, FS_DEVFS);
+            }
+            return 0 - ENOENT;
+        }
         return Vfs::open(name_addr as void*, flags);
     }
 
@@ -244,6 +256,38 @@ impl Syscall {
     static long munmap(ulong addr, ulong length) {
         return Mmap::do_munmap(addr, length);
     }
+
+    /// sys_pipe: パイプ作成
+    /// pipefd[0] = 読み取り端, pipefd[1] = 書き込み端
+    static long do_pipe(ulong pipefd_addr) {
+        if (pipefd_addr == 0) { return 0 - EFAULT; }
+        long pipe_id = Pipe::create();
+        if (pipe_id < 0) { return 0 - EMFILE; }
+        // 読み取り端FD
+        Fd read_fd = FdTable::alloc(pipe_id, O_RDONLY, FS_PIPE);
+        if (read_fd < 0) {
+            Pipe::destroy(pipe_id as ulong);
+            return 0 - EMFILE;
+        }
+        // 書き込み端FD
+        Fd write_fd = FdTable::alloc(pipe_id, O_WRONLY, FS_PIPE);
+        if (write_fd < 0) {
+            FdTable::free(read_fd);
+            Pipe::destroy(pipe_id as ulong);
+            return 0 - EMFILE;
+        }
+        // pipefd配列に書き込み
+        ulong* fd0 = pipefd_addr as ulong*;
+        ulong* fd1 = (pipefd_addr + 8) as ulong*;
+        *fd0 = read_fd as ulong;
+        *fd1 = write_fd as ulong;
+        return 0;
+    }
+
+    /// sys_dup2: FDコピー
+    static long do_dup2(ulong oldfd, ulong newfd) {
+        return FdTable::dup2(oldfd as long, newfd as long);
+    }
 }
 
 // ============================================================
@@ -298,6 +342,12 @@ ulong arg3, ulong arg4, ulong arg5) {
     }
     if (nr == SYS_MUNMAP) {
         return Syscall::munmap(arg0, arg1);
+    }
+    if (nr == SYS_PIPE) {
+        return Syscall::do_pipe(arg0);
+    }
+    if (nr == SYS_DUP2) {
+        return Syscall::do_dup2(arg0, arg1);
     }
 
     // 未実装syscall

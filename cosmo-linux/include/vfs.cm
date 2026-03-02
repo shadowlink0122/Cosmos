@@ -82,19 +82,25 @@ export const ulong FS_RAMFS = 1;
 /// FS種別: stdin/stdout/stderr用特殊FS
 export const ulong FS_CONSOLE = 0;
 
+/// FS種別: DevFS (/dev/null, /dev/zero等)
+export const ulong FS_DEVFS = 2;
+
+/// FS種別: パイプ
+export const ulong FS_PIPE = 3;
+
 // ============================================================
 // Inode — ファイル/ディレクトリのメタデータ
 // ============================================================
 
 /// iノード構造体
 export struct Inode {
-    Ino ino;              // iノード番号
-    ulong mode;           // ファイル種別 + パーミッション
-    ulong size;           // ファイルサイズ（バイト）
-    ulong nlink;          // ハードリンク数
-    ulong data_addr;      // データ領域の物理アドレス（ramfs用）
-    ulong fs_type;        // ファイルシステム種別
-    ulong used;           // このエントリが使用中か (0=未使用, 1=使用中)
+    Ino ino;          // iノード番号
+    ulong mode;       // ファイル種別 + パーミッション
+    ulong size;       // ファイルサイズ（バイト）
+    ulong nlink;      // ハードリンク数
+    ulong data_addr;  // データ領域の物理アドレス（ramfs用）
+    ulong fs_type;    // ファイルシステム種別
+    ulong used;       // このエントリが使用中か (0=未使用, 1=使用中)
 }
 
 // ============================================================
@@ -103,10 +109,10 @@ export struct Inode {
 
 /// ディレクトリエントリ構造体
 export struct DirEntry {
-    ulong name_addr;      // ファイル名の格納アドレス（32バイト固定領域）
-    Ino ino;              // 対応するiノード番号
-    ulong entry_type;     // エントリ種別 (S_IFREG / S_IFDIR)
-    ulong used;           // このエントリが使用中か (0=未使用, 1=使用中)
+    ulong name_addr;   // ファイル名の格納アドレス（32バイト固定領域）
+    Ino ino;           // 対応するiノード番号
+    ulong entry_type;  // エントリ種別 (S_IFREG / S_IFDIR)
+    ulong used;        // このエントリが使用中か (0=未使用, 1=使用中)
 }
 
 // ============================================================
@@ -115,9 +121,9 @@ export struct DirEntry {
 
 /// ファイルディスクリプタ構造体
 export struct FileDesc {
-    Ino ino;              // 対応するiノード番号
-    ulong offset;         // 現在の読み書き位置
-    ulong flags;          // オープンフラグ
-    ulong fs_type;        // ファイルシステム種別
-    ulong used;           // このFDが使用中か (0=未使用, 1=使用中)
+    Ino ino;        // 対応するiノード番号
+    ulong offset;   // 現在の読み書き位置
+    ulong flags;    // オープンフラグ
+    ulong fs_type;  // ファイルシステム種別
+    ulong used;     // このFDが使用中か (0=未使用, 1=使用中)
 }

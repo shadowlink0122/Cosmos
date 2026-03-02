@@ -1,0 +1,140 @@
+//! platform: baremetal-x86
+// cosmo-linux::fs::pipe - カーネルパイプ
+//
+// Pipe struct/impl — pipe() syscall 用のカーネル内バッファ。
+// 参照: linux/fs/pipe.c
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../include/errno;
+import ../lib/kstring;
+import ./fd_table;
+
+// ============================================================
+// パイプ定数
+// ============================================================
+
+/// パイプバッファサイズ (4KiB)
+const ulong PIPE_BUF_SIZE = 4096;
+
+/// 最大パイプ数
+const ulong MAX_PIPES = 8;
+
+/// パイプテーブル固定メモリアドレス
+/// 各パイプ: buf(4096) + read_pos(8) + write_pos(8) + count(8) + used(8) = 4128
+const PhysAddr PIPE_TABLE_ADDR = 0x500000;
+const ulong PIPE_ENTRY_SIZE = 4128;
+
+// ============================================================
+// Pipe struct/impl
+// ============================================================
+
+/// Pipe — カーネルパイプ管理
+export struct Pipe {}
+
+impl Pipe {
+    /// パイプテーブル初期化
+    static void setup() {
+        memzero(PIPE_TABLE_ADDR as void*, MAX_PIPES * PIPE_ENTRY_SIZE);
+    }
+
+    /// パイプを作成。戻り値: パイプID (0-7)、失敗時 -1
+    static long create() {
+        ulong i = 0;
+        while (i < MAX_PIPES) {
+            ulong base = PIPE_TABLE_ADDR + i * PIPE_ENTRY_SIZE;
+            ulong* used = (base + PIPE_BUF_SIZE + 24) as ulong*;
+            if (*used == 0) {
+                // パイプを初期化
+                memzero(base as void*, PIPE_ENTRY_SIZE);
+                *used = 1;
+                return i as long;
+            }
+            i = i + 1;
+        }
+        return 0 - 1;
+    }
+
+    /// パイプから読み込み
+    static long read(ulong pipe_id, ulong buf_addr, ulong count) {
+        if (pipe_id >= MAX_PIPES) { return 0 - EBADF; }
+        ulong base = PIPE_TABLE_ADDR + pipe_id * PIPE_ENTRY_SIZE;
+        ulong* read_pos  = (base + PIPE_BUF_SIZE) as ulong*;
+        ulong* write_pos = (base + PIPE_BUF_SIZE + 8) as ulong*;
+        ulong* data_count = (base + PIPE_BUF_SIZE + 16) as ulong*;
+
+        if (*data_count == 0) { return 0; }  // EOF (空)
+
+        ulong to_read = count;
+        if (to_read > *data_count) { to_read = *data_count; }
+
+        ulong i = 0;
+        while (i < to_read) {
+            ulong src_addr = base + ((*read_pos + i) % PIPE_BUF_SIZE);
+            ulong dst_addr = buf_addr + i;
+            ulong byte_val = 0;
+            __asm__(`
+                movq ${r:src_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:byte_val}
+            `);
+            __asm__(`
+                movq ${r:dst_addr}, %rdi;
+                movq ${r:byte_val}, %rax;
+                movb %al, (%rdi)
+            `);
+            i = i + 1;
+        }
+
+        *read_pos = (*read_pos + to_read) % PIPE_BUF_SIZE;
+        *data_count = *data_count - to_read;
+        return to_read as long;
+    }
+
+    /// パイプに書き込み
+    static long write(ulong pipe_id, ulong buf_addr, ulong count) {
+        if (pipe_id >= MAX_PIPES) { return 0 - EBADF; }
+        ulong base = PIPE_TABLE_ADDR + pipe_id * PIPE_ENTRY_SIZE;
+        ulong* write_pos = (base + PIPE_BUF_SIZE + 8) as ulong*;
+        ulong* data_count = (base + PIPE_BUF_SIZE + 16) as ulong*;
+
+        ulong space = PIPE_BUF_SIZE - *data_count;
+        if (space == 0) { return 0 - EAGAIN; }
+
+        ulong to_write = count;
+        if (to_write > space) { to_write = space; }
+
+        ulong i = 0;
+        while (i < to_write) {
+            ulong src_addr = buf_addr + i;
+            ulong dst_addr = base + ((*write_pos + i) % PIPE_BUF_SIZE);
+            ulong byte_val = 0;
+            __asm__(`
+                movq ${r:src_addr}, %rdi;
+                xorq %rax, %rax;
+                movb (%rdi), %al;
+                movq %rax, ${=r:byte_val}
+            `);
+            __asm__(`
+                movq ${r:dst_addr}, %rdi;
+                movq ${r:byte_val}, %rax;
+                movb %al, (%rdi)
+            `);
+            i = i + 1;
+        }
+
+        *write_pos = (*write_pos + to_write) % PIPE_BUF_SIZE;
+        *data_count = *data_count + to_write;
+        return to_write as long;
+    }
+
+    /// パイプを解放
+    static void destroy(ulong pipe_id) {
+        if (pipe_id >= MAX_PIPES) { return; }
+        ulong base = PIPE_TABLE_ADDR + pipe_id * PIPE_ENTRY_SIZE;
+        ulong* used = (base + PIPE_BUF_SIZE + 24) as ulong*;
+        *used = 0;
+    }
+}

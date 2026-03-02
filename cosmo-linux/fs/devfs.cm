@@ -1,0 +1,96 @@
+//! platform: baremetal-x86
+// cosmo-linux::fs::devfs - デバイスファイルシステム
+//
+// /dev/null, /dev/zero, /dev/random をエミュレート。
+// 参照: linux/drivers/char/mem.c
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../include/errno;
+import ../drivers/serial;
+import ../lib/kstring;
+
+// ============================================================
+// デバイス番号定数
+// ============================================================
+
+/// /dev/null デバイス番号
+export const ulong DEV_NULL   = 1;
+
+/// /dev/zero デバイス番号
+export const ulong DEV_ZERO   = 2;
+
+/// /dev/random デバイス番号
+export const ulong DEV_RANDOM = 3;
+
+// ============================================================
+// DevFs struct/impl
+// ============================================================
+
+/// DevFs — デバイスファイルシステム
+export struct DevFs {}
+
+impl DevFs {
+    /// デバイスファイルの読み込み
+    /// ino にデバイス番号を格納してFDを作成する想定
+    static long read(ulong dev_id, ulong buf_addr, ulong count) {
+        if (dev_id == DEV_NULL) {
+            // /dev/null: 常にEOF (0バイト)
+            return 0;
+        }
+        if (dev_id == DEV_ZERO) {
+            // /dev/zero: 0で埋める
+            memzero(buf_addr as void*, count);
+            return count as long;
+        }
+        if (dev_id == DEV_RANDOM) {
+            // /dev/random: 擬似乱数で埋める（PIT tick + LFSRベース）
+            ulong seed = 0;
+            __asm__(`rdtsc; movq %rax, ${=r:seed}`);
+            ulong i = 0;
+            while (i < count) {
+                // 簡易LFSR
+                seed = seed ^ (seed << 13);
+                seed = seed ^ (seed >> 7);
+                seed = seed ^ (seed << 17);
+                ulong byte_val = seed & 0xFF;
+                ulong addr = buf_addr + i;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    movq ${r:byte_val}, %rax;
+                    movb %al, (%rdi)
+                `);
+                i = i + 1;
+            }
+            return count as long;
+        }
+        return 0 - ENODEV;
+    }
+
+    /// デバイスファイルへの書き込み
+    static long write(ulong dev_id, ulong buf_addr, ulong count) {
+        if (dev_id == DEV_NULL) {
+            // /dev/null: 全て破棄、countを返す
+            return count as long;
+        }
+        if (dev_id == DEV_ZERO) {
+            // /dev/zero: 書き込み不可
+            return 0 - EACCES;
+        }
+        if (dev_id == DEV_RANDOM) {
+            // /dev/random: 書き込み不可
+            return 0 - EACCES;
+        }
+        return 0 - ENODEV;
+    }
+
+    /// デバイスファイル名からデバイスIDを取得
+    /// "null" → DEV_NULL, "zero" → DEV_ZERO, "random" → DEV_RANDOM
+    static ulong lookup(void* name) {
+        if (streq(name, "null" as void*) != 0) { return DEV_NULL; }
+        if (streq(name, "zero" as void*) != 0) { return DEV_ZERO; }
+        if (streq(name, "random" as void*) != 0) { return DEV_RANDOM; }
+        return 0;
+    }
+}

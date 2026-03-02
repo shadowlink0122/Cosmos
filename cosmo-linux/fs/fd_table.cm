@@ -32,27 +32,42 @@ impl FdTable {
 
         // fd 0: stdin (console)
         ulong o0 = FD_TABLE_BASE;
-        ulong* p0_ino = o0 as ulong*;             *p0_ino = 0;
-        ulong* p0_off = (o0 + 8) as ulong*;       *p0_off = 0;
-        ulong* p0_flg = (o0 + 16) as ulong*;      *p0_flg = O_RDONLY;
-        ulong* p0_fs  = (o0 + 24) as ulong*;      *p0_fs  = FS_CONSOLE;
-        ulong* p0_use = (o0 + 32) as ulong*;      *p0_use = 1;
+        ulong* p0_ino = o0 as ulong*;
+        *p0_ino = 0;
+        ulong* p0_off = (o0 + 8) as ulong*;
+        *p0_off = 0;
+        ulong* p0_flg = (o0 + 16) as ulong*;
+        *p0_flg = O_RDONLY;
+        ulong* p0_fs  = (o0 + 24) as ulong*;
+        *p0_fs  = FS_CONSOLE;
+        ulong* p0_use = (o0 + 32) as ulong*;
+        *p0_use = 1;
 
         // fd 1: stdout (console)
         ulong o1 = FD_TABLE_BASE + FD_ENTRY_SIZE;
-        ulong* p1_ino = o1 as ulong*;             *p1_ino = 0;
-        ulong* p1_off = (o1 + 8) as ulong*;       *p1_off = 0;
-        ulong* p1_flg = (o1 + 16) as ulong*;      *p1_flg = O_WRONLY;
-        ulong* p1_fs  = (o1 + 24) as ulong*;      *p1_fs  = FS_CONSOLE;
-        ulong* p1_use = (o1 + 32) as ulong*;      *p1_use = 1;
+        ulong* p1_ino = o1 as ulong*;
+        *p1_ino = 0;
+        ulong* p1_off = (o1 + 8) as ulong*;
+        *p1_off = 0;
+        ulong* p1_flg = (o1 + 16) as ulong*;
+        *p1_flg = O_WRONLY;
+        ulong* p1_fs  = (o1 + 24) as ulong*;
+        *p1_fs  = FS_CONSOLE;
+        ulong* p1_use = (o1 + 32) as ulong*;
+        *p1_use = 1;
 
         // fd 2: stderr (console)
         ulong o2 = FD_TABLE_BASE + FD_ENTRY_SIZE * 2;
-        ulong* p2_ino = o2 as ulong*;             *p2_ino = 0;
-        ulong* p2_off = (o2 + 8) as ulong*;       *p2_off = 0;
-        ulong* p2_flg = (o2 + 16) as ulong*;      *p2_flg = O_WRONLY;
-        ulong* p2_fs  = (o2 + 24) as ulong*;      *p2_fs  = FS_CONSOLE;
-        ulong* p2_use = (o2 + 32) as ulong*;      *p2_use = 1;
+        ulong* p2_ino = o2 as ulong*;
+        *p2_ino = 0;
+        ulong* p2_off = (o2 + 8) as ulong*;
+        *p2_off = 0;
+        ulong* p2_flg = (o2 + 16) as ulong*;
+        *p2_flg = O_WRONLY;
+        ulong* p2_fs  = (o2 + 24) as ulong*;
+        *p2_fs  = FS_CONSOLE;
+        ulong* p2_use = (o2 + 32) as ulong*;
+        *p2_use = 1;
     }
 
     /// 空きFDを割り当てて初期化。成功=fd番号、失敗=-EMFILE
@@ -62,10 +77,14 @@ impl FdTable {
             ulong o = FD_TABLE_BASE + i * FD_ENTRY_SIZE;
             ulong* used_flag = (o + 32) as ulong*;
             if (*used_flag == 0) {
-                ulong* p_ino = o as ulong*;         *p_ino = ino;
-                ulong* p_off = (o + 8) as ulong*;   *p_off = 0;
-                ulong* p_flg = (o + 16) as ulong*;  *p_flg = flags;
-                ulong* p_fs  = (o + 24) as ulong*;  *p_fs  = fs_type;
+                ulong* p_ino = o as ulong*;
+                *p_ino = ino;
+                ulong* p_off = (o + 8) as ulong*;
+                *p_off = 0;
+                ulong* p_flg = (o + 16) as ulong*;
+                *p_flg = flags;
+                ulong* p_fs  = (o + 24) as ulong*;
+                *p_fs  = fs_type;
                 *used_flag = 1;
                 return i as long;
             }
@@ -146,5 +165,29 @@ impl FdTable {
         ulong o = FD_TABLE_BASE + ufd * FD_ENTRY_SIZE;
         ulong* used_flag = (o + 32) as ulong*;
         return *used_flag;
+    }
+
+    /// dup2: oldfd の内容を newfd にコピー
+    static Fd dup2(Fd oldfd, Fd newfd) {
+        if (oldfd < 0 || newfd < 0) { return 0 - 9; }  // -EBADF
+        ulong old_u = oldfd as ulong;
+        ulong new_u = newfd as ulong;
+        if (old_u >= MAX_FD || new_u >= MAX_FD) { return 0 - 9; }
+
+        ulong o_old = FD_TABLE_BASE + old_u * FD_ENTRY_SIZE;
+        ulong* old_used = (o_old + 32) as ulong*;
+        if (*old_used == 0) { return 0 - 9; }  // oldfdが無効
+
+        // newfdが使用中なら閉じる
+        ulong o_new = FD_TABLE_BASE + new_u * FD_ENTRY_SIZE;
+        // oldfdの内容をnewfdにコピー (40バイト)
+        ulong i = 0;
+        while (i < 5) {
+            ulong* src = (o_old + i * 8) as ulong*;
+            ulong* dst = (o_new + i * 8) as ulong*;
+            *dst = *src;
+            i = i + 1;
+        }
+        return newfd;
     }
 }
