@@ -194,7 +194,10 @@ impl Mmap {
         ulong vma_addr = vma as ulong;
         if (vma_addr == 0) { return 0 - 22; }
 
-        // ページマッピング解除
+        // PMMを取得してページ解放
+        ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
         ulong cr3 = 0;
         __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
         PageTable pt(cr3);
@@ -202,7 +205,13 @@ impl Mmap {
         ulong offset = 0;
         ulong total = vma->end - vma->start;
         while (offset < total) {
-            pt.unmap_page(vma->start + offset);
+            ulong va = vma->start + offset;
+            // 物理ページを取得して解放
+            PhysAddr phys = pt.translate(va);
+            if (phys != 0) {
+                pmm->free_pages(phys, 0);
+            }
+            pt.unmap_page(va);
             offset = offset + PAGE_SIZE;
         }
 

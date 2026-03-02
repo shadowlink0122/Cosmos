@@ -29,6 +29,7 @@ import ../init/init;
 import ../sys/signal;
 import ../mm/mmap;
 import ../exec/loader;
+import ../test/ktest;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -43,7 +44,7 @@ impl Cmd {
         Shell::writeln("  ls cat touch write cp mv rm mkdir" as void*);
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
         Shell::writeln("  echo cd pwd env export history kill" as void*);
-        Shell::writeln("  vmstat exec  cmd1 | cmd2  Tab=complete" as void*);
+        Shell::writeln("  vmstat exec test  cmd1 | cmd2  Tab=complete" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
 
@@ -1215,6 +1216,10 @@ impl Cmd {
         if (startswith(CMD_BUF_ADDR as void*, "exec " as void*) != 0) {
             ulong arg = Cmd::arg(CMD_BUF_ADDR);
             Cmd::exec_cmd(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "test" as void*) != 0) {
+            KTest::run_all();
             return;
         }
         Shell::write("Unknown command: " as void*);

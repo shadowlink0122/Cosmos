@@ -27,6 +27,7 @@ import ../sys/syscall;
 import ../ui/shell;
 import ../fs/ramfs;
 import ../fs/fd_table;
+import ../fs/pipe;
 import ../fs/vfs;
 import ../init/init;
 
@@ -102,7 +103,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
     RamFs::setup(&serial);
     FdTable::setup();
     Cwd::setup();
-    pr_info(&serial, "VFS initialized (ramfs + fd + cwd)" as void*);
+    Pipe::setup();
+    pr_info(&serial, "VFS initialized (ramfs + fd + cwd + pipe)" as void*);
 
     // === 8. プロセス管理初期化 ===
     pr_info(&serial, "Initializing process management..." as void*);

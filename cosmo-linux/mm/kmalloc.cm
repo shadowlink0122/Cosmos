@@ -40,14 +40,14 @@ const Size CLASS_7 = 2048;
 /// カーネルヒープアロケータ
 export struct KernelHeap {
     // 各サイズクラスのフリーリストヘッド
-    VirtAddr free_list_0;   // 16B
-    VirtAddr free_list_1;   // 32B
-    VirtAddr free_list_2;   // 64B
-    VirtAddr free_list_3;   // 128B
-    VirtAddr free_list_4;   // 256B
-    VirtAddr free_list_5;   // 512B
-    VirtAddr free_list_6;   // 1024B
-    VirtAddr free_list_7;   // 2048B
+    VirtAddr free_list_0;  // 16B
+    VirtAddr free_list_1;  // 32B
+    VirtAddr free_list_2;  // 64B
+    VirtAddr free_list_3;  // 128B
+    VirtAddr free_list_4;  // 256B
+    VirtAddr free_list_5;  // 512B
+    VirtAddr free_list_6;  // 1024B
+    VirtAddr free_list_7;  // 2048B
 
     // 統計
     ulong total_allocs;
@@ -73,31 +73,35 @@ impl KernelHeap {
         self.total_frees = 0;
     }
 
-    /// サイズからサイズクラスインデックスを取得
-    ulong size_to_class(Size size) {
-        if (size <= CLASS_0) { return 0; }
-        if (size <= CLASS_1) { return 1; }
-        if (size <= CLASS_2) { return 2; }
-        if (size <= CLASS_3) { return 3; }
-        if (size <= CLASS_4) { return 4; }
-        if (size <= CLASS_5) { return 5; }
-        if (size <= CLASS_6) { return 6; }
-        if (size <= CLASS_7) { return 7; }
-        return 8;  // ページ単位
-    }
+}
 
-    /// サイズクラスからブロックサイズを取得
-    Size class_to_size(ulong cls) {
-        if (cls == 0) { return CLASS_0; }
-        if (cls == 1) { return CLASS_1; }
-        if (cls == 2) { return CLASS_2; }
-        if (cls == 3) { return CLASS_3; }
-        if (cls == 4) { return CLASS_4; }
-        if (cls == 5) { return CLASS_5; }
-        if (cls == 6) { return CLASS_6; }
-        if (cls == 7) { return CLASS_7; }
-        return PAGE_SIZE;
-    }
+/// サイズからサイズクラスインデックスを取得
+export ulong heap_size_to_class(Size size) {
+    if (size <= CLASS_0) { return 0; }
+    if (size <= CLASS_1) { return 1; }
+    if (size <= CLASS_2) { return 2; }
+    if (size <= CLASS_3) { return 3; }
+    if (size <= CLASS_4) { return 4; }
+    if (size <= CLASS_5) { return 5; }
+    if (size <= CLASS_6) { return 6; }
+    if (size <= CLASS_7) { return 7; }
+    return 8;  // ページ単位
+}
+
+/// サイズクラスからブロックサイズを取得
+export Size heap_class_to_size(ulong cls) {
+    if (cls == 0) { return CLASS_0; }
+    if (cls == 1) { return CLASS_1; }
+    if (cls == 2) { return CLASS_2; }
+    if (cls == 3) { return CLASS_3; }
+    if (cls == 4) { return CLASS_4; }
+    if (cls == 5) { return CLASS_5; }
+    if (cls == 6) { return CLASS_6; }
+    if (cls == 7) { return CLASS_7; }
+    return PAGE_SIZE;
+}
+
+impl KernelHeap {
 
     /// フリーリストからヘッド取得
     VirtAddr get_free_head(ulong cls) {
@@ -129,7 +133,7 @@ impl KernelHeap {
         PhysAddr page = pmm->alloc_pages(0);
         if (page == 0) { return; }
 
-        Size block_size = self.class_to_size(cls);
+        Size block_size = heap_class_to_size(cls);
         ulong blocks = PAGE_SIZE / block_size;
 
         // ページをブロックに分割し、フリーリスト構築
@@ -154,7 +158,16 @@ impl KernelHeap for Allocator {
     VirtAddr alloc(Size size) {
         if (size == 0) { return 0; }
 
-        ulong cls = self.size_to_class(size);
+        // インラインサイズクラス計算（impl for内の外部関数呼び出しバグ回避）
+        ulong cls = 8;
+        if (size <= 16) { cls = 0; }
+        if (size > 16 && size <= 32) { cls = 1; }
+        if (size > 32 && size <= 64) { cls = 2; }
+        if (size > 64 && size <= 128) { cls = 3; }
+        if (size > 128 && size <= 256) { cls = 4; }
+        if (size > 256 && size <= 512) { cls = 5; }
+        if (size > 512 && size <= 1024) { cls = 6; }
+        if (size > 1024 && size <= 2048) { cls = 7; }
 
         // ページ単位以上はPMMから直接（未実装、0を返す）
         if (cls >= NUM_SIZE_CLASSES) { return 0; }
@@ -191,7 +204,7 @@ impl KernelHeap for Allocator {
 export VirtAddr kmalloc(KernelHeap* heap, BuddyAllocator* pmm, Size size) {
     if (size == 0) { return 0; }
 
-    ulong cls = heap->size_to_class(size);
+    ulong cls = heap_size_to_class(size);
     if (cls >= NUM_SIZE_CLASSES) {
         // ページ単位: PMMから直接
         ulong order = 0;

@@ -1,0 +1,390 @@
+//! platform: baremetal-x86
+// cosmo-linux::test::ktest - カーネルテストフレームワーク
+//
+// カーネル内ユニットテストを実行し結果をシリアルとVGAに表示。
+// 参照: linux/lib/kunit
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../include/errno;
+import ../include/scheduler;
+import ../include/signal;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ../fs/devfs;
+import ../fs/pipe;
+import ../fs/fd_table;
+import ../sys/signal;
+import ../sched/process;
+import ../sched/scheduler;
+import ../mm/mmap;
+import ../ui/shell_io;
+import ../ui/vga;
+
+// ============================================================
+// テスト結果カウンタ
+// ============================================================
+
+/// テスト統計アドレス (pass/fail/total)
+const PhysAddr KTEST_STATS = 0x9C000;
+
+/// KTest — カーネルテストフレームワーク
+export struct KTest {}
+
+impl KTest {
+    /// テスト統計初期化
+    static void reset() {
+        ulong* pass  = KTEST_STATS as ulong*;
+        ulong* fail  = (KTEST_STATS + 8) as ulong*;
+        ulong* total = (KTEST_STATS + 16) as ulong*;
+        *pass  = 0;
+        *fail  = 0;
+        *total = 0;
+    }
+
+    /// テストパス記録
+    static void pass(void* name) {
+        ulong* p = KTEST_STATS as ulong*;
+        ulong* t = (KTEST_STATS + 16) as ulong*;
+        *p = *p + 1;
+        *t = *t + 1;
+        Shell::set_color(10, 0);  // 緑
+        Shell::write("  [PASS] " as void*);
+        Shell::set_color(7, 0);
+        Shell::writeln(name);
+    }
+
+    /// テストフェイル記録
+    static void fail(void* name) {
+        ulong* f = (KTEST_STATS + 8) as ulong*;
+        ulong* t = (KTEST_STATS + 16) as ulong*;
+        *f = *f + 1;
+        *t = *t + 1;
+        Shell::set_color(12, 0);  // 赤
+        Shell::write("  [FAIL] " as void*);
+        Shell::set_color(7, 0);
+        Shell::writeln(name);
+    }
+
+    /// アサート: 条件が真であることを検証
+    static void assert_true(ulong cond, void* name) {
+        if (cond != 0) {
+            KTest::pass(name);
+        } else {
+            KTest::fail(name);
+        }
+    }
+
+    /// アサート: 値が等しいことを検証
+    static void assert_eq(ulong actual, ulong expected, void* name) {
+        if (actual == expected) {
+            KTest::pass(name);
+        } else {
+            KTest::fail(name);
+            Shell::write("    expected=" as void*);
+            Shell::print_dec(expected);
+            Shell::write(" actual=" as void*);
+            Shell::print_dec(actual);
+            Shell::putc(10);
+        }
+    }
+
+    /// アサート: 値がゼロでないことを検証
+    static void assert_nonzero(ulong val, void* name) {
+        if (val != 0) {
+            KTest::pass(name);
+        } else {
+            KTest::fail(name);
+        }
+    }
+
+    /// テスト結果サマリ表示
+    static void summary() {
+        ulong* pass  = KTEST_STATS as ulong*;
+        ulong* fail  = (KTEST_STATS + 8) as ulong*;
+        ulong* total = (KTEST_STATS + 16) as ulong*;
+
+        Shell::writeln("" as void*);
+        if (*fail == 0) {
+            Shell::set_color(10, 0);
+            Shell::write("All tests passed: " as void*);
+        } else {
+            Shell::set_color(12, 0);
+            Shell::write("Tests failed: " as void*);
+        }
+        Shell::print_dec(*pass);
+        Shell::write("/" as void*);
+        Shell::print_dec(*total);
+        Shell::write(" passed, " as void*);
+        Shell::print_dec(*fail);
+        Shell::writeln(" failed" as void*);
+        Shell::set_color(7, 0);
+    }
+
+    // ============================================================
+    // テストスイート
+    // ============================================================
+
+    /// 全テスト実行
+    static void run_all() {
+        KTest::reset();
+        Shell::writeln("" as void*);
+        Shell::set_color(11, 0);
+        Shell::writeln("=== Cosmo Linux Kernel Tests ===" as void*);
+        Shell::set_color(7, 0);
+
+        KTest::test_devfs();
+        KTest::test_pipe();
+        KTest::test_signal();
+        KTest::test_fd_table();
+        KTest::test_vma();
+        KTest::test_process();
+
+        KTest::summary();
+    }
+
+    // ============================================================
+    // DevFS テスト
+    // ============================================================
+
+    static void test_devfs() {
+        Shell::set_color(14, 0);
+        Shell::writeln("[DevFS]" as void*);
+        Shell::set_color(7, 0);
+
+        // /dev/null lookup
+        ulong dev = DevFs::lookup("null" as void*);
+        KTest::assert_eq(dev, DEV_NULL, "lookup /dev/null" as void*);
+
+        dev = DevFs::lookup("zero" as void*);
+        KTest::assert_eq(dev, DEV_ZERO, "lookup /dev/zero" as void*);
+
+        dev = DevFs::lookup("random" as void*);
+        KTest::assert_eq(dev, DEV_RANDOM, "lookup /dev/random" as void*);
+
+        dev = DevFs::lookup("nonexistent" as void*);
+        KTest::assert_eq(dev, 0, "lookup nonexistent returns 0" as void*);
+
+        // /dev/null read → EOF (0)
+        ulong buf_addr = 0x9D000;  // テスト用一時バッファ
+        long n = DevFs::read(DEV_NULL, buf_addr, 64);
+        KTest::assert_eq(n as ulong, 0, "/dev/null read returns 0 (EOF)" as void*);
+
+        // /dev/null write → count
+        n = DevFs::write(DEV_NULL, buf_addr, 100);
+        KTest::assert_eq(n as ulong, 100, "/dev/null write returns count" as void*);
+
+        // /dev/zero read → fills zeros
+        // バッファに0xFF埋め
+        ulong i = 0;
+        while (i < 16) {
+            ulong addr = buf_addr + i;
+            __asm__(`
+                movq ${r:addr}, %rdi;
+                movb $$0xFF, (%rdi)
+            `);
+            i = i + 1;
+        }
+        n = DevFs::read(DEV_ZERO, buf_addr, 16);
+        KTest::assert_eq(n as ulong, 16, "/dev/zero read returns count" as void*);
+        // 最初のバイトがゼロか確認
+        ulong first_byte = 0;
+        __asm__(`
+            movq ${r:buf_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:first_byte}
+        `);
+        KTest::assert_eq(first_byte, 0, "/dev/zero fills with zeros" as void*);
+
+        // /dev/random read → nonzero return
+        n = DevFs::read(DEV_RANDOM, buf_addr, 32);
+        KTest::assert_eq(n as ulong, 32, "/dev/random read returns count" as void*);
+    }
+
+    // ============================================================
+    // Pipe テスト
+    // ============================================================
+
+    static void test_pipe() {
+        Shell::set_color(14, 0);
+        Shell::writeln("[Pipe]" as void*);
+        Shell::set_color(7, 0);
+
+        // パイプ作成
+        long pipe_id = Pipe::create();
+        if (pipe_id >= 0) {
+            KTest::assert_true(1, "pipe create succeeds" as void*);
+        } else {
+            KTest::assert_true(0, "pipe create succeeds" as void*);
+        }
+
+        // 空パイプから読み込み → 0
+        ulong buf = 0x9D100;
+        long n = Pipe::read(pipe_id as ulong, buf, 32);
+        KTest::assert_eq(n as ulong, 0, "empty pipe read returns 0" as void*);
+
+        // 書き込み
+        ulong msg_addr = "Hello" as ulong;
+        n = Pipe::write(pipe_id as ulong, msg_addr, 5);
+        KTest::assert_eq(n as ulong, 5, "pipe write 5 bytes" as void*);
+
+        // 読み込み
+        memzero(buf as void*, 32);
+        n = Pipe::read(pipe_id as ulong, buf, 32);
+        KTest::assert_eq(n as ulong, 5, "pipe read returns 5 bytes" as void*);
+
+        // 読み込みデータ検証 (先頭バイト = 'H' = 72)
+        ulong first = 0;
+        __asm__(`
+            movq ${r:buf}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:first}
+        `);
+        KTest::assert_eq(first, 72, "pipe data integrity (H=72)" as void*);
+
+        // パイプ解放
+        Pipe::destroy(pipe_id as ulong);
+        KTest::pass("pipe destroy" as void*);
+    }
+
+    // ============================================================
+    // Signal テスト
+    // ============================================================
+
+    static void test_signal() {
+        Shell::set_color(14, 0);
+        Shell::writeln("[Signal]" as void*);
+        Shell::set_color(7, 0);
+
+        // シグナル定数
+        KTest::assert_eq(SIGKILL, 9, "SIGKILL = 9" as void*);
+        KTest::assert_eq(SIGTERM, 15, "SIGTERM = 15" as void*);
+        KTest::assert_eq(SIGCHLD, 17, "SIGCHLD = 17" as void*);
+
+        // is_pending / clear on current process
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            cur->pending_signal = 0;  // クリア
+            KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 0,
+            "no pending SIGUSR1" as void*);
+            // SIGUSR1をセット
+            cur->pending_signal = cur->pending_signal | (1 << SIGUSR1);
+            KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 1,
+            "SIGUSR1 pending after set" as void*);
+            // クリア
+            Signal::clear(cur, SIGUSR1);
+            KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 0,
+            "SIGUSR1 cleared" as void*);
+        }
+    }
+
+    // ============================================================
+    // FDテーブル テスト
+    // ============================================================
+
+    static void test_fd_table() {
+        Shell::set_color(14, 0);
+        Shell::writeln("[FdTable]" as void*);
+        Shell::set_color(7, 0);
+
+        // stdin/stdout/stderr は有効
+        KTest::assert_eq(FdTable::is_valid(0), 1, "fd 0 (stdin) valid" as void*);
+        KTest::assert_eq(FdTable::is_valid(1), 1, "fd 1 (stdout) valid" as void*);
+        KTest::assert_eq(FdTable::is_valid(2), 1, "fd 2 (stderr) valid" as void*);
+
+        // 未使用FDは無効
+        KTest::assert_eq(FdTable::is_valid(15), 0, "fd 15 invalid" as void*);
+
+        // alloc/free サイクル
+        Fd fd = FdTable::alloc(42, O_RDWR, FS_DEVFS);
+        if (fd >= 3) {
+            KTest::assert_true(1, "alloc returns fd >= 3" as void*);
+        } else {
+            KTest::assert_true(0, "alloc returns fd >= 3" as void*);
+        }
+        KTest::assert_eq(FdTable::is_valid(fd), 1, "allocated fd valid" as void*);
+        KTest::assert_eq(FdTable::get_fs_type(fd), FS_DEVFS, "fs_type = FS_DEVFS" as void*);
+
+        // dup2
+        Fd dup_fd = FdTable::dup2(fd, 10);
+        KTest::assert_eq(dup_fd as ulong, 10, "dup2 returns newfd" as void*);
+        KTest::assert_eq(FdTable::is_valid(10), 1, "dup2 target valid" as void*);
+        KTest::assert_eq(FdTable::get_fs_type(10), FS_DEVFS, "dup2 target fs_type" as void*);
+
+        // クリーンアップ
+        FdTable::free(fd);
+        FdTable::free(10);
+    }
+
+    // ============================================================
+    // VMA テスト
+    // ============================================================
+
+    static void test_vma() {
+        Shell::set_color(14, 0);
+        Shell::writeln("[VMA/Mmap]" as void*);
+        Shell::set_color(7, 0);
+
+        // 初期VMA数
+        ulong initial = Mmap::count();
+        KTest::pass("initial VMA count read" as void*);
+
+        // mmap — 匿名マッピング
+        ulong addr = Mmap::do_mmap(0, 4096, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS);
+        if (addr != MAP_FAILED) {
+            KTest::assert_true(1, "mmap anonymous succeeds" as void*);
+        } else {
+            KTest::assert_true(0, "mmap anonymous succeeds" as void*);
+        }
+        KTest::assert_eq(Mmap::count(), initial + 1, "VMA count +1" as void*);
+
+        // find_vma
+        Vma* vma = Mmap::find_vma(addr);
+        ulong vma_addr = vma as ulong;
+        KTest::assert_nonzero(vma_addr, "find_vma returns valid" as void*);
+
+        // munmap
+        long ret = Mmap::do_munmap(addr, 4096);
+        KTest::assert_eq(ret as ulong, 0, "munmap returns 0" as void*);
+        KTest::assert_eq(Mmap::count(), initial, "VMA count restored" as void*);
+    }
+
+    // ============================================================
+    // Process テスト
+    // ============================================================
+
+    static void test_process() {
+        Shell::set_color(14, 0);
+        Shell::writeln("[Process]" as void*);
+        Shell::set_color(7, 0);
+
+        // 現在のプロセス
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        KTest::assert_nonzero(cur_addr, "current process exists" as void*);
+
+        if (cur_addr != 0) {
+            if (cur->pid >= 0) {
+                KTest::assert_true(1, "current PID >= 0" as void*);
+            } else {
+                KTest::assert_true(0, "current PID >= 0" as void*);
+            }
+        }
+
+        // PID 0 (idle) を検索
+        Process* idle = ProcessTable::find_by_pid(0);
+        ulong idle_addr = idle as ulong;
+        KTest::assert_nonzero(idle_addr, "find PID 0 (idle)" as void*);
+
+        // 存在しないPID
+        Process* ghost = ProcessTable::find_by_pid(999);
+        ulong ghost_addr = ghost as ulong;
+        KTest::assert_eq(ghost_addr, 0, "find PID 999 returns null" as void*);
+    }
+}

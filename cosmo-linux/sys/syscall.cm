@@ -142,6 +142,15 @@ impl Syscall {
 
     /// sys_close: FDを閉じる
     static long close(ulong fd) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong fs_type = FdTable::get_fs_type(fd as long);
+        if (fs_type == FS_DEVFS || fs_type == FS_PIPE) {
+            // DevFS / Pipe: FDエントリのみ解放
+            FdTable::free(fd as long);
+            return 0;
+        }
         return Vfs::close(fd as long);
     }
 
