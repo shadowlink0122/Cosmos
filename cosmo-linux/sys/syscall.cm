@@ -28,6 +28,7 @@ import ../fs/pipe;
 import ./syscall_fs;
 import ./syscall_proc;
 import ./syscall_net;
+import ../drivers/keyboard;
 
 // ============================================================
 // MSR定数
@@ -115,7 +116,53 @@ impl Syscall {
 
     /// sys_read: fdから読み出し
     static long read(ulong fd, ulong buf_addr, ulong count) {
-        if (fd == 0) { return 0; }
+        // stdin (fd=0): PS/2キーボードからブロッキング読み取り（行バッファリング）
+        if (fd == 0) {
+            if (count == 0) { return 0; }
+            SerialPort echo_port(COM1);
+            ulong bytes_read = 0;
+
+            while (bytes_read < count) {
+                // キーバッファが空ならhltで待機（IRQ1でキーが入る）
+                ulong ch = Kbd::getchar();
+                while (ch == 0) {
+                    __asm__(`sti; hlt`);
+                    ch = Kbd::getchar();
+                }
+
+                // Ctrl+D (EOF) → 0バイト返却
+                if (ch == 4) {
+                    if (bytes_read == 0) { return 0; }
+                    break;
+                }
+
+                // Backspace (0x08) → 1文字削除
+                if (ch == 8) {
+                    if (bytes_read > 0) {
+                        bytes_read = bytes_read - 1;
+                        // エコーバック: BS + Space + BS
+                        echo_port.putc(8);
+                        echo_port.putc(32);
+                        echo_port.putc(8);
+                    }
+                    continue;
+                }
+
+                // ユーザーバッファに格納
+                ulong dst = buf_addr + bytes_read;
+                __asm__(`movq ${r:dst}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+                bytes_read = bytes_read + 1;
+
+                // エコーバック
+                echo_port.putc(ch as utiny);
+
+                // Enter (0x0A) → 行完了
+                if (ch == 10) {
+                    break;
+                }
+            }
+            return bytes_read as long;
+        }
         // DevFSチェック
         ulong fs_type = FdTable::get_fs_type(fd as long);
         if (fs_type == FS_DEVFS) {
