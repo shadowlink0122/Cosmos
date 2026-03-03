@@ -103,8 +103,27 @@ export void exc_page_fault() {
     // ユーザーモード#PF → プロセスkill (SIGSEGV = exit code 139)
     ulong cs_val = *cs_ptr;
     if ((cs_val & 3) != 0) {
+        ulong* ursp_ptr = (tss_rsp0 - 16) as ulong*;
+        serial.puts("  user_RSP = " as void*);
+        serial.print_hex(*ursp_ptr);
+        serial.puts("  err = " as void*);
+        serial.print_hex(*err_ptr);
+        serial.println("" as void*);
+        // ユーザースタックダンプ (call chain)
+        ulong ursp = *ursp_ptr;
+        if (ursp > 0x400000) {
+            ulong i = 0;
+            while (i < 8) {
+                ulong* ustack = (ursp + i * 8) as ulong*;
+                serial.puts("  [ursp+" as void*);
+                serial.print_hex(i * 8);
+                serial.puts("] = " as void*);
+                serial.print_hex(*ustack);
+                serial.println("" as void*);
+                i = i + 1;
+            }
+        }
         serial.println("[#PF] User process killed (SIGSEGV)" as void*);
-        // タイマー割り込み経由でスケジューラに復帰（sti→hlt）
         __asm__(`sti; 1: hlt; jmp 1b`);
         return;
     }
