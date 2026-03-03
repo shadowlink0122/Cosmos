@@ -10,6 +10,9 @@ import ../include/scheduler;
 import ../drivers/serial;
 import ../drivers/pit;
 import ../drivers/virtio_net;
+import ../net/arp;
+import ../net/ip;
+import ../include/net;
 
 import ../drivers/keyboard;
 import ../lib/kstring;

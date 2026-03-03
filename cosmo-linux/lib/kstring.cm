@@ -159,5 +159,9 @@ impl KString {
 // 互換ラッパー（strlen/strcmp/streq）
 export Size strlen(void* str) { return KString::strlen(str); }
 export long strcmp(void* s1, void* s2) { return KString::strcmp(s1, s2); }
-export ulong streq(void* a_ptr, void* b_ptr) { return KString::streq(a_ptr, b_ptr); }
+export ulong streq(void* a_ptr, void* b_ptr) {
+    long result = KString::strcmp(a_ptr, b_ptr);
+    if (result == 0) { return 1; }
+    return 0;
+}
 

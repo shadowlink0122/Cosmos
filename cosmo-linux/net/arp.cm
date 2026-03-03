@@ -1,13 +1,18 @@
 //! platform: baremetal-x86
 // cosmo-linux::net::arp - ARPプロトコル
 //
-// IPv4→MACアドレス解決テーブル。
-// ループバック環境では自己解決のみ使用。
+// IPv4→MACアドレス解決テーブル + ARP Request応答。
 // 参照: RFC 826
 
 import ../include/types;
 import ../include/net;
 import ../lib/kstring;
+import ../drivers/serial;
+import ../drivers/pci;
+import ../drivers/virtio;
+import ../drivers/virtio_net;
+import ../net/ethernet;
+import ../net/ip;
 
 // ============================================================
 // ARP定数
@@ -121,5 +126,123 @@ impl Arp {
             }
             i = i + 1;
         }
+    }
+
+    /// 受信パケットがARP Requestかチェックし、必要ならARP Replyを送信
+    /// data: Ethernetヘッダの後のARPデータ (28バイト)
+    /// eth_src: 送信元MACアドレス(Ethernetヘッダから)
+    /// 返り値: 1=ARP処理した, 0=無関係
+    static ulong handle_packet(ulong data, ulong data_len) {
+        if (data_len < 28) { return 0; }
+
+        // ARP Header (28バイト for IPv4)
+        // HTYPE (2) + PTYPE (2) + HLEN (1) + PLEN (1) + OPER (2)
+        // + SHA (6) + SPA (4) + THA (6) + TPA (4)
+
+        // OPER: offset 6-7
+        ulong oper_hi = Mem::read_byte(data + 6);
+        ulong oper_lo = Mem::read_byte(data + 7);
+        ulong oper = (oper_hi << 8) | oper_lo;
+
+        if (oper != ARP_OP_REQUEST) { return 0; }
+
+        // 送信元MACアドレス (SHA): offset 8-13
+        ulong sha0 = Mem::read_byte(data + 8);
+        ulong sha1 = Mem::read_byte(data + 9);
+        ulong sha2 = Mem::read_byte(data + 10);
+        ulong sha3 = Mem::read_byte(data + 11);
+        ulong sha4 = Mem::read_byte(data + 12);
+        ulong sha5 = Mem::read_byte(data + 13);
+        ulong sender_mac = (sha0 << 40) | (sha1 << 32) | (sha2 << 24) | (sha3 << 16) | (sha4 << 8) | sha5;
+
+        // 送信元IPアドレス (SPA): offset 14-17
+        ulong spa0 = Mem::read_byte(data + 14);
+        ulong spa1 = Mem::read_byte(data + 15);
+        ulong spa2 = Mem::read_byte(data + 16);
+        ulong spa3 = Mem::read_byte(data + 17);
+        ulong sender_ip = (spa0 << 24) | (spa1 << 16) | (spa2 << 8) | spa3;
+
+        // ターゲットIPアドレス (TPA): offset 24-27
+        ulong tpa0 = Mem::read_byte(data + 24);
+        ulong tpa1 = Mem::read_byte(data + 25);
+        ulong tpa2 = Mem::read_byte(data + 26);
+        ulong tpa3 = Mem::read_byte(data + 27);
+        ulong target_ip = (tpa0 << 24) | (tpa1 << 16) | (tpa2 << 8) | tpa3;
+
+        // ターゲットIPがゲストIPでなければ無視
+        if (target_ip != GUEST_IP) { return 0; }
+
+        // ARPテーブルに送信元を登録
+        Arp::update(sender_ip, sender_mac);
+
+        // ARP Reply構築
+        ulong reply_buf = 0xA52000;
+        ulong our_mac = VirtioNet::mac();
+        ulong rpos = 0;
+
+        // Ethernet Header
+        // dst MAC = sender MAC
+        Mem::write_byte(reply_buf, sha0);
+        Mem::write_byte(reply_buf + 1, sha1);
+        Mem::write_byte(reply_buf + 2, sha2);
+        Mem::write_byte(reply_buf + 3, sha3);
+        Mem::write_byte(reply_buf + 4, sha4);
+        Mem::write_byte(reply_buf + 5, sha5);
+        // src MAC = our MAC
+        Mem::write_byte(reply_buf + 6, (our_mac >> 40) & 0xFF);
+        Mem::write_byte(reply_buf + 7, (our_mac >> 32) & 0xFF);
+        Mem::write_byte(reply_buf + 8, (our_mac >> 24) & 0xFF);
+        Mem::write_byte(reply_buf + 9, (our_mac >> 16) & 0xFF);
+        Mem::write_byte(reply_buf + 10, (our_mac >> 8) & 0xFF);
+        Mem::write_byte(reply_buf + 11, our_mac & 0xFF);
+        // EtherType = ARP (0x0806)
+        Mem::write_byte(reply_buf + 12, 0x08);
+        Mem::write_byte(reply_buf + 13, 0x06);
+        rpos = 14;
+
+        // ARP Reply
+        // HTYPE = 1 (Ethernet)
+        Mem::write_byte(reply_buf + rpos, 0x00);
+        Mem::write_byte(reply_buf + rpos + 1, 0x01);
+        // PTYPE = 0x0800 (IPv4)
+        Mem::write_byte(reply_buf + rpos + 2, 0x08);
+        Mem::write_byte(reply_buf + rpos + 3, 0x00);
+        // HLEN = 6
+        Mem::write_byte(reply_buf + rpos + 4, 0x06);
+        // PLEN = 4
+        Mem::write_byte(reply_buf + rpos + 5, 0x04);
+        // OPER = 2 (Reply)
+        Mem::write_byte(reply_buf + rpos + 6, 0x00);
+        Mem::write_byte(reply_buf + rpos + 7, 0x02);
+        // SHA = our MAC
+        Mem::write_byte(reply_buf + rpos + 8, (our_mac >> 40) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 9, (our_mac >> 32) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 10, (our_mac >> 24) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 11, (our_mac >> 16) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 12, (our_mac >> 8) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 13, our_mac & 0xFF);
+        // SPA = our IP (GUEST_IP)
+        Mem::write_byte(reply_buf + rpos + 14, (GUEST_IP >> 24) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 15, (GUEST_IP >> 16) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 16, (GUEST_IP >> 8) & 0xFF);
+        Mem::write_byte(reply_buf + rpos + 17, GUEST_IP & 0xFF);
+        // THA = sender MAC
+        Mem::write_byte(reply_buf + rpos + 18, sha0);
+        Mem::write_byte(reply_buf + rpos + 19, sha1);
+        Mem::write_byte(reply_buf + rpos + 20, sha2);
+        Mem::write_byte(reply_buf + rpos + 21, sha3);
+        Mem::write_byte(reply_buf + rpos + 22, sha4);
+        Mem::write_byte(reply_buf + rpos + 23, sha5);
+        // TPA = sender IP
+        Mem::write_byte(reply_buf + rpos + 24, spa0);
+        Mem::write_byte(reply_buf + rpos + 25, spa1);
+        Mem::write_byte(reply_buf + rpos + 26, spa2);
+        Mem::write_byte(reply_buf + rpos + 27, spa3);
+        rpos = rpos + 28;
+
+        // ARP Reply送信
+        VirtioNet::send(reply_buf, rpos);
+
+        return 1;
     }
 }

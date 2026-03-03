@@ -37,6 +37,7 @@ import ../include/net;
 import ../net/ethernet;
 import ../net/ip;
 import ../net/icmp;
+import ../net/arp;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -878,6 +879,15 @@ impl Cmd {
                         eth_type: 0, padding: 0
                     };
                     ulong eth_len = Ethernet::parse(rx_buf, &rx_eth);
+
+                    // ARP Request処理 (EtherType=0x0806)
+                    if (rx_eth.eth_type == ETH_TYPE_ARP) {
+                        ulong arp_data = rx_buf + eth_len;
+                        ulong arp_len = rx_len - eth_len;
+                        Arp::handle_packet(arp_data, arp_len);
+                        // ARP処理後、ICMPの到着を待ち続ける
+                    }
+
                     if (rx_eth.eth_type == ETH_TYPE_IP) {
                         // IPv4ヘッダ解析
                         IpHeader rx_ip = {
