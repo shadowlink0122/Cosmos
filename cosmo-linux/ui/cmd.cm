@@ -186,9 +186,11 @@ impl Cmd {
                 return;
             }
 
-            // /mnt または /mnt/ の場合: host ディレクトリを表示
-            if (streq(path_addr as void*, "/mnt" as void*) != 0 ||
-                streq(path_addr as void*, "/mnt/" as void*) != 0) {
+            // /mnt, /mnt/, /mnt/host (末尾/なし) の場合: host ディレクトリを表示
+            ulong is_mnt = 0;
+            if (streq(path_addr as void*, "/mnt" as void*) != 0) { is_mnt = 1; }
+            if (streq(path_addr as void*, "/mnt/" as void*) != 0) { is_mnt = 1; }
+            if (is_mnt != 0) {
                 Shell::writeln("" as void*);
                 Shell::write("  " as void*);
                 Shell::set_color(11, 0);

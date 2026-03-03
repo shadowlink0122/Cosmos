@@ -394,7 +394,7 @@ export void shell_main() {
 
                         // パス補完: ワードが / で始まる場合
                         // 仮想パスエントリを0x9B000に配置
-                        ulong PATH_LIST = 0x9B000;
+                        ulong PATH_LIST = 0xA5B000;
                         ulong path_count = 0;
                         ulong first_ch = Mem::read_byte(word_addr);
                         if (first_ch == 47) {  // '/'
@@ -402,7 +402,7 @@ export void shell_main() {
                             ulong is_host = 0;
                             if (word_len >= 10) {
                                 // "/mnt/host/" を確認
-                                ulong p_tmp = 0x9B800;
+                                ulong p_tmp = 0xA5B800;
                                 // "/mnt/host/" の10文字を比較
                                 ulong pm = 1;
                                 ulong pmnt = "/mnt/host/" as ulong;
@@ -423,7 +423,7 @@ export void shell_main() {
                                         if (walk_ok != 0) {
                                             ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
                                             if (open_ok != 0) {
-                                                ulong dir_buf = 0x9C000;
+                                                ulong dir_buf = 0xA5A000;
                                                 ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
                                                 // readdirデータ解析
                                                 ulong dpos = 0;
