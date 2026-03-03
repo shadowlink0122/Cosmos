@@ -88,6 +88,19 @@ export const ulong FS_SOCKET = 4;
 // ループバック: 127.0.0.1 = 0x7F000001
 export const ulong LOOPBACK_ADDR = 0x7F000001;
 
+// QEMU SLIRP ネットワーク設定
+// ゲストIP: 10.0.2.15 = 0x0A00020F
+export const ulong GUEST_IP = 0x0A00020F;
+
+// ゲートウェイ: 10.0.2.2 = 0x0A000202
+export const ulong GATEWAY_IP = 0x0A000202;
+
+// DNS: 10.0.2.3 = 0x0A000203
+export const ulong DNS_IP = 0x0A000203;
+
+// QEMU SLIRPゲートウェイMAC: 52:55:0a:00:02:02
+export const ulong GATEWAY_MAC = 0x52550A000202;
+
 // ============================================================
 // ネットワークバッファ
 // ============================================================

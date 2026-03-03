@@ -9,6 +9,7 @@ import ../include/config;
 import ../include/scheduler;
 import ../drivers/serial;
 import ../drivers/pit;
+import ../drivers/virtio_net;
 
 import ../drivers/keyboard;
 import ../lib/kstring;
@@ -128,7 +129,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
     PIT::setup(&serial);
     Kbd::setup(&serial);
 
-    // === 11. initプロセス & シェルタスク生成 ===
+    // === 11. ネットワーク初期化 ===
+    pr_info(&serial, "Initializing network..." as void*);
+    VirtioNet::init(&serial);
+
+    // === 12. initプロセス & シェルタスク生成 ===
     Init::banner(&serial);
     pr_info(&serial, "Creating shell task..." as void*);
 

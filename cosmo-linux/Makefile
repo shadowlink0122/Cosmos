@@ -117,6 +117,7 @@ run: $(ELF)
 		-m $(QEMU_MEM) \
 		-smp 1 \
 		-serial stdio \
+		-nic user,model=virtio-net-pci \
 		-no-reboot
 
 test: $(TEST_ELF)

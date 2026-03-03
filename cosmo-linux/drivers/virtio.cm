@@ -1,0 +1,250 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::virtio - virtio デバイス基盤
+//
+// virtio legacy (PCI) デバイスのvirtqueue管理。
+// 参照: virtio-v1.0, linux/drivers/virtio/
+
+import ../include/types;
+import ./serial;
+import ./pci;
+
+// ============================================================
+// virtio legacy PCI レジスタオフセット (BAR0 I/Oポートベース)
+// ============================================================
+
+// デバイス機能ビット (32ビット)
+export const ulong VIRTIO_PCI_HOST_FEATURES   = 0;
+// ゲスト機能ビット (32ビット)
+export const ulong VIRTIO_PCI_GUEST_FEATURES  = 4;
+// キューアドレス (物理ページ番号)
+export const ulong VIRTIO_PCI_QUEUE_PFN       = 8;
+// キューサイズ (エントリ数)
+export const ulong VIRTIO_PCI_QUEUE_SIZE      = 12;
+// キューセレクタ
+export const ulong VIRTIO_PCI_QUEUE_SEL       = 14;
+// キュー通知
+export const ulong VIRTIO_PCI_QUEUE_NOTIFY    = 16;
+// デバイスステータス
+export const ulong VIRTIO_PCI_STATUS          = 18;
+// ISRステータス
+export const ulong VIRTIO_PCI_ISR             = 19;
+// デバイス固有設定 (virtio-netの場合 offset 20〜)
+export const ulong VIRTIO_PCI_CONFIG          = 20;
+
+// ステータスビット
+export const ulong VIRTIO_STATUS_ACK          = 1;
+export const ulong VIRTIO_STATUS_DRIVER       = 2;
+export const ulong VIRTIO_STATUS_DRIVER_OK    = 4;
+export const ulong VIRTIO_STATUS_FEATURES_OK  = 8;
+
+// virtio-net Feature bits
+export const ulong VIRTIO_NET_F_MAC           = 32;  // bit 5 → 1<<5 = 32
+export const ulong VIRTIO_NET_F_STATUS        = 65536;  // bit 16
+
+// ============================================================
+// Virtqueue 定数
+// ============================================================
+
+// virtqueueエントリ数 (2のべき乗)
+export const ulong VQ_SIZE = 256;
+
+// Descriptor flags
+export const ulong VRING_DESC_F_NEXT     = 1;
+export const ulong VRING_DESC_F_WRITE    = 2;
+export const ulong VRING_DESC_F_INDIRECT = 4;
+
+// ============================================================
+// Virtqueue 固定メモリレイアウト
+//
+// TX: 0xB00000〜
+// RX: 0xB10000〜
+// データバッファ: 0xB20000〜
+// ============================================================
+
+export const ulong VQ_TX_BASE   = 0xB00000;
+export const ulong VQ_RX_BASE   = 0xB10000;
+export const ulong VQ_DATA_BASE = 0xB20000;
+
+// 1バッファ = 2048バイト (Ethernetフレーム + virtio-netヘッダ十分)
+export const ulong VQ_BUF_SIZE  = 2048;
+
+// ============================================================
+// Virtqueue 構造体
+// ============================================================
+
+/// Virtqueue管理情報
+export struct Virtqueue {
+    ulong desc_base;       // Descriptor Tableのアドレス
+    ulong avail_base;      // Available Ringのアドレス
+    ulong used_base;       // Used Ringのアドレス
+    ulong size;            // キューサイズ
+    ulong free_head;       // 空きDescriptorリストの先頭
+    ulong num_free;        // 空きDescriptor数
+    ulong avail_idx;       // Available Ring次書き込みインデックス
+    ulong last_used_idx;   // 最後に処理したUsed Ringインデックス
+}
+
+// ============================================================
+// Virtqueue操作
+// ============================================================
+
+export struct Vq {}
+
+impl Vq {
+    /// Virtqueueを初期化
+    /// base: virtqueue配置先のメモリアドレス
+    static void init(Virtqueue* vq, ulong base, ulong qsize) {
+        vq->size = qsize;
+        vq->free_head = 0;
+        vq->num_free = qsize;
+        vq->avail_idx = 0;
+        vq->last_used_idx = 0;
+
+        // Descriptor Table: 各エントリ16バイト (addr:8 + len:4 + flags:2 + next:2)
+        vq->desc_base = base;
+        ulong desc_size = qsize * 16;
+
+        // Available Ring: flags:2 + idx:2 + ring[qsize]:2*qsize + used_event:2
+        vq->avail_base = base + desc_size;
+        ulong avail_size = 4 + qsize * 2 + 2;
+
+        // Available Ringの後をページ境界にアライン
+        ulong used_offset = desc_size + avail_size;
+        // 4096バイトアライメント
+        // 4096バイトアラインメント (除算→乗算方式)
+        used_offset = ((used_offset + 4095) / 4096) * 4096;
+
+        // Used Ring: flags:2 + idx:2 + ring[qsize]:(4+4)*qsize + avail_event:2
+        vq->used_base = base + used_offset;
+
+        // ゼロクリア
+        ulong total_size = used_offset + 4 + qsize * 8 + 2;
+        ulong i = 0;
+        while (i < total_size) {
+            Mem::write_byte(base + i, 0);
+            i = i + 1;
+        }
+
+        // Descriptorチェーンの初期化 (各descriptorのnextを次に設定)
+        i = 0;
+        while (i < qsize) {
+            ulong desc_addr = vq->desc_base + i * 16;
+            // next = i + 1 (最後はqsize-1のまま)
+            ulong next_val = i + 1;
+            if (next_val >= qsize) { next_val = 0; }
+            // offset 14-15: next (16bit LE)
+            Mem::write_byte(desc_addr + 14, next_val & 0xFF);
+            Mem::write_byte(desc_addr + 15, (next_val >> 8) & 0xFF);
+            i = i + 1;
+        }
+    }
+
+    /// Descriptorを1つ確保してデータバッファを設定
+    /// 返り値: descriptor index (失敗時 0xFFFFFFFF)
+    static ulong alloc_desc(Virtqueue* vq, ulong buf_addr, ulong buf_len, ulong flags) {
+        if (vq->num_free == 0) { return 0xFFFFFFFF; }
+
+        ulong idx = vq->free_head;
+        ulong desc_addr = vq->desc_base + idx * 16;
+
+        // 次のfree descriptorを取得 (next field, offset 14)
+        ulong next_lo = Mem::read_byte(desc_addr + 14);
+        ulong next_hi = Mem::read_byte(desc_addr + 15);
+        vq->free_head = next_lo | (next_hi << 8);
+        vq->num_free = vq->num_free - 1;
+
+        // Descriptor設定
+        // addr (offset 0-7): 64bit LE
+        Mem::write_byte(desc_addr, buf_addr & 0xFF);
+        Mem::write_byte(desc_addr + 1, (buf_addr >> 8) & 0xFF);
+        Mem::write_byte(desc_addr + 2, (buf_addr >> 16) & 0xFF);
+        Mem::write_byte(desc_addr + 3, (buf_addr >> 24) & 0xFF);
+        Mem::write_byte(desc_addr + 4, (buf_addr >> 32) & 0xFF);
+        Mem::write_byte(desc_addr + 5, (buf_addr >> 40) & 0xFF);
+        Mem::write_byte(desc_addr + 6, (buf_addr >> 48) & 0xFF);
+        Mem::write_byte(desc_addr + 7, (buf_addr >> 56) & 0xFF);
+
+        // len (offset 8-11): 32bit LE
+        Mem::write_byte(desc_addr + 8, buf_len & 0xFF);
+        Mem::write_byte(desc_addr + 9, (buf_len >> 8) & 0xFF);
+        Mem::write_byte(desc_addr + 10, (buf_len >> 16) & 0xFF);
+        Mem::write_byte(desc_addr + 11, (buf_len >> 24) & 0xFF);
+
+        // flags (offset 12-13): 16bit LE
+        Mem::write_byte(desc_addr + 12, flags & 0xFF);
+        Mem::write_byte(desc_addr + 13, (flags >> 8) & 0xFF);
+
+        return idx;
+    }
+
+    /// Descriptorを解放
+    static void free_desc(Virtqueue* vq, ulong idx) {
+        ulong desc_addr = vq->desc_base + idx * 16;
+        // nextを現在のfree_headに設定
+        Mem::write_byte(desc_addr + 14, vq->free_head & 0xFF);
+        Mem::write_byte(desc_addr + 15, (vq->free_head >> 8) & 0xFF);
+        vq->free_head = idx;
+        vq->num_free = vq->num_free + 1;
+    }
+
+    /// Available Ringにdescriptorインデックスを追加
+    static void submit(Virtqueue* vq, ulong desc_idx) {
+        ulong avail_idx = vq->avail_idx;
+        ulong ring_offset = 4 + (avail_idx % vq->size) * 2;
+        ulong ring_addr = vq->avail_base + ring_offset;
+
+        // ring[avail_idx % size] = desc_idx (16bit LE)
+        Mem::write_byte(ring_addr, desc_idx & 0xFF);
+        Mem::write_byte(ring_addr + 1, (desc_idx >> 8) & 0xFF);
+
+        // メモリバリア
+        __asm__(`mfence`);
+
+        // avail->idx をインクリメント (offset 2, 16bit LE)
+        vq->avail_idx = avail_idx + 1;
+        ulong new_idx = vq->avail_idx;
+        Mem::write_byte(vq->avail_base + 2, new_idx & 0xFF);
+        Mem::write_byte(vq->avail_base + 3, (new_idx >> 8) & 0xFF);
+    }
+
+    /// Used Ringから処理済みdescriptorを取得
+    /// 返り値: descriptor index (なければ 0xFFFFFFFF)
+    static ulong poll_used(Virtqueue* vq) {
+        // used->idx を読み取り (offset 2, 16bit LE)
+        ulong used_idx_lo = Mem::read_byte(vq->used_base + 2);
+        ulong used_idx_hi = Mem::read_byte(vq->used_base + 3);
+        ulong used_idx = used_idx_lo | (used_idx_hi << 8);
+
+        if (vq->last_used_idx == used_idx) {
+            return 0xFFFFFFFF;  // 新しいエントリなし
+        }
+
+        // used ring entry: id:4 + len:4 = 8バイト
+        ulong entry_offset = 4 + (vq->last_used_idx % vq->size) * 8;
+        ulong entry_addr = vq->used_base + entry_offset;
+
+        // id (32bit LE)
+        ulong id_b0 = Mem::read_byte(entry_addr);
+        ulong id_b1 = Mem::read_byte(entry_addr + 1);
+        ulong id_b2 = Mem::read_byte(entry_addr + 2);
+        ulong id_b3 = Mem::read_byte(entry_addr + 3);
+        ulong desc_id = id_b0 | (id_b1 << 8) | (id_b2 << 16) | (id_b3 << 24);
+
+        vq->last_used_idx = vq->last_used_idx + 1;
+
+        return desc_id;
+    }
+
+    /// Used Ringエントリのデータ長を取得
+    static ulong get_used_len(Virtqueue* vq, ulong used_entry_idx) {
+        ulong entry_offset = 4 + (used_entry_idx % vq->size) * 8;
+        ulong entry_addr = vq->used_base + entry_offset;
+
+        // len (offset 4-7, 32bit LE)
+        ulong l0 = Mem::read_byte(entry_addr + 4);
+        ulong l1 = Mem::read_byte(entry_addr + 5);
+        ulong l2 = Mem::read_byte(entry_addr + 6);
+        ulong l3 = Mem::read_byte(entry_addr + 7);
+        return l0 | (l1 << 8) | (l2 << 16) | (l3 << 24);
+    }
+}

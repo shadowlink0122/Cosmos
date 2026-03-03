@@ -57,6 +57,10 @@ impl Arp {
         *mac_ptr = 0;  // ループバックはMAC不要
         *valid_ptr = 1;
         *ttl_ptr = 0xFFFFFFFF;  // 永続
+
+        // ゲートウェイエントリを登録
+        // 10.0.2.2 → 52:55:0a:00:02:02 (QEMU SLIRPゲートウェイMAC)
+        Arp::update(GATEWAY_IP, GATEWAY_MAC);
     }
 
     /// IPアドレスからMACアドレスを検索
