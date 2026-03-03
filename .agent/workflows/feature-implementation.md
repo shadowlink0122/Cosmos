@@ -45,8 +45,8 @@ description: 新機能の実装手順
 
 ## 5. ドキュメント更新
 // turbo
-1. `docs/cosmo-linux/005_phase0_checklist.md` を更新
-2. 必要であれば新規チェックリスト作成
+1. `docs/cosmo-linux/` にドキュメントを追加/更新
+2. 実装完了した設計ドキュメントは `docs/archive/` に移動
 
 ## 6. コミット
 // turbo

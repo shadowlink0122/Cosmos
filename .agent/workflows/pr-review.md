@@ -26,10 +26,12 @@ description: GitHub PRの作成とレビュールール
    - impl ブロックで正しく実装されているか
 2. **ドキュメント**
    - `docs/cosmo-linux/` に 00N_ ドキュメントが追加/更新されているか
-   - バグがあれば 00N_bug_ ドキュメントが作成されているか
+   - 実装完了した設計ドキュメントは `docs/archive/` に移動されているか
+   - バグがあれば BUG-00N_ ドキュメントが作成されているか
+   - **注意**: `cosmo-linux/docs/` にドキュメントを置かないこと（`docs/cosmo-linux/` を使用）
 3. **セキュリティ**
    - ローカルパス情報 (`/Users/`, `/home/`) が含まれていないこと
-   - 確認: `grep -rn "/Users/" cosmo-linux/ .agent/ --include="*.md" --include="*.cm"`
+   - 確認: `grep -rn "/Users/" cosmo-linux/ .agent/ docs/ --include="*.md" --include="*.cm"`
 4. **ビルド・テスト**
    - `make -C cosmo-linux` でビルド成功
    - `make -C cosmo-linux test` でテスト成功
@@ -37,4 +39,5 @@ description: GitHub PRの作成とレビュールール
 ## マージ条件
 - テスト全パス
 - typedef/interface/impl ルール準拠
-- 00N_ ドキュメント更新済み
+- 00N_ ドキュメント更新済み（`docs/cosmo-linux/` に配置）
+
