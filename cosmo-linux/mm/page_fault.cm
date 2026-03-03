@@ -83,7 +83,8 @@ export void handle_page_fault(ulong error_code) {
                 ulong cr3 = 0;
                 __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
                 PageTable pt(cr3);
-                pt.map_page(page_virt, page_phys, KERNEL_PAGE_FLAGS, pmm);
+                // ユーザープロセス用: PRESENT | WRITE | USER = 7
+                pt.map_page(page_virt, page_phys, 7, pmm);
                 return;  // 正常復帰
             }
         }

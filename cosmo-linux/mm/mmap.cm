@@ -179,7 +179,8 @@ impl Mmap {
             PhysAddr page = pmm->alloc_pages(0);
             if (page == 0) { return MAP_FAILED; }
             memzero(page as void*, PAGE_SIZE);
-            pt.map_page(map_addr + offset, page, KERNEL_PAGE_FLAGS, pmm);
+            // ユーザープロセス用: PRESENT | WRITE | USER = 7
+            pt.map_page(map_addr + offset, page, 7, pmm);
             offset = offset + PAGE_SIZE;
         }
 
@@ -243,7 +244,8 @@ impl Mmap {
                 PhysAddr page = pmm->alloc_pages(0);
                 if (page == 0) { return old_brk; }
                 memzero(page as void*, PAGE_SIZE);
-                pt.map_page(page_addr, page, KERNEL_PAGE_FLAGS, pmm);
+                // ユーザープロセス用: PRESENT | WRITE | USER = 7
+                pt.map_page(page_addr, page, 7, pmm);
                 page_addr = page_addr + PAGE_SIZE;
             }
         }

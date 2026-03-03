@@ -353,11 +353,11 @@ impl Loader {
         // スタックポインタを16バイトアラインメント
         sp = sp & ~15;
 
-        // コンテキスト初期化（エントリポイントへジャンプ、RSP=構築済みスタック）
-        Context::init_task(proc, proc->kernel_stack, entry);
-
         // ユーザースタックを構築済みのSPに更新
         proc->user_stack = sp;
+
+        // コンテキスト初期化（iretqでRing3+ユーザーRSPに直接遷移）
+        Context::init_user_task(proc, proc->kernel_stack, entry, sp);
 
         // スケジューラに登録
         Sched::add(proc);

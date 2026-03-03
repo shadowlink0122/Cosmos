@@ -312,6 +312,11 @@ impl Syscall {
     static long arch_prctl(ulong code, ulong addr) {
         // ARCH_SET_FS = 0x1002: FSベースレジスタ設定 (TLS用)
         if (code == 0x1002) {
+            // [デバッグ] FSベースアドレス確認
+            SerialPort dbg(COM1);
+            dbg.puts("[TLS] SET_FS=0x" as void*);
+            dbg.print_hex(addr);
+            dbg.println("" as void*);
             Cpu::wrmsr(0xC0000100, addr);  // IA32_FS_BASE
             return 0;
         }
@@ -423,6 +428,12 @@ impl Syscall {
 /// syscall エントリ（ASMスタブから呼ばれる）
 export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
 ulong arg3, ulong arg4, ulong arg5) {
+    // [デバッグ] syscallトレース
+    SerialPort trace_serial(COM1);
+    trace_serial.puts("[SC] " as void*);
+    print_dec(&trace_serial, nr);
+    trace_serial.println("" as void*);
+
     // --- ファイルシステム基本 ---
     if (nr == SYS_READ) {
         return Syscall::read(arg0, arg1, arg2);

@@ -11,6 +11,23 @@ import ../../include/scheduler;
 /// Context — コンテキストスイッチ管理
 export struct Context {}
 
+/// ユーザーモード遷移トランポリン
+/// switch_toのretから呼ばれ、iretqでRing3に遷移する
+/// カーネルスタック上にiretqフレーム(RIP, CS, RFLAGS, RSP, SS)が構築済み
+void usermode_trampoline() {
+    __asm__(`
+        // データセグメントレジスタをユーザーDS(0x1B)に設定
+        movw $$0x1B, %ax;
+        movw %ax, %ds;
+        movw %ax, %es;
+        // FS/GSはTLS用に個別設定されるためここでは設定しない
+
+        // iretqでRing3に遷移
+        // スタック上のフレーム: [RIP, CS, RFLAGS, RSP, SS]
+        iretq
+    `);
+}
+
 impl Context {
     /// 2つのProcess間でコンテキストスイッチを実行
     static void switch_to(Process* prev, Process* next) {
@@ -56,6 +73,43 @@ impl Context {
         proc->context.r14 = 0;
         proc->context.r15 = 0;
         proc->context.rip = entry_fn;
+        proc->context.rflags = 0x200;
+    }
+
+    /// ユーザープロセス用コンテキスト初期化
+    /// iretqフレームでRing3+ユーザーRSPに直接遷移する
+    static void init_user_task(Process* proc, ulong stack_top, ulong entry_fn, ulong user_rsp) {
+        // カーネルスタック上にiretqフレームを構築
+        // iretqはスタックから以下を pop する:
+        //   [RSP+0]  RIP     (ユーザーエントリポイント)
+        //   [RSP+8]  CS      (ユーザーCS = 0x20 | 3 = 0x23)
+        //   [RSP+16] RFLAGS  (IF=1)
+        //   [RSP+24] RSP     (ユーザーRSP)
+        //   [RSP+32] SS      (ユーザーSS = 0x18 | 3 = 0x1B)
+        // その前にトランポリンコードのアドレスを置く
+
+        // トランポリン関数のアドレス（switch_toのretで呼ばれる）
+        ulong sp = stack_top;
+
+        // iretqフレーム（逆順にpush）
+        sp = sp - 8; ulong* p_ss = sp as ulong*;     *p_ss = 0x1B;        // SS (User DS | RPL=3)
+        sp = sp - 8; ulong* p_rsp = sp as ulong*;    *p_rsp = user_rsp;   // User RSP
+        sp = sp - 8; ulong* p_rfl = sp as ulong*;    *p_rfl = 0x200;      // RFLAGS (IF=1)
+        sp = sp - 8; ulong* p_cs = sp as ulong*;     *p_cs = 0x23;        // CS (User CS | RPL=3)
+        sp = sp - 8; ulong* p_rip = sp as ulong*;    *p_rip = entry_fn;   // User RIP
+
+        // switch_toのretで呼ばれるトランポリンのアドレス
+        sp = sp - 8; ulong* p_tramp = sp as ulong*;
+        *p_tramp = usermode_trampoline as ulong;
+
+        proc->context.rsp = sp;
+        proc->context.rbp = sp;
+        proc->context.rbx = 0;
+        proc->context.r12 = 0;
+        proc->context.r13 = 0;
+        proc->context.r14 = 0;
+        proc->context.r15 = 0;
+        proc->context.rip = usermode_trampoline as ulong;
         proc->context.rflags = 0x200;
     }
 }
