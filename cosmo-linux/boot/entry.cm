@@ -173,9 +173,9 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // === hello auto-execは省略（busyboxとvaddrが競合するため）===
     // Pid hello_pid = Loader::exec("hello" as void*, &serial);
 
-    // === AUTO-EXEC TEST: busybox（9p経由）===
-    pr_info(&serial, "Auto-exec: loading 'busybox'..." as void*);
-    Pid bb_pid = Loader::exec("busybox" as void*, &serial);
+    // === AUTO-EXEC TEST: busybox echo（9p経由、argv渡しテスト）===
+    pr_info(&serial, "Auto-exec: loading 'busybox echo hello world'..." as void*);
+    Pid bb_pid = Loader::exec("busybox echo hello world" as void*, &serial);
     if (bb_pid >= 0) {
         serial.puts("[INFO] busybox loaded, PID=" as void*);
         print_dec(&serial, bb_pid as ulong);

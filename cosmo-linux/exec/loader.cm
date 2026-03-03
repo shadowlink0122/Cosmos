@@ -78,30 +78,52 @@ const ulong AT_RANDOM = 25;
 export struct Loader {}
 
 impl Loader {
-    /// ELFファイルをRamFSからロードしてプロセスとして実行
+    /// ELFファイルをcmdlineからロードしてプロセスとして実行
+    /// cmdline: "busybox echo hello" のようなコマンドライン文字列
+    /// 先頭ワードをファイル名として検索し、全体をargvとして構築
     /// 戻り値: 新プロセスのPID（失敗時 -1）
-    static Pid exec(void* filename, SerialPort* w) {
+    static Pid exec(void* cmdline, SerialPort* w) {
         ulong fsize = 0;
         ulong loaded_from_9p = 0;
+        ulong cmd = cmdline as ulong;
+
+        // cmdlineから先頭ワード（ファイル名）の長さを計算
+        ulong fname_len = 0;
+        while (true) {
+            ulong fch = Mem::read_byte(cmd + fname_len);
+            if (fch == 0 || fch == 32) { break; }
+            fname_len = fname_len + 1;
+        }
+        if (fname_len == 0) {
+            pr_err(w, "exec: empty command" as void*);
+            return 0 - 1;
+        }
+
+        // ファイル名をNULL終端の一時バッファにコピー（検索用）
+        ulong fname_buf = 0x95200;  // 一時バッファ
+        ulong fi_copy = 0;
+        while (fi_copy < fname_len) {
+            Mem::write_byte(fname_buf + fi_copy, Mem::read_byte(cmd + fi_copy));
+            fi_copy = fi_copy + 1;
+        }
+        Mem::write_byte(fname_buf + fname_len, 0);  // NULL終端
 
         // RamFSからファイル検索
-        Ino ino = RamFs::lookup(filename);
+        Ino ino = RamFs::lookup(fname_buf as void*);
         if (ino != 0) {
             fsize = RamFs::file_size(ino);
             if (fsize < 64) {
                 pr_err(w, "exec: file too small for ELF" as void*);
                 return 0 - 1;
             }
-            // 一時バッファに読み込み
             long bytes = RamFs::read(ino, ELF_TMP_BUF, 0, fsize);
             if (bytes <= 0) {
                 pr_err(w, "exec: failed to read file" as void*);
                 return 0 - 1;
             }
         } else {
-            // 9pフォールバック: rootfs/<filename> から読み込み
-            ulong fname = filename as ulong;
-            ulong bytes_9p = NinePfs::read_file(fname, ELF_TMP_BUF, ELF_MAX_SIZE);
+            // 9pフォールバック
+            ulong bytes_9p = NinePfs::read_file(fname_buf, ELF_TMP_BUF, ELF_MAX_SIZE);
             if (bytes_9p == 0) {
                 pr_err(w, "exec: file not found (ramfs/9p)" as void*);
                 return 0 - 1;
@@ -124,6 +146,9 @@ impl Loader {
         ulong phoff = Elf::get_phoff(ELF_TMP_BUF);
         ulong phentsize = Elf::get_phentsize(ELF_TMP_BUF);
         ulong phnum = Elf::get_phnum(ELF_TMP_BUF);
+
+        // セグメント末尾を追跡（brk初期値用）
+        ulong data_end = 0;
 
         // PIEの場合、ベースアドレスオフセットを計算
         ulong load_bias = 0;
@@ -213,9 +238,16 @@ impl Loader {
                 w->puts(" size=" as void*);
                 print_dec(w, p_filesz);
                 w->println("" as void*);
+
+                // data_end を更新
+                ulong seg_end = p_vaddr + p_memsz;
+                if (seg_end > data_end) { data_end = seg_end; }
             }
             i = i + 1;
         }
+
+        // data_endをページアラインメント
+        data_end = (data_end + 0xFFF) & ~0xFFF;
 
         // プロセス作成
         Pid new_pid = ProcessTable::alloc_pid();
@@ -245,18 +277,24 @@ impl Loader {
         proc->is_user = 1;
         proc->user_stack = Usermode::alloc_user_stack();
 
+        // brk初期値をDATAセグメント末尾に設定
+        // musl-libcのbrk(0)でヒープ開始アドレスとして返却される
+        proc->brk_addr = data_end;
+
         // ============================================================
         // ユーザースタック上にargc/argv/envp/auxvを構築
-        // musl-libcの__libc_start_mainが期待するスタックレイアウト:
+        // cmdlineをスペースで分割して動的にargv[]を構築
         //
         // [高アドレス = スタックトップ]
         //   ランダムバイト (16B, AT_RANDOM用)
-        //   ファイル名文字列 (argv[0])
-        //   auxv[]: { AT_PAGESZ:4096, AT_UID:0, ... AT_NULL:0 }
+        //   argv文字列群 (各引数のNUL終端文字列)
+        //   auxv[]: { AT_PAGESZ:4096, ... AT_NULL:0 }
         //   envp[0] = NULL
-        //   argv[1] = NULL
-        //   argv[0] → ファイル名文字列へのポインタ
-        //   argc = 1
+        //   argv[argc] = NULL
+        //   argv[argc-1] → 文字列ポインタ
+        //   ...
+        //   argv[0] → 文字列ポインタ
+        //   argc
         // [低アドレス = RSP]
         // ============================================================
 
@@ -265,7 +303,6 @@ impl Loader {
         // --- ランダムバイト (16バイト) ---
         sp = sp - 16;
         ulong random_addr = sp;
-        // RDRAND等で埋める（簡易版: 固定パターン）
         ulong ri = 0;
         while (ri < 16) {
             ulong val = (ri * 7 + 0x42) & 0xFF;
@@ -274,28 +311,50 @@ impl Loader {
             ri = ri + 1;
         }
 
-        // --- ファイル名文字列 ---
-        ulong fname_len = strlen(filename);
-        sp = sp - (fname_len + 1);
-        sp = sp & ~7;  // 8バイトアラインメント
-        ulong argv0_str = sp;
-        // ファイル名をスタックにコピー
-        ulong fi = 0;
-        while (fi <= fname_len) {
-            ulong ch = 0;
-            ulong fsrc = (filename as ulong) + fi;
-            __asm__(`movq ${r:fsrc}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
-            ulong fdst = argv0_str + fi;
-            __asm__(`movq ${r:fdst}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
-            fi = fi + 1;
+        // --- cmdlineをスペースで分割し、各引数文字列をスタックにコピー ---
+        // argv_strsにポインタを記録（最大16引数）
+        ulong argv_strs_buf = 0x95300;  // 一時ポインタ配列(16*8=128B)
+        ulong argc_val = 0;
+        ulong ci = 0;
+        while (argc_val < 16) {
+            // 先頭スペースをスキップ
+            while (Mem::read_byte(cmd + ci) == 32) { ci = ci + 1; }
+            ulong ch = Mem::read_byte(cmd + ci);
+            if (ch == 0) { break; }
+
+            // 引数の開始位置
+            ulong arg_start = ci;
+            // 引数の終了位置を探す
+            while (true) {
+                ch = Mem::read_byte(cmd + ci);
+                if (ch == 0 || ch == 32) { break; }
+                ci = ci + 1;
+            }
+            ulong arg_len = ci - arg_start;
+
+            // 引数文字列をスタックにコピー
+            sp = sp - (arg_len + 1);
+            sp = sp & ~7;  // 8バイトアラインメント
+            ulong arg_str = sp;
+            ulong ai = 0;
+            while (ai < arg_len) {
+                ulong src_ch = Mem::read_byte(cmd + arg_start + ai);
+                ulong dst_a = arg_str + ai;
+                __asm__(`movq ${r:dst_a}, %rdi; movq ${r:src_ch}, %rax; movb %al, (%rdi)`);
+                ai = ai + 1;
+            }
+            // NUL終端
+            ulong nul_a = arg_str + arg_len;
+            __asm__(`movq ${r:nul_a}, %rdi; xorq %rax, %rax; movb %al, (%rdi)`);
+
+            // ポインタを記録
+            ulong* argv_slot = (argv_strs_buf + argc_val * 8) as ulong*;
+            *argv_slot = arg_str;
+            argc_val = argc_val + 1;
         }
 
         // --- auxiliary vector (auxv) ---
-        // musl-libcはenvp NULLの直後からauxvを読むため、
-        // auxvをスタック上で連続配置する必要がある。
-        // pushは下方成長なので、AT_NULLを最初にpush、AT_PAGESZを最後にpush。
-
-        // 16バイトアラインメント（auxv前に実施、以降は全て連続push）
+        // 16バイトアラインメント
         sp = sp & ~15;
 
         // AT_NULL = 終端
@@ -337,23 +396,25 @@ impl Loader {
         ulong* envp_null = sp as ulong*;
         *envp_null = 0;
 
-        // --- argv[1] = NULL ---
+        // --- argv[argc] = NULL ---
         sp = sp - 8;
-        ulong* argv1_null = sp as ulong*;
-        *argv1_null = 0;
+        ulong* argv_null = sp as ulong*;
+        *argv_null = 0;
 
-        // --- argv[0] = ファイル名文字列へのポインタ ---
-        sp = sp - 8;
-        ulong* argv0_ptr = sp as ulong*;
-        *argv0_ptr = argv0_str;
+        // --- argv[argc-1] ... argv[0] (逆順push) ---
+        ulong argi = argc_val;
+        while (argi > 0) {
+            argi = argi - 1;
+            sp = sp - 8;
+            ulong* argv_ptr = sp as ulong*;
+            ulong* argv_src = (argv_strs_buf + argi * 8) as ulong*;
+            *argv_ptr = *argv_src;
+        }
 
-        // --- argc = 1 ---
+        // --- argc ---
         sp = sp - 8;
         ulong* argc_ptr = sp as ulong*;
-        *argc_ptr = 1;
-
-        // 注: auxv(11×16=176B) + envp_null(8B) + argv_null(8B) + argv0(8B) + argc(8B)
-        // = 208B = 16×13 → 16の倍数なのでアライン済み
+        *argc_ptr = argc_val;
 
         // ユーザースタックを構築済みのSPに更新
         proc->user_stack = sp;

@@ -176,11 +176,17 @@ impl Mmap {
 
         ulong offset = 0;
         while (offset < aligned_len) {
-            PhysAddr page = pmm->alloc_pages(0);
-            if (page == 0) { return MAP_FAILED; }
-            memzero(page as void*, PAGE_SIZE);
-            // ユーザープロセス用: PRESENT | WRITE | USER = 7
-            pt.map_page(map_addr + offset, page, 7, pmm);
+            // MAP_FIXEDの場合、既存マッピングがあればスキップ（データ保護）
+            ulong target_va = map_addr + offset;
+            PhysAddr existing = pt.translate(target_va);
+            if (existing == 0) {
+                // 未マッピングの場合のみ新規ページ割り当て
+                PhysAddr page = pmm->alloc_pages(0);
+                if (page == 0) { return MAP_FAILED; }
+                memzero(page as void*, PAGE_SIZE);
+                // ユーザープロセス用: PRESENT | WRITE | USER = 7
+                pt.map_page(target_va, page, 7, pmm);
+            }
             offset = offset + PAGE_SIZE;
         }
 
@@ -224,7 +230,8 @@ impl Mmap {
     /// brk: ヒープ上限変更
     static ulong do_brk(ulong new_brk, Process* proc) {
         if (new_brk == 0) { return proc->brk_addr; }
-        if (new_brk < HEAP_BASE) { return proc->brk_addr; }
+        // new_brkが現在のbrk以下の場合は現在値を返す
+        if (new_brk < proc->brk_addr) { return proc->brk_addr; }
 
         ulong old_brk = proc->brk_addr;
         ulong aligned_new = (new_brk + 0xFFF) & ~0xFFF;

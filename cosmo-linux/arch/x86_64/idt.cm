@@ -62,59 +62,38 @@ export void exc_page_fault() {
     SerialPort serial(COM1);
     serial.println("!!! PAGE FAULT (#PF) !!!" as void*);
     ulong cr2 = 0;
-    ulong rsp_val = 0;
-    __asm__(`
-        movq %cr2, %rax;
-        movq %rax, ${=r:cr2};
-        movq %rsp, %rax;
-        movq %rax, ${=r:rsp_val}
-    `);
+    __asm__(`movq %cr2, %rax; movq %rax, ${=r:cr2}`);
     serial.puts("  CR2 = " as void*);
     serial.print_hex(cr2);
     serial.println("" as void*);
-    serial.puts("  RSP = " as void*);
-    serial.print_hex(rsp_val);
-    serial.println("" as void*);
+
     // TSS RSP0ベースで割り込みフレームを読み取り
-    // TSS = 0x83000, RSP0 at offset 4
-    // CPU pushes (Ring3 #PF): SS[-8], RSP[-16], RFLAGS[-24], CS[-32], RIP[-40], error_code[-48]
     ulong* tss_rsp0_ptr = 0x83004 as ulong*;
     ulong tss_rsp0 = *tss_rsp0_ptr;
 
     ulong* err_ptr = (tss_rsp0 - 48) as ulong*;
     ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
     ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
-    ulong* rfl_ptr = (tss_rsp0 - 24) as ulong*;
-    ulong* ursp_ptr = (tss_rsp0 - 16) as ulong*;
 
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(*rip_ptr);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(*cs_ptr);
+    serial.println("" as void*);
+
+    // ユーザーモード#PF → プロセスkill (SIGSEGV = exit code 139)
+    ulong cs_val = *cs_ptr;
+    if ((cs_val & 3) != 0) {
+        serial.println("[#PF] User process killed (SIGSEGV)" as void*);
+        // タイマー割り込み経由でスケジューラに復帰（sti→hlt）
+        __asm__(`sti; 1: hlt; jmp 1b`);
+        return;
+    }
+
+    // カーネルモード#PF → halt
     serial.puts("  err_code = " as void*);
     serial.print_hex(*err_ptr);
     serial.println("" as void*);
-    serial.puts("  RIP = " as void*);
-    serial.print_hex(*rip_ptr);
-    serial.println("" as void*);
-    serial.puts("  CS  = " as void*);
-    serial.print_hex(*cs_ptr);
-    serial.println("" as void*);
-    serial.puts("  user_RSP = " as void*);
-    serial.print_hex(*ursp_ptr);
-    serial.println("" as void*);
-
-    // user_RSPが有効なら、スタック上の戻りアドレスを出力
-    // (call NULLの場合、user_RSP[0]にcall命令の次のアドレスがある)
-    ulong ursp = *ursp_ptr;
-    if (ursp > 0x400000) {
-        ulong i = 0;
-        while (i < 4) {
-            ulong* ustack = (ursp + i * 8) as ulong*;
-            serial.puts("  [ursp+" as void*);
-            serial.print_hex(i * 8);
-            serial.puts("] = " as void*);
-            serial.print_hex(*ustack);
-            serial.println("" as void*);
-            i = i + 1;
-        }
-    }
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 

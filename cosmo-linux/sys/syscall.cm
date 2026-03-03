@@ -619,6 +619,14 @@ ulong arg3, ulong arg4, ulong arg5) {
         return SyscallProc::getrandom(arg0, arg1, arg2);
     }
 
+    // --- stub syscall（動作に影響なし、0を返却）---
+    if (nr == SYS_SET_ROBUST_LIST) {
+        return 0;  // futex robust list（スレッド未対応のため無視）
+    }
+    if (nr == SYS_RSEQ) {
+        return 0;  // restartable sequences（未対応のため無視）
+    }
+
     // 未実装syscall（デバッグログ出力）
     SerialPort serial_dbg(COM1);
     serial_dbg.puts("[WARN] unimplemented syscall: " as void*);

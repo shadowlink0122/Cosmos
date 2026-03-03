@@ -86,8 +86,10 @@ export const ulong SYS_OPENAT     = 257;
 export const ulong SYS_NEWFSTATAT = 262;
 export const ulong SYS_READLINKAT = 267;
 export const ulong SYS_FACCESSAT  = 269;
-export const ulong SYS_PRLIMIT64  = 302;
-export const ulong SYS_GETRANDOM  = 318;
+export const ulong SYS_PRLIMIT64       = 302;
+export const ulong SYS_GETRANDOM       = 318;
+export const ulong SYS_SET_ROBUST_LIST = 273;
+export const ulong SYS_RSEQ            = 334;
 
 /// 最大syscall番号
 export const ulong NR_SYSCALLS = 512;
