@@ -1,0 +1,378 @@
+//! platform: baremetal-x86
+// cosmo-linux::pkg::brew - Homebrew パッケージマネージャ
+//
+// ホスト側 rootfs/packages/ に配置した静的リンクELFバイナリを
+// 9pfs経由でRamFSにインストール（コピー）し、exec可能にする。
+//
+// コマンド:
+//   brew install <pkg>  — パッケージをRamFSにコピー
+//   brew list           — インストール済みパッケージ一覧
+//   brew search         — 利用可能なパッケージ検索（ホスト側）
+//   brew run <pkg>      — パッケージを実行
+
+import ../include/types;
+import ../include/vfs;
+import ../include/page_alloc;
+import ../drivers/serial;
+import ../drivers/virtio_9p;
+import ../fs/ramfs;
+import ../fs/ninepfs;
+import ../mm/pmm;
+import ../exec/loader;
+import ../lib/kstring;
+import ../lib/printk;
+import ../ui/shell_io;
+import ../ui/shell_const;
+import ../ui/mem;
+
+// ============================================================
+// Brew 定数
+// ============================================================
+
+// パッケージディレクトリ（9pfsルートからの相対パス）
+const ulong BREW_PKG_DIR = 0xA60000;   // "packages" 文字列バッファ
+const ulong BREW_TMP_BUF = 0xA61000;   // 一時読み取りバッファ (64KB)
+const ulong BREW_TMP_SIZE = 65536;     // 64KB
+const ulong BREW_NAME_BUF = 0xA71000;  // パッケージ名バッファ
+
+// ============================================================
+// Brew — パッケージマネージャ
+// ============================================================
+
+export struct Brew {}
+
+impl Brew {
+
+    /// brew install <pkg> — パッケージをホストFSからRamFSにインストール
+    static void install(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: brew install <package>" as void*);
+            return;
+        }
+
+        if (Virtio9p::is_ready() == 0) {
+            Shell::writeln("brew: host filesystem not available" as void*);
+            return;
+        }
+
+        // 既にインストール済みかチェック
+        Ino existing = RamFs::lookup(name_addr as void*);
+        if (existing != 0) {
+            Shell::write("brew: " as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln(" is already installed" as void*);
+            return;
+        }
+
+        // パッケージパスを構築: "packages/<name>"
+        ulong path_buf = BREW_NAME_BUF;
+        ulong pkg_prefix = "packages/" as ulong;
+        ulong pi = 0;
+        while (pi < 9) {
+            Mem::write_byte(path_buf + pi, Mem::read_byte(pkg_prefix + pi));
+            pi = pi + 1;
+        }
+        // パッケージ名をコピー
+        ulong ni = 0;
+        while (ni < 100) {
+            ulong c = Mem::read_byte(name_addr + ni);
+            Mem::write_byte(path_buf + 9 + ni, c);
+            if (c == 0) { break; }
+            ni = ni + 1;
+        }
+        Mem::write_byte(path_buf + 9 + ni, 0);
+
+        // 9pfsでファイルサイズを取得
+        ulong fid = 13;
+        ulong walk_ok = Virtio9p::walk(0, fid, path_buf);
+        if (walk_ok == 0) {
+            Shell::write("brew: package '" as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln("' not found on host" as void*);
+            return;
+        }
+
+        // ファイルサイズ取得
+        ulong file_size = 0;
+        Virtio9p::getattr(fid, &file_size);
+        Virtio9p::clunk(fid);
+
+        if (file_size == 0) {
+            Shell::writeln("brew: package is empty" as void*);
+            return;
+        }
+
+        Shell::write("==> Downloading " as void*);
+        Shell::write(name_addr as void*);
+        Shell::write(" (" as void*);
+        Shell::print_dec(file_size);
+        Shell::writeln(" bytes)" as void*);
+
+        // RamFSにファイル作成用のメモリを確保
+        // 必要ページ数を計算
+        ulong pages_needed = (file_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        if (pages_needed == 0) { pages_needed = 1; }
+
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+
+        // 連続バッファとして割り当て (order計算)
+        ulong order = 0;
+        ulong p = 1;
+        while (p < pages_needed) {
+            order = order + 1;
+            p = p * 2;
+        }
+        ulong data_base = pmm->alloc_pages(order);
+        if (data_base == 0) {
+            Shell::writeln("brew: failed to allocate memory" as void*);
+            return;
+        }
+        memzero(data_base as void*, p * PAGE_SIZE);
+
+        // RamFSにファイル作成
+        Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1FF, data_base);
+        if (ino == 0) {
+            Shell::writeln("brew: failed to create file in ramfs" as void*);
+            return;
+        }
+
+        // 9pfsからデータを読み取りRamFSに書き込み
+        fid = 13;
+        walk_ok = Virtio9p::walk(0, fid, path_buf);
+        if (walk_ok == 0) {
+            Shell::writeln("brew: failed to reopen package" as void*);
+            return;
+        }
+        ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
+        if (open_ok == 0) {
+            Virtio9p::clunk(fid);
+            Shell::writeln("brew: failed to open package" as void*);
+            return;
+        }
+
+        // チャンク単位で読み取り → RamFSに書き込み
+        ulong total_read = 0;
+        ulong offset = 0;
+        Shell::write("==> Installing..." as void*);
+        while (total_read < file_size) {
+            ulong remaining = file_size - total_read;
+            ulong chunk_size = BREW_TMP_SIZE;
+            if (chunk_size > remaining) { chunk_size = remaining; }
+
+            ulong bytes = Virtio9p::read(fid, BREW_TMP_BUF, offset, chunk_size);
+            if (bytes == 0) { break; }
+
+            // RamFSのデータバッファに直接コピー
+            RamFs::write(ino, BREW_TMP_BUF, offset, bytes);
+            total_read = total_read + bytes;
+            offset = offset + bytes;
+
+            // 進捗表示
+            Shell::putc(46);  // '.'
+        }
+        Virtio9p::clunk(fid);
+
+        Shell::putc(10);
+        Shell::set_color(10, 0);
+        Shell::write("==> " as void*);
+        Shell::write(name_addr as void*);
+        Shell::write(" installed successfully! (" as void*);
+        Shell::print_dec(total_read);
+        Shell::writeln(" bytes)" as void*);
+        Shell::set_color(7, 0);
+        Shell::write("    Run with: exec " as void*);
+        Shell::writeln(name_addr as void*);
+    }
+
+    /// brew list — インストール済みパッケージ一覧
+    static void list() {
+        Shell::writeln("" as void*);
+        Shell::set_color(14, 0);
+        Shell::writeln("Installed packages:" as void*);
+        Shell::set_color(7, 0);
+
+        ulong count = RamFs::dir_count();
+        ulong found = 0;
+        ulong i = 0;
+        while (i < count) {
+            ulong name = RamFs::dir_name(i);
+            if (name != 0) {
+                ulong dtype = RamFs::dir_type(i);
+                if (dtype == S_IFREG) {
+                    Ino ino = RamFs::dir_ino(i);
+                    ulong fsize = RamFs::file_size(ino);
+                    // ELFかチェック (最初の4バイト: 0x7f 'E' 'L' 'F')
+                    if (fsize >= 4) {
+                        ulong buf4 = BREW_TMP_BUF;
+                        RamFs::read(ino, buf4, 0, 4);
+                        ulong b0 = Mem::read_byte(buf4);
+                        ulong b1 = Mem::read_byte(buf4 + 1);
+                        ulong b2 = Mem::read_byte(buf4 + 2);
+                        ulong b3 = Mem::read_byte(buf4 + 3);
+                        if (b0 == 0x7F && b1 == 69 && b2 == 76 && b3 == 70) {
+                            // ELFバイナリ
+                            Shell::write("  📦 " as void*);
+                            Shell::set_color(11, 0);
+                            Shell::write(name as void*);
+                            Shell::set_color(7, 0);
+                            Shell::write("  (" as void*);
+                            Shell::print_dec(fsize);
+                            Shell::writeln(" bytes)" as void*);
+                            found = found + 1;
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        if (found == 0) {
+            Shell::writeln("  (no packages installed)" as void*);
+            Shell::writeln("  Use 'brew install <pkg>' to install" as void*);
+        }
+        Shell::writeln("" as void*);
+    }
+
+    /// brew search — ホスト側の利用可能パッケージを表示
+    static void search() {
+        if (Virtio9p::is_ready() == 0) {
+            Shell::writeln("brew: host filesystem not available" as void*);
+            return;
+        }
+
+        Shell::writeln("" as void*);
+        Shell::set_color(14, 0);
+        Shell::writeln("Available packages (host):" as void*);
+        Shell::set_color(7, 0);
+
+        // 9pfsで packages/ ディレクトリを読み取り
+        ulong fid = 13;
+        ulong walk_ok = Virtio9p::walk(0, fid, "packages" as ulong);
+        if (walk_ok == 0) {
+            Shell::writeln("  (packages/ directory not found on host)" as void*);
+            Shell::writeln("  Create rootfs/packages/ and add ELF binaries" as void*);
+            Shell::writeln("" as void*);
+            return;
+        }
+
+        ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
+        if (open_ok == 0) {
+            Virtio9p::clunk(fid);
+            Shell::writeln("  (cannot open packages/)" as void*);
+            Shell::writeln("" as void*);
+            return;
+        }
+
+        ulong dir_buf = BREW_TMP_BUF;
+        ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
+        Virtio9p::clunk(fid);
+
+        if (dir_len == 0) {
+            Shell::writeln("  (no packages available)" as void*);
+            Shell::writeln("" as void*);
+            return;
+        }
+
+        // readdirデータ解析
+        ulong pos = 0;
+        ulong found = 0;
+        while (pos < dir_len) {
+            pos = pos + 13;  // qid
+            pos = pos + 8;   // offset
+            ulong dtype = Mem::read_byte(dir_buf + pos);
+            pos = pos + 1;
+            ulong nlen = Virtio9p::read_le16(dir_buf + pos);
+            pos = pos + 2;
+
+            // . と .. をスキップ
+            ulong skip = 0;
+            if (nlen == 1 && Mem::read_byte(dir_buf + pos) == 46) { skip = 1; }
+            if (nlen == 2 && Mem::read_byte(dir_buf + pos) == 46 && Mem::read_byte(dir_buf + pos + 1) == 46) { skip = 1; }
+
+            if (skip == 0) {
+                // パッケージ名を表示
+                Shell::write("  🍺 " as void*);
+                Shell::set_color(10, 0);
+                ulong ki = 0;
+                while (ki < nlen) {
+                    Shell::putc(Mem::read_byte(dir_buf + pos + ki));
+                    ki = ki + 1;
+                }
+                Shell::set_color(7, 0);
+
+                // インストール済みかチェック
+                // 名前を一時バッファにコピー
+                ulong tmp_name = BREW_NAME_BUF + 128;
+                ki = 0;
+                while (ki < nlen && ki < 63) {
+                    Mem::write_byte(tmp_name + ki, Mem::read_byte(dir_buf + pos + ki));
+                    ki = ki + 1;
+                }
+                Mem::write_byte(tmp_name + ki, 0);
+                Ino existing = RamFs::lookup(tmp_name as void*);
+                if (existing != 0) {
+                    Shell::set_color(11, 0);
+                    Shell::write("  [installed]" as void*);
+                    Shell::set_color(7, 0);
+                }
+                Shell::putc(10);
+                found = found + 1;
+            }
+            pos = pos + nlen;
+        }
+
+        if (found == 0) {
+            Shell::writeln("  (no packages available)" as void*);
+        }
+        Shell::writeln("" as void*);
+    }
+
+    /// brew run <pkg> — パッケージを実行
+    static void run(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: brew run <package>" as void*);
+            return;
+        }
+
+        // RamFSにあるか確認
+        Ino ino = RamFs::lookup(name_addr as void*);
+        if (ino == 0) {
+            Shell::write("brew: '" as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln("' is not installed" as void*);
+            Shell::writeln("  Use 'brew install <pkg>' first" as void*);
+            return;
+        }
+
+        // exec実行
+        SerialPort serial(COM1);
+        Pid pid = Loader::exec(name_addr as void*, &serial);
+        if (pid >= 0) {
+            Shell::write("==> Running " as void*);
+            Shell::write(name_addr as void*);
+            Shell::write(" (PID " as void*);
+            Shell::print_dec(pid as ulong);
+            Shell::writeln(")" as void*);
+        } else {
+            Shell::writeln("brew: failed to execute package" as void*);
+        }
+    }
+
+    /// brew help — ヘルプ表示
+    static void help() {
+        Shell::writeln("" as void*);
+        Shell::set_color(14, 0);
+        Shell::writeln("Cosmo Homebrew - Package Manager" as void*);
+        Shell::set_color(7, 0);
+        Shell::writeln("" as void*);
+        Shell::writeln("Commands:" as void*);
+        Shell::writeln("  brew install <pkg>  Install a package from host" as void*);
+        Shell::writeln("  brew list           List installed packages" as void*);
+        Shell::writeln("  brew search         Search available packages" as void*);
+        Shell::writeln("  brew run <pkg>      Run an installed package" as void*);
+        Shell::writeln("  brew help           Show this help" as void*);
+        Shell::writeln("" as void*);
+        Shell::writeln("Packages are loaded from host rootfs/packages/" as void*);
+        Shell::writeln("" as void*);
+    }
+}
