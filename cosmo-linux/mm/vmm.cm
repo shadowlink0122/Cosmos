@@ -145,6 +145,10 @@ impl PageTable {
 
         PhysAddr pt = 0;
         if (self.entry_present(pd_entry) != 0) {
+            // TODO: 2MB huge page (PTE_HUGE) の 4KB splitting 対応
+            // 現在は MMAP_BASE=0x40000000 (identity map外) で回避中。
+            // ELFローダーが 0x400000+ を map_page する際、PD[2] の
+            // 2MB entry を entry_addr で PT として扱う（偶然動作）。
             pt = self.entry_addr(pd_entry);
             if ((flags & PTE_USER) != 0 && (pd_entry & PTE_USER) == 0) {
                 self.write_entry(pd, pd_idx, pd_entry | PTE_USER);
