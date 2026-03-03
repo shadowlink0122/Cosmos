@@ -36,9 +36,9 @@ const VirtAddr ELF_LOAD_BASE = 0x400000;
 const VirtAddr PIE_LOAD_BASE = 0x400000;
 
 /// ELFデータ読み込み一時バッファ
-const PhysAddr ELF_TMP_BUF = 0x600000;
-// ELFバッファ最大サイズ (ELF_TMP_BUF 0x600000 → INO_BASE 0x1000000 = 10MB)
-const ulong ELF_MAX_SIZE = 0xA00000;
+const PhysAddr ELF_TMP_BUF = 0x800000;
+// ELFバッファ最大サイズ (ELF_TMP_BUF 0x800000 → INO_BASE 0x1000000 = 8MB)
+const ulong ELF_MAX_SIZE = 0x800000;
 
 /// ローダー用PMMポインタアドレス
 const PhysAddr LOADER_PMM_PTR = 0x95010;
@@ -159,6 +159,7 @@ impl Loader {
         while (i < phnum) {
             ulong ph_addr = ELF_TMP_BUF + phoff + i * phentsize;
             ulong p_type = Elf::ph_type(ph_addr);
+
 
             if (p_type == PT_LOAD) {
                 ulong p_offset = Elf::ph_offset(ph_addr);
@@ -290,45 +291,46 @@ impl Loader {
         }
 
         // --- auxiliary vector (auxv) ---
-        // auxvエントリ数: 8個 + AT_NULL = 9エントリ × 16バイト = 144バイト
-        sp = sp - 144;
-        sp = sp & ~15;  // 16バイトアラインメント
-        ulong auxv_base = sp;
+        // musl-libcはenvp NULLの直後からauxvを読むため、
+        // auxvをスタック上で連続配置する必要がある。
+        // pushは下方成長なので、AT_NULLを最初にpush、AT_PAGESZを最後にpush。
 
-        // auxvエントリ書き込みヘルパ: { type(8B), value(8B) }
-        ulong ai = 0;
-        // AT_PAGESZ = 4096
-        Loader::write_auxv(auxv_base, ai, AT_PAGESZ, 4096);
-        ai = ai + 1;
-        // AT_UID = 0
-        Loader::write_auxv(auxv_base, ai, AT_UID, 0);
-        ai = ai + 1;
-        // AT_EUID = 0
-        Loader::write_auxv(auxv_base, ai, AT_EUID, 0);
-        ai = ai + 1;
-        // AT_GID = 0
-        Loader::write_auxv(auxv_base, ai, AT_GID, 0);
-        ai = ai + 1;
-        // AT_EGID = 0
-        Loader::write_auxv(auxv_base, ai, AT_EGID, 0);
-        ai = ai + 1;
-        // AT_ENTRY = エントリポイント
-        Loader::write_auxv(auxv_base, ai, AT_ENTRY, entry);
-        ai = ai + 1;
-        // AT_PHDR = PHDRアドレス
-        Loader::write_auxv(auxv_base, ai, AT_PHDR, phdr_addr);
-        ai = ai + 1;
-        // AT_PHENT = PHDRエントリサイズ
-        Loader::write_auxv(auxv_base, ai, AT_PHENT, phentsize);
-        ai = ai + 1;
-        // AT_PHNUM = PHDR数
-        Loader::write_auxv(auxv_base, ai, AT_PHNUM, phnum);
-        ai = ai + 1;
-        // AT_RANDOM = ランダムバイトアドレス
-        Loader::write_auxv(auxv_base, ai, AT_RANDOM, random_addr);
-        ai = ai + 1;
+        // 16バイトアラインメント（auxv前に実施、以降は全て連続push）
+        sp = sp & ~15;
+
         // AT_NULL = 終端
-        Loader::write_auxv(auxv_base, ai, AT_NULL, 0);
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_NULL, 0);
+        // AT_RANDOM
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_RANDOM, random_addr);
+        // AT_PHNUM
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHNUM, phnum);
+        // AT_PHENT
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHENT, phentsize);
+        // AT_PHDR
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHDR, phdr_addr);
+        // AT_ENTRY
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_ENTRY, entry);
+        // AT_EGID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_EGID, 0);
+        // AT_GID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_GID, 0);
+        // AT_EUID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_EUID, 0);
+        // AT_UID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_UID, 0);
+        // AT_PAGESZ
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PAGESZ, 4096);
 
         // --- envp[0] = NULL ---
         sp = sp - 8;
@@ -350,11 +352,15 @@ impl Loader {
         ulong* argc_ptr = sp as ulong*;
         *argc_ptr = 1;
 
-        // スタックポインタを16バイトアラインメント
-        sp = sp & ~15;
+        // 注: auxv(11×16=176B) + envp_null(8B) + argv_null(8B) + argv0(8B) + argc(8B)
+        // = 208B = 16×13 → 16の倍数なのでアライン済み
 
         // ユーザースタックを構築済みのSPに更新
         proc->user_stack = sp;
+
+        // syscall用カーネルRSPを設定（Ring3→Ring0のRSP切り替え用）
+        ulong* syscall_krsp = 0x96000 as ulong*;
+        *syscall_krsp = proc->kernel_stack;
 
         // コンテキスト初期化（iretqでRing3+ユーザーRSPに直接遷移）
         Context::init_user_task(proc, proc->kernel_stack, entry, sp);

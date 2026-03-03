@@ -261,11 +261,9 @@ impl Virtio9p {
                 // 応答受信完了
                 ulong resp_len = Vq::get_used_len(&vq, vq.last_used_idx - 1);
                 Vq::free_desc(&vq, done);
-                // RXデスクリプタも回収
-                ulong done2 = Vq::poll_used(&vq);
-                if (done2 != 0xFFFFFFFF) {
-                    Vq::free_desc(&vq, done2);
-                }
+                // RXデスクリプタも明示的に解放
+                // (virtio chainではheadのみused ringに返却されるため)
+                Vq::free_desc(&vq, rx_desc);
                 Virtio9p::save_vq(&vq);
 
                 // 応答のサイズはメッセージヘッダから取得

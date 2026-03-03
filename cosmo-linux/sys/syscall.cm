@@ -639,10 +639,16 @@ ulong arg3, ulong arg4, ulong arg5) {
 /// Cm ABI (x86_64 SysV): RDI, RSI, RDX, RCX, R8, R9
 export void syscall_entry_stub() {
     __asm__(`
-        // === ユーザーコンテキスト保存 ===
-        // RCX=戻りRIP, R11=RFLAGSをスタックに保存
-        pushq %rcx;
-        pushq %r11;
+        // === RSP切り替え: ユーザーRSP → カーネルRSP ===
+        // ユーザーRSPを一時保存領域に退避
+        movq %rsp, 0x96008;          // SYSCALL_USER_RSP = user RSP
+
+        // カーネルRSPをロード
+        movq 0x96000, %rsp;          // SYSCALL_KERNEL_RSP → RSP
+
+        // === ユーザーコンテキスト保存（カーネルスタック上）===
+        pushq %rcx;                  // RCX = 戻りRIP
+        pushq %r11;                  // R11 = 戻りRFLAGS
         pushq %rbp;
         movq %rsp, %rbp;
 
@@ -654,58 +660,54 @@ export void syscall_entry_stub() {
         pushq %r15;
 
         // syscall引数をスタックに退避
-        // (callでレジスタが破壊されるため)
-        pushq %rdi;   // arg0 (ユーザーRDI)
-        pushq %rsi;   // arg1 (ユーザーRSI)
-        pushq %rdx;   // arg2 (ユーザーRDX)
-        pushq %r10;   // arg3 (Linux ABIではR10)
-        pushq %r8;    // arg4
-        pushq %r9;    // arg5
-        pushq %rax;   // syscall番号
+        pushq %rdi;                  // arg0
+        pushq %rsi;                  // arg1
+        pushq %rdx;                  // arg2
+        pushq %r10;                  // arg3 (Linux ABI)
+        pushq %r8;                   // arg4
+        pushq %r9;                   // arg5
+        pushq %rax;                  // syscall番号
 
         // === syscall_handlerの呼び出し ===
         // Cm ABI: syscall_handler(nr, arg0, arg1, arg2, arg3, arg4, arg5)
-        //         RDI=nr, RSI=arg0, RDX=arg1, RCX=arg2, R8=arg3, R9=arg4
-        //         arg5はスタック経由
-        // スタックから引数を復元してABI変換
-        popq %rdi;     // nr = RAX (syscall番号)
-        popq %r12;     // arg5 = R9 → 退避
-        popq %r13;     // arg4 = R8 → 退避
-        popq %r8;      // arg3 = R10 → R8 (Cm ABI 5番目)
-        popq %rcx;     // arg2 = RDX → RCX (Cm ABI 4番目)
-        popq %rdx;     // arg1 = RSI → RDX (Cm ABI 3番目)
-        popq %rsi;     // arg0 = RDI → RSI (Cm ABI 2番目)
+        popq %rdi;                   // nr
+        popq %r12;                   // arg5 (退避)
+        popq %r13;                   // arg4 (退避)
+        popq %r8;                    // arg3 = R10 → R8
+        popq %rcx;                   // arg2 = RDX → RCX
+        popq %rdx;                   // arg1 = RSI → RDX
+        popq %rsi;                   // arg0 = RDI → RSI
 
-        // arg4, arg5をCm ABIに設定
-        movq %r13, %r9;   // arg4 → R9 (Cm ABI 6番目)
-        // arg5はスタック経由 (7番目の引数)
-        pushq %r12;
+        movq %r13, %r9;             // arg4 → R9
+        pushq %r12;                  // arg5 → スタック
 
         // 16バイトアラインメント調整
         movq %rsp, %r14;
         andq $$-16, %rsp;
 
-        // syscall_handler呼び出し
         call syscall_handler;
 
         // スタック復帰
         movq %r14, %rsp;
-        addq $$8, %rsp;    // arg5のpush分
+        addq $$8, %rsp;              // arg5のpush分
 
         // === ユーザーコンテキスト復帰 ===
-        // RAXにはsyscall_handlerの戻り値が入っている
-
-        // callee-savedレジスタ復帰
         popq %r15;
         popq %r14;
         popq %r13;
         popq %r12;
         popq %rbx;
 
-        // rbp, r11(RFLAGS), rcx(RIP) 復帰
         popq %rbp;
-        popq %r11;
-        popq %rcx;
+        popq %r11;                   // RFLAGS
+        popq %rcx;                   // RIP
+
+        // === RSP復帰: カーネルRSP → ユーザーRSP ===
+
+        // カーネルRSPを保存（次回syscall用）
+        movq %rsp, 0x96000;          // SYSCALL_KERNEL_RSP = 現在のRSP
+        // ユーザーRSPを復元
+        movq 0x96008, %rsp;          // RSP = SYSCALL_USER_RSP
 
         // ユーザー空間に戻る
         sysretq

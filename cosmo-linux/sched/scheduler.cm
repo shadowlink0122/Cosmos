@@ -238,6 +238,13 @@ impl Sched {
         *cur_proc = next as ulong;
 
         // コンテキストスイッチ実行
+        // [デバッグ] switch_toトレース
+        SerialPort sw_dbg(COM1);
+        sw_dbg.puts("[SWITCH] " as void*);
+        print_dec(&sw_dbg, cur_pid as ulong);
+        sw_dbg.puts("->" as void*);
+        print_dec(&sw_dbg, next_pid as ulong);
+        sw_dbg.println("" as void*);
         Context::switch_to(prev, next);
     }
 
@@ -250,6 +257,13 @@ impl Sched {
         // タイムスライスが0になったらスケジュール要求
         Process* cur = Sched::current();
         if (cur->time_slice == 0) {
+            // [デバッグ] スケジュール呼び出し確認
+            SerialPort dbg(COM1);
+            dbg.puts("[TICK] run() pid=" as void*);
+            print_dec(&dbg, cur->pid as ulong);
+            dbg.puts(" cnt=" as void*);
+            print_dec(&dbg, sched->count);
+            dbg.println("" as void*);
             Sched::run();
         }
     }
