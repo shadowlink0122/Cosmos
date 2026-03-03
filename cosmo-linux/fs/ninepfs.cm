@@ -1,0 +1,230 @@
+//! platform: baremetal-x86
+// cosmo-linux::fs::9pfs - 9pファイルシステム VFS統合
+//
+// virtio-9p ドライバをVFSに統合するブリッジレイヤ。
+// /mnt/host パスへのアクセスを9P2000.Lプロトコルに変換。
+// 参照: linux/fs/9p/
+
+import ../include/types;
+import ../include/vfs;
+import ../drivers/serial;
+import ../drivers/virtio_9p;
+import ../lib/kstring;
+import ../lib/printk;
+
+// ============================================================
+// 9pfs 定数
+// ============================================================
+
+// 9pfs用 作業バッファ（他と衝突しない領域）
+const ulong P9FS_BUF = 0xB90000;       // ファイル読み取りバッファ (8KB)
+const ulong P9FS_DIR_BUF = 0xB92000;   // ディレクトリ読み取りバッファ (8KB)
+const ulong P9FS_NAME_BUF = 0xB94000;  // ファイル名出力バッファ (4KB)
+
+// FID管理: 0=ルート, 1以降=操作用
+const ulong P9FS_WORK_FID = 1;     // walk用ワークFID
+
+// マウントポイントプレフィックス
+const ulong P9FS_MOUNT_PREFIX_LEN = 10;  // "/mnt/host/" の長さ
+
+// ============================================================
+// NinePfs — 9pファイルシステムVFSブリッジ
+// ============================================================
+
+export struct NinePfs {}
+
+impl NinePfs {
+    /// 初期化: virtio-9pドライバの準備状態を確認
+    static void setup(SerialPort* w) {
+        if (Virtio9p::is_ready() != 0) {
+            pr_info(w, "9pfs: mounted at /mnt/host" as void*);
+        } else {
+            pr_info(w, "9pfs: virtio-9p not available, /mnt/host disabled" as void*);
+        }
+    }
+
+    /// パスが /mnt/host で始まるか判定
+    /// 返り値: 1=9pfsパス, 0=それ以外
+    static ulong is_9p_path(ulong path) {
+        // "/mnt/host" を1バイトずつ比較
+        ulong prefix = "/mnt/host" as ulong;
+        ulong i = 0;
+        while (i < 9) {
+            ulong a = Mem::read_byte(path + i);
+            ulong b = Mem::read_byte(prefix + i);
+            if (a != b) { return 0; }
+            i = i + 1;
+        }
+        // "/mnt/host" の後は '\0', '/' のいずれか
+        ulong next = Mem::read_byte(path + 9);
+        if (next == 0 || next == 47) { return 1; }
+        return 0;
+    }
+
+    /// /mnt/host/xxx から相対パスを取得
+    /// 返り値: 相対パスの先頭アドレス（"xxx" 部分）
+    /// /mnt/host のみの場合は空文字列のアドレスを返す
+    static ulong strip_prefix(ulong path) {
+        ulong next = Mem::read_byte(path + 9);
+        if (next == 47) {
+            // "/mnt/host/xxx" → "xxx" を返す
+            return path + 10;
+        }
+        // "/mnt/host" → ルートディレクトリ（空パス）
+        return path + 9;
+    }
+
+    /// ファイル読み取り: walk → lopen → read → clunk
+    /// path: 9pfsルートからの相対パス（strip_prefix済み）
+    /// buf: 読み取り先バッファ
+    /// max_size: バッファサイズ
+    /// 返り値: 読み取ったバイト数 (0=失敗)
+    static ulong read_file(ulong path, ulong buf, ulong max_size) {
+        if (Virtio9p::is_ready() == 0) { return 0; }
+
+        // 1. walk: ルートFID(0) → ワークFID(1)
+        ulong rel_path = path;
+        ulong rch = Mem::read_byte(rel_path);
+
+        // 空パスの場合はルート（ディレクトリなので0を返す）
+        if (rch == 0) { return 0; }
+
+        ulong walk_ok = Virtio9p::walk(0, P9FS_WORK_FID, rel_path);
+        if (walk_ok == 0) { return 0; }
+
+        // 2. lopen: 読み取り専用でオープン
+        ulong open_ok = Virtio9p::lopen(P9FS_WORK_FID, 0);  // O_RDONLY
+        if (open_ok == 0) {
+            Virtio9p::clunk(P9FS_WORK_FID);
+            return 0;
+        }
+
+        // 3. read: ファイル内容を読み取り
+        ulong total = 0;
+        ulong offset = 0;
+        while (total < max_size) {
+            ulong remaining = max_size - total;
+            ulong chunk = Virtio9p::read(P9FS_WORK_FID, buf + total, offset, remaining);
+            if (chunk == 0) { break; }  // EOF
+            total = total + chunk;
+            offset = offset + chunk;
+        }
+
+        // 4. clunk: FIDを解放
+        Virtio9p::clunk(P9FS_WORK_FID);
+
+        return total;
+    }
+
+    /// ファイルサイズ取得: walk → getattr → clunk
+    /// path: 9pfsルートからの相対パス
+    /// 返り値: ファイルサイズ (0=失敗 or 空ファイル)
+    static ulong file_size(ulong path) {
+        if (Virtio9p::is_ready() == 0) { return 0; }
+
+        ulong rch = Mem::read_byte(path);
+        if (rch == 0) { return 0; }
+
+        ulong walk_ok = Virtio9p::walk(0, P9FS_WORK_FID, path);
+        if (walk_ok == 0) { return 0; }
+
+        ulong size = 0;
+        Virtio9p::getattr(P9FS_WORK_FID, &size);
+        Virtio9p::clunk(P9FS_WORK_FID);
+
+        return size;
+    }
+
+    /// ディレクトリ一覧取得: walk → lopen → readdir → clunk
+    /// path: 9pfsルートからの相対パス（空=""=ルート）
+    /// callback経由ではなく、Shell直接出力形式で処理
+    /// names_buf: エントリ名出力先バッファ
+    /// max_entries: 最大エントリ数
+    /// 返り値: エントリ数
+    static ulong list_dir(ulong path, ulong names_buf, ulong max_entries) {
+        if (Virtio9p::is_ready() == 0) { return 0; }
+
+        // パスが空の場合はルートFID(0)を直接使ってwalk (nwname=0)
+        ulong use_fid = P9FS_WORK_FID;
+        ulong rch = Mem::read_byte(path);
+
+        if (rch == 0) {
+            // ルートディレクトリ: walk with nwname=0 で FID複製
+            ulong walk_ok = Virtio9p::walk(0, P9FS_WORK_FID, path);
+            if (walk_ok == 0) { return 0; }
+        } else {
+            ulong walk_ok = Virtio9p::walk(0, P9FS_WORK_FID, path);
+            if (walk_ok == 0) { return 0; }
+        }
+
+        // lopen
+        ulong open_ok = Virtio9p::lopen(P9FS_WORK_FID, 0);
+        if (open_ok == 0) {
+            Virtio9p::clunk(P9FS_WORK_FID);
+            return 0;
+        }
+
+        // readdir
+        ulong dir_buf = P9FS_DIR_BUF;
+        ulong rd_count = Virtio9p::readdir(P9FS_WORK_FID, dir_buf, 0, 4096);
+        Virtio9p::clunk(P9FS_WORK_FID);
+
+        if (rd_count == 0) { return 0; }
+
+        // 9P2000.L readdir エントリをパース
+        // 各エントリ: qid(13) + offset(8) + type(1) + name_len(2) + name[name_len]
+        ulong pos = 0;
+        ulong entry_count = 0;
+        ulong name_out = names_buf;
+
+        while (pos < rd_count && entry_count < max_entries) {
+            // qid(13バイト)をスキップ
+            pos = pos + 13;
+            if (pos + 8 + 1 + 2 > rd_count) { break; }
+
+            // offset(8バイト)スキップ
+            pos = pos + 8;
+
+            // type(1バイト)
+            ulong dtype = Mem::read_byte(dir_buf + pos);
+            pos = pos + 1;
+
+            // name_len(2バイト LE)
+            ulong name_len_lo = Mem::read_byte(dir_buf + pos);
+            ulong name_len_hi = Mem::read_byte(dir_buf + pos + 1);
+            ulong name_len = name_len_lo | (name_len_hi << 8);
+            pos = pos + 2;
+
+            if (pos + name_len > rd_count) { break; }
+
+            // "." と ".." をスキップ
+            ulong skip = 0;
+            if (name_len == 1) {
+                ulong c0 = Mem::read_byte(dir_buf + pos);
+                if (c0 == 46) { skip = 1; }  // "."
+            }
+            if (name_len == 2) {
+                ulong c0 = Mem::read_byte(dir_buf + pos);
+                ulong c1 = Mem::read_byte(dir_buf + pos + 1);
+                if (c0 == 46 && c1 == 46) { skip = 1; }  // ".."
+            }
+
+            if (skip == 0) {
+                // 名前をコピー
+                ulong ni = 0;
+                while (ni < name_len && ni < 31) {
+                    Mem::write_byte(name_out + ni, Mem::read_byte(dir_buf + pos + ni));
+                    ni = ni + 1;
+                }
+                Mem::write_byte(name_out + ni, 0);  // ヌル終端
+
+                name_out = name_out + 32;  // 次のエントリ (32バイト固定)
+                entry_count = entry_count + 1;
+            }
+
+            pos = pos + name_len;
+        }
+
+        return entry_count;
+    }
+}

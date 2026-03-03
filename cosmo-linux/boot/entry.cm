@@ -10,6 +10,7 @@ import ../include/scheduler;
 import ../drivers/serial;
 import ../drivers/pit;
 import ../drivers/virtio_net;
+import ../drivers/virtio_9p;
 import ../net/arp;
 import ../net/ip;
 import ../include/net;
@@ -34,6 +35,7 @@ import ../fs/ramfs;
 import ../fs/fd_table;
 import ../fs/pipe;
 import ../fs/vfs;
+import ../fs/ninepfs;
 import ../init/init;
 
 // ============================================================
@@ -136,6 +138,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // === 11. ネットワーク初期化 ===
     pr_info(&serial, "Initializing network..." as void*);
     VirtioNet::init(&serial);
+
+    // === 11b. ホストFS (virtio-9p) 初期化 ===
+    pr_info(&serial, "Initializing host filesystem..." as void*);
+    Virtio9p::init(&serial);
+    NinePfs::setup(&serial);
 
     // === 12. initプロセス & シェルタスク生成 ===
     Init::banner(&serial);

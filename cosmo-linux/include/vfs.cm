@@ -88,6 +88,9 @@ export const ulong FS_DEVFS = 2;
 /// FS種別: パイプ
 export const ulong FS_PIPE = 3;
 
+/// FS種別: 9pfs (virtio-9pホストFS)
+export const ulong FS_9PFS = 4;
+
 // ============================================================
 // Inode — ファイル/ディレクトリのメタデータ
 // ============================================================

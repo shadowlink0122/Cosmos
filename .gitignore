@@ -19,3 +19,6 @@ Thumbs.db
 # Cosmo Linux ビルド成果物
 *.elf
 *.iso
+
+# QEMU virtfs 共有ディレクトリ
+rootfs/

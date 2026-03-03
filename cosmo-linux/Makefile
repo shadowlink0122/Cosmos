@@ -112,12 +112,14 @@ $(TEST_ELF): $(TEST_ELF64)
 
 run: $(ELF)
 	@echo "=== Cosmo Linux 起動 ==="
+	@mkdir -p rootfs
 	$(QEMU) \
 		-kernel $(ELF) \
 		-m $(QEMU_MEM) \
 		-smp 1 \
 		-serial stdio \
 		-nic user,model=virtio-net-pci \
+		-virtfs local,path=./rootfs,mount_tag=host,security_model=none,id=host0 \
 		-no-reboot
 
 test: $(TEST_ELF)

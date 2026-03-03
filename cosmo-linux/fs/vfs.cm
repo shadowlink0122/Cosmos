@@ -3,6 +3,7 @@
 //
 // ファイルシステム抽象化レイヤ。
 // FDテーブルとramfsを統合し、open/read/write/close APIを提供。
+// 9pfsサポート追加: /mnt/host パスをvirtio-9pに委譲。
 // 参照: linux/fs/open.c, linux/fs/read_write.c
 
 import ../include/types;
@@ -11,6 +12,7 @@ import ../include/vfs;
 import ../include/errno;
 import ./fd_table;
 import ./ramfs;
+import ./ninepfs;
 import ../lib/kstring;
 
 /// Vfs — 仮想ファイルシステムAPI
@@ -21,6 +23,13 @@ impl Vfs {
     /// 成功=fd番号(≥0)、失敗=負のerrno
     static Fd open(void* name, ulong flags) {
         if (name as ulong == 0) { return 0 - EINVAL; }
+
+        // 9pfsパス判定: /mnt/host で始まるパス
+        if (NinePfs::is_9p_path(name as ulong) != 0) {
+            // 9pfsではFDテーブルをバイパスし、直接読み取り
+            // read_file/list_dirでアクセスするため、ダミーFDは割り当てない
+            return 0 - ENOSYS;  // VFS open経由ではなく直接APIを使用
+        }
 
         // ramfsで検索
         Ino ino = RamFs::lookup(name);
@@ -112,3 +121,4 @@ impl Vfs {
         return RamFs::dir_name(idx);
     }
 }
+
