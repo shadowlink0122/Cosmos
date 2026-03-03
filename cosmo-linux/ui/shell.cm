@@ -371,11 +371,9 @@ export void shell_main() {
                         ulong match_addr = 0;
 
                         // コマンド名補完 (先頭ワードの場合)
-                        // コマンドリストを0x9A000に配置
                         ulong CMD_LIST = 0x9A000;
                         ulong cmd_count = 0;
                         if (is_first_word != 0) {
-                            // ビルトインコマンド名を一時テーブルに格納
                             cmd_count = shell_fill_cmd_list(CMD_LIST);
                             ulong ci = 0;
                             while (ci < cmd_count) {
@@ -394,7 +392,137 @@ export void shell_main() {
                             }
                         }
 
-                        // ファイル名補完
+                        // パス補完: ワードが / で始まる場合
+                        // 仮想パスエントリを0x9B000に配置
+                        ulong PATH_LIST = 0x9B000;
+                        ulong path_count = 0;
+                        ulong first_ch = Mem::read_byte(word_addr);
+                        if (first_ch == 47) {  // '/'
+                            // /mnt/host/ で始まるパス → 9pfsファイル名補完
+                            ulong is_host = 0;
+                            if (word_len >= 10) {
+                                // "/mnt/host/" を確認
+                                ulong p_tmp = 0x9B800;
+                                // "/mnt/host/" の10文字を比較
+                                ulong pm = 1;
+                                ulong pmnt = "/mnt/host/" as ulong;
+                                ulong pci = 0;
+                                while (pci < 10) {
+                                    if (Mem::read_byte(word_addr + pci) != Mem::read_byte(pmnt + pci)) { pm = 0; break; }
+                                    pci = pci + 1;
+                                }
+                                if (pm != 0) {
+                                    is_host = 1;
+                                    // /mnt/host/ 以降のファイル名部分を取得
+                                    ulong file_part_addr = word_addr + 10;
+                                    ulong file_part_len = word_len - 10;
+                                    // 9pfsでルートディレクトリをreaddir
+                                    if (Virtio9p::is_ready() != 0) {
+                                        ulong fid = 12;
+                                        ulong walk_ok = Virtio9p::walk(0, fid, "" as ulong);
+                                        if (walk_ok != 0) {
+                                            ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
+                                            if (open_ok != 0) {
+                                                ulong dir_buf = 0x9C000;
+                                                ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
+                                                // readdirデータ解析
+                                                ulong dpos = 0;
+                                                while (dpos < dir_len) {
+                                                    dpos = dpos + 13;  // qid
+                                                    dpos = dpos + 8;   // offset
+                                                    ulong dtype = Mem::read_byte(dir_buf + dpos);
+                                                    dpos = dpos + 1;
+                                                    ulong nlen = Virtio9p::read_le16(dir_buf + dpos);
+                                                    dpos = dpos + 2;
+                                                    // 名前を一時バッファにコピー
+                                                    ulong entry_addr = PATH_LIST + path_count * 128;
+                                                    // フルパスを構築: /mnt/host/name
+                                                    ulong pfx = "/mnt/host/" as ulong;
+                                                    ulong pi = 0;
+                                                    while (pi < 10) {
+                                                        Mem::write_byte(entry_addr + pi, Mem::read_byte(pfx + pi));
+                                                        pi = pi + 1;
+                                                    }
+                                                    ulong ni = 0;
+                                                    while (ni < nlen && ni < 110) {
+                                                        Mem::write_byte(entry_addr + 10 + ni, Mem::read_byte(dir_buf + dpos + ni));
+                                                        ni = ni + 1;
+                                                    }
+                                                    Mem::write_byte(entry_addr + 10 + ni, 0);
+                                                    // . と .. をスキップ
+                                                    ulong skip = 0;
+                                                    if (nlen == 1 && Mem::read_byte(dir_buf + dpos) == 46) { skip = 1; }
+                                                    if (nlen == 2 && Mem::read_byte(dir_buf + dpos) == 46 && Mem::read_byte(dir_buf + dpos + 1) == 46) { skip = 1; }
+                                                    if (skip == 0) {
+                                                        // ワード全体と先頭一致チェック
+                                                        ulong m = 1;
+                                                        ulong mc = 0;
+                                                        while (mc < word_len) {
+                                                            if (Mem::read_byte(entry_addr + mc) != Mem::read_byte(word_addr + mc)) { m = 0; break; }
+                                                            mc = mc + 1;
+                                                        }
+                                                        if (m != 0) {
+                                                            match_count = match_count + 1;
+                                                            match_addr = entry_addr;
+                                                            path_count = path_count + 1;
+                                                        }
+                                                    }
+                                                    dpos = dpos + nlen;
+                                                }
+                                            }
+                                            Virtio9p::clunk(fid);
+                                        }
+                                    }
+                                }
+                            }
+                            // 仮想ディレクトリパス補完 (/mnt, /mnt/host)
+                            if (is_host == 0) {
+                                // "/mnt/" をチェック
+                                ulong vp1 = PATH_LIST + path_count * 128;
+                                // "/mnt/" エントリ
+                                ulong mnt_str = "/mnt/" as ulong;
+                                ulong vi = 0;
+                                while (vi < 5) {
+                                    Mem::write_byte(vp1 + vi, Mem::read_byte(mnt_str + vi));
+                                    vi = vi + 1;
+                                }
+                                Mem::write_byte(vp1 + 5, 0);
+                                ulong m1 = 1;
+                                ulong mc1 = 0;
+                                while (mc1 < word_len) {
+                                    if (Mem::read_byte(vp1 + mc1) != Mem::read_byte(word_addr + mc1)) { m1 = 0; break; }
+                                    mc1 = mc1 + 1;
+                                }
+                                if (m1 != 0 && word_len < 5) {
+                                    match_count = match_count + 1;
+                                    match_addr = vp1;
+                                    path_count = path_count + 1;
+                                }
+
+                                // "/mnt/host/" エントリ
+                                ulong vp2 = PATH_LIST + path_count * 128;
+                                ulong mnthost_str = "/mnt/host/" as ulong;
+                                vi = 0;
+                                while (vi < 10) {
+                                    Mem::write_byte(vp2 + vi, Mem::read_byte(mnthost_str + vi));
+                                    vi = vi + 1;
+                                }
+                                Mem::write_byte(vp2 + 10, 0);
+                                ulong m2 = 1;
+                                ulong mc2 = 0;
+                                while (mc2 < word_len) {
+                                    if (Mem::read_byte(vp2 + mc2) != Mem::read_byte(word_addr + mc2)) { m2 = 0; break; }
+                                    mc2 = mc2 + 1;
+                                }
+                                if (m2 != 0 && word_len < 10) {
+                                    match_count = match_count + 1;
+                                    match_addr = vp2;
+                                    path_count = path_count + 1;
+                                }
+                            }
+                        }
+
+                        // ファイル名補完 (ramfs)
                         ulong dc = RamFs::dir_count();
                         ulong di = 0;
                         while (di < dc) {
@@ -451,6 +579,15 @@ export void shell_main() {
                                     }
                                     ci = ci + 1;
                                 }
+                            }
+
+                            // パス候補
+                            ulong pi = 0;
+                            while (pi < path_count) {
+                                ulong pentry = PATH_LIST + pi * 128;
+                                Shell::write(pentry as void*);
+                                Shell::write("  " as void*);
+                                pi = pi + 1;
                             }
 
                             // ファイル名候補

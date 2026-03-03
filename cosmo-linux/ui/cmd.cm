@@ -173,8 +173,8 @@ impl Cmd {
 
     /// ls コマンド: ファイル一覧表示
     static void ls(ulong path_addr) {
-        // /mnt/host パスの場合は9pfsに委譲
         if (path_addr != 0) {
+            // /mnt/host パスの場合は9pfsに委譲
             if (NinePfs::is_9p_path(path_addr) != 0) {
                 ulong rel = NinePfs::strip_prefix(path_addr);
                 ulong rch = Mem::read_byte(rel);
@@ -183,6 +183,31 @@ impl Cmd {
                 } else {
                     Cmd::hostls(rel);
                 }
+                return;
+            }
+
+            // /mnt または /mnt/ の場合: host ディレクトリを表示
+            if (streq(path_addr as void*, "/mnt" as void*) != 0 ||
+                streq(path_addr as void*, "/mnt/" as void*) != 0) {
+                Shell::writeln("" as void*);
+                Shell::write("  " as void*);
+                Shell::set_color(11, 0);
+                Shell::write("host/" as void*);
+                Shell::set_color(7, 0);
+                Shell::writeln("" as void*);
+                Shell::writeln("" as void*);
+                return;
+            }
+
+            // / の場合: ルート仮想ディレクトリ
+            if (streq(path_addr as void*, "/" as void*) != 0) {
+                Shell::writeln("" as void*);
+                Shell::write("  " as void*);
+                Shell::set_color(11, 0);
+                Shell::write("mnt/" as void*);
+                Shell::set_color(7, 0);
+                Shell::writeln("" as void*);
+                Shell::writeln("" as void*);
                 return;
             }
         }
