@@ -71,6 +71,16 @@
 ## 計画中
 
 ### v0.2.0 — ユーザー空間とRing3遷移
-- [ ] Ring 3 遷移 (iretq)
-- [ ] ユーザースタック/カーネルスタック分離
-- [ ] syscall Ring3対応
+- [x] GDT再配置 (sysret互換: User DS=0x18, User CS=0x20)
+- [x] STAR MSR修正 (sysret base=0x10)
+- [x] usermode.cm (iretq遷移, ユーザースタック確保)
+- [x] Process拡張 (user_stack, is_user)
+
+---
+
+## 計画中
+
+### v0.3.0 — ネットワークとソケット
+- [ ] ループバックデバイス
+- [ ] TCP/IPスタック基盤
+- [ ] socket/bind/listen/accept syscall

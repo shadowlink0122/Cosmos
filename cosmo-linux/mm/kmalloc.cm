@@ -158,16 +158,7 @@ impl KernelHeap for Allocator {
     VirtAddr alloc(Size size) {
         if (size == 0) { return 0; }
 
-        // インラインサイズクラス計算（impl for内の外部関数呼び出しバグ回避）
-        ulong cls = 8;
-        if (size <= 16) { cls = 0; }
-        if (size > 16 && size <= 32) { cls = 1; }
-        if (size > 32 && size <= 64) { cls = 2; }
-        if (size > 64 && size <= 128) { cls = 3; }
-        if (size > 128 && size <= 256) { cls = 4; }
-        if (size > 256 && size <= 512) { cls = 5; }
-        if (size > 512 && size <= 1024) { cls = 6; }
-        if (size > 1024 && size <= 2048) { cls = 7; }
+        ulong cls = heap_size_to_class(size);
 
         // ページ単位以上はPMMから直接（未実装、0を返す）
         if (cls >= NUM_SIZE_CLASSES) { return 0; }

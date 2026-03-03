@@ -1,0 +1,179 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::ip - IPv4パケット処理
+//
+// IPv4ヘッダの解析・構築・チェックサム計算。
+// 参照: RFC 791
+
+import ../include/types;
+import ../include/net;
+import ../lib/kstring;
+
+// ============================================================
+// IPv4 ヘッダ (20バイト、オプションなし)
+// ============================================================
+
+/// IPv4ヘッダ
+export struct IpHeader {
+    ulong version;     // バージョン (4)
+    ulong ihl;         // ヘッダ長 (5 = 20バイト)
+    ulong tos;         // Type of Service
+    ulong total_len;   // パケット全体長
+    ulong id;          // 識別子
+    ulong flags;       // フラグ
+    ulong frag_off;    // フラグメントオフセット
+    ulong ttl;         // Time to Live
+    ulong protocol;    // 上位プロトコル (TCP=6, UDP=17, ICMP=1)
+    ulong checksum;    // ヘッダチェックサム
+    ulong src_addr;    // 送信元IPアドレス
+    ulong dst_addr;    // 宛先IPアドレス
+}
+
+// ============================================================
+// IP 処理
+// ============================================================
+
+/// IP IDカウンタ (固定メモリ)
+const ulong IP_ID_COUNTER = 0xA10200;
+
+export struct Ip {}
+
+impl Ip {
+    /// IPv4ヘッダを解析
+    static ulong parse(ulong data, IpHeader* header) {
+        if (data == 0) { return 0; }
+
+        // バイト0: version(上位4bit) + IHL(下位4bit)
+        ulong b0 = Mem::read_byte(data);
+        header->version = (b0 >> 4) & 0x0F;
+        header->ihl = b0 & 0x0F;
+
+        if (header->version != 4) { return 0; }
+
+        // バイト1: TOS
+        header->tos = Mem::read_byte(data + 1);
+
+        // バイト2-3: Total Length (ビッグエンディアン)
+        ulong t0 = Mem::read_byte(data + 2);
+        ulong t1 = Mem::read_byte(data + 3);
+        header->total_len = (t0 << 8) | t1;
+
+        // バイト4-5: Identification
+        t0 = Mem::read_byte(data + 4);
+        t1 = Mem::read_byte(data + 5);
+        header->id = (t0 << 8) | t1;
+
+        // バイト6-7: Flags + Fragment Offset
+        t0 = Mem::read_byte(data + 6);
+        t1 = Mem::read_byte(data + 7);
+        header->flags = (t0 >> 5) & 0x07;
+        header->frag_off = ((t0 & 0x1F) << 8) | t1;
+
+        // バイト8: TTL
+        header->ttl = Mem::read_byte(data + 8);
+
+        // バイト9: Protocol
+        header->protocol = Mem::read_byte(data + 9);
+
+        // バイト10-11: Checksum
+        t0 = Mem::read_byte(data + 10);
+        t1 = Mem::read_byte(data + 11);
+        header->checksum = (t0 << 8) | t1;
+
+        // バイト12-15: Source IP
+        ulong s0 = Mem::read_byte(data + 12);
+        ulong s1 = Mem::read_byte(data + 13);
+        ulong s2 = Mem::read_byte(data + 14);
+        ulong s3 = Mem::read_byte(data + 15);
+        header->src_addr = (s0 << 24) | (s1 << 16) | (s2 << 8) | s3;
+
+        // バイト16-19: Destination IP
+        s0 = Mem::read_byte(data + 16);
+        s1 = Mem::read_byte(data + 17);
+        s2 = Mem::read_byte(data + 18);
+        s3 = Mem::read_byte(data + 19);
+        header->dst_addr = (s0 << 24) | (s1 << 16) | (s2 << 8) | s3;
+
+        return header->ihl * 4;  // ヘッダサイズ（バイト）
+    }
+
+    /// IPv4ヘッダを構築
+    static ulong build(ulong data, IpHeader* header) {
+        if (data == 0) { return 0; }
+
+        // IP IDの自動インクリメント
+        ulong* id_counter = IP_ID_COUNTER as ulong*;
+        *id_counter = *id_counter + 1;
+        header->id = *id_counter;
+
+        // バイト0: version(4) + IHL(5)
+        Mem::write_byte(data, (header->version << 4) | header->ihl);
+
+        // バイト1: TOS
+        Mem::write_byte(data + 1, header->tos);
+
+        // バイト2-3: Total Length
+        Mem::write_byte(data + 2, (header->total_len >> 8) & 0xFF);
+        Mem::write_byte(data + 3, header->total_len & 0xFF);
+
+        // バイト4-5: ID
+        Mem::write_byte(data + 4, (header->id >> 8) & 0xFF);
+        Mem::write_byte(data + 5, header->id & 0xFF);
+
+        // バイト6-7: Flags + Fragment Offset
+        ulong flags_frag = (header->flags << 13) | header->frag_off;
+        Mem::write_byte(data + 6, (flags_frag >> 8) & 0xFF);
+        Mem::write_byte(data + 7, flags_frag & 0xFF);
+
+        // バイト8: TTL
+        Mem::write_byte(data + 8, header->ttl);
+
+        // バイト9: Protocol
+        Mem::write_byte(data + 9, header->protocol);
+
+        // バイト10-11: Checksum (一旦0)
+        Mem::write_byte(data + 10, 0);
+        Mem::write_byte(data + 11, 0);
+
+        // バイト12-15: Source IP
+        Mem::write_byte(data + 12, (header->src_addr >> 24) & 0xFF);
+        Mem::write_byte(data + 13, (header->src_addr >> 16) & 0xFF);
+        Mem::write_byte(data + 14, (header->src_addr >> 8) & 0xFF);
+        Mem::write_byte(data + 15, header->src_addr & 0xFF);
+
+        // バイト16-19: Destination IP
+        Mem::write_byte(data + 16, (header->dst_addr >> 24) & 0xFF);
+        Mem::write_byte(data + 17, (header->dst_addr >> 16) & 0xFF);
+        Mem::write_byte(data + 18, (header->dst_addr >> 8) & 0xFF);
+        Mem::write_byte(data + 19, header->dst_addr & 0xFF);
+
+        // チェックサム計算・設定
+        ulong cksum = Ip::checksum(data, 20);
+        Mem::write_byte(data + 10, (cksum >> 8) & 0xFF);
+        Mem::write_byte(data + 11, cksum & 0xFF);
+
+        return 20;
+    }
+
+    /// IPv4ヘッダチェックサム計算 (RFC 1071)
+    static ulong checksum(ulong data, ulong len) {
+        ulong sum = 0;
+        ulong i = 0;
+        while (i < len) {
+            ulong hi = Mem::read_byte(data + i);
+            ulong lo = 0;
+            if (i + 1 < len) {
+                lo = Mem::read_byte(data + i + 1);
+            }
+            sum = sum + ((hi << 8) | lo);
+            i = i + 2;
+        }
+
+        // キャリーの折り返し
+        while ((sum >> 16) > 0) {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+
+        // ビット反転 (XOR方式、~演算子の優先度問題回避)
+        return (sum ^ 0xFFFF) & 0xFFFF;
+    }
+}

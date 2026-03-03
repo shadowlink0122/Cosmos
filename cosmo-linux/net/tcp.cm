@@ -1,0 +1,252 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::tcp - TCPプロトコル
+//
+// TCPセグメントの解析・構築・ステートマシン。
+// 参照: RFC 793
+
+import ../include/types;
+import ../include/net;
+import ../lib/kstring;
+
+// ============================================================
+// TCP ヘッダ (20バイト、オプションなし)
+// ============================================================
+
+/// TCPヘッダ
+export struct TcpHeader {
+    ulong src_port;     // 送信元ポート
+    ulong dst_port;     // 宛先ポート
+    ulong seq_num;      // シーケンス番号
+    ulong ack_num;      // 確認応答番号
+    ulong data_offset;  // データオフセット (ヘッダ長/4)
+    ulong flags;        // TCP フラグ (FIN/SYN/RST/PSH/ACK/URG)
+    ulong window;       // ウィンドウサイズ
+    ulong checksum;     // チェックサム
+    ulong urgent_ptr;   // 緊急ポインタ
+}
+
+// ============================================================
+// TCP コネクション
+// ============================================================
+
+const ulong MAX_TCP_CONNS = 16;
+const ulong TCP_CONN_BASE = 0xA20000;
+const ulong TCP_CONN_SIZE = 96;
+
+/// TCPコネクション
+export struct TcpConn {
+    ulong state;
+    ulong local_port;
+    ulong remote_port;
+    ulong local_addr;
+    ulong remote_addr;
+    ulong send_next;
+    ulong send_unack;
+    ulong recv_next;
+    ulong send_window;
+    ulong recv_window;
+    ulong socket_id;
+    ulong used;
+}
+
+// ============================================================
+// TCP 処理
+// ============================================================
+
+export struct Tcp {}
+
+impl Tcp {
+    /// TCPヘッダを解析
+    static ulong parse(ulong data, TcpHeader* header) {
+        if (data == 0) { return 0; }
+
+        // 送信元ポート (2バイト)
+        ulong b0 = Mem::read_byte(data);
+        ulong b1 = Mem::read_byte(data + 1);
+        header->src_port = (b0 << 8) | b1;
+
+        // 宛先ポート (2バイト)
+        b0 = Mem::read_byte(data + 2);
+        b1 = Mem::read_byte(data + 3);
+        header->dst_port = (b0 << 8) | b1;
+
+        // シーケンス番号 (4バイト)
+        ulong s0 = Mem::read_byte(data + 4);
+        ulong s1 = Mem::read_byte(data + 5);
+        ulong s2 = Mem::read_byte(data + 6);
+        ulong s3 = Mem::read_byte(data + 7);
+        header->seq_num = (s0 << 24) | (s1 << 16) | (s2 << 8) | s3;
+
+        // 確認応答番号 (4バイト)
+        s0 = Mem::read_byte(data + 8);
+        s1 = Mem::read_byte(data + 9);
+        s2 = Mem::read_byte(data + 10);
+        s3 = Mem::read_byte(data + 11);
+        header->ack_num = (s0 << 24) | (s1 << 16) | (s2 << 8) | s3;
+
+        // データオフセット + フラグ (2バイト)
+        b0 = Mem::read_byte(data + 12);
+        b1 = Mem::read_byte(data + 13);
+        header->data_offset = (b0 >> 4) & 0x0F;
+        header->flags = b1 & 0x3F;
+
+        // ウィンドウ (2バイト)
+        b0 = Mem::read_byte(data + 14);
+        b1 = Mem::read_byte(data + 15);
+        header->window = (b0 << 8) | b1;
+
+        // チェックサム (2バイト)
+        b0 = Mem::read_byte(data + 16);
+        b1 = Mem::read_byte(data + 17);
+        header->checksum = (b0 << 8) | b1;
+
+        // 緊急ポインタ (2バイト)
+        b0 = Mem::read_byte(data + 18);
+        b1 = Mem::read_byte(data + 19);
+        header->urgent_ptr = (b0 << 8) | b1;
+
+        return header->data_offset * 4;
+    }
+
+    /// TCPヘッダを構築
+    static ulong build(ulong data, TcpHeader* header) {
+        if (data == 0) { return 0; }
+
+        Mem::write_byte(data,     (header->src_port >> 8) & 0xFF);
+        Mem::write_byte(data + 1, header->src_port & 0xFF);
+
+        Mem::write_byte(data + 2, (header->dst_port >> 8) & 0xFF);
+        Mem::write_byte(data + 3, header->dst_port & 0xFF);
+
+        Mem::write_byte(data + 4, (header->seq_num >> 24) & 0xFF);
+        Mem::write_byte(data + 5, (header->seq_num >> 16) & 0xFF);
+        Mem::write_byte(data + 6, (header->seq_num >> 8) & 0xFF);
+        Mem::write_byte(data + 7, header->seq_num & 0xFF);
+
+        Mem::write_byte(data + 8,  (header->ack_num >> 24) & 0xFF);
+        Mem::write_byte(data + 9,  (header->ack_num >> 16) & 0xFF);
+        Mem::write_byte(data + 10, (header->ack_num >> 8) & 0xFF);
+        Mem::write_byte(data + 11, header->ack_num & 0xFF);
+
+        Mem::write_byte(data + 12, (header->data_offset << 4) & 0xF0);
+        Mem::write_byte(data + 13, header->flags & 0x3F);
+
+        Mem::write_byte(data + 14, (header->window >> 8) & 0xFF);
+        Mem::write_byte(data + 15, header->window & 0xFF);
+
+        Mem::write_byte(data + 16, 0);
+        Mem::write_byte(data + 17, 0);
+
+        Mem::write_byte(data + 18, (header->urgent_ptr >> 8) & 0xFF);
+        Mem::write_byte(data + 19, header->urgent_ptr & 0xFF);
+
+        return 20;
+    }
+
+    /// TCPコネクションテーブル初期化
+    static void setup() {
+        ulong i = 0;
+        while (i < MAX_TCP_CONNS) {
+            ulong base = TCP_CONN_BASE + i * TCP_CONN_SIZE;
+            ulong j = 0;
+            while (j < TCP_CONN_SIZE) {
+                ulong* ptr = (base + j) as ulong*;
+                *ptr = 0;
+                j = j + 8;
+            }
+            i = i + 1;
+        }
+    }
+
+    /// コネクションを作成
+    static long create() {
+        ulong i = 0;
+        while (i < MAX_TCP_CONNS) {
+            ulong base = TCP_CONN_BASE + i * TCP_CONN_SIZE;
+            ulong* used_ptr = (base + 88) as ulong*;
+            if (*used_ptr == 0) {
+                *used_ptr = 1;
+                ulong* state_ptr = base as ulong*;
+                *state_ptr = TCP_CLOSED;
+                return i as long;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    static ulong get_state(ulong conn_id) {
+        if (conn_id >= MAX_TCP_CONNS) { return TCP_CLOSED; }
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* state_ptr = base as ulong*;
+        return *state_ptr;
+    }
+
+    static void set_state(ulong conn_id, ulong state) {
+        if (conn_id >= MAX_TCP_CONNS) { return; }
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* state_ptr = base as ulong*;
+        *state_ptr = state;
+    }
+
+    static void bind_conn(ulong conn_id, ulong local_addr, ulong local_port) {
+        if (conn_id >= MAX_TCP_CONNS) { return; }
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* lport_ptr = (base + 8) as ulong*;
+        ulong* laddr_ptr = (base + 24) as ulong*;
+        *lport_ptr = local_port;
+        *laddr_ptr = local_addr;
+    }
+
+    static void listen_conn(ulong conn_id) {
+        Tcp::set_state(conn_id, TCP_LISTEN);
+    }
+
+    static void close_conn(ulong conn_id) {
+        if (conn_id >= MAX_TCP_CONNS) { return; }
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong j = 0;
+        while (j < TCP_CONN_SIZE) {
+            ulong* ptr = (base + j) as ulong*;
+            *ptr = 0;
+            j = j + 8;
+        }
+    }
+
+    static void handle_syn(ulong conn_id, ulong remote_addr,
+                           ulong remote_port, ulong seq) {
+        if (conn_id >= MAX_TCP_CONNS) { return; }
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* rport_ptr = (base + 16) as ulong*;
+        ulong* raddr_ptr = (base + 32) as ulong*;
+        ulong* recv_next_ptr = (base + 56) as ulong*;
+        *rport_ptr = remote_port;
+        *raddr_ptr = remote_addr;
+        *recv_next_ptr = seq + 1;
+        Tcp::set_state(conn_id, TCP_SYN_RCVD);
+    }
+
+    static void handle_ack(ulong conn_id, ulong ack_num) {
+        ulong state = Tcp::get_state(conn_id);
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* send_unack_ptr = (base + 48) as ulong*;
+        *send_unack_ptr = ack_num;
+
+        if (state == TCP_SYN_RCVD) {
+            Tcp::set_state(conn_id, TCP_ESTABLISHED);
+        } else if (state == TCP_FIN_WAIT_1) {
+            Tcp::set_state(conn_id, TCP_FIN_WAIT_2);
+        } else if (state == TCP_LAST_ACK) {
+            Tcp::close_conn(conn_id);
+        }
+    }
+
+    static void handle_fin(ulong conn_id) {
+        ulong state = Tcp::get_state(conn_id);
+        if (state == TCP_ESTABLISHED) {
+            Tcp::set_state(conn_id, TCP_CLOSE_WAIT);
+        } else if (state == TCP_FIN_WAIT_2) {
+            Tcp::set_state(conn_id, TCP_TIME_WAIT);
+        }
+    }
+}

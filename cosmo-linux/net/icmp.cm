@@ -1,0 +1,114 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::icmp - ICMPプロトコル
+//
+// ICMP Echo Request/Reply (ping) 処理。
+// 参照: RFC 792
+
+import ../include/types;
+import ../include/net;
+import ../lib/kstring;
+
+// ============================================================
+// ICMP ヘッダ (8バイト)
+// ============================================================
+
+/// ICMPヘッダ
+export struct IcmpHeader {
+    ulong icmp_type;   // メッセージタイプ
+    ulong code;        // コード
+    ulong checksum;    // チェックサム
+    ulong id;          // 識別子 (Echo用)
+    ulong seq;         // シーケンス番号 (Echo用)
+}
+
+// ============================================================
+// ICMP 処理
+// ============================================================
+
+export struct Icmp {}
+
+impl Icmp {
+    /// ICMPヘッダを解析
+    static ulong parse(ulong data, IcmpHeader* header) {
+        if (data == 0) { return 0; }
+
+        header->icmp_type = Mem::read_byte(data);
+        header->code = Mem::read_byte(data + 1);
+
+        ulong c0 = Mem::read_byte(data + 2);
+        ulong c1 = Mem::read_byte(data + 3);
+        header->checksum = (c0 << 8) | c1;
+
+        c0 = Mem::read_byte(data + 4);
+        c1 = Mem::read_byte(data + 5);
+        header->id = (c0 << 8) | c1;
+
+        c0 = Mem::read_byte(data + 6);
+        c1 = Mem::read_byte(data + 7);
+        header->seq = (c0 << 8) | c1;
+
+        return 8;
+    }
+
+    /// ICMPヘッダを構築
+    static ulong build(ulong data, IcmpHeader* header) {
+        if (data == 0) { return 0; }
+
+        Mem::write_byte(data, header->icmp_type);
+        Mem::write_byte(data + 1, header->code);
+
+        // チェックサムは一旦0
+        Mem::write_byte(data + 2, 0);
+        Mem::write_byte(data + 3, 0);
+
+        Mem::write_byte(data + 4, (header->id >> 8) & 0xFF);
+        Mem::write_byte(data + 5, header->id & 0xFF);
+
+        Mem::write_byte(data + 6, (header->seq >> 8) & 0xFF);
+        Mem::write_byte(data + 7, header->seq & 0xFF);
+
+        return 8;
+    }
+
+    /// Echo Requestを処理してEcho Replyを生成
+    static ulong handle_echo(ulong req_data, ulong req_len,
+                              ulong reply_data) {
+        if (req_data == 0) { return 0; }
+
+        IcmpHeader req_hdr = {
+            icmp_type: 0, code: 0, checksum: 0, id: 0, seq: 0
+        };
+        Icmp::parse(req_data, &req_hdr);
+
+        if (req_hdr.icmp_type != ICMP_ECHO_REQUEST) { return 0; }
+
+        IcmpHeader reply_hdr = {
+            icmp_type: ICMP_ECHO_REPLY,
+            code: 0,
+            checksum: 0,
+            id: req_hdr.id,
+            seq: req_hdr.seq
+        };
+        Icmp::build(reply_data, &reply_hdr);
+
+        // ペイロードコピー
+        ulong payload_len = 0;
+        if (req_len > 8) {
+            payload_len = req_len - 8;
+            ulong i = 0;
+            while (i < payload_len) {
+                ulong b = Mem::read_byte(req_data + 8 + i);
+                Mem::write_byte(reply_data + 8 + i, b);
+                i = i + 1;
+            }
+        }
+
+        // チェックサム計算
+        ulong total = 8 + payload_len;
+        ulong cksum = Ip::checksum(reply_data, total);
+        Mem::write_byte(reply_data + 2, (cksum >> 8) & 0xFF);
+        Mem::write_byte(reply_data + 3, cksum & 0xFF);
+
+        return total;
+    }
+}

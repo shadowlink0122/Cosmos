@@ -7,8 +7,6 @@
 import ../include/types;
 import ../include/config;
 import ../include/vfs;
-import ../net/http;
-import ../net/http_server;
 import ../include/errno;
 import ../include/scheduler;
 import ../include/signal;

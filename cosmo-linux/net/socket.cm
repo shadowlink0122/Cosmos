@@ -1,0 +1,296 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::socket - BSD Socket API
+//
+// ソケットインターフェース。FDテーブルと連携して
+// socket/bind/listen/accept/connect/send/recv を提供。
+// 参照: linux/net/socket.c
+
+import ../include/types;
+import ../include/net;
+import ../lib/kstring;
+import ./loopback;
+import ./tcp;
+
+// ============================================================
+// ソケットテーブル
+// ============================================================
+
+const ulong MAX_SOCKETS = 16;
+const ulong SOCKET_TABLE_BASE = 0xA40000;
+const ulong SOCKET_ENTRY_SIZE = 112;
+
+// フィールドオフセット
+const ulong SOCK_USED       = 0;
+const ulong SOCK_DOMAIN     = 8;
+const ulong SOCK_TYPE       = 16;
+const ulong SOCK_PROTOCOL   = 24;
+const ulong SOCK_STATE      = 32;
+const ulong SOCK_LOCAL_ADDR = 40;
+const ulong SOCK_LOCAL_PORT = 48;
+const ulong SOCK_REMOTE_ADDR= 56;
+const ulong SOCK_REMOTE_PORT= 64;
+const ulong SOCK_TCP_CONN   = 72;
+const ulong SOCK_RECV_BUF   = 80;
+const ulong SOCK_RECV_LEN   = 88;
+const ulong SOCK_BACKLOG    = 96;
+const ulong SOCK_FD         = 104;
+
+// 受信バッファ領域
+const ulong SOCK_RECV_BASE = 0xA50000;
+const ulong SOCK_RECV_SLOT = 4096;
+
+// ============================================================
+// Socket 操作
+// ============================================================
+
+export struct Socket {}
+
+impl Socket {
+    /// ソケットテーブル初期化
+    static void setup() {
+        ulong i = 0;
+        while (i < MAX_SOCKETS) {
+            ulong base = SOCKET_TABLE_BASE + i * SOCKET_ENTRY_SIZE;
+            ulong j = 0;
+            while (j < SOCKET_ENTRY_SIZE) {
+                ulong* ptr = (base + j) as ulong*;
+                *ptr = 0;
+                j = j + 8;
+            }
+            i = i + 1;
+        }
+    }
+
+    /// ソケット作成
+    static long create(ulong domain, ulong sock_type, ulong protocol) {
+        ulong i = 0;
+        while (i < MAX_SOCKETS) {
+            ulong base = SOCKET_TABLE_BASE + i * SOCKET_ENTRY_SIZE;
+            ulong* used_ptr = base as ulong*;
+            if (*used_ptr == 0) {
+                *used_ptr = 1;
+                ulong* dom_ptr   = (base + SOCK_DOMAIN) as ulong*;
+                ulong* type_ptr  = (base + SOCK_TYPE) as ulong*;
+                ulong* proto_ptr = (base + SOCK_PROTOCOL) as ulong*;
+                ulong* state_ptr = (base + SOCK_STATE) as ulong*;
+                ulong* conn_ptr  = (base + SOCK_TCP_CONN) as ulong*;
+                ulong* recv_ptr  = (base + SOCK_RECV_BUF) as ulong*;
+
+                *dom_ptr = domain;
+                *type_ptr = sock_type;
+
+                if (protocol == 0) {
+                    if (sock_type == SOCK_STREAM) {
+                        *proto_ptr = IP_PROTO_TCP;
+                    } else {
+                        *proto_ptr = IP_PROTO_UDP;
+                    }
+                } else {
+                    *proto_ptr = protocol;
+                }
+
+                *state_ptr = TCP_CLOSED;
+                *conn_ptr = 0xFFFFFFFFFFFFFFFF;
+                *recv_ptr = SOCK_RECV_BASE + i * SOCK_RECV_SLOT;
+
+                return i as long;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /// ソケットにアドレスをバインド
+    static long bind(ulong sock_id, ulong addr, ulong port) {
+        if (sock_id >= MAX_SOCKETS) { return -1; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+        ulong* used_ptr = base as ulong*;
+        if (*used_ptr == 0) { return -1; }
+
+        ulong* laddr_ptr = (base + SOCK_LOCAL_ADDR) as ulong*;
+        ulong* lport_ptr = (base + SOCK_LOCAL_PORT) as ulong*;
+        *laddr_ptr = addr;
+        *lport_ptr = port;
+
+        return 0;
+    }
+
+    /// TCPリッスン
+    static long listen(ulong sock_id, ulong backlog) {
+        if (sock_id >= MAX_SOCKETS) { return -1; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+        ulong* type_ptr = (base + SOCK_TYPE) as ulong*;
+        if (*type_ptr != SOCK_STREAM) { return -1; }
+
+        ulong* state_ptr = (base + SOCK_STATE) as ulong*;
+        ulong* bl_ptr    = (base + SOCK_BACKLOG) as ulong*;
+        *state_ptr = TCP_LISTEN;
+        *bl_ptr = backlog;
+
+        long conn_id = Tcp::create();
+        if (conn_id >= 0) {
+            ulong* conn_ptr = (base + SOCK_TCP_CONN) as ulong*;
+            *conn_ptr = conn_id as ulong;
+            ulong* laddr_ptr = (base + SOCK_LOCAL_ADDR) as ulong*;
+            ulong* lport_ptr = (base + SOCK_LOCAL_PORT) as ulong*;
+            Tcp::bind_conn(conn_id as ulong, *laddr_ptr, *lport_ptr);
+            Tcp::listen_conn(conn_id as ulong);
+        }
+
+        return 0;
+    }
+
+    /// TCP接続
+    static long connect(ulong sock_id, ulong addr, ulong port) {
+        if (sock_id >= MAX_SOCKETS) { return -1; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+        ulong* type_ptr = (base + SOCK_TYPE) as ulong*;
+        if (*type_ptr != SOCK_STREAM) { return -1; }
+
+        ulong* raddr_ptr = (base + SOCK_REMOTE_ADDR) as ulong*;
+        ulong* rport_ptr = (base + SOCK_REMOTE_PORT) as ulong*;
+        ulong* state_ptr = (base + SOCK_STATE) as ulong*;
+        *raddr_ptr = addr;
+        *rport_ptr = port;
+
+        if (addr == LOOPBACK_ADDR) {
+            *state_ptr = TCP_ESTABLISHED;
+            long conn_id = Tcp::create();
+            if (conn_id >= 0) {
+                ulong* conn_ptr = (base + SOCK_TCP_CONN) as ulong*;
+                *conn_ptr = conn_id as ulong;
+                ulong* laddr_ptr = (base + SOCK_LOCAL_ADDR) as ulong*;
+                ulong* lport_ptr = (base + SOCK_LOCAL_PORT) as ulong*;
+                Tcp::bind_conn(conn_id as ulong, *laddr_ptr, *lport_ptr);
+                Tcp::set_state(conn_id as ulong, TCP_ESTABLISHED);
+            }
+            return 0;
+        }
+
+        *state_ptr = TCP_SYN_SENT;
+        return 0;
+    }
+
+    /// データ送信 (ループバック経由)
+    static long send(ulong sock_id, ulong data, ulong len) {
+        if (sock_id >= MAX_SOCKETS) { return -1; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+
+        ulong* used_ptr = base as ulong*;
+        if (*used_ptr == 0) { return -1; }
+
+        ulong* raddr_ptr = (base + SOCK_REMOTE_ADDR) as ulong*;
+
+        if (*raddr_ptr == LOOPBACK_ADDR) {
+            ulong* rport_ptr = (base + SOCK_REMOTE_PORT) as ulong*;
+            ulong target = Socket::find_by_port(*rport_ptr);
+            if (target < MAX_SOCKETS) {
+                ulong t_base = SOCKET_TABLE_BASE + target * SOCKET_ENTRY_SIZE;
+                ulong* recv_buf  = (t_base + SOCK_RECV_BUF) as ulong*;
+                ulong* recv_len  = (t_base + SOCK_RECV_LEN) as ulong*;
+
+                ulong dst = *recv_buf + *recv_len;
+                ulong i = 0;
+                while (i < len) {
+                    ulong b = Mem::read_byte(data + i);
+                    Mem::write_byte(dst + i, b);
+                    i = i + 1;
+                }
+                *recv_len = *recv_len + len;
+                return len as long;
+            }
+        }
+
+        ulong sent = Loopback::send(data, len);
+        return sent as long;
+    }
+
+    /// データ受信
+    static long recv(ulong sock_id, ulong buf, ulong buf_len) {
+        if (sock_id >= MAX_SOCKETS) { return -1; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+
+        ulong* recv_buf_ptr = (base + SOCK_RECV_BUF) as ulong*;
+        ulong* recv_len_ptr = (base + SOCK_RECV_LEN) as ulong*;
+        ulong available = *recv_len_ptr;
+
+        if (available == 0) { return 0; }
+
+        ulong copy_len = available;
+        if (copy_len > buf_len) { copy_len = buf_len; }
+
+        ulong src = *recv_buf_ptr;
+        ulong i = 0;
+        while (i < copy_len) {
+            ulong b = Mem::read_byte(src + i);
+            Mem::write_byte(buf + i, b);
+            i = i + 1;
+        }
+
+        if (copy_len < available) {
+            ulong remaining = available - copy_len;
+            i = 0;
+            while (i < remaining) {
+                ulong b = Mem::read_byte(src + copy_len + i);
+                Mem::write_byte(src + i, b);
+                i = i + 1;
+            }
+            *recv_len_ptr = remaining;
+        } else {
+            *recv_len_ptr = 0;
+        }
+
+        return copy_len as long;
+    }
+
+    /// ソケットを閉じる
+    static void close(ulong sock_id) {
+        if (sock_id >= MAX_SOCKETS) { return; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+
+        ulong* conn_ptr = (base + SOCK_TCP_CONN) as ulong*;
+        if (*conn_ptr != 0xFFFFFFFFFFFFFFFF) {
+            Tcp::close_conn(*conn_ptr);
+        }
+
+        ulong j = 0;
+        while (j < SOCKET_ENTRY_SIZE) {
+            ulong* ptr = (base + j) as ulong*;
+            *ptr = 0;
+            j = j + 8;
+        }
+    }
+
+    /// ポート番号からソケットを検索
+    static ulong find_by_port(ulong port) {
+        ulong i = 0;
+        while (i < MAX_SOCKETS) {
+            ulong base = SOCKET_TABLE_BASE + i * SOCKET_ENTRY_SIZE;
+            ulong* used_ptr  = base as ulong*;
+            ulong* lport_ptr = (base + SOCK_LOCAL_PORT) as ulong*;
+            if (*used_ptr == 1) {
+                if (*lport_ptr == port) {
+                    return i;
+                }
+            }
+            i = i + 1;
+        }
+        return MAX_SOCKETS;
+    }
+
+    /// ソケットの状態を取得
+    static ulong get_state(ulong sock_id) {
+        if (sock_id >= MAX_SOCKETS) { return TCP_CLOSED; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+        ulong* state_ptr = (base + SOCK_STATE) as ulong*;
+        return *state_ptr;
+    }
+
+    /// ソケットが使用中か
+    static ulong is_valid(ulong sock_id) {
+        if (sock_id >= MAX_SOCKETS) { return 0; }
+        ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
+        ulong* used_ptr = base as ulong*;
+        return *used_ptr;
+    }
+}

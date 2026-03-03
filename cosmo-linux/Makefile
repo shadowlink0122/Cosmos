@@ -10,7 +10,7 @@
 # ツール設定
 # ============================================================
 
-CM ?= cm
+CM ?= ../Cm/cm
 NASM ?= nasm
 LD := x86_64-elf-ld
 QEMU ?= qemu-system-x86_64
@@ -31,6 +31,12 @@ LD_FLAGS = -T linker.ld -nostdlib -static -z noexecstack
 BUILD = ../.tmp/cosmo-linux
 ELF64 = $(BUILD)/cosmo-linux64.elf
 ELF   = $(BUILD)/cosmo-linux.elf
+
+# テスト用
+TEST_ELF64 = $(BUILD)/test64.elf
+TEST_ELF   = $(BUILD)/test.elf
+TEST_OBJ   = $(BUILD)/test_kernel.o
+TEST_SRC   = test/test_entry.cm
 
 # ソース
 BOOT_ASM    = boot/header.S
@@ -83,6 +89,24 @@ $(ELF): $(ELF64)
 	@echo "✓ ビルド完了: $@"
 
 # ============================================================
+# テストビルド
+# ============================================================
+
+$(TEST_OBJ): $(CM_SOURCES)
+	@mkdir -p $(BUILD)
+	@echo "[CM]   $(TEST_SRC) (test)"
+	$(CM) compile $(CM_FLAGS) -o $@ $(TEST_SRC)
+
+$(TEST_ELF64): $(BOOT_OBJ) $(TEST_OBJ)
+	@echo "[LD]   → $@ (test)"
+	$(LD) $(LD_FLAGS) -o $@ $(BOOT_OBJ) $(TEST_OBJ)
+
+$(TEST_ELF): $(TEST_ELF64)
+	@echo "[CONV] elf64 → elf32 (test)"
+	x86_64-elf-objcopy -O elf32-i386 $(TEST_ELF64) $(TEST_ELF)
+	@echo "✓ テストビルド完了: $@"
+
+# ============================================================
 # QEMU
 # ============================================================
 
@@ -95,19 +119,19 @@ run: $(ELF)
 		-serial stdio \
 		-no-reboot
 
-test: $(ELF)
+test: $(TEST_ELF)
 	@echo "=== Cosmo Linux テスト ==="
 	@rm -f $(BUILD)/serial.log
 	@if [ -n "$(TIMEOUT)" ]; then \
 		$(TIMEOUT) $(QEMU_TIMEOUT) $(QEMU) \
-			-kernel $(ELF) -m $(QEMU_MEM) -smp 1 \
+			-kernel $(TEST_ELF) -m $(QEMU_MEM) -smp 1 \
 			-serial file:$(BUILD)/serial.log \
 			-display none \
 			-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 			-no-reboot 2>/dev/null; \
 	else \
 		$(QEMU) \
-			-kernel $(ELF) -m $(QEMU_MEM) -smp 1 \
+			-kernel $(TEST_ELF) -m $(QEMU_MEM) -smp 1 \
 			-serial file:$(BUILD)/serial.log \
 			-display none \
 			-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
@@ -119,10 +143,12 @@ test: $(ELF)
 	@cat $(BUILD)/serial.log 2>/dev/null || echo "(出力なし)"
 	@echo ""
 	@echo "--- 結果 ---"
-	@if grep -q "Cosmo Linux" $(BUILD)/serial.log 2>/dev/null; then \
-		echo "✓ PASS"; \
+	@if grep -q "KTEST_RESULT:PASS" $(BUILD)/serial.log 2>/dev/null; then \
+		echo "✓ PASS — 全テスト合格"; \
+	elif grep -q "KTEST_RESULT:FAIL" $(BUILD)/serial.log 2>/dev/null; then \
+		echo "✗ FAIL — テスト失敗あり"; exit 1; \
 	else \
-		echo "✗ FAIL"; exit 1; \
+		echo "? UNKNOWN — テスト結果マーカー未検出"; exit 1; \
 	fi
 
 clean:

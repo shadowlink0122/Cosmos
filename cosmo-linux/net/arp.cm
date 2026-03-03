@@ -1,0 +1,121 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::arp - ARPプロトコル
+//
+// IPv4→MACアドレス解決テーブル。
+// ループバック環境では自己解決のみ使用。
+// 参照: RFC 826
+
+import ../include/types;
+import ../include/net;
+import ../lib/kstring;
+
+// ============================================================
+// ARP定数
+// ============================================================
+
+const ulong ARP_TABLE_SIZE = 16;
+const ulong ARP_TABLE_BASE = 0xA10000;  // ARPテーブル固定メモリ
+
+// ARPエントリサイズ: ip(8) + mac(8) + valid(8) + ttl(8) = 32バイト
+const ulong ARP_ENTRY_SIZE = 32;
+
+// ARP Operation
+const ulong ARP_OP_REQUEST = 1;
+const ulong ARP_OP_REPLY   = 2;
+
+// ============================================================
+// ARP テーブル
+// ============================================================
+
+export struct Arp {}
+
+impl Arp {
+    /// ARPテーブル初期化
+    static void setup() {
+        // テーブルをゼロクリア
+        ulong i = 0;
+        while (i < ARP_TABLE_SIZE) {
+            ulong base = ARP_TABLE_BASE + i * ARP_ENTRY_SIZE;
+            ulong* ip_ptr    = base as ulong*;
+            ulong* mac_ptr   = (base + 8) as ulong*;
+            ulong* valid_ptr = (base + 16) as ulong*;
+            ulong* ttl_ptr   = (base + 24) as ulong*;
+            *ip_ptr = 0;
+            *mac_ptr = 0;
+            *valid_ptr = 0;
+            *ttl_ptr = 0;
+            i = i + 1;
+        }
+
+        // ループバックエントリを登録
+        // 127.0.0.1 → 00:00:00:00:00:00 (ループバックMAC)
+        ulong* ip_ptr    = ARP_TABLE_BASE as ulong*;
+        ulong* mac_ptr   = (ARP_TABLE_BASE + 8) as ulong*;
+        ulong* valid_ptr = (ARP_TABLE_BASE + 16) as ulong*;
+        ulong* ttl_ptr   = (ARP_TABLE_BASE + 24) as ulong*;
+        *ip_ptr = LOOPBACK_ADDR;
+        *mac_ptr = 0;  // ループバックはMAC不要
+        *valid_ptr = 1;
+        *ttl_ptr = 0xFFFFFFFF;  // 永続
+    }
+
+    /// IPアドレスからMACアドレスを検索
+    /// 見つかった場合 1、見つからない場合 0
+    static ulong lookup(ulong ip, ulong* mac_out) {
+        ulong i = 0;
+        while (i < ARP_TABLE_SIZE) {
+            ulong base = ARP_TABLE_BASE + i * ARP_ENTRY_SIZE;
+            ulong* ip_ptr    = base as ulong*;
+            ulong* mac_ptr   = (base + 8) as ulong*;
+            ulong* valid_ptr = (base + 16) as ulong*;
+
+            if (*valid_ptr == 1) {
+                if (*ip_ptr == ip) {
+                    *mac_out = *mac_ptr;
+                    return 1;
+                }
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    /// ARPエントリを追加/更新
+    static void update(ulong ip, ulong mac) {
+        // 既存エントリの更新を試行
+        ulong i = 0;
+        while (i < ARP_TABLE_SIZE) {
+            ulong base = ARP_TABLE_BASE + i * ARP_ENTRY_SIZE;
+            ulong* ip_ptr    = base as ulong*;
+            ulong* valid_ptr = (base + 16) as ulong*;
+
+            if (*valid_ptr == 1) {
+                if (*ip_ptr == ip) {
+                    ulong* mac_ptr = (base + 8) as ulong*;
+                    *mac_ptr = mac;
+                    return;
+                }
+            }
+            i = i + 1;
+        }
+
+        // 空きスロットに追加
+        i = 0;
+        while (i < ARP_TABLE_SIZE) {
+            ulong base = ARP_TABLE_BASE + i * ARP_ENTRY_SIZE;
+            ulong* valid_ptr = (base + 16) as ulong*;
+
+            if (*valid_ptr == 0) {
+                ulong* ip_ptr  = base as ulong*;
+                ulong* mac_ptr = (base + 8) as ulong*;
+                ulong* ttl_ptr = (base + 24) as ulong*;
+                *ip_ptr = ip;
+                *mac_ptr = mac;
+                *valid_ptr = 1;
+                *ttl_ptr = 300;  // 5分 (tick単位)
+                return;
+            }
+            i = i + 1;
+        }
+    }
+}

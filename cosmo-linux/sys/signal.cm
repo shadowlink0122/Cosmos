@@ -55,7 +55,10 @@ impl Signal {
     /// シグナルをクリア
     static void clear(Process* proc, ulong sig) {
         if (sig < NSIG) {
-            ulong mask = ~(1 << sig);
+            // ~(1 << sig) は Cm パーサーの優先度で (~1) << sig と解釈されるため
+            // XOR で全ビット反転する方式を使用
+            ulong bit = 1 << sig;
+            ulong mask = bit ^ 0xFFFFFFFFFFFFFFFF;
             proc->pending_signal = proc->pending_signal & mask;
         }
     }

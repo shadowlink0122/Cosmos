@@ -1,0 +1,112 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::loopback - ループバックデバイス
+//
+// 送信パケットをそのまま受信キューに戻すデバイス。
+// 参照: linux/drivers/net/loopback.c
+
+import ../include/types;
+import ../include/net;
+import ../lib/kstring;
+
+// ============================================================
+// ループバックバッファ (リングバッファ)
+// ============================================================
+
+const ulong LO_BASE = 0xA30000;
+const ulong LO_QUEUE_BASE  = 0xA30100;
+const ulong LO_QUEUE_ENTRY = 16;
+const ulong LO_QUEUE_CAP   = 32;
+const ulong LO_DATA_BASE = 0xA31000;
+const ulong LO_DATA_SLOT = 2048;
+
+// ============================================================
+// Loopback デバイス
+// ============================================================
+
+export struct Loopback {}
+
+impl Loopback {
+    /// ループバック初期化
+    static void setup() {
+        ulong* head     = LO_BASE as ulong*;
+        ulong* tail     = (LO_BASE + 8) as ulong*;
+        ulong* count    = (LO_BASE + 16) as ulong*;
+        ulong* capacity = (LO_BASE + 24) as ulong*;
+
+        *head = 0;
+        *tail = 0;
+        *count = 0;
+        *capacity = LO_QUEUE_CAP;
+    }
+
+    /// パケット送信 (→ 受信キューに追加)
+    static ulong send(ulong data, ulong len) {
+        if (data == 0) { return 0; }
+        if (len == 0) { return 0; }
+        if (len > LO_DATA_SLOT) { return 0; }
+
+        ulong* count = (LO_BASE + 16) as ulong*;
+        if (*count >= LO_QUEUE_CAP) { return 0; }
+
+        ulong* tail = (LO_BASE + 8) as ulong*;
+        ulong slot = *tail;
+
+        // データをバッファスロットにコピー
+        ulong dst = LO_DATA_BASE + slot * LO_DATA_SLOT;
+        ulong i = 0;
+        while (i < len) {
+            ulong b = Mem::read_byte(data + i);
+            Mem::write_byte(dst + i, b);
+            i = i + 1;
+        }
+
+        // キューエントリを設定
+        ulong entry = LO_QUEUE_BASE + slot * LO_QUEUE_ENTRY;
+        ulong* addr_ptr = entry as ulong*;
+        ulong* len_ptr  = (entry + 8) as ulong*;
+        *addr_ptr = dst;
+        *len_ptr = len;
+
+        // tail を進める
+        *tail = (slot + 1) % LO_QUEUE_CAP;
+        *count = *count + 1;
+
+        return len;
+    }
+
+    /// パケット受信
+    static ulong recv(ulong buf, ulong buf_len) {
+        ulong* count = (LO_BASE + 16) as ulong*;
+        if (*count == 0) { return 0; }
+
+        ulong* head = LO_BASE as ulong*;
+        ulong slot = *head;
+
+        ulong entry = LO_QUEUE_BASE + slot * LO_QUEUE_ENTRY;
+        ulong* addr_ptr = entry as ulong*;
+        ulong* len_ptr  = (entry + 8) as ulong*;
+        ulong src = *addr_ptr;
+        ulong pkt_len = *len_ptr;
+
+        ulong copy_len = pkt_len;
+        if (copy_len > buf_len) { copy_len = buf_len; }
+
+        ulong i = 0;
+        while (i < copy_len) {
+            ulong b = Mem::read_byte(src + i);
+            Mem::write_byte(buf + i, b);
+            i = i + 1;
+        }
+
+        *head = (slot + 1) % LO_QUEUE_CAP;
+        *count = *count - 1;
+
+        return copy_len;
+    }
+
+    /// キュー内パケット数を取得
+    static ulong pending() {
+        ulong* count = (LO_BASE + 16) as ulong*;
+        return *count;
+    }
+}
