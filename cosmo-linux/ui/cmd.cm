@@ -38,6 +38,7 @@ import ../net/ethernet;
 import ../net/ip;
 import ../net/icmp;
 import ../net/arp;
+import ../net/dns;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -787,14 +788,32 @@ impl Cmd {
 
         // IPアドレスをパース (例: "10.0.2.2")
         ulong dst_ip = Cmd::parse_ip(arg_addr);
+        ulong is_hostname = 0;
         if (dst_ip == 0) {
-            Shell::writeln("ping: invalid IP address" as void*);
-            return;
+            // IPアドレスではない → ホスト名としてDNS解決
+            Shell::write("Resolving " as void*);
+            Shell::write(arg_addr as void*);
+            Shell::writeln("..." as void*);
+            dst_ip = Dns::resolve(arg_addr);
+            if (dst_ip == 0) {
+                Shell::writeln("ping: cannot resolve hostname" as void*);
+                return;
+            }
+            is_hostname = 1;
         }
 
-        Shell::write("PING " as void*);
-        Cmd::print_ip(dst_ip);
-        Shell::writeln("" as void*);
+        // PING表示
+        if (is_hostname != 0) {
+            Shell::write("PING " as void*);
+            Shell::write(arg_addr as void*);
+            Shell::write(" (" as void*);
+            Cmd::print_ip(dst_ip);
+            Shell::writeln(")" as void*);
+        } else {
+            Shell::write("PING " as void*);
+            Cmd::print_ip(dst_ip);
+            Shell::writeln("" as void*);
+        }
 
         ulong src_ip = GUEST_IP;
         ulong src_mac = VirtioNet::mac();

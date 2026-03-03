@@ -13,6 +13,7 @@ import ../drivers/virtio_net;
 import ../net/arp;
 import ../net/ip;
 import ../include/net;
+import ../net/dns;
 
 import ../drivers/keyboard;
 import ../lib/kstring;
