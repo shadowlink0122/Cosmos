@@ -288,8 +288,20 @@ void kbd_irq_handler() {
             12:;
             // 下矢印 (0x50) → 0x81
             cmpb $$0x50, %sil;
-            jne 9f;
+            jne 14f;
             movq $$0x81, %rcx;
+            jmp 42f;
+            14:;
+            // 左矢印 (0x4B) → 0x82
+            cmpb $$0x4B, %sil;
+            jne 15f;
+            movq $$0x82, %rcx;
+            jmp 42f;
+            15:;
+            // 右矢印 (0x4D) → 0x83
+            cmpb $$0x4D, %sil;
+            jne 9f;
+            movq $$0x83, %rcx;
             // バッファに格納
             42:;
             movq $$0x93048, %rdi;
