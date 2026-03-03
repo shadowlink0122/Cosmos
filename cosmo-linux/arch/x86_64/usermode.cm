@@ -17,7 +17,9 @@ import ./gdt;
 // ============================================================
 
 /// ユーザースタック仮想アドレス（4KiBスタック）
-const VirtAddr USER_STACK_BASE = 0x7FFFFF000;
+/// 注: 0x7FFFFF000 + 0x1000 = 0x800000000 は33ビットに溢れるため、
+///    32ビット安全なアドレスを使用
+const VirtAddr USER_STACK_BASE = 0x7FFE0000;
 
 /// ユーザースタックサイズ
 const ulong USER_STACK_SIZE = 4096;

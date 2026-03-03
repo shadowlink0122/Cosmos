@@ -40,6 +40,21 @@ export void exc_double_fault() {
 export void exc_general_protection() {
     SerialPort serial(COM1);
     serial.println("!!! GENERAL PROTECTION (#GP) !!!" as void*);
+    ulong rsp_val = 0;
+    __asm__(`movq %rsp, %rax; movq %rax, ${=r:rsp_val}`);
+    serial.puts("  RSP = " as void*);
+    serial.print_hex(rsp_val);
+    serial.println("" as void*);
+    ulong i = 0;
+    while (i < 8) {
+        ulong* sp = (rsp_val + i * 8) as ulong*;
+        serial.puts("  [RSP+" as void*);
+        serial.print_hex(i * 8);
+        serial.puts("] = " as void*);
+        serial.print_hex(*sp);
+        serial.println("" as void*);
+        i = i + 1;
+    }
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
@@ -47,13 +62,32 @@ export void exc_page_fault() {
     SerialPort serial(COM1);
     serial.println("!!! PAGE FAULT (#PF) !!!" as void*);
     ulong cr2 = 0;
+    ulong rsp_val = 0;
     __asm__(`
         movq %cr2, %rax;
-        movq %rax, ${=r:cr2}
+        movq %rax, ${=r:cr2};
+        movq %rsp, %rax;
+        movq %rax, ${=r:rsp_val}
     `);
     serial.puts("  CR2 = " as void*);
     serial.print_hex(cr2);
     serial.println("" as void*);
+    serial.puts("  RSP = " as void*);
+    serial.print_hex(rsp_val);
+    serial.println("" as void*);
+    // スタック上のISRフレームを表示 (error_code, RIP, CS, RFLAGS)
+    // ISR stubがerror codeをpopしている場合、rsp+0がret addr
+    // ISR stubの構造次第で、RIPの位置が変わる
+    ulong i = 0;
+    while (i < 8) {
+        ulong* sp = (rsp_val + i * 8) as ulong*;
+        serial.puts("  [RSP+" as void*);
+        serial.print_hex(i * 8);
+        serial.puts("] = " as void*);
+        serial.print_hex(*sp);
+        serial.println("" as void*);
+        i = i + 1;
+    }
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 

@@ -113,6 +113,10 @@ impl PageTable {
         PhysAddr pdpt = 0;
         if (self.entry_present(pml4_entry) != 0) {
             pdpt = self.entry_addr(pml4_entry);
+            // USERフラグが要求されている場合、中間エントリにも追加
+            if ((flags & PTE_USER) != 0 && (pml4_entry & PTE_USER) == 0) {
+                self.write_entry(self.pml4, pml4_idx, pml4_entry | PTE_USER);
+            }
         } else {
             pdpt = pmm->alloc_pages(0);
             memzero(pdpt as void*, PAGE_SIZE);
@@ -126,6 +130,9 @@ impl PageTable {
         PhysAddr pd = 0;
         if (self.entry_present(pdpt_entry) != 0) {
             pd = self.entry_addr(pdpt_entry);
+            if ((flags & PTE_USER) != 0 && (pdpt_entry & PTE_USER) == 0) {
+                self.write_entry(pdpt, pdpt_idx, pdpt_entry | PTE_USER);
+            }
         } else {
             pd = pmm->alloc_pages(0);
             memzero(pd as void*, PAGE_SIZE);
@@ -139,6 +146,9 @@ impl PageTable {
         PhysAddr pt = 0;
         if (self.entry_present(pd_entry) != 0) {
             pt = self.entry_addr(pd_entry);
+            if ((flags & PTE_USER) != 0 && (pd_entry & PTE_USER) == 0) {
+                self.write_entry(pd, pd_idx, pd_entry | PTE_USER);
+            }
         } else {
             pt = pmm->alloc_pages(0);
             memzero(pt as void*, PAGE_SIZE);

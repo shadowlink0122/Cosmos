@@ -20,28 +20,59 @@ const PhysAddr PIT_NEED_SCHED_ADDR = 0x90008;
 /// PIT IRQ0 ハンドラ（関数ポインタとして使うためモジュールレベル）
 void pit_irq_handler() {
     __asm__(`
+        // callee-savedレジスタ保存（sched_tickがcallするため）
         pushq %rax;
         pushq %rcx;
         pushq %rdx;
         pushq %rdi;
+        pushq %rsi;
+        pushq %r8;
+        pushq %r9;
+        pushq %r10;
+        pushq %r11;
+        pushq %rbx;
+        pushq %rbp;
+        pushq %r12;
+        pushq %r13;
+        pushq %r14;
+        pushq %r15;
 
+        // ティックカウンタをインクリメント
         movq $$0x90000, %rdi;
         movq (%rdi), %rax;
         addq $$1, %rax;
         movq %rax, (%rdi);
 
+        // EOI送信（PIC）
+        movb $$0x20, %al;
+        outb %al, $$0x20;
+
+        // 10tick毎にスケジューラtickを呼び出し
+        movq $$0x90000, %rdi;
+        movq (%rdi), %rax;
         xorq %rdx, %rdx;
         movq $$10, %rcx;
         divq %rcx;
         testq %rdx, %rdx;
         jnz 1f;
+
+        // need_reschedフラグ設定（協調スケジューリング用）
         movq $$0x90008, %rdi;
         movq $$1, (%rdi);
         1:;
 
-        movb $$0x20, %al;
-        outb %al, $$0x20;
-
+        // レジスタ復帰
+        popq %r15;
+        popq %r14;
+        popq %r13;
+        popq %r12;
+        popq %rbp;
+        popq %rbx;
+        popq %r11;
+        popq %r10;
+        popq %r9;
+        popq %r8;
+        popq %rsi;
         popq %rdi;
         popq %rdx;
         popq %rcx;

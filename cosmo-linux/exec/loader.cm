@@ -164,7 +164,8 @@ impl Loader {
                     PhysAddr phys_page = pmm->alloc_pages(0);
                     if (phys_page != 0) {
                         memzero(phys_page as void*, PAGE_SIZE);
-                        pt.map_page(page, phys_page, KERNEL_PAGE_FLAGS, pmm);
+                        // ユーザープロセス用: PRESENT | WRITE | USER = 7
+                        pt.map_page(page, phys_page, 7, pmm);
                     }
                     page = page + PAGE_SIZE;
                 }
