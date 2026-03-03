@@ -22,6 +22,25 @@ export const ulong GATE_USER = 0xEF;  // Trap Gate, DPL=3
 export void exc_default() {
     SerialPort serial(COM1);
     serial.println("!!! UNHANDLED EXCEPTION !!!" as void*);
+    // TSS RSP0からフレーム情報を表示
+    ulong* tss_rsp0_ptr = 0x83004 as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
+    ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
+    ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
+    ulong* err_ptr = (tss_rsp0 - 48) as ulong*;
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(*rip_ptr);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(*cs_ptr);
+    serial.println("" as void*);
+
+    // ユーザーモード例外ならSIGSEGV kill
+    ulong cs_val = *cs_ptr;
+    if ((cs_val & 3) != 0) {
+        serial.println("[EXC] User process killed" as void*);
+        __asm__(`sti; 1: hlt; jmp 1b`);
+        return;
+    }
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 

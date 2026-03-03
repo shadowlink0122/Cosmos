@@ -119,6 +119,18 @@ impl SyscallFs {
         if (stat_addr == 0) { return 0 - EFAULT; }
         if (pathname == 0) { return 0 - EFAULT; }
 
+        // ルートディレクトリ "/" の特別処理
+        ulong first_ch = 0;
+        __asm__(`movq ${r:pathname}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:first_ch}`);
+        ulong second_ch = 0;
+        ulong second_addr = pathname + 1;
+        __asm__(`movq ${r:second_addr}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:second_ch}`);
+        if (first_ch == 47 && second_ch == 0) {
+            // "/" → ディレクトリ (S_IFDIR | 0755 = 0x41ED)
+            SyscallFs::fill_stat(stat_addr, 1, 0x41ED, 4096);
+            return 0;
+        }
+
         // RamFSでファイルを検索
         Ino ino = RamFs::lookup(pathname as void*);
         if (ino == 0) {

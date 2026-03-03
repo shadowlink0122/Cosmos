@@ -174,20 +174,21 @@ impl Mmap {
         __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
         PageTable pt(cr3);
 
-        ulong offset = 0;
-        while (offset < aligned_len) {
-            // MAP_FIXEDの場合、既存マッピングがあればスキップ（データ保護）
-            ulong target_va = map_addr + offset;
-            PhysAddr existing = pt.translate(target_va);
-            if (existing == 0) {
-                // 未マッピングの場合のみ新規ページ割り当て
+        // MAP_FIXEDの場合はVMA登録のみ（ページテーブル操作はスキップ）
+        // brk/mmapの共存問題を回避: brk済みページのデータを保護
+        ulong is_fixed = flags & 0x10;  // MAP_FIXED = 0x10
+        if (is_fixed == 0) {
+            // 非MAP_FIXED: 新規ページ割り当て
+            ulong offset = 0;
+            while (offset < aligned_len) {
+                ulong target_va = map_addr + offset;
                 PhysAddr page = pmm->alloc_pages(0);
                 if (page == 0) { return MAP_FAILED; }
                 memzero(page as void*, PAGE_SIZE);
                 // ユーザープロセス用: PRESENT | WRITE | USER = 7
                 pt.map_page(target_va, page, 7, pmm);
+                offset = offset + PAGE_SIZE;
             }
-            offset = offset + PAGE_SIZE;
         }
 
         return map_addr;

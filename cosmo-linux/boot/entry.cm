@@ -85,6 +85,18 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Gdt::setup(&serial);
     Idt::setup(&serial);
 
+    // SSE/SSE2有効化（musl-libc xorps等のSIMD命令サポート）
+    __asm__(`
+        movq %cr0, %rax;
+        andw $$0xFFFB, %ax;       // CR0.EM=0 (bit2 clear)
+        orw $$0x0002, %ax;        // CR0.MP=1 (bit1 set)
+        movq %rax, %cr0;
+        movq %cr4, %rax;
+        orw $$0x0600, %ax;        // CR4.OSFXSR=1 (bit9), CR4.OSXMMEXCPT=1 (bit10)
+        movq %rax, %cr4
+    `);
+    pr_info(&serial, "SSE/SSE2 enabled" as void*);
+
     // === 6. メモリ管理初期化 ===
     pr_info(&serial, "Initializing memory management..." as void*);
 

@@ -447,6 +447,14 @@ ulong arg3, ulong arg4, ulong arg5) {
     if (nr == SYS_CLOSE) {
         return Syscall::close(arg0);
     }
+    if (nr == SYS_STAT) {
+        // stat(path, buf) → newfstatat(AT_FDCWD, path, buf, 0)
+        return SyscallFs::newfstatat(0 - 100, arg0, arg1, 0);
+    }
+    if (nr == SYS_LSTAT) {
+        // lstat(path, buf) → newfstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW)
+        return SyscallFs::newfstatat(0 - 100, arg0, arg1, 0x100);
+    }
     if (nr == SYS_FSTAT) {
         return SyscallFs::fstat(arg0, arg1);
     }
