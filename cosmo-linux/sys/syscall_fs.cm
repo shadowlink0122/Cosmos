@@ -13,8 +13,8 @@ import ../include/vfs;
 import ../drivers/serial;
 import ../lib/printk;
 import ../lib/kstring;
-import ../fs/vfs;
 import ../fs/fd_table;
+import ../fs/vfs;
 import ../fs/ramfs;
 import ../sys/syscall_table;
 import ../ui/shell_util;
@@ -132,7 +132,14 @@ impl SyscallFs {
         }
 
         // RamFSでファイルを検索
-        Ino ino = RamFs::lookup(pathname as void*);
+        // パス先頭の'/'をスキップ（RamFSはプレフィックスなしで格納）
+        ulong search_path = pathname;
+        ulong sp_ch = 0;
+        __asm__(`movq ${r:search_path}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sp_ch}`);
+        if (sp_ch == 47) {
+            search_path = pathname + 1;
+        }
+        Ino ino = RamFs::lookup(search_path as void*);
         if (ino == 0) {
             return 0 - ENOENT;
         }
@@ -174,6 +181,19 @@ impl SyscallFs {
         // AT_FDCWD (-100) またはパスが絶対パスならopen()に委譲
         // 現段階ではAT_FDCWDのみサポート
         if (pathname == 0) { return 0 - EFAULT; }
+
+        // ルートディレクトリ "/" → ディレクトリFDを返す
+        ulong fb = 0;
+        __asm__(`movq ${r:pathname}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:fb}`);
+        if (fb == 0x2F) {
+            ulong sb = 0;
+            ulong na1 = pathname + 1;
+            __asm__(`movq ${r:na1}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sb}`);
+            if (sb == 0) {
+                return FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+            }
+        }
+
         // sys_openに委譲（importはsyscall.cmで行うため、Vfs::openを使用）
         return Vfs::open(pathname as void*, flags);
     }
@@ -214,10 +234,16 @@ impl SyscallFs {
 
     /// sys_getdents64: ディレクトリエントリ読み出し
     static long getdents64(ulong fd, ulong dirp, ulong count) {
-        // RamFSのディレクトリ一覧を返す（fdはcwdに対応）
+        // FDオフセットで読み取り位置を管理（2回目以降はEOF=0を返す）
+        ulong fd_offset = FdTable::get_offset(fd as long);
         ulong dir_count = RamFs::dir_count();
+        if (fd_offset >= dir_count) {
+            return 0;  // EOF: 全エントリ読み取り済み
+        }
+
+        // RamFSのディレクトリ一覧を返す
         ulong offset = 0;
-        ulong i = 0;
+        ulong i = fd_offset;
         while (i < dir_count && offset + 24 < count) {
             ulong name = RamFs::dir_name(i);
             if (name != 0) {
@@ -242,7 +268,7 @@ impl SyscallFs {
 
                 // d_off (8バイト) — 次のエントリのオフセット
                 ulong* d_off = (entry + 8) as ulong*;
-                *d_off = offset + reclen;
+                *d_off = i + 1;
 
                 // d_reclen (2バイト)
                 ulong* d_reclen_ptr = (entry + 16) as ulong*;
@@ -269,6 +295,8 @@ impl SyscallFs {
             }
             i = i + 1;
         }
+        // FDオフセットを更新（次回の読み取り位置）
+        FdTable::set_offset(fd as long, i);
         return offset as long;
     }
 

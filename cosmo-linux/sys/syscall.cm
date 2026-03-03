@@ -132,6 +132,23 @@ impl Syscall {
 
     /// sys_open: ファイルをオープン
     static long open(ulong name_addr, ulong flags) {
+        // ルートディレクトリ "/" → ディレクトリFDを返す
+        ulong is_root = 0;
+        ulong* first_byte = name_addr as ulong*;
+        ulong fb = 0;
+        __asm__(`movq ${r:name_addr}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:fb}`);
+        if (fb == 0x2F) {
+            // '/' の次が '\0' かチェック
+            ulong sb = 0;
+            ulong na1 = name_addr + 1;
+            __asm__(`movq ${r:na1}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sb}`);
+            if (sb == 0) {
+                is_root = 1;
+            }
+        }
+        if (is_root != 0) {
+            return FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+        }
         // /dev/ プレフィックスチェック
         if (startswith(name_addr as void*, "/dev/" as void*) != 0) {
             ulong dev_name = name_addr + 5;

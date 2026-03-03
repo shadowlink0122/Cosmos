@@ -18,7 +18,7 @@ import ../include/errno;
 //
 // FileDesc構造: ino(8) + offset(8) + flags(8) + fs_type(8) + used(8) = 40バイト
 
-const PhysAddr FD_TABLE_BASE = 0x406000;
+const PhysAddr FD_TABLE_BASE = 0x9B800;  // ELFロード範囲(0x400000+)外
 const ulong    FD_ENTRY_SIZE = 40;
 
 /// FdTable — ファイルディスクリプタテーブル管理
