@@ -10,6 +10,7 @@ import ../include/types;
 // Linux x86_64 Syscall 番号
 // ============================================================
 
+// --- ファイルシステム ---
 export const ulong SYS_READ       = 0;
 export const ulong SYS_WRITE      = 1;
 export const ulong SYS_OPEN       = 2;
@@ -24,12 +25,34 @@ export const ulong SYS_MPROTECT   = 10;
 export const ulong SYS_MUNMAP     = 11;
 export const ulong SYS_BRK        = 12;
 export const ulong SYS_IOCTL      = 16;
+export const ulong SYS_PREAD64    = 17;
+export const ulong SYS_PWRITE64   = 18;
+export const ulong SYS_READV      = 19;
 export const ulong SYS_WRITEV     = 20;
 export const ulong SYS_ACCESS     = 21;
 export const ulong SYS_PIPE       = 22;
 export const ulong SYS_DUP        = 32;
 export const ulong SYS_DUP2       = 33;
+
+// --- シグナル ---
+export const ulong SYS_RT_SIGACTION   = 13;
+export const ulong SYS_RT_SIGPROCMASK = 14;
+
+// --- タイマー ---
+export const ulong SYS_NANOSLEEP  = 35;
+
+// --- プロセス ---
 export const ulong SYS_GETPID     = 39;
+export const ulong SYS_SOCKET     = 41;
+export const ulong SYS_CONNECT    = 42;
+export const ulong SYS_ACCEPT     = 43;
+export const ulong SYS_SENDTO     = 44;
+export const ulong SYS_RECVFROM   = 45;
+export const ulong SYS_BIND       = 49;
+export const ulong SYS_LISTEN     = 50;
+export const ulong SYS_SETSOCKOPT = 54;
+export const ulong SYS_GETSOCKOPT = 55;
+export const ulong SYS_CLONE      = 56;
 export const ulong SYS_FORK       = 57;
 export const ulong SYS_VFORK      = 58;
 export const ulong SYS_EXECVE     = 59;
@@ -37,19 +60,34 @@ export const ulong SYS_EXIT       = 60;
 export const ulong SYS_WAIT4      = 61;
 export const ulong SYS_KILL       = 62;
 export const ulong SYS_UNAME      = 63;
+export const ulong SYS_FCNTL      = 72;
 export const ulong SYS_GETCWD     = 79;
 export const ulong SYS_CHDIR      = 80;
 export const ulong SYS_MKDIR      = 83;
 export const ulong SYS_RMDIR      = 84;
 export const ulong SYS_UNLINK     = 87;
+
+// --- ユーザー/グループ ---
 export const ulong SYS_GETUID     = 102;
 export const ulong SYS_GETGID     = 104;
+export const ulong SYS_GETEUID    = 107;
+export const ulong SYS_GETEGID    = 108;
 export const ulong SYS_GETPPID    = 110;
+
+// --- アーキテクチャ固有 ---
 export const ulong SYS_ARCH_PRCTL = 158;
+
+// --- 拡張 ---
+export const ulong SYS_GETDENTS64 = 217;
 export const ulong SYS_SET_TID_ADDRESS = 218;
 export const ulong SYS_CLOCK_GETTIME = 228;
 export const ulong SYS_EXIT_GROUP = 231;
 export const ulong SYS_OPENAT     = 257;
+export const ulong SYS_NEWFSTATAT = 262;
+export const ulong SYS_READLINKAT = 267;
+export const ulong SYS_FACCESSAT  = 269;
+export const ulong SYS_PRLIMIT64  = 302;
+export const ulong SYS_GETRANDOM  = 318;
 
 /// 最大syscall番号
 export const ulong NR_SYSCALLS = 512;

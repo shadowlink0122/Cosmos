@@ -190,4 +190,34 @@ impl FdTable {
         }
         return newfd;
     }
+
+    /// dup_lowest: oldfdの内容を最小の空きFDにコピー
+    static Fd dup_lowest(Fd oldfd) {
+        if (oldfd < 0) { return 0 - 9; }
+        ulong old_u = oldfd as ulong;
+        if (old_u >= MAX_FD) { return 0 - 9; }
+        ulong o_old = FD_TABLE_BASE + old_u * FD_ENTRY_SIZE;
+        ulong* old_used = (o_old + 32) as ulong*;
+        if (*old_used == 0) { return 0 - 9; }
+
+        // 最小の空きFDを検索 (3以上)
+        ulong i = 3;
+        while (i < MAX_FD) {
+            ulong o = FD_TABLE_BASE + i * FD_ENTRY_SIZE;
+            ulong* used_flag = (o + 32) as ulong*;
+            if (*used_flag == 0) {
+                // コピー
+                ulong j = 0;
+                while (j < 5) {
+                    ulong* src = (o_old + j * 8) as ulong*;
+                    ulong* dst = (o + j * 8) as ulong*;
+                    *dst = *src;
+                    j = j + 1;
+                }
+                return i as long;
+            }
+            i = i + 1;
+        }
+        return 0 - EMFILE;
+    }
 }

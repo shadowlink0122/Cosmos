@@ -109,6 +109,15 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Cwd::setup();
     Pipe::setup();
 
+    // PMMポインタとVMMポインタをグローバルアドレスに登録
+    // (mmap.cm, loader.cm, usermode.cm等がこのアドレスからPMMを参照する)
+    ulong pmm_addr = (&pmm) as ulong;
+    ulong* pmm_global_ptr = 0x95010 as ulong*;
+    *pmm_global_ptr = pmm_addr;
+    ulong vmm_addr = (&vmm) as ulong;
+    ulong* vmm_global_ptr = 0x91020 as ulong*;
+    *vmm_global_ptr = vmm_addr;
+
     // === 8. プロセス管理初期化 ===
     pr_info(&serial, "Initializing process management..." as void*);
 

@@ -60,6 +60,10 @@ impl KTest {
         TestIO::write("  [PASS] " as void*);
         TestIO::set_color(7, 0);
         TestIO::writeln(name);
+        // シリアルにも出力
+        SerialPort s(COM1);
+        s.puts("  [PASS] " as void*);
+        s.println(name);
     }
 
     /// テストフェイル記録
@@ -72,6 +76,10 @@ impl KTest {
         TestIO::write("  [FAIL] " as void*);
         TestIO::set_color(7, 0);
         TestIO::writeln(name);
+        // シリアルにも出力
+        SerialPort s(COM1);
+        s.puts("  [FAIL] " as void*);
+        s.println(name);
     }
 
     /// アサート: 条件が真であることを検証
@@ -127,6 +135,14 @@ impl KTest {
         TestIO::print_dec(*fail);
         TestIO::writeln(" failed" as void*);
         TestIO::set_color(7, 0);
+
+        // シリアル出力: Makefile結果判定用マーカー
+        SerialPort serial(COM1);
+        if (*fail == 0) {
+            serial.println("KTEST_RESULT:PASS" as void*);
+        } else {
+            serial.println("KTEST_RESULT:FAIL" as void*);
+        }
     }
 
     // ============================================================
@@ -482,14 +498,18 @@ impl KTest {
         KTest::assert_eq(hdr.ttl, 64, "IP ttl=64" as void*);
         KTest::assert_eq(hdr.protocol, 6, "IP proto=TCP(6)" as void*);
 
-        ulong cksum = Ip::checksum(pkt, 20);
-        KTest::assert_eq(cksum, 0, "IP checksum=0 (valid)" as void*);
-
+        // チェックサムフィールド=0でチェックサム計算 → 正しいチェックサム値が得られる
         Mem::write_byte(pkt+10, 0); Mem::write_byte(pkt+11, 0);
         ulong computed = Ip::checksum(pkt, 20);
         ulong ck_ok = 0;
         if (computed > 0) { ck_ok = 1; }
         KTest::assert_eq(ck_ok, 1, "IP checksum computed>0" as void*);
+
+        // チェックサム値を書き込んで再計算 → 0になるべき（正当性検証）
+        Mem::write_byte(pkt+10, (computed >> 8) & 0xFF);
+        Mem::write_byte(pkt+11, computed & 0xFF);
+        ulong verify = Ip::checksum(pkt, 20);
+        KTest::assert_eq(verify, 0, "IP checksum verified=0" as void*);
 
         KTest::assert_eq((hdr.src_addr >> 24) & 0xFF, 127, "IP src[0]=127" as void*);
         KTest::assert_eq((hdr.dst_addr >> 24) & 0xFF, 127, "IP dst[0]=127" as void*);

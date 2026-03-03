@@ -3,6 +3,7 @@
 //
 // RamFS上のELFファイルをメモリにロードし、
 // カーネルスレッドとして実行する。
+// musl-libc対応: スタック上にargc/argv/envp/auxvを構築。
 //
 // 参照: linux/fs/binfmt_elf.c
 
@@ -30,11 +31,41 @@ import ./elf;
 /// ELFロード先仮想アドレス (ユーザー空間ベース)
 const VirtAddr ELF_LOAD_BASE = 0x400000;
 
+/// PIEのロード先ベースアドレス
+const VirtAddr PIE_LOAD_BASE = 0x400000;
+
 /// ELFデータ読み込み一時バッファ
 const PhysAddr ELF_TMP_BUF = 0x600000;
 
 /// ローダー用PMMポインタアドレス
 const PhysAddr LOADER_PMM_PTR = 0x95010;
+
+// ============================================================
+// Auxiliary Vector (auxv) 定数
+// ============================================================
+
+/// AT_NULL: auxv終端
+const ulong AT_NULL   = 0;
+/// AT_PHDR: プログラムヘッダのアドレス
+const ulong AT_PHDR   = 3;
+/// AT_PHENT: プログラムヘッダエントリサイズ
+const ulong AT_PHENT  = 4;
+/// AT_PHNUM: プログラムヘッダ数
+const ulong AT_PHNUM  = 5;
+/// AT_PAGESZ: ページサイズ
+const ulong AT_PAGESZ = 6;
+/// AT_ENTRY: エントリポイント
+const ulong AT_ENTRY  = 9;
+/// AT_UID: 実UID
+const ulong AT_UID    = 11;
+/// AT_EUID: 実効UID
+const ulong AT_EUID   = 12;
+/// AT_GID: 実GID
+const ulong AT_GID    = 13;
+/// AT_EGID: 実効GID
+const ulong AT_EGID   = 14;
+/// AT_RANDOM: ランダムバイトのアドレス（16バイト）
+const ulong AT_RANDOM = 25;
 
 // ============================================================
 // Loader struct/impl
@@ -79,10 +110,21 @@ impl Loader {
         ulong phentsize = Elf::get_phentsize(ELF_TMP_BUF);
         ulong phnum = Elf::get_phnum(ELF_TMP_BUF);
 
+        // PIEの場合、ベースアドレスオフセットを計算
+        ulong load_bias = 0;
+        if (Elf::is_pie(ELF_TMP_BUF) != 0) {
+            load_bias = PIE_LOAD_BASE;
+            entry = entry + load_bias;
+        }
+
         w->puts("[INFO] ELF entry=0x" as void*);
         w->print_hex(entry);
         w->puts(" phnum=" as void*);
         print_dec(w, phnum);
+        if (load_bias != 0) {
+            w->puts(" PIE bias=0x" as void*);
+            w->print_hex(load_bias);
+        }
         w->println("" as void*);
 
         // PMMを取得
@@ -94,6 +136,9 @@ impl Loader {
         __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
         PageTable pt(cr3);
 
+        // PHDRのユーザー空間アドレス記録用
+        ulong phdr_addr = 0;
+
         // PT_LOADセグメントをメモリにロード
         ulong i = 0;
         while (i < phnum) {
@@ -102,9 +147,14 @@ impl Loader {
 
             if (p_type == PT_LOAD) {
                 ulong p_offset = Elf::ph_offset(ph_addr);
-                ulong p_vaddr  = Elf::ph_vaddr(ph_addr);
+                ulong p_vaddr  = Elf::ph_vaddr(ph_addr) + load_bias;
                 ulong p_filesz = Elf::ph_filesz(ph_addr);
                 ulong p_memsz  = Elf::ph_memsz(ph_addr);
+
+                // 最初のPT_LOADにPHDRが含まれるか確認
+                if (phdr_addr == 0 && p_offset == 0) {
+                    phdr_addr = p_vaddr + phoff;
+                }
 
                 // ページマッピング
                 ulong page_start = p_vaddr & ~0xFFF;
@@ -174,12 +224,124 @@ impl Loader {
         proc->alloc_stack(pmm);
         proc->page_table = cr3;
 
-        // コンテキスト初期化（エントリポイントへジャンプ）
-        Context::init_task(proc, proc->kernel_stack, entry);
-
-        // ユーザープロセスフラグ設定
+        // ユーザースタック確保 (2ページ = 8KiB)
         proc->is_user = 1;
         proc->user_stack = Usermode::alloc_user_stack();
+
+        // ============================================================
+        // ユーザースタック上にargc/argv/envp/auxvを構築
+        // musl-libcの__libc_start_mainが期待するスタックレイアウト:
+        //
+        // [高アドレス = スタックトップ]
+        //   ランダムバイト (16B, AT_RANDOM用)
+        //   ファイル名文字列 (argv[0])
+        //   auxv[]: { AT_PAGESZ:4096, AT_UID:0, ... AT_NULL:0 }
+        //   envp[0] = NULL
+        //   argv[1] = NULL
+        //   argv[0] → ファイル名文字列へのポインタ
+        //   argc = 1
+        // [低アドレス = RSP]
+        // ============================================================
+
+        ulong sp = proc->user_stack;
+
+        // --- ランダムバイト (16バイト) ---
+        sp = sp - 16;
+        ulong random_addr = sp;
+        // RDRAND等で埋める（簡易版: 固定パターン）
+        ulong ri = 0;
+        while (ri < 16) {
+            ulong val = (ri * 7 + 0x42) & 0xFF;
+            ulong ra = random_addr + ri;
+            __asm__(`movq ${r:ra}, %rdi; movq ${r:val}, %rax; movb %al, (%rdi)`);
+            ri = ri + 1;
+        }
+
+        // --- ファイル名文字列 ---
+        ulong fname_len = strlen(filename);
+        sp = sp - (fname_len + 1);
+        sp = sp & ~7;  // 8バイトアラインメント
+        ulong argv0_str = sp;
+        // ファイル名をスタックにコピー
+        ulong fi = 0;
+        while (fi <= fname_len) {
+            ulong ch = 0;
+            ulong fsrc = (filename as ulong) + fi;
+            __asm__(`movq ${r:fsrc}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
+            ulong fdst = argv0_str + fi;
+            __asm__(`movq ${r:fdst}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+            fi = fi + 1;
+        }
+
+        // --- auxiliary vector (auxv) ---
+        // auxvエントリ数: 8個 + AT_NULL = 9エントリ × 16バイト = 144バイト
+        sp = sp - 144;
+        sp = sp & ~15;  // 16バイトアラインメント
+        ulong auxv_base = sp;
+
+        // auxvエントリ書き込みヘルパ: { type(8B), value(8B) }
+        ulong ai = 0;
+        // AT_PAGESZ = 4096
+        Loader::write_auxv(auxv_base, ai, AT_PAGESZ, 4096);
+        ai = ai + 1;
+        // AT_UID = 0
+        Loader::write_auxv(auxv_base, ai, AT_UID, 0);
+        ai = ai + 1;
+        // AT_EUID = 0
+        Loader::write_auxv(auxv_base, ai, AT_EUID, 0);
+        ai = ai + 1;
+        // AT_GID = 0
+        Loader::write_auxv(auxv_base, ai, AT_GID, 0);
+        ai = ai + 1;
+        // AT_EGID = 0
+        Loader::write_auxv(auxv_base, ai, AT_EGID, 0);
+        ai = ai + 1;
+        // AT_ENTRY = エントリポイント
+        Loader::write_auxv(auxv_base, ai, AT_ENTRY, entry);
+        ai = ai + 1;
+        // AT_PHDR = PHDRアドレス
+        Loader::write_auxv(auxv_base, ai, AT_PHDR, phdr_addr);
+        ai = ai + 1;
+        // AT_PHENT = PHDRエントリサイズ
+        Loader::write_auxv(auxv_base, ai, AT_PHENT, phentsize);
+        ai = ai + 1;
+        // AT_PHNUM = PHDR数
+        Loader::write_auxv(auxv_base, ai, AT_PHNUM, phnum);
+        ai = ai + 1;
+        // AT_RANDOM = ランダムバイトアドレス
+        Loader::write_auxv(auxv_base, ai, AT_RANDOM, random_addr);
+        ai = ai + 1;
+        // AT_NULL = 終端
+        Loader::write_auxv(auxv_base, ai, AT_NULL, 0);
+
+        // --- envp[0] = NULL ---
+        sp = sp - 8;
+        ulong* envp_null = sp as ulong*;
+        *envp_null = 0;
+
+        // --- argv[1] = NULL ---
+        sp = sp - 8;
+        ulong* argv1_null = sp as ulong*;
+        *argv1_null = 0;
+
+        // --- argv[0] = ファイル名文字列へのポインタ ---
+        sp = sp - 8;
+        ulong* argv0_ptr = sp as ulong*;
+        *argv0_ptr = argv0_str;
+
+        // --- argc = 1 ---
+        sp = sp - 8;
+        ulong* argc_ptr = sp as ulong*;
+        *argc_ptr = 1;
+
+        // スタックポインタを16バイトアラインメント
+        sp = sp & ~15;
+
+        // コンテキスト初期化（エントリポイントへジャンプ、RSP=構築済みスタック）
+        Context::init_task(proc, proc->kernel_stack, entry);
+
+        // ユーザースタックを構築済みのSPに更新
+        proc->user_stack = sp;
 
         // スケジューラに登録
         Sched::add(proc);
@@ -188,8 +350,19 @@ impl Loader {
         print_dec(w, new_pid as ulong);
         w->puts(" entry=0x" as void*);
         w->print_hex(entry);
+        w->puts(" sp=0x" as void*);
+        w->print_hex(sp);
         w->println("" as void*);
 
         return new_pid;
+    }
+
+    /// auxvエントリを書き込むヘルパ
+    static void write_auxv(ulong base, ulong index, ulong atype, ulong value) {
+        ulong offset = index * 16;
+        ulong* type_ptr = (base + offset) as ulong*;
+        ulong* val_ptr = (base + offset + 8) as ulong*;
+        *type_ptr = atype;
+        *val_ptr = value;
     }
 }

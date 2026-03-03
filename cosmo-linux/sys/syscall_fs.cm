@@ -1,0 +1,333 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::syscall_fs - ファイルシステム関連syscall
+//
+// stat, lseek, openat, readlinkat, faccessat, getdents64,
+// pread64, pwrite64, readv, fcntl 等のファイルシステムsyscallを実装。
+//
+// 参照: linux/fs/stat.c, linux/fs/open.c, linux/fs/readdir.c
+
+import ../include/types;
+import ../include/config;
+import ../include/errno;
+import ../include/vfs;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ../fs/vfs;
+import ../fs/fd_table;
+import ../fs/ramfs;
+import ../sys/syscall_table;
+import ../ui/shell_util;
+
+// ============================================================
+// stat構造体定数 (Linux x86_64 struct stat = 144バイト)
+// ============================================================
+
+// struct stat フィールドオフセット
+const ulong STAT_ST_DEV     = 0;    // 8バイト
+const ulong STAT_ST_INO     = 8;    // 8バイト
+const ulong STAT_ST_NLINK   = 16;   // 8バイト
+const ulong STAT_ST_MODE    = 24;   // 4バイト
+const ulong STAT_ST_UID     = 28;   // 4バイト
+const ulong STAT_ST_GID     = 32;   // 4バイト
+const ulong STAT_ST_RDEV    = 40;   // 8バイト
+const ulong STAT_ST_SIZE    = 48;   // 8バイト
+const ulong STAT_ST_BLKSIZE = 56;   // 8バイト
+const ulong STAT_ST_BLOCKS  = 64;   // 8バイト
+const ulong STAT_SIZE       = 144;  // struct stat 全体サイズ
+
+// AT_FDCWD: カレントディレクトリを基準にする
+const long AT_FDCWD = 0 - 100;
+
+// fcntl コマンド
+const ulong F_GETFD = 1;
+const ulong F_SETFD = 2;
+const ulong F_GETFL = 3;
+const ulong F_SETFL = 4;
+const ulong F_DUPFD = 0;
+const ulong F_DUPFD_CLOEXEC = 1030;
+
+// getdents64 エントリ構造
+// struct linux_dirent64 {
+//     u64 d_ino;     // inode番号
+//     u64 d_off;     // ディレクトリストリーム内オフセット
+//     u16 d_reclen;  // エントリサイズ
+//     u8  d_type;    // ファイルタイプ
+//     char d_name[]; // ファイル名
+// }
+
+// ディレクトリエントリタイプ
+const ulong DT_REG  = 8;  // 通常ファイル
+const ulong DT_DIR  = 4;  // ディレクトリ
+
+// ============================================================
+// SyscallFs — ファイルシステム関連syscall
+// ============================================================
+
+export struct SyscallFs {}
+
+impl SyscallFs {
+    /// stat/fstat共通: struct statを埋める
+    static void fill_stat(ulong stat_addr, ulong ino, ulong mode, ulong size) {
+        // 全体をゼロ初期化
+        memzero(stat_addr as void*, STAT_SIZE);
+
+        // st_ino
+        ulong* ino_ptr = (stat_addr + STAT_ST_INO) as ulong*;
+        *ino_ptr = ino;
+
+        // st_nlink = 1
+        ulong* nlink_ptr = (stat_addr + STAT_ST_NLINK) as ulong*;
+        *nlink_ptr = 1;
+
+        // st_mode (4バイトだが上位をゼロクリアしているので安全)
+        ulong* mode_ptr = (stat_addr + STAT_ST_MODE) as ulong*;
+        *mode_ptr = mode;
+
+        // st_size
+        ulong* size_ptr = (stat_addr + STAT_ST_SIZE) as ulong*;
+        *size_ptr = size;
+
+        // st_blksize = 4096
+        ulong* blksize_ptr = (stat_addr + STAT_ST_BLKSIZE) as ulong*;
+        *blksize_ptr = 4096;
+
+        // st_blocks = ceil(size / 512)
+        ulong* blocks_ptr = (stat_addr + STAT_ST_BLOCKS) as ulong*;
+        *blocks_ptr = (size + 511) / 512;
+    }
+
+    /// sys_fstat: FDからファイル情報を取得
+    static long fstat(ulong fd, ulong stat_addr) {
+        if (stat_addr == 0) { return 0 - EFAULT; }
+        // stdin/stdout/stderr: キャラクタデバイス
+        if (fd == 0 || fd == 1 || fd == 2) {
+            SyscallFs::fill_stat(stat_addr, fd, 0x2190, 0);
+            return 0;
+        }
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        ulong fsize = RamFs::file_size(ino);
+        SyscallFs::fill_stat(stat_addr, ino, 0x81A4, fsize);
+        return 0;
+    }
+
+    /// sys_newfstatat: パス名からファイル情報を取得 (AT_FDCWD対応)
+    static long newfstatat(long dirfd, ulong pathname, ulong stat_addr, ulong flags) {
+        if (stat_addr == 0) { return 0 - EFAULT; }
+        if (pathname == 0) { return 0 - EFAULT; }
+
+        // RamFSでファイルを検索
+        Ino ino = RamFs::lookup(pathname as void*);
+        if (ino == 0) {
+            return 0 - ENOENT;
+        }
+        ulong fsize = RamFs::file_size(ino);
+        SyscallFs::fill_stat(stat_addr, ino, 0x81A4, fsize);
+        return 0;
+    }
+
+    /// sys_lseek: ファイルオフセットを移動
+    static long lseek(ulong fd, long offset, ulong whence) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        ulong fsize = RamFs::file_size(ino);
+        ulong cur_off = FdTable::get_offset(fd as long);
+        ulong new_off = 0;
+
+        // SEEK_SET = 0, SEEK_CUR = 1, SEEK_END = 2
+        if (whence == 0) {
+            // SEEK_SET
+            new_off = offset as ulong;
+        } else if (whence == 1) {
+            // SEEK_CUR
+            new_off = cur_off + (offset as ulong);
+        } else if (whence == 2) {
+            // SEEK_END
+            new_off = fsize + (offset as ulong);
+        } else {
+            return 0 - EINVAL;
+        }
+
+        FdTable::set_offset(fd as long, new_off);
+        return new_off as long;
+    }
+
+    /// sys_openat: ディレクトリFD相対でファイルをオープン
+    static long openat(long dirfd, ulong pathname, ulong flags, ulong mode) {
+        // AT_FDCWD (-100) またはパスが絶対パスならopen()に委譲
+        // 現段階ではAT_FDCWDのみサポート
+        if (pathname == 0) { return 0 - EFAULT; }
+        // sys_openに委譲（importはsyscall.cmで行うため、Vfs::openを使用）
+        return Vfs::open(pathname as void*, flags);
+    }
+
+    /// sys_readlinkat: シンボリックリンク読み取り
+    /// /proc/self/exe に対応
+    static long readlinkat(long dirfd, ulong pathname, ulong buf, ulong bufsiz) {
+        if (pathname == 0 || buf == 0) { return 0 - EFAULT; }
+        if (bufsiz == 0) { return 0 - EINVAL; }
+
+        // /proc/self/exe → 実行中バイナリのパス（簡易版）
+        if (startswith(pathname as void*, "/proc/self/exe" as void*) != 0) {
+            ulong fake_path = "/usr/bin/program" as ulong;
+            ulong i = 0;
+            while (i < bufsiz) {
+                ulong ch = 0;
+                ulong src = fake_path + i;
+                __asm__(`movq ${r:src}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
+                if (ch == 0) { return i as long; }
+                ulong dst = buf + i;
+                __asm__(`movq ${r:dst}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+                i = i + 1;
+            }
+            return bufsiz as long;
+        }
+
+        return 0 - ENOENT;
+    }
+
+    /// sys_faccessat: ファイルアクセス確認
+    static long faccessat(long dirfd, ulong pathname, ulong mode, ulong flags) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        // RamFSでファイルを検索
+        Ino ino = RamFs::lookup(pathname as void*);
+        if (ino != 0) { return 0; }
+        return 0 - ENOENT;
+    }
+
+    /// sys_getdents64: ディレクトリエントリ読み出し
+    static long getdents64(ulong fd, ulong dirp, ulong count) {
+        // RamFSのディレクトリ一覧を返す（fdはcwdに対応）
+        ulong dir_count = RamFs::dir_count();
+        ulong offset = 0;
+        ulong i = 0;
+        while (i < dir_count && offset + 24 < count) {
+            ulong name = RamFs::dir_name(i);
+            if (name != 0) {
+                Ino ino = RamFs::dir_ino(i);
+                ulong dtype = RamFs::dir_type(i);
+
+                // ファイル名長を計算
+                ulong name_len = strlen(name as void*);
+
+                // レコードサイズ: 8(d_ino) + 8(d_off) + 2(d_reclen) + 1(d_type) + name_len + 1(null)
+                // 8バイトアラインメント
+                ulong reclen = 19 + name_len + 1;
+                reclen = (reclen + 7) & ~7;
+
+                if (offset + reclen > count) { break; }
+
+                ulong entry = dirp + offset;
+
+                // d_ino (8バイト)
+                ulong* d_ino = entry as ulong*;
+                *d_ino = ino;
+
+                // d_off (8バイト) — 次のエントリのオフセット
+                ulong* d_off = (entry + 8) as ulong*;
+                *d_off = offset + reclen;
+
+                // d_reclen (2バイト)
+                ulong* d_reclen_ptr = (entry + 16) as ulong*;
+                *d_reclen_ptr = reclen;
+
+                // d_type (1バイト, offset 18)
+                ulong d_type_val = DT_REG;
+                if (dtype == S_IFDIR) { d_type_val = DT_DIR; }
+                ulong d_type_addr = entry + 18;
+                __asm__(`movq ${r:d_type_addr}, %rdi; movq ${r:d_type_val}, %rax; movb %al, (%rdi)`);
+
+                // d_name (offset 19)
+                ulong j = 0;
+                while (j <= name_len) {
+                    ulong ch = 0;
+                    ulong s = name + j;
+                    __asm__(`movq ${r:s}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
+                    ulong d = entry + 19 + j;
+                    __asm__(`movq ${r:d}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+                    j = j + 1;
+                }
+
+                offset = offset + reclen;
+            }
+            i = i + 1;
+        }
+        return offset as long;
+    }
+
+    /// sys_pread64: オフセット指定読み込み
+    static long pread64(ulong fd, ulong buf, ulong count, ulong offset) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        return RamFs::read(ino, buf, offset, count);
+    }
+
+    /// sys_pwrite64: オフセット指定書き込み
+    static long pwrite64(ulong fd, ulong buf, ulong count, ulong offset) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        return RamFs::write(ino, buf, offset, count);
+    }
+
+    /// sys_readv: scatter read (iovec配列による読み込み)
+    static long readv(ulong fd, ulong iov_addr, ulong iovcnt) {
+        long total = 0;
+        ulong i = 0;
+        while (i < iovcnt) {
+            ulong* base_ptr = (iov_addr + i * 16) as ulong*;
+            ulong* len_ptr = (iov_addr + i * 16 + 8) as ulong*;
+            ulong base = *base_ptr;
+            ulong len = *len_ptr;
+            if (len > 0) {
+                long ret = Vfs::read(fd as long, base, len);
+                if (ret < 0) { return ret; }
+                total = total + ret;
+                if ((ret as ulong) < len) { break; }  // 短い読み込み → 終了
+            }
+            i = i + 1;
+        }
+        return total;
+    }
+
+    /// sys_fcntl: ファイルディスクリプタ制御
+    static long fcntl(ulong fd, ulong cmd, ulong arg) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        if (cmd == F_GETFD) {
+            return 0;  // FD_CLOEXEC = 0 (デフォルト)
+        }
+        if (cmd == F_SETFD) {
+            return 0;  // 設定を無視（成功を返す）
+        }
+        if (cmd == F_GETFL) {
+            return FdTable::get_flags(fd as long) as long;
+        }
+        if (cmd == F_SETFL) {
+            return 0;  // フラグ変更を無視
+        }
+        if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
+            // arg以上の最小FDにdup
+            return FdTable::dup2(fd as long, arg as long);
+        }
+        return 0 - EINVAL;
+    }
+
+    /// sys_dup: FD複製
+    static long dup(ulong oldfd) {
+        if (FdTable::is_valid(oldfd as long) == 0) {
+            return 0 - EBADF;
+        }
+        // 最小の空きFDにコピー
+        return FdTable::dup_lowest(oldfd as long);
+    }
+}
