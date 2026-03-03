@@ -25,6 +25,7 @@ export const long EISDIR  = 21;  // ディレクトリ
 export const long EINVAL  = 22;  // 無効な引数
 export const long ENFILE  = 23;  // ファイルテーブル満杯
 export const long EMFILE  = 24;  // 開きすぎ
+export const long ENOTTY  = 25;  // デバイス不適切ioctl
 export const long ENOSPC  = 28;  // 空き領域なし
 export const long EROFS   = 30;  // 読み取り専用FS
 export const long EPIPE   = 32;  // パイプ破損

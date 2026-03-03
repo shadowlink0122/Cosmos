@@ -297,6 +297,164 @@ impl Syscall {
     static long do_dup2(ulong oldfd, ulong newfd) {
         return FdTable::dup2(oldfd as long, newfd as long);
     }
+
+    // ================================================================
+    // MS2: Linux ABI拡張 — musl-libc対応syscall
+    // ================================================================
+
+    /// sys_arch_prctl: アーキテクチャ固有制御
+    /// 参照: linux/arch/x86/kernel/process_64.c
+    /// musl-libcはTLS(Thread Local Storage)セットアップに使用
+    static long arch_prctl(ulong code, ulong addr) {
+        // ARCH_SET_FS = 0x1002: FSベースレジスタ設定 (TLS用)
+        if (code == 0x1002) {
+            Cpu::wrmsr(0xC0000100, addr);  // IA32_FS_BASE
+            return 0;
+        }
+        // ARCH_GET_FS = 0x1003: FSベースレジスタ取得
+        if (code == 0x1003) {
+            ulong fs = Cpu::rdmsr(0xC0000100);
+            ulong* out = addr as ulong*;
+            *out = fs;
+            return 0;
+        }
+        // ARCH_SET_GS = 0x1001
+        if (code == 0x1001) {
+            Cpu::wrmsr(0xC0000101, addr);  // IA32_GS_BASE
+            return 0;
+        }
+        return 0 - EINVAL;
+    }
+
+    /// sys_set_tid_address: スレッドID設定
+    /// 参照: linux/kernel/fork.c
+    /// musl-libcはプロセス初期化時に呼び出す
+    static long set_tid_address(ulong tidptr) {
+        // clear_child_tidを設定（簡易版: 保存のみ）
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            return cur->pid;
+        }
+        return 1;  // PID1
+    }
+
+    /// sys_mprotect: メモリ保護属性変更
+    /// 参照: linux/mm/mprotect.c
+    /// 現段階ではページテーブル操作なしで成功を返す
+    static long do_mprotect(ulong addr, ulong len, ulong prot) {
+        // TODO: 実際のページテーブルフラグ変更
+        // 現段階では常に成功を返す（musl-libc起動に影響しない）
+        return 0;
+    }
+
+    /// sys_writev: scatter write (iovec配列による書き込み)
+    /// 参照: linux/fs/read_write.c do_writev()
+    /// musl-libcのprintf/putsはwritev経由で出力
+    static long writev(ulong fd, ulong iov_addr, ulong iovcnt) {
+        if (fd != 1 && fd != 2) {
+            // 非stdout/stderr: 個別のwrite呼び出しに分解
+            long total = 0;
+            ulong i = 0;
+            while (i < iovcnt) {
+                // struct iovec { void* iov_base; size_t iov_len; }
+                ulong* base_ptr = (iov_addr + i * 16) as ulong*;
+                ulong* len_ptr = (iov_addr + i * 16 + 8) as ulong*;
+                ulong base = *base_ptr;
+                ulong len = *len_ptr;
+                if (len > 0) {
+                    long ret = Syscall::write(fd, base, len);
+                    if (ret < 0) { return ret; }
+                    total = total + ret;
+                }
+                i = i + 1;
+            }
+            return total;
+        }
+        // stdout/stderr: シリアル出力
+        SerialPort serial(COM1);
+        long total = 0;
+        ulong i = 0;
+        while (i < iovcnt) {
+            ulong* base_ptr = (iov_addr + i * 16) as ulong*;
+            ulong* len_ptr = (iov_addr + i * 16 + 8) as ulong*;
+            ulong base = *base_ptr;
+            ulong len = *len_ptr;
+            ulong j = 0;
+            while (j < len) {
+                ulong ch = 0;
+                ulong addr = base + j;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    xorq %rax, %rax;
+                    movb (%rdi), %al;
+                    movq %rax, ${=r:ch}
+                `);
+                serial.putc(ch as utiny);
+                j = j + 1;
+            }
+            total = total + (len as long);
+            i = i + 1;
+        }
+        return total;
+    }
+
+    /// sys_exit_group: プロセスグループ終了
+    /// 参照: linux/kernel/exit.c do_group_exit()
+    /// musl-libcはexit()でexit_groupを呼ぶ
+    static void exit_group(long code) {
+        Syscall::exit(code);
+    }
+
+    /// sys_fstat: ファイル情報取得
+    /// 参照: linux/fs/stat.c
+    /// struct stat (x86_64 Linux): 144バイト
+    static long fstat(ulong fd, ulong stat_addr) {
+        if (stat_addr == 0) { return 0 - EFAULT; }
+        // struct stat全体をゼロ初期化
+        ulong i = 0;
+        while (i < 144) {
+            ulong addr = stat_addr + i;
+            __asm__(`movq ${r:addr}, %rdi; movb $$0, (%rdi)`);
+            i = i + 1;
+        }
+        // st_dev  (offset 0, 8B)
+        // st_ino  (offset 8, 8B)
+        // st_nlink (offset 16, 8B) = 1
+        ulong* nlink = (stat_addr + 16) as ulong*;
+        *nlink = 1;
+        // st_mode (offset 24, 4B)
+        ulong* mode_ptr = (stat_addr + 24) as ulong*;
+        if (fd == 0 || fd == 1 || fd == 2) {
+            // stdin/stdout/stderr: キャラクタデバイス
+            *mode_ptr = 0x2190;  // S_IFCHR | 0190
+        } else {
+            *mode_ptr = 0x81A4;  // S_IFREG | 0644
+        }
+        // st_blksize (offset 112, 8B) = 4096
+        ulong* blksize = (stat_addr + 112) as ulong*;
+        *blksize = 4096;
+        return 0;
+    }
+
+    /// sys_ioctl: デバイス制御
+    /// 参照: linux/fs/ioctl.c
+    static long do_ioctl(ulong fd, ulong cmd, ulong arg) {
+        // TIOCGWINSZ = 0x5413: ウィンドウサイズ取得
+        if (cmd == 0x5413) {
+            if (arg != 0) {
+                // struct winsize { rows(2), cols(2), xpixel(2), ypixel(2) }
+                ulong* ws = arg as ulong*;
+                *ws = (80 << 16) | 25;  // rows=25, cols=80
+            }
+            return 0;
+        }
+        // TCGETS = 0x5401: termios取得
+        if (cmd == 0x5401) {
+            return 0 - ENOTTY;
+        }
+        return 0 - ENOTTY;
+    }
 }
 
 // ============================================================
@@ -358,31 +516,122 @@ ulong arg3, ulong arg4, ulong arg5) {
     if (nr == SYS_DUP2) {
         return Syscall::do_dup2(arg0, arg1);
     }
+    // MS2: musl-libc対応syscall
+    if (nr == SYS_ARCH_PRCTL) {
+        return Syscall::arch_prctl(arg0, arg1);
+    }
+    if (nr == SYS_SET_TID_ADDRESS) {
+        return Syscall::set_tid_address(arg0);
+    }
+    if (nr == SYS_MPROTECT) {
+        return Syscall::do_mprotect(arg0, arg1, arg2);
+    }
+    if (nr == SYS_WRITEV) {
+        return Syscall::writev(arg0, arg1, arg2);
+    }
+    if (nr == SYS_EXIT_GROUP) {
+        Syscall::exit_group(arg0 as long);
+        return 0;
+    }
+    if (nr == SYS_FSTAT) {
+        return Syscall::fstat(arg0, arg1);
+    }
+    if (nr == SYS_IOCTL) {
+        return Syscall::do_ioctl(arg0, arg1, arg2);
+    }
+    if (nr == SYS_ACCESS) {
+        return 0 - ENOENT;  // ファイルアクセス確認（簡易版）
+    }
 
-    // 未実装syscall
+    // 未実装syscall（デバッグログ出力）
+    SerialPort serial_dbg(COM1);
+    serial_dbg.puts("[WARN] unimplemented syscall: " as void*);
+    print_dec(&serial_dbg, nr);
+    serial_dbg.println("" as void*);
     return (0 - ENOSYS);
 }
 
-/// syscall ASMスタブ（RCX=RIP, R11=RFLAGS を保存）
+/// syscall ASMスタブ（Linux entry_SYSCALL_64 準拠）
+/// 参照: linux/arch/x86/entry/entry_64.S
+///
+/// syscall命令実行時:
+///   RCX = ユーザーRIP（戻りアドレス）
+///   R11 = ユーザーRFLAGS
+///   RAX = syscall番号
+///   RDI, RSI, RDX, R10, R8, R9 = 引数0-5
+///
+/// Cm ABI (x86_64 SysV): RDI, RSI, RDX, RCX, R8, R9
 export void syscall_entry_stub() {
     __asm__(`
-        // ユーザースタック保存 → カーネルスタック
-        // 簡易版: レジスタを保存してCmハンドラを呼ぶ
+        // === ユーザーコンテキスト保存 ===
+        // RCX=戻りRIP, R11=RFLAGSをスタックに保存
         pushq %rcx;
         pushq %r11;
         pushq %rbp;
         movq %rsp, %rbp;
 
-        // syscall_handler(nr=rax, arg0=rdi, arg1=rsi, arg2=rdx, arg3=r10, arg4=r8, arg5=r9)
-        // x86_64 Cm ABI: rdi, rsi, rdx, rcx, r8, r9
-        movq %rax, %rdi;
-        // arg0は元のrdi → 保存が必要だが簡易版では省略
-        movq %r10, %rcx;
+        // callee-savedレジスタ保存
+        pushq %rbx;
+        pushq %r12;
+        pushq %r13;
+        pushq %r14;
+        pushq %r15;
 
-        // ハンドラを直接callはできないので、sysretで戻る
+        // syscall引数をスタックに退避
+        // (callでレジスタが破壊されるため)
+        pushq %rdi;   // arg0 (ユーザーRDI)
+        pushq %rsi;   // arg1 (ユーザーRSI)
+        pushq %rdx;   // arg2 (ユーザーRDX)
+        pushq %r10;   // arg3 (Linux ABIではR10)
+        pushq %r8;    // arg4
+        pushq %r9;    // arg5
+        pushq %rax;   // syscall番号
+
+        // === syscall_handlerの呼び出し ===
+        // Cm ABI: syscall_handler(nr, arg0, arg1, arg2, arg3, arg4, arg5)
+        //         RDI=nr, RSI=arg0, RDX=arg1, RCX=arg2, R8=arg3, R9=arg4
+        //         arg5はスタック経由
+        // スタックから引数を復元してABI変換
+        popq %rdi;     // nr = RAX (syscall番号)
+        popq %r12;     // arg5 = R9 → 退避
+        popq %r13;     // arg4 = R8 → 退避
+        popq %r8;      // arg3 = R10 → R8 (Cm ABI 5番目)
+        popq %rcx;     // arg2 = RDX → RCX (Cm ABI 4番目)
+        popq %rdx;     // arg1 = RSI → RDX (Cm ABI 3番目)
+        popq %rsi;     // arg0 = RDI → RSI (Cm ABI 2番目)
+
+        // arg4, arg5をCm ABIに設定
+        movq %r13, %r9;   // arg4 → R9 (Cm ABI 6番目)
+        // arg5はスタック経由 (7番目の引数)
+        pushq %r12;
+
+        // 16バイトアラインメント調整
+        movq %rsp, %r14;
+        andq $$-16, %rsp;
+
+        // syscall_handler呼び出し
+        call syscall_handler;
+
+        // スタック復帰
+        movq %r14, %rsp;
+        addq $$8, %rsp;    // arg5のpush分
+
+        // === ユーザーコンテキスト復帰 ===
+        // RAXにはsyscall_handlerの戻り値が入っている
+
+        // callee-savedレジスタ復帰
+        popq %r15;
+        popq %r14;
+        popq %r13;
+        popq %r12;
+        popq %rbx;
+
+        // rbp, r11(RFLAGS), rcx(RIP) 復帰
         popq %rbp;
         popq %r11;
         popq %rcx;
+
+        // ユーザー空間に戻る
         sysretq
     `);
 }
