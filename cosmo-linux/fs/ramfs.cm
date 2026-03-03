@@ -21,12 +21,12 @@ void wb(ulong a, ulong v) {
     __asm__(`movq ${r:a}, %r10; movq ${r:v}, %rax; movb %al, (%r10)`);
 }
 
-// メモリレイアウト
-const PhysAddr INO_BASE  = 0x400000;
-const PhysAddr DIR_BASE  = 0x402000;
-const PhysAddr NAME_BASE = 0x404000;
-const PhysAddr NEXT_INO  = 0x405000;
-const PhysAddr DIR_CNT   = 0x405008;
+// メモリレイアウト（0x1000000 = 16MBから配置: ELF vaddr 0x400000との衝突回避）
+const PhysAddr INO_BASE  = 0x1000000;
+const PhysAddr DIR_BASE  = 0x1002000;
+const PhysAddr NAME_BASE = 0x1004000;
+const PhysAddr NEXT_INO  = 0x1005000;
+const PhysAddr DIR_CNT   = 0x1005008;
 
 // 内部ヘルパー
 ulong find_ino(Ino ino) {

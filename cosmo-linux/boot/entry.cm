@@ -170,15 +170,18 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // === 初期rootfs構築: helloバイナリをRamFSに登録 ===
     InitRootfs::setup(&pmm, &serial);
 
-    // === AUTO-EXEC TEST: helloバイナリを自動実行 ===
-    pr_info(&serial, "Auto-exec: loading 'hello'..." as void*);
-    Pid hello_pid = Loader::exec("hello" as void*, &serial);
-    if (hello_pid >= 0) {
-        serial.puts("[INFO] hello loaded, PID=" as void*);
-        print_dec(&serial, hello_pid as ulong);
+    // === hello auto-execは省略（busyboxとvaddrが競合するため）===
+    // Pid hello_pid = Loader::exec("hello" as void*, &serial);
+
+    // === AUTO-EXEC TEST: busybox（9p経由）===
+    pr_info(&serial, "Auto-exec: loading 'busybox'..." as void*);
+    Pid bb_pid = Loader::exec("busybox" as void*, &serial);
+    if (bb_pid >= 0) {
+        serial.puts("[INFO] busybox loaded, PID=" as void*);
+        print_dec(&serial, bb_pid as ulong);
         serial.println("" as void*);
     } else {
-        pr_err(&serial, "Failed to load hello" as void*);
+        pr_err(&serial, "Failed to load busybox (9p may not be available)" as void*);
     }
 
     pr_info(&serial, "Entering idle loop with scheduler..." as void*);

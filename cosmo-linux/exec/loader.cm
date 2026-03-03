@@ -16,6 +16,7 @@ import ../drivers/serial;
 import ../lib/printk;
 import ../lib/kstring;
 import ../fs/ramfs;
+import ../fs/ninepfs;
 import ../mm/pmm;
 import ../mm/vmm;
 import ../sched/process;
@@ -36,6 +37,8 @@ const VirtAddr PIE_LOAD_BASE = 0x400000;
 
 /// ELFデータ読み込み一時バッファ
 const PhysAddr ELF_TMP_BUF = 0x600000;
+// ELFバッファ最大サイズ (ELF_TMP_BUF 0x600000 → INO_BASE 0x1000000 = 10MB)
+const ulong ELF_MAX_SIZE = 0xA00000;
 
 /// ローダー用PMMポインタアドレス
 const PhysAddr LOADER_PMM_PTR = 0x95010;
@@ -78,24 +81,36 @@ impl Loader {
     /// ELFファイルをRamFSからロードしてプロセスとして実行
     /// 戻り値: 新プロセスのPID（失敗時 -1）
     static Pid exec(void* filename, SerialPort* w) {
+        ulong fsize = 0;
+        ulong loaded_from_9p = 0;
+
         // RamFSからファイル検索
         Ino ino = RamFs::lookup(filename);
-        if (ino == 0) {
-            pr_err(w, "exec: file not found" as void*);
-            return 0 - 1;
-        }
-
-        ulong fsize = RamFs::file_size(ino);
-        if (fsize < 64) {
-            pr_err(w, "exec: file too small for ELF" as void*);
-            return 0 - 1;
-        }
-
-        // 一時バッファに読み込み
-        long bytes = RamFs::read(ino, ELF_TMP_BUF, 0, fsize);
-        if (bytes <= 0) {
-            pr_err(w, "exec: failed to read file" as void*);
-            return 0 - 1;
+        if (ino != 0) {
+            fsize = RamFs::file_size(ino);
+            if (fsize < 64) {
+                pr_err(w, "exec: file too small for ELF" as void*);
+                return 0 - 1;
+            }
+            // 一時バッファに読み込み
+            long bytes = RamFs::read(ino, ELF_TMP_BUF, 0, fsize);
+            if (bytes <= 0) {
+                pr_err(w, "exec: failed to read file" as void*);
+                return 0 - 1;
+            }
+        } else {
+            // 9pフォールバック: rootfs/<filename> から読み込み
+            ulong fname = filename as ulong;
+            ulong bytes_9p = NinePfs::read_file(fname, ELF_TMP_BUF, ELF_MAX_SIZE);
+            if (bytes_9p == 0) {
+                pr_err(w, "exec: file not found (ramfs/9p)" as void*);
+                return 0 - 1;
+            }
+            fsize = bytes_9p;
+            loaded_from_9p = 1;
+            w->puts("[INFO] Loaded from 9p: " as void*);
+            print_dec(w, fsize);
+            w->println(" bytes" as void*);
         }
 
         // ELFヘッダ検証
