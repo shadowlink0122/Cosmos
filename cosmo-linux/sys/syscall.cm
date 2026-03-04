@@ -24,6 +24,7 @@ import ../sched/scheduler;
 import ../mm/mmap;
 import ../fs/devfs;
 import ../ui/shell_io;
+import ../ui/vga;
 import ../fs/pipe;
 // ABI拡張: 分野別syscall
 import ./syscall_fs;
@@ -106,11 +107,12 @@ impl Syscall {
                 `);
                 serial.putc(ch as utiny);
                 // ユーザープロセスの場合のみVGA画面にも出力
+                // 注: Shell::putcはVGA+serial両方に書くのでVga::putc直接使用
                 if (is_user != 0) {
                     if (ch == 10) {
-                        Shell::putc(10);
+                        Vga::putc(10);
                     } else if (ch >= 32 && ch < 127) {
-                        Shell::putc(ch);
+                        Vga::putc(ch);
                     }
                 }
                 i = i + 1;
