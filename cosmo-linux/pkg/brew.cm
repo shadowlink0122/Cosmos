@@ -618,7 +618,7 @@ impl Brew {
             pos = pos + 1;
             pi = pi + 1;
         }
-        pos = Brew::wstr(buf, pos, " HTTP/1.1\r\nHost: 10.0.2.2:8080\r\nConnection: close\r\n\r\n" as ulong, 52);
+        pos = Brew::wstr(buf, pos, " HTTP/1.1\r\nHost: 10.0.2.2:8080\r\nConnection: close\r\n\r\n" as ulong, 53);
         return pos;
     }
 
