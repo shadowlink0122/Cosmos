@@ -122,6 +122,15 @@ run: $(ELF)
 		-virtfs local,path=./rootfs,mount_tag=host,security_model=none,id=host0 \
 		-no-reboot
 
+# brew install用HTTPサーバ (別端末で実行)
+# rootfs/packages/ のバイナリをゲストから HTTP GET で取得可能にする
+serve:
+	@echo "=== brew パッケージサーバ起動 ==="
+	@echo "  http://localhost:8080/packages/<name> でパッケージ配信"
+	@echo "  ゲストから: brew install <name>"
+	@echo ""
+	cd rootfs && python3 -m http.server 8080
+
 test: $(TEST_ELF)
 	@echo "=== Cosmo Linux テスト ==="
 	@rm -f $(BUILD)/serial.log

@@ -59,6 +59,7 @@ impl Cmd {
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
         Shell::writeln("  echo cd pwd env export history kill" as void*);
         Shell::writeln("  vmstat exec test ping curl  cmd1 | cmd2  Tab=complete" as void*);
+        Shell::writeln("  cm version/help" as void*);
         Shell::writeln("  gen install/list/search/run" as void*);
         Shell::writeln("  brew install/uninstall/list/help" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
@@ -1687,6 +1688,24 @@ impl Cmd {
         }
         if (streq(CMD_BUF_ADDR as void*, "test" as void*) != 0) {
             KTest::run_all();
+            return;
+        }
+        // cm コマンド（Cmコンパイラ情報）
+        if (streq(CMD_BUF_ADDR as void*, "cm" as void*) != 0 ||
+            streq(CMD_BUF_ADDR as void*, "cm version" as void*) != 0) {
+            Shell::set_color(14, 0);
+            Shell::writeln("Cm Compiler v0.14.2" as void*);
+            Shell::set_color(7, 0);
+            Shell::writeln("  Sea Minor - A systems programming language" as void*);
+            Shell::writeln("  Target: x86_64-cosmo-linux" as void*);
+            Shell::writeln("  Homepage: https://github.com/Exaloop/Cm" as void*);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "cm help" as void*) != 0) {
+            Shell::writeln("Cm Compiler - Usage:" as void*);
+            Shell::writeln("  cm              Show version" as void*);
+            Shell::writeln("  cm version      Show version" as void*);
+            Shell::writeln("  cm help         Show this help" as void*);
             return;
         }
         // gen コマンド（ホストFSパッケージマネージャ）
