@@ -81,6 +81,12 @@ export void exc_general_protection() {
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
+/// PF後のアイドルループ
+/// iretqで復帰した後、タイマー割り込みでスケジューラがシェルに切替
+void pf_idle_loop() {
+    __asm__(`sti; 1: hlt; jmp 1b`);
+}
+
 export void exc_page_fault() {
     SerialPort serial(COM1);
     serial.println("!!! PAGE FAULT (#PF) !!!" as void*);
@@ -134,16 +140,25 @@ export void exc_page_fault() {
         Shell::writeln("Segmentation fault (core dumped)" as void*);
         Shell::set_color(7, 0);
 
-        // プロセスを終了してシェルに復帰
+        // プロセスを終了
         Process* cur = Sched::current();
         ulong cur_addr = cur as ulong;
         if (cur_addr != 0) {
             ProcessTable::do_exit(cur, 139);  // SIGSEGV = 128+11 = 139
         }
 
-        // 割り込み有効化してスケジューラに戻る
-        __asm__(`sti`);
-        Sched::run();
+        // iretqフレームを書き換えてカーネルのhltループに復帰
+        // CPU例外フレーム: [SS, RSP, RFLAGS, CS, RIP, error_code]
+        // error_codeをスキップして、iretq先をカーネル空間に変更
+        // → タイマー割り込みで自然にスケジューラがシェルに切替
+        ulong idle_rip = pf_idle_loop as ulong;
+        *rip_ptr = idle_rip;                          // RIP = idle loop
+        *cs_ptr = 0x08;                               // CS = kernel CS
+        ulong* rflags_ptr = (tss_rsp0 - 24) as ulong*;
+        *rflags_ptr = 0x200;                          // IF=1 (割り込み有効)
+        *ursp_ptr = tss_rsp0;                         // RSP = kernel stack
+        ulong* ss_ptr = (tss_rsp0 - 8) as ulong*;
+        *ss_ptr = 0x10;                               // SS = kernel DS
         return;
     }
 
