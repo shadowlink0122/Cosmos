@@ -26,15 +26,15 @@ export const ulong VIRTIO_NET_HDR_SIZE = 10;
 // NICステート (固定メモリ)
 // ============================================================
 
-const ulong NIC_STATE_BASE = 0xA40000;
+const ulong NIC_STATE_BASE = 0x1700000;  // (ELFバッファ/RamFS/9p後)
 // offset 0: io_base (BAR0 I/Oポートベースアドレス)
 // offset 8: mac_addr (MACアドレス、下位48bit)
 // offset 16: initialized (1=初期化済み)
 
 // RXバッファプール: 各2048バイト, 64個
-const ulong RX_BUF_BASE = 0xB20000;
+const ulong RX_BUF_BASE = 0x1730000;
 const ulong RX_BUF_COUNT = 64;
-const ulong TX_BUF_BASE = 0xB40000;
+const ulong TX_BUF_BASE = 0x1770000;
 
 // ============================================================
 // VirtioNet
@@ -170,7 +170,7 @@ impl VirtioNet {
         ulong max_rx = rx_qsize;
         if (max_rx > RX_BUF_COUNT) { max_rx = RX_BUF_COUNT; }
 
-        // RXのvirtqueue状態を固定メモリにコピー (0xA40100)
+        // RXのvirtqueue状態を固定メモリにコピー
         VirtioNet::save_rx_vq(&rx_vq);
 
         while (i < max_rx) {
@@ -185,7 +185,7 @@ impl VirtioNet {
         // RX状態を保存
         VirtioNet::save_rx_vq(&rx_vq);
 
-        // TX状態を保存 (0xA40200)
+        // TX状態を保存
         VirtioNet::save_tx_vq(&tx_vq);
 
         // RXキュー通知 (デバイスにバッファ投入を通知)
@@ -358,9 +358,9 @@ impl VirtioNet {
     // 内部ヘルパー: VirtqueueをNICステートメモリに保存/復元
     // ============================================================
 
-    /// RX Virtqueue状態を固定メモリに保存 (0xA40100)
+    /// RX Virtqueue状態を固定メモリに保存
     static void save_rx_vq(Virtqueue* vq) {
-        ulong base = 0xA40100;
+        ulong base = NIC_STATE_BASE + 0x100;
         ulong* p0 = base as ulong*;        *p0 = vq->desc_base;
         ulong* p1 = (base + 8) as ulong*;  *p1 = vq->avail_base;
         ulong* p2 = (base + 16) as ulong*; *p2 = vq->used_base;
@@ -373,7 +373,7 @@ impl VirtioNet {
 
     /// RX Virtqueue状態を固定メモリから復元
     static void load_rx_vq(Virtqueue* vq) {
-        ulong base = 0xA40100;
+        ulong base = NIC_STATE_BASE + 0x100;
         ulong* p0 = base as ulong*;        vq->desc_base = *p0;
         ulong* p1 = (base + 8) as ulong*;  vq->avail_base = *p1;
         ulong* p2 = (base + 16) as ulong*; vq->used_base = *p2;
@@ -384,9 +384,9 @@ impl VirtioNet {
         ulong* p7 = (base + 56) as ulong*; vq->last_used_idx = *p7;
     }
 
-    /// TX Virtqueue状態を固定メモリに保存 (0xA40200)
+    /// TX Virtqueue状態を固定メモリに保存
     static void save_tx_vq(Virtqueue* vq) {
-        ulong base = 0xA40200;
+        ulong base = NIC_STATE_BASE + 0x200;
         ulong* p0 = base as ulong*;        *p0 = vq->desc_base;
         ulong* p1 = (base + 8) as ulong*;  *p1 = vq->avail_base;
         ulong* p2 = (base + 16) as ulong*; *p2 = vq->used_base;
@@ -399,7 +399,7 @@ impl VirtioNet {
 
     /// TX Virtqueue状態を固定メモリから復元
     static void load_tx_vq(Virtqueue* vq) {
-        ulong base = 0xA40200;
+        ulong base = NIC_STATE_BASE + 0x200;
         ulong* p0 = base as ulong*;        vq->desc_base = *p0;
         ulong* p1 = (base + 8) as ulong*;  vq->avail_base = *p1;
         ulong* p2 = (base + 16) as ulong*; vq->used_base = *p2;

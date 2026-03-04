@@ -50,16 +50,16 @@ const ulong P9_O_RDONLY = 0;
 // ドライバ状態 (固定メモリ)
 // ============================================================
 
-const ulong V9P_STATE_BASE = 0xA60000;
+const ulong V9P_STATE_BASE = 0x1400000;   // ドライバ状態 (ELFバッファ/RamFS後)
 // offset 0: io_base
 // offset 8: initialized (1=ready)
 // offset 16: tag_len (マウントタグ長)
 // offset 24-87: mount_tag (最大64バイト)
 
-const ulong V9P_VQ_BASE = 0xB60000;     // virtqueue メモリ
-const ulong V9P_VQ_STATE = 0xA60100;    // virtqueue状態保存
-const ulong V9P_TX_BUF = 0xB70000;      // 送信バッファ
-const ulong V9P_RX_BUF = 0xB80000;      // 受信バッファ
+const ulong V9P_VQ_STATE = 0x1400100;     // virtqueue状態保存
+const ulong V9P_VQ_BASE = 0x1500000;      // virtqueue メモリ
+const ulong V9P_TX_BUF = 0x1600000;       // 送信バッファ
+const ulong V9P_RX_BUF = 0x1610000;       // 受信バッファ
 
 const ulong V9P_MSIZE = 8192;           // 最大メッセージサイズ
 
@@ -479,10 +479,23 @@ impl Virtio9p {
     /// count: 読み取り最大バイト数
     /// 返り値: 読み取ったバイト数 (0=EOF or エラー)
     static ulong read(ulong fid, ulong buf, ulong offset, ulong count) {
+        // デバッグ
+        SerialPort dbg(COM1);
+        dbg.puts("[9p-read] fid=" as void*);
+        print_dec(&dbg, fid);
+        dbg.puts(" off=" as void*);
+        print_dec(&dbg, offset);
+        dbg.puts(" cnt=" as void*);
+        print_dec(&dbg, count);
+        dbg.puts(" buf=0x" as void*);
+        dbg.print_hex(buf);
+        dbg.println("" as void*);
+
         ulong tx = V9P_TX_BUF;
         // Tread: size(4) + type(1) + tag(2) + fid(4) + offset(8) + count(4)
         ulong msg_size = 4 + 1 + 2 + 4 + 8 + 4;
 
+        dbg.println("[9p-read] building msg..." as void*);
         Virtio9p::write_le32(tx, msg_size);
         Mem::write_byte(tx + 4, P9_TREAD);
         Virtio9p::write_le16(tx + 5, 3);  // tag=3
@@ -495,15 +508,24 @@ impl Virtio9p {
         if (max_read > V9P_MSIZE - 32) { max_read = V9P_MSIZE - 32; }
         Virtio9p::write_le32(tx + 19, max_read);
 
+        dbg.println("[9p-read] calling transact..." as void*);
         ulong rx = V9P_RX_BUF;
         ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
-        if (resp == 0) { return 0; }
+        if (resp == 0) {
+            dbg.println("[9p-read] transact failed" as void*);
+            return 0;
+        }
+        dbg.println("[9p-read] transact ok" as void*);
 
         ulong rtype = Mem::read_byte(rx + 4);
         if (rtype != P9_RREAD) { return 0; }
 
         // Rread: size(4) + type(1) + tag(2) + count(4) + data[count]
         ulong rcount = Virtio9p::read_le32(rx + 7);
+
+        dbg.puts("[9p-read] copying " as void*);
+        print_dec(&dbg, rcount);
+        dbg.println(" bytes" as void*);
 
         // データをコピー
         ulong ci = 0;
@@ -512,6 +534,7 @@ impl Virtio9p {
             ci = ci + 1;
         }
 
+        dbg.println("[9p-read] done" as void*);
         return rcount;
     }
 

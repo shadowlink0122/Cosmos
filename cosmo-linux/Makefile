@@ -122,6 +122,35 @@ run: $(ELF)
 		-virtfs local,path=./rootfs,mount_tag=host,security_model=none,id=host0 \
 		-no-reboot
 
+# curlテスト: QEMU起動→自動実行→シリアルログ確認
+run-curl: $(ELF)
+	@echo "=== curl --version テスト ==="
+	@rm -f $(BUILD)/serial_curl.log /tmp/cosmo_qemu_mon.sock
+	@$(QEMU) \
+		-kernel $(ELF) \
+		-m $(QEMU_MEM) \
+		-smp 1 \
+		-serial file:$(BUILD)/serial_curl.log \
+		-nic user,model=virtio-net-pci \
+		-virtfs local,path=./rootfs,mount_tag=host,security_model=none,id=host0 \
+		-display none \
+		-monitor unix:/tmp/cosmo_qemu_mon.sock,server=on,wait=off \
+		-no-reboot &
+	@sleep 4
+	@python3 -c "\
+import socket, time; \
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); \
+s.connect('/tmp/cosmo_qemu_mon.sock'); \
+time.sleep(0.5); s.recv(4096); \
+for k in 'curl': \
+    s.sendall(('sendkey ' + k + '\n').encode()); time.sleep(0.15); s.recv(4096); \
+s.sendall(b'sendkey ret\n'); time.sleep(8); s.recv(4096); \
+s.sendall(b'quit\n'); s.close()"
+	@echo ""
+	@echo "--- シリアルログ (curl) ---"
+	@cat $(BUILD)/serial_curl.log 2>/dev/null | tail -40
+	@rm -f /tmp/cosmo_qemu_mon.sock
+
 # brew install用HTTPサーバ (別端末で実行)
 # rootfs/packages/ のバイナリをゲストから HTTP GET で取得可能にする
 serve:

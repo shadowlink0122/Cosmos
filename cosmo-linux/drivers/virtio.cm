@@ -61,8 +61,8 @@ export const ulong VRING_DESC_F_INDIRECT = 4;
 // データバッファ: 0xB20000〜
 // ============================================================
 
-export const ulong VQ_TX_BASE   = 0xB00000;
-export const ulong VQ_RX_BASE   = 0xB10000;
+export const ulong VQ_TX_BASE   = 0x1710000;  // (ELFバッファ/RamFS/9p後)
+export const ulong VQ_RX_BASE   = 0x1720000;  // (ELFバッファ/RamFS/9p後)
 export const ulong VQ_DATA_BASE = 0xB20000;
 
 // 1バッファ = 2048バイト (Ethernetフレーム + virtio-netヘッダ十分)

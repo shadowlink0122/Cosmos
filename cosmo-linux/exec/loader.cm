@@ -123,6 +123,8 @@ impl Loader {
             }
         } else {
             // 9pフォールバック
+            w->puts("[exec] Loading from 9p: " as void*);
+            w->println(fname_buf as void*);
             ulong bytes_9p = NinePfs::read_file(fname_buf, ELF_TMP_BUF, ELF_MAX_SIZE);
             if (bytes_9p == 0) {
                 pr_err(w, "exec: file not found (ramfs/9p)" as void*);
@@ -130,19 +132,30 @@ impl Loader {
             }
             fsize = bytes_9p;
             loaded_from_9p = 1;
+            w->puts("[exec] 9p read complete: " as void*);
+            print_dec(w, fsize);
+            w->println(" bytes" as void*);
         }
 
         // ELFヘッダ検証
+        w->println("[exec] Validating ELF header..." as void*);
         if (Elf::validate(ELF_TMP_BUF) == 0) {
             pr_err(w, "exec: invalid ELF64 binary" as void*);
             return 0 - 1;
         }
+        w->println("[exec] ELF header valid" as void*);
 
         // エントリポイント取得
         ulong entry = Elf::get_entry(ELF_TMP_BUF);
         ulong phoff = Elf::get_phoff(ELF_TMP_BUF);
         ulong phentsize = Elf::get_phentsize(ELF_TMP_BUF);
         ulong phnum = Elf::get_phnum(ELF_TMP_BUF);
+
+        w->puts("[exec] entry=0x" as void*);
+        w->print_hex(entry);
+        w->puts(" phnum=" as void*);
+        print_dec(w, phnum);
+        w->println("" as void*);
 
         // セグメント末尾を追跡（brk初期値用）
         ulong data_end = 0;
@@ -152,6 +165,7 @@ impl Loader {
         if (Elf::is_pie(ELF_TMP_BUF) != 0) {
             load_bias = PIE_LOAD_BASE;
             entry = entry + load_bias;
+            w->println("[exec] PIE detected, applying load bias" as void*);
         }
 
 

@@ -82,6 +82,11 @@ impl NinePfs {
     static ulong read_file(ulong path, ulong buf, ulong max_size) {
         if (Virtio9p::is_ready() == 0) { return 0; }
 
+        // デバッグログ
+        SerialPort dbg(COM1);
+        dbg.puts("[9pfs] read_file: path=" as void*);
+        dbg.println(path as void*);
+
         // 1. walk: ルートFID(0) → ワークFID(1)
         ulong rel_path = path;
         ulong rch = Mem::read_byte(rel_path);
@@ -89,15 +94,23 @@ impl NinePfs {
         // 空パスの場合はルート（ディレクトリなので0を返す）
         if (rch == 0) { return 0; }
 
+        dbg.println("[9pfs] walk..." as void*);
         ulong walk_ok = Virtio9p::walk(0, P9FS_WORK_FID, rel_path);
-        if (walk_ok == 0) { return 0; }
+        if (walk_ok == 0) {
+            dbg.println("[9pfs] walk failed" as void*);
+            return 0;
+        }
+        dbg.println("[9pfs] walk ok" as void*);
 
         // 2. lopen: 読み取り専用でオープン
+        dbg.println("[9pfs] lopen..." as void*);
         ulong open_ok = Virtio9p::lopen(P9FS_WORK_FID, 0);  // O_RDONLY
         if (open_ok == 0) {
             Virtio9p::clunk(P9FS_WORK_FID);
+            dbg.println("[9pfs] lopen failed" as void*);
             return 0;
         }
+        dbg.println("[9pfs] lopen ok" as void*);
 
         // 3. read: ファイル内容を読み取り
         ulong total = 0;
@@ -109,6 +122,10 @@ impl NinePfs {
             total = total + chunk;
             offset = offset + chunk;
         }
+
+        dbg.puts("[9pfs] read complete: " as void*);
+        print_dec(&dbg, total);
+        dbg.println(" bytes" as void*);
 
         // 4. clunk: FIDを解放
         Virtio9p::clunk(P9FS_WORK_FID);
