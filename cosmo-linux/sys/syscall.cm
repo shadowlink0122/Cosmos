@@ -84,9 +84,16 @@ impl Syscall {
 
     /// sys_write: fdに書き込み
     static long write(ulong fd, ulong buf_addr, ulong count) {
-        // fd 1 (stdout) と fd 2 (stderr) → シリアル + VGA に出力
+        // fd 1 (stdout) と fd 2 (stderr) → シリアル出力
+        // ユーザープロセスの場合はVGA画面にも出力
         if (fd == 1 || fd == 2) {
             SerialPort serial(COM1);
+            Process* cur = Sched::current();
+            ulong cur_addr = cur as ulong;
+            ulong is_user = 0;
+            if (cur_addr != 0) {
+                is_user = cur->is_user;
+            }
             ulong i = 0;
             while (i < count) {
                 ulong ch = 0;
@@ -98,11 +105,13 @@ impl Syscall {
                     movq %rax, ${=r:ch}
                 `);
                 serial.putc(ch as utiny);
-                // VGA画面にも出力
-                if (ch == 10) {
-                    Shell::putc(10);
-                } else if (ch >= 32 && ch < 127) {
-                    Shell::putc(ch);
+                // ユーザープロセスの場合のみVGA画面にも出力
+                if (is_user != 0) {
+                    if (ch == 10) {
+                        Shell::putc(10);
+                    } else if (ch >= 32 && ch < 127) {
+                        Shell::putc(ch);
+                    }
                 }
                 i = i + 1;
             }

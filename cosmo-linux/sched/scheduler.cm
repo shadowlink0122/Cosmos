@@ -217,12 +217,21 @@ impl Sched {
         // 同じプロセスなら何もしない
         if (next_pid == cur_pid) { return; }
 
+        // IDLE_PIDが選ばれた場合、アイドルプロセス(idx=0)に戻る
+        if (next_pid == IDLE_PID) {
+            sched->current_idx = 0;
+            sched->current_pid = IDLE_PID;
+        }
+
         // 次のプロセスのポインタを取得
         ulong next_proc_addr = sched->get_proc(sched->current_idx);
         if (next_proc_addr == 0) { return; }
 
         Process* prev = Sched::current();
         Process* next = next_proc_addr as Process*;
+
+        // ZOMBIE/BLOCKEDプロセスへのスイッチを防止
+        if (next->is_runnable() == 0) { return; }
 
         // プロセス状態を更新
         if (prev->state == TASK_RUNNING) {
