@@ -193,7 +193,7 @@ void init_scancode_table() {
     kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x24, 74);   // 'J'
     kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x25, 75);   // 'K'
     kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x26, 76);   // 'L'
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x27, 43);   // '+' (JIS: Shift+;)
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x27, 58);   // ':' (US layout: Shift+;)
     kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x28, 42);   // '*' (JIS: Shift+:)
     kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2B, 125);  // '}' (JIS: Shift+])
 

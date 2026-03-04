@@ -117,6 +117,20 @@ export const ulong SYS_SCHED_GETAFFINITY = 204;
 export const ulong SYS_SCHED_YIELD    = 24;
 export const ulong SYS_GETTIMEOFDAY   = 96;
 
+// --- epoll ---
+export const ulong SYS_EPOLL_CREATE    = 213;
+export const ulong SYS_EPOLL_CTL       = 233;
+export const ulong SYS_EPOLL_WAIT      = 232;
+export const ulong SYS_EPOLL_PWAIT     = 281;
+export const ulong SYS_EPOLL_CREATE1   = 291;
+export const ulong SYS_EPOLL_PWAIT2    = 290;
+
+// --- ソケット追加 ---
+export const ulong SYS_GETSOCKNAME    = 51;
+export const ulong SYS_GETPEERNAME    = 52;
+export const ulong SYS_SOCKETPAIR     = 53;
+export const ulong SYS_SHUTDOWN       = 48;
+
 /// 最大syscall番号
 export const ulong NR_SYSCALLS = 512;
 

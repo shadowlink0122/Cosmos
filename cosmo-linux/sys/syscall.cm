@@ -651,6 +651,54 @@ ulong arg3, ulong arg4, ulong arg5) {
     if (nr == SYS_GETSOCKOPT) {
         return SyscallNet::do_getsockopt(arg0, arg1, arg2, arg3, arg4);
     }
+    // getsockname / getpeername / shutdown / socketpair
+    if (nr == SYS_GETSOCKNAME) {
+        // stub: 最小限のsockaddr_inを返す
+        if (arg1 != 0 && arg2 != 0) {
+            ulong* len_ptr = arg2 as ulong*;
+            // AF_INET (2) + port 0 + addr 0.0.0.0
+            Mem::write_byte(arg1, 2);      // sin_family low
+            Mem::write_byte(arg1 + 1, 0);  // sin_family high
+            Mem::write_byte(arg1 + 2, 0);  // port high
+            Mem::write_byte(arg1 + 3, 0);  // port low
+            ulong k = 4;
+            while (k < 16) {
+                Mem::write_byte(arg1 + k, 0);
+                k = k + 1;
+            }
+            *len_ptr = 16;
+        }
+        return 0;
+    }
+    if (nr == SYS_GETPEERNAME) {
+        return 0 - ENOTCONN;
+    }
+    if (nr == SYS_SHUTDOWN) {
+        return 0;  // stub: 成功
+    }
+    if (nr == SYS_SOCKETPAIR) {
+        return 0 - EOPNOTSUPP;
+    }
+
+    // --- epoll ---
+    if (nr == SYS_EPOLL_CREATE || nr == SYS_EPOLL_CREATE1) {
+        // epollインスタンス作成 → FDを返す (実際には使わないのでダミーFD)
+        Fd fd = FdTable::alloc(0, 0, FS_EPOLL);
+        if (fd < 0) { return 0 - EMFILE; }
+        return fd;
+    }
+    if (nr == SYS_EPOLL_CTL) {
+        // epoll_ctl: 常に成功
+        return 0;
+    }
+    if (nr == SYS_EPOLL_WAIT || nr == SYS_EPOLL_PWAIT || nr == SYS_EPOLL_PWAIT2) {
+        // epoll_wait: イベント0個を返す (タイムアウト)
+        return 0;
+    }
+    if (nr == SYS_POLL) {
+        // poll: イベント0個を返す (タイムアウト)
+        return 0;
+    }
 
     // --- ユーザー/グループ ---
     if (nr == SYS_GETUID) {

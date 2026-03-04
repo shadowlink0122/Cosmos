@@ -16,7 +16,7 @@ import ./tcp;
 // ============================================================
 
 const ulong MAX_SOCKETS = 16;
-const ulong SOCKET_TABLE_BASE = 0xA40000;
+const ulong SOCKET_TABLE_BASE = 0x1900000;  // 25MB地点 (High Mem)
 const ulong SOCKET_ENTRY_SIZE = 112;
 
 // フィールドオフセット
@@ -36,7 +36,7 @@ const ulong SOCK_BACKLOG    = 96;
 const ulong SOCK_FD         = 104;
 
 // 受信バッファ領域
-const ulong SOCK_RECV_BASE = 0xA50000;
+const ulong SOCK_RECV_BASE = 0x1910000;   // 25MB+64KB地点
 const ulong SOCK_RECV_SLOT = 4096;
 
 // ============================================================

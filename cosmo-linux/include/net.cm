@@ -78,8 +78,9 @@ export const ulong TCP_CLOSING     = 8;
 export const ulong TCP_LAST_ACK    = 9;
 export const ulong TCP_TIME_WAIT   = 10;
 
-// FS Type (ソケット用)
+// FS Type (ソケット/epoll用)
 export const ulong FS_SOCKET = 4;
+export const ulong FS_EPOLL  = 5;
 
 // ============================================================
 // ローカルアドレス定数
@@ -106,7 +107,7 @@ export const ulong GATEWAY_MAC = 0x52550A000202;
 // ============================================================
 
 /// パケットバッファプール基底アドレス
-export const ulong NET_BUF_BASE = 0xA00000;
+export const ulong NET_BUF_BASE = 0x1920000;   // 25MB+128KB地点 (High Mem)
 
 /// パケットバッファ1つの最大サイズ
 export const ulong NET_BUF_SIZE = 2048;
