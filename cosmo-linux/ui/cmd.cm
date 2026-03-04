@@ -41,6 +41,7 @@ import ../net/arp;
 import ../net/dns;
 import ../drivers/virtio_9p;
 import ../fs/ninepfs;
+import ../net/curl;
 import ../pkg/gen;
 
 /// Cmd — シェルコマンド群
@@ -56,7 +57,7 @@ impl Cmd {
         Shell::writeln("  ls cat touch write cp mv rm mkdir" as void*);
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
         Shell::writeln("  echo cd pwd env export history kill" as void*);
-        Shell::writeln("  vmstat exec test ping  cmd1 | cmd2  Tab=complete" as void*);
+        Shell::writeln("  vmstat exec test ping curl  cmd1 | cmd2  Tab=complete" as void*);
         Shell::writeln("  gen install/list/search/run" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
@@ -1674,6 +1675,11 @@ impl Cmd {
         if (startswith(CMD_BUF_ADDR as void*, "ping " as void*) != 0) {
             ulong arg = Cmd::arg(CMD_BUF_ADDR);
             Cmd::ping(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "curl " as void*) != 0) {
+            ulong arg = Cmd::arg2(CMD_BUF_ADDR);
+            Curl::get(arg);
             return;
         }
         if (streq(CMD_BUF_ADDR as void*, "test" as void*) != 0) {

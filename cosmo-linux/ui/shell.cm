@@ -84,6 +84,7 @@ ulong shell_fill_cmd_list(ulong buf) {
     cmd_entry(buf, n, "exec" as ulong);     n = n + 1;
     cmd_entry(buf, n, "test" as ulong);     n = n + 1;
     cmd_entry(buf, n, "ping" as ulong);     n = n + 1;
+    cmd_entry(buf, n, "curl" as ulong);     n = n + 1;
     cmd_entry(buf, n, "hostls" as ulong);   n = n + 1;
     cmd_entry(buf, n, "hostcat" as ulong);  n = n + 1;
     cmd_entry(buf, n, "gen" as ulong);      n = n + 1;
