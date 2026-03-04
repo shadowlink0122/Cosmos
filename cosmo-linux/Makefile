@@ -132,6 +132,35 @@ serve:
 	@lsof -ti :8080 | xargs kill 2>/dev/null || true
 	cd rootfs && python3 -m http.server 8080
 
+# Cmプログラムをクロスコンパイルしてrootfs/packages/に配置
+# 使い方: make cm-build SRC=programs/hello.cm
+# 9p共有でCosmo Linuxから直接実行可能
+cm-build:
+	@if [ -z "$(SRC)" ]; then \
+		echo "Usage: make cm-build SRC=<file.cm>"; \
+		echo "  例: make cm-build SRC=programs/hello.cm"; \
+		exit 1; \
+	fi
+	@mkdir -p $(BUILD) rootfs/packages
+	@NAME=$$(basename $(SRC) .cm); \
+	echo "[CM]   $(SRC) → $$NAME (cosmo-linux)"; \
+	$(CM) compile --target=baremetal-x86 -o $(BUILD)/$$NAME.o $(SRC) && \
+	$(LD) -T linker-user.ld -nostdlib -static -z noexecstack -o rootfs/packages/$$NAME $(BUILD)/$$NAME.o && \
+	echo "✓ rootfs/packages/$$NAME ($$(wc -c < rootfs/packages/$$NAME | tr -d ' ')B)"
+
+# programs/*.cm を一括ビルド
+cm-build-all:
+	@mkdir -p $(BUILD) rootfs/packages
+	@for src in programs/*.cm; do \
+		[ -f "$$src" ] || continue; \
+		NAME=$$(basename $$src .cm); \
+		echo "[CM]   $$src → $$NAME"; \
+		$(CM) compile --target=baremetal-x86 -o $(BUILD)/$$NAME.o $$src && \
+		$(LD) -T linker-user.ld -nostdlib -static -z noexecstack -o rootfs/packages/$$NAME $(BUILD)/$$NAME.o && \
+		echo "✓ rootfs/packages/$$NAME"; \
+	done
+	@echo "✓ 全プログラムビルド完了"
+
 test: $(TEST_ELF)
 	@echo "=== Cosmo Linux テスト ==="
 	@rm -f $(BUILD)/serial.log
