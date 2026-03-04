@@ -5,10 +5,11 @@
 // 9pfs経由でRamFSにインストール（コピー）し、exec可能にする。
 //
 // コマンド:
-//   gen install <pkg>  — パッケージをRamFSにコピー
-//   gen list           — インストール済みパッケージ一覧
-//   gen search         — 利用可能なパッケージ検索（ホスト側）
-//   gen run <pkg>      — パッケージを実行
+//   gen install <pkg>    — パッケージをRamFSにコピー
+//   gen uninstall <pkg>  — パッケージをRamFSから削除
+//   gen list             — インストール済みパッケージ一覧
+//   gen search           — 利用可能なパッケージ検索（ホスト側）
+//   gen run <pkg>        — パッケージを実行
 
 import ../include/types;
 import ../include/vfs;
@@ -183,6 +184,37 @@ impl Gen {
         Shell::set_color(7, 0);
         Shell::write("    Run with: exec " as void*);
         Shell::writeln(name_addr as void*);
+    }
+
+    /// gen uninstall <pkg> — パッケージをRamFSから削除
+    static void uninstall(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: gen uninstall <package>" as void*);
+            return;
+        }
+
+        // インストール済みか確認
+        Ino existing = RamFs::lookup(name_addr as void*);
+        if (existing == 0) {
+            Shell::write("gen: '" as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln("' is not installed" as void*);
+            return;
+        }
+
+        // RamFSからファイル削除
+        long result = RamFs::unlink(name_addr as void*);
+        if (result == 0) {
+            Shell::set_color(10, 0);
+            Shell::write("==> " as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln(" uninstalled successfully" as void*);
+            Shell::set_color(7, 0);
+        } else {
+            Shell::write("gen: failed to uninstall '" as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln("'" as void*);
+        }
     }
 
     /// gen list — インストール済みパッケージ一覧
@@ -366,11 +398,12 @@ impl Gen {
         Shell::set_color(7, 0);
         Shell::writeln("" as void*);
         Shell::writeln("Commands:" as void*);
-        Shell::writeln("  gen install <pkg>   Install a package from host" as void*);
-        Shell::writeln("  gen list            List installed packages" as void*);
-        Shell::writeln("  gen search          Search available packages" as void*);
-        Shell::writeln("  gen run <pkg>       Run an installed package" as void*);
-        Shell::writeln("  gen help            Show this help" as void*);
+        Shell::writeln("  gen install <pkg>     Install a package from host" as void*);
+        Shell::writeln("  gen uninstall <pkg>   Uninstall a package" as void*);
+        Shell::writeln("  gen list              List installed packages" as void*);
+        Shell::writeln("  gen search            Search available packages" as void*);
+        Shell::writeln("  gen run <pkg>         Run an installed package" as void*);
+        Shell::writeln("  gen help              Show this help" as void*);
         Shell::writeln("" as void*);
         Shell::writeln("Packages are loaded from host rootfs/packages/" as void*);
         Shell::writeln("" as void*);

@@ -1702,6 +1702,11 @@ impl Cmd {
             Gen::install(arg);
             return;
         }
+        if (startswith(CMD_BUF_ADDR as void*, "gen uninstall " as void*) != 0) {
+            ulong arg = Cmd::arg2(CMD_BUF_ADDR);
+            Gen::uninstall(arg);
+            return;
+        }
         if (startswith(CMD_BUF_ADDR as void*, "gen run " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
             Gen::run(arg);
