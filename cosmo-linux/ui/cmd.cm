@@ -825,7 +825,12 @@ impl Cmd {
         }
         SerialPort serial(COM1);
         Pid pid = Loader::exec(arg_addr as void*, &serial);
-        if (pid < 0) {
+        if (pid >= 0) {
+            // フォアグラウンド待機: 子プロセス完了まで待つ
+            while (Sched::is_alive(pid) != 0) {
+                __asm__(`sti; hlt`);
+            }
+        } else {
             Shell::writeln("exec: failed to load ELF" as void*);
         }
     }
@@ -1765,7 +1770,10 @@ impl Cmd {
             SerialPort serial(COM1);
             Pid pid = Loader::exec(exec_name as void*, &serial);
             if (pid >= 0) {
-                // 実行開始 — シェルに自動復帰
+                // フォアグラウンド待機: 子プロセス完了まで待つ
+                while (Sched::is_alive(pid) != 0) {
+                    __asm__(`sti; hlt`);
+                }
             } else {
                 Shell::write(exec_name as void*);
                 Shell::writeln(": exec format error" as void*);
