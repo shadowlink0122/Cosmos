@@ -197,11 +197,18 @@ impl Loader {
                     phdr_addr = p_vaddr + phoff;
                 }
 
-                // ページマッピング
+                // ページマッピング（既存マッピングがあれば解放してから再マッピング）
                 ulong page_start = p_vaddr & ~0xFFF;
                 ulong page_end = (p_vaddr + p_memsz + 0xFFF) & ~0xFFF;
                 ulong page = page_start;
                 while (page < page_end) {
+                    // 既存マッピングを解放 (flush_old_exec相当)
+                    PhysAddr old_phys = pt.translate(page);
+                    if (old_phys != 0) {
+                        pmm->free_pages(old_phys, 0);
+                        pt.unmap_page(page);
+                    }
+                    // 新規ページ割当
                     PhysAddr phys_page = pmm->alloc_pages(0);
                     if (phys_page != 0) {
                         memzero(phys_page as void*, PAGE_SIZE);
