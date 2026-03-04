@@ -242,21 +242,10 @@ impl Kbd {
 
         // シリアルRXフォールバック (COM1: 0x3F8)
         // LSR (Line Status Register) bit0 = data ready
-        ulong lsr = 0;
-        __asm__(`
-            movw $$0x3FD, %dx;
-            inb %dx, %al;
-            movzbq %al, %rax;
-            movq %rax, ${=r:lsr}
-        `);
+        // inb で直接読み取り（レジスタ干渉回避のため専用変数で受ける）
+        ulong lsr = inb(0x3FD);
         if ((lsr & 1) != 0) {
-            ulong ch = 0;
-            __asm__(`
-                movw $$0x3F8, %dx;
-                inb %dx, %al;
-                movzbq %al, %rax;
-                movq %rax, ${=r:ch}
-            `);
+            ulong ch = inb(0x3F8);
             // CR(0x0D) → LF(0x0A) 変換
             if (ch == 13) { ch = 10; }
             return ch;
