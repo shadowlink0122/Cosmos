@@ -22,11 +22,17 @@ void wb(ulong a, ulong v) {
 }
 
 // メモリレイアウト（0x1000000 = 16MBから配置: ELF vaddr 0x400000との衝突回避）
-const PhysAddr INO_BASE  = 0x1000000;
-const PhysAddr DIR_BASE  = 0x1002000;
-const PhysAddr NAME_BASE = 0x1004000;
-const PhysAddr NEXT_INO  = 0x1005000;
-const PhysAddr DIR_CNT   = 0x1005008;
+const PhysAddr INO_BASE  = 0x1000000;   // inode配列 (256 * 56 = 14KB)
+const PhysAddr DIR_BASE  = 0x1004000;   // ディレクトリ配列 (64 * 32 = 2KB)
+const PhysAddr NAME_BASE = 0x1005000;   // ファイル名領域 (64 * 32 = 2KB)
+const PhysAddr NEXT_INO  = 0x1006000;   // 次のinode番号
+const PhysAddr DIR_CNT   = 0x1006008;   // ディレクトリエントリ数
+
+// ファイルデータバッファプール (2MB領域)
+// 最大64ファイル × 64KB/ファイル = 4MB → 2MBで十分(実際は小さいファイルが多い)
+const PhysAddr DATA_POOL_BASE = 0x1100000;   // 17MB地点
+const PhysAddr DATA_POOL_NEXT = 0x1006010;   // 次の割り当てオフセット
+const ulong    DATA_POOL_SIZE = 0x200000;     // 2MB
 
 // 内部ヘルパー
 ulong find_ino(Ino ino) {
@@ -44,6 +50,17 @@ ulong find_ino(Ino ino) {
 }
 
 Ino alloc_ino(ulong mode, ulong data) {
+    // data == 0 の場合、データプールから割り当て
+    if (data == 0 && (mode & S_IFMT) == S_IFREG) {
+        ulong* pool_next = DATA_POOL_NEXT as ulong*;
+        ulong offset = *pool_next;
+        if (offset + MAX_FILE_SIZE <= DATA_POOL_SIZE) {
+            data = DATA_POOL_BASE + offset;
+            *pool_next = offset + MAX_FILE_SIZE;
+            // バッファをゼロクリア
+            memzero(data as void*, MAX_FILE_SIZE);
+        }
+    }
     ulong i = 0;
     while (i < MAX_INODES) {
         ulong o = i * 56;
@@ -85,11 +102,14 @@ export struct RamFs {}
 impl RamFs {
     /// VFS初期化
     static void setup(SerialPort* w) {
-        memzero(INO_BASE as void*, 7168);
-        memzero(DIR_BASE as void*, 2048);
-        memzero(NAME_BASE as void*, 2048);
+        memzero(INO_BASE as void*, MAX_INODES * 56);
+        memzero(DIR_BASE as void*, MAX_DIR_ENTRIES * 32);
+        memzero(NAME_BASE as void*, MAX_DIR_ENTRIES * MAX_NAME_LEN);
         ulong* ni = NEXT_INO as ulong*; *ni = 2;
         ulong* dc = DIR_CNT as ulong*;  *dc = 0;
+        // データプール初期化
+        ulong* pool_next = DATA_POOL_NEXT as ulong*;
+        *pool_next = 0;
         // ルートinode
         ulong* p0 = INO_BASE as ulong*;             *p0 = 1;
         ulong* p1 = (INO_BASE + 8) as ulong*;       *p1 = S_IFDIR | 0x1FF;
@@ -98,7 +118,16 @@ impl RamFs {
         ulong* p4 = (INO_BASE + 32) as ulong*;      *p4 = 0;
         ulong* p5 = (INO_BASE + 40) as ulong*;      *p5 = FS_RAMFS;
         ulong* p6 = (INO_BASE + 48) as ulong*;      *p6 = 1;
-        pr_info(w, "VFS initialized (ramfs)" as void*);
+
+        // よく使うディレクトリを事前作成
+        RamFs::mkdir("tmp" as void*);
+        RamFs::mkdir("usr" as void*);
+        RamFs::mkdir("usr/local" as void*);
+        RamFs::mkdir("usr/local/bin" as void*);
+        RamFs::mkdir("proc" as void*);
+        RamFs::mkdir("dev" as void*);
+
+        pr_info(w, "VFS initialized (ramfs + /tmp + data pool)" as void*);
     }
 
     /// 名前からinode検索
@@ -236,6 +265,14 @@ impl RamFs {
         if (io == 0xFFFFFFFFFFFFFFFF) { return 0; }
         ulong* sp = (INO_BASE + io + 16) as ulong*;
         return *sp;
+    }
+
+    /// ファイルモード取得 (S_IFREG, S_IFDIR等のビットマスク含む)
+    static ulong get_mode(Ino ino) {
+        ulong io = find_ino(ino);
+        if (io == 0xFFFFFFFFFFFFFFFF) { return 0; }
+        ulong* mp = (INO_BASE + io + 8) as ulong*;
+        return *mp;
     }
 
     /// ファイル削除（inode解放 + direntry削除）

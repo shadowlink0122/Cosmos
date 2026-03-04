@@ -144,7 +144,15 @@ impl SyscallFs {
             return 0 - ENOENT;
         }
         ulong fsize = RamFs::file_size(ino);
-        SyscallFs::fill_stat(stat_addr, ino, 0x81A4, fsize);
+
+        // ファイルタイプ判定: inodeのmodeから取得
+        ulong stored_mode = RamFs::get_mode(ino);
+        ulong file_mode = 0x81A4;  // デフォルト: 通常ファイル (0100644)
+        if ((stored_mode & S_IFMT) == S_IFDIR) {
+            file_mode = 0x41ED;  // ディレクトリ (0040755)
+            fsize = 4096;
+        }
+        SyscallFs::fill_stat(stat_addr, ino, file_mode, fsize);
         return 0;
     }
 
