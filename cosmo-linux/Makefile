@@ -129,6 +129,7 @@ serve:
 	@echo "  http://localhost:8080/packages/<name> でパッケージ配信"
 	@echo "  ゲストから: brew install <name>"
 	@echo ""
+	@lsof -ti :8080 | xargs kill 2>/dev/null || true
 	cd rootfs && python3 -m http.server 8080
 
 test: $(TEST_ELF)
