@@ -43,6 +43,7 @@ import ../drivers/virtio_9p;
 import ../fs/ninepfs;
 import ../net/curl;
 import ../pkg/gen;
+import ../pkg/brew;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -59,6 +60,7 @@ impl Cmd {
         Shell::writeln("  echo cd pwd env export history kill" as void*);
         Shell::writeln("  vmstat exec test ping curl  cmd1 | cmd2  Tab=complete" as void*);
         Shell::writeln("  gen install/list/search/run" as void*);
+        Shell::writeln("  brew install/uninstall/list/help" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
 
@@ -1716,6 +1718,26 @@ impl Cmd {
         if (startswith(CMD_BUF_ADDR as void*, "gen run " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
             Gen::run(arg);
+            return;
+        }
+        // brew コマンド
+        if (streq(CMD_BUF_ADDR as void*, "brew" as void*) != 0 ||
+            streq(CMD_BUF_ADDR as void*, "brew help" as void*) != 0) {
+            Brew::help();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "brew list" as void*) != 0) {
+            Brew::list();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "brew install " as void*) != 0) {
+            ulong arg = Cmd::arg2(CMD_BUF_ADDR);
+            Brew::install(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "brew uninstall " as void*) != 0) {
+            ulong arg = Cmd::arg2(CMD_BUF_ADDR);
+            Brew::uninstall(arg);
             return;
         }
         Shell::write("Unknown command: " as void*);

@@ -1,0 +1,741 @@
+//! platform: baremetal-x86
+// cosmo-linux::pkg::brew - HTTPパッケージマネージャ
+//
+// ホスト側HTTPサーバからELFバイナリをダウンロードし、
+// RamFSにインストールして実行可能にする。
+//
+// デフォルトサーバ: http://10.0.2.2:8080/packages/ (QEMUホスト)
+//
+// ホスト側セットアップ:
+//   mkdir -p packages && cd packages
+//   # 静的リンクELFバイナリを配置
+//   python3 -m http.server 8080
+//
+// コマンド:
+//   brew install <pkg>     — パッケージをHTTPからダウンロード＆インストール
+//   brew uninstall <pkg>   — パッケージを削除
+//   brew list              — インストール済みパッケージ一覧
+//   brew help              — ヘルプ表示
+
+import ../include/types;
+import ../include/net;
+import ../include/vfs;
+import ../include/page_alloc;
+import ../drivers/virtio_net;
+import ../drivers/serial;
+import ../drivers/pit;
+import ../net/ethernet;
+import ../net/ip;
+import ../net/tcp;
+import ../net/arp;
+import ../net/dns;
+import ../fs/ramfs;
+import ../mm/pmm;
+import ../lib/kstring;
+import ../ui/shell_io;
+import ../ui/shell_const;
+import ../ui/mem;
+
+// ============================================================
+// Brew 定数
+// ============================================================
+
+// パケットバッファ（curl.cmと別領域を使用）
+const ulong BREW_TX_BUF  = 0xA90000;   // 送信バッファ (2KB)
+const ulong BREW_RX_BUF  = 0xA91000;   // 受信バッファ (2KB)
+const ulong BREW_HDR_BUF = 0xA92000;   // HTTPヘッダ受信バッファ (4KB)
+const ulong BREW_NAME_BUF = 0xA93000;  // パッケージ名/パスバッファ (256B)
+const ulong BREW_PORT_BASE = 0xA93100; // エフェメラルポートカウンタ
+
+// デフォルトサーバ設定
+const ulong BREW_SERVER_IP   = 0x0A000202;  // 10.0.2.2 (QEMUホスト)
+const ulong BREW_SERVER_PORT = 8080;
+
+// ============================================================
+// Brew — HTTPパッケージマネージャ
+// ============================================================
+
+export struct Brew {}
+
+impl Brew {
+
+    /// brew install <pkg> — パッケージをHTTPでダウンロード＆インストール
+    static void install(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: brew install <package>" as void*);
+            return;
+        }
+
+        if (VirtioNet::is_ready() == 0) {
+            Shell::writeln("brew: network not available" as void*);
+            return;
+        }
+
+        // インストール済みかチェック
+        Ino existing = RamFs::lookup(name_addr as void*);
+        if (existing != 0) {
+            Shell::write("brew: " as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln(" is already installed" as void*);
+            return;
+        }
+
+        // パス構築: /packages/<name>
+        ulong path_buf = BREW_NAME_BUF;
+        ulong prefix = "/packages/" as ulong;
+        ulong pi = 0;
+        while (pi < 10) {
+            Mem::write_byte(path_buf + pi, Mem::read_byte(prefix + pi));
+            pi = pi + 1;
+        }
+        ulong ni = 0;
+        while (ni < 200) {
+            ulong c = Mem::read_byte(name_addr + ni);
+            Mem::write_byte(path_buf + 10 + ni, c);
+            if (c == 0) { break; }
+            ni = ni + 1;
+        }
+        Mem::write_byte(path_buf + 10 + ni, 0);
+
+        Shell::write("==> Downloading " as void*);
+        Shell::write(name_addr as void*);
+        Shell::writeln("..." as void*);
+
+        // TCP接続
+        ulong local_port = Brew::next_port();
+        ulong remote_ip = BREW_SERVER_IP;
+        ulong remote_port = BREW_SERVER_PORT;
+
+        ulong conn_id = Brew::tcp_connect(remote_ip, remote_port, local_port);
+        if (conn_id == 0xFFFFFFFF) {
+            Shell::writeln("brew: connection failed (is host HTTP server running?)" as void*);
+            Shell::writeln("  Start server: cd packages && python3 -m http.server 8080" as void*);
+            return;
+        }
+
+        // HTTP GETリクエスト構築・送信
+        ulong req_buf = BREW_TX_BUF + 14 + 20 + 20;
+        ulong req_len = Brew::build_get(req_buf, path_buf);
+        ulong sent = Brew::tcp_send_data(conn_id, remote_ip, remote_port,
+                                          local_port, req_buf, req_len);
+        if (sent == 0) {
+            Shell::writeln("brew: failed to send request" as void*);
+            Tcp::close_conn(conn_id);
+            return;
+        }
+
+        // レスポンス受信: ヘッダ→ボディ
+        // まずヘッダ部分を受信してContent-Lengthを取得
+        ulong hdr_buf = BREW_HDR_BUF;
+        ulong hdr_total = 0;
+        ulong body_offset = 0;    // ヘッダ終了位置
+        ulong content_len = 0;
+        ulong status_code = 0;
+        ulong hdr_done = 0;
+        ulong fin_received = 0;
+
+        // データメモリ（後でpmm割り当て）
+        ulong data_base = 0;
+        ulong body_written = 0;
+
+        ulong timeout = PIT::get_ticks() + 500;
+
+        while (PIT::get_ticks() < timeout && fin_received == 0) {
+            ulong rx_len = VirtioNet::recv(BREW_RX_BUF, 1500);
+            if (rx_len > 0) {
+                // Ethernet/IP/TCP判定
+                ulong et_hi = Mem::read_byte(BREW_RX_BUF + 12);
+                ulong et_lo = Mem::read_byte(BREW_RX_BUF + 13);
+                ulong etype = (et_hi << 8) | et_lo;
+
+                if (etype == ETH_TYPE_ARP) {
+                    Arp::handle_packet(BREW_RX_BUF + 14, rx_len - 14);
+                } else if (etype == ETH_TYPE_IP) {
+                    ulong ip_proto = Mem::read_byte(BREW_RX_BUF + 14 + 9);
+                    if (ip_proto == IP_PROTO_TCP) {
+                        ulong ip_ihl = Mem::read_byte(BREW_RX_BUF + 14) & 0x0F;
+                        ulong ip_hdr_len = ip_ihl * 4;
+
+                        TcpHeader tcp_hdr = {
+                            src_port: 0, dst_port: 0,
+                            seq_num: 0, ack_num: 0,
+                            data_offset: 0, flags: 0,
+                            window: 0, checksum: 0, urgent_ptr: 0
+                        };
+                        ulong tcp_hdr_len = Tcp::parse(BREW_RX_BUF + 14 + ip_hdr_len, &tcp_hdr);
+
+                        if (tcp_hdr.dst_port == local_port && tcp_hdr.src_port == remote_port) {
+                            // TCPペイロード長計算
+                            ulong total_ip_hi = Mem::read_byte(BREW_RX_BUF + 14 + 2);
+                            ulong total_ip_lo = Mem::read_byte(BREW_RX_BUF + 14 + 3);
+                            ulong total_ip_len = (total_ip_hi << 8) | total_ip_lo;
+                            ulong payload_len = total_ip_len - ip_hdr_len - tcp_hdr_len;
+                            ulong payload_start = BREW_RX_BUF + 14 + ip_hdr_len + tcp_hdr_len;
+
+                            if (payload_len > 0) {
+                                if (hdr_done == 0) {
+                                    // ヘッダ部分蓄積
+                                    ulong ci = 0;
+                                    while (ci < payload_len && hdr_total < 4096) {
+                                        Mem::write_byte(hdr_buf + hdr_total, Mem::read_byte(payload_start + ci));
+                                        hdr_total = hdr_total + 1;
+                                        ci = ci + 1;
+                                    }
+
+                                    // \r\n\r\n 検索
+                                    body_offset = Brew::find_header_end(hdr_buf, hdr_total);
+                                    if (body_offset > 0) {
+                                        hdr_done = 1;
+                                        status_code = Brew::parse_status(hdr_buf, hdr_total);
+                                        content_len = Brew::parse_content_length(hdr_buf, body_offset);
+
+                                        // ステータスコードチェック
+                                        if (status_code != 200) {
+                                            Shell::write("brew: server returned " as void*);
+                                            Shell::print_dec(status_code);
+                                            Shell::writeln("" as void*);
+                                            if (status_code == 404) {
+                                                Shell::writeln("  Package not found on server" as void*);
+                                            }
+                                            Tcp::close_conn(conn_id);
+                                            return;
+                                        }
+
+                                        // メモリ割り当て
+                                        ulong alloc_size = content_len;
+                                        if (alloc_size == 0) { alloc_size = 1048576; }  // 1MB default
+                                        ulong pages = (alloc_size + PAGE_SIZE - 1) / PAGE_SIZE;
+                                        if (pages == 0) { pages = 1; }
+                                        ulong order = 0;
+                                        ulong p = 1;
+                                        while (p < pages) { order = order + 1; p = p * 2; }
+
+                                        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+                                        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+                                        data_base = pmm->alloc_pages(order);
+                                        if (data_base == 0) {
+                                            Shell::writeln("brew: out of memory" as void*);
+                                            Tcp::close_conn(conn_id);
+                                            return;
+                                        }
+                                        memzero(data_base as void*, p * PAGE_SIZE);
+
+                                        // ヘッダ後の残りデータをコピー
+                                        ulong remaining = hdr_total - body_offset;
+                                        ci = 0;
+                                        while (ci < remaining) {
+                                            Mem::write_byte(data_base + ci,
+                                                            Mem::read_byte(hdr_buf + body_offset + ci));
+                                            ci = ci + 1;
+                                        }
+                                        body_written = remaining;
+
+                                        // 進捗表示
+                                        Shell::putc(46);
+                                    }
+                                } else {
+                                    // ボディデータ → 直接pmmメモリにコピー
+                                    if (data_base != 0) {
+                                        ulong ci = 0;
+                                        while (ci < payload_len) {
+                                            Mem::write_byte(data_base + body_written + ci,
+                                                            Mem::read_byte(payload_start + ci));
+                                            ci = ci + 1;
+                                        }
+                                        body_written = body_written + payload_len;
+                                        Shell::putc(46);
+                                    }
+                                }
+
+                                // ACK送信
+                                ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+                                ulong* recv_next_ptr = (base + 56) as ulong*;
+                                *recv_next_ptr = tcp_hdr.seq_num + payload_len;
+                                ulong* send_next_ptr = (base + 40) as ulong*;
+                                Brew::tcp_send_ack_pkt(remote_ip, remote_port, local_port,
+                                                        *send_next_ptr,
+                                                        tcp_hdr.seq_num + payload_len);
+                            }
+
+                            // FINチェック
+                            if ((tcp_hdr.flags & TCP_FIN) != 0) {
+                                fin_received = 1;
+                                ulong base3 = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+                                ulong* sn = (base3 + 40) as ulong*;
+                                Brew::tcp_send_ack_pkt(remote_ip, remote_port, local_port,
+                                                        *sn, tcp_hdr.seq_num + 1);
+                            }
+
+                            timeout = PIT::get_ticks() + 300;
+                        }
+                    }
+                }
+            }
+            __asm__(`pause`);
+        }
+
+        Tcp::close_conn(conn_id);
+
+        // 結果チェック
+        if (body_written == 0) {
+            Shell::putc(10);
+            Shell::writeln("brew: download failed (empty response)" as void*);
+            return;
+        }
+
+        // RamFSにファイル作成
+        Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1FF, data_base);
+        if (ino == 0) {
+            Shell::putc(10);
+            Shell::writeln("brew: failed to create file" as void*);
+            return;
+        }
+
+        // ファイルサイズ設定
+        ulong actual_size = body_written;
+        if (content_len > 0 && content_len < body_written) {
+            actual_size = content_len;
+        }
+        // RamFSのサイズを直接設定
+        ulong io = 0;
+        ulong fi = 0;
+        while (fi < 128) {
+            ulong o = fi * 56;
+            ulong* u = (0x802000 + o + 48) as ulong*;
+            if (*u != 0) {
+                ulong* p = (0x802000 + o) as ulong*;
+                if (*p == ino as ulong) {
+                    ulong* sp = (0x802000 + o + 16) as ulong*;
+                    *sp = actual_size;
+                    break;
+                }
+            }
+            fi = fi + 1;
+        }
+
+        Shell::putc(10);
+        Shell::set_color(10, 0);
+        Shell::write("==> " as void*);
+        Shell::write(name_addr as void*);
+        Shell::write(" installed (" as void*);
+        Shell::print_dec(actual_size);
+        Shell::writeln(" bytes)" as void*);
+        Shell::set_color(7, 0);
+        Shell::write("    Run with: exec " as void*);
+        Shell::writeln(name_addr as void*);
+    }
+
+    /// brew uninstall <pkg>
+    static void uninstall(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: brew uninstall <package>" as void*);
+            return;
+        }
+        Ino existing = RamFs::lookup(name_addr as void*);
+        if (existing == 0) {
+            Shell::write("brew: '" as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln("' is not installed" as void*);
+            return;
+        }
+        long result = RamFs::unlink(name_addr as void*);
+        if (result == 0) {
+            Shell::set_color(10, 0);
+            Shell::write("==> " as void*);
+            Shell::write(name_addr as void*);
+            Shell::writeln(" uninstalled" as void*);
+            Shell::set_color(7, 0);
+        } else {
+            Shell::writeln("brew: uninstall failed" as void*);
+        }
+    }
+
+    /// brew list
+    static void list() {
+        Shell::set_color(14, 0);
+        Shell::writeln("Installed packages:" as void*);
+        Shell::set_color(7, 0);
+
+        ulong count = RamFs::dir_count();
+        ulong found = 0;
+        ulong i = 0;
+        while (i < count) {
+            ulong name = RamFs::dir_name(i);
+            if (name != 0) {
+                ulong dtype = RamFs::dir_type(i);
+                if (dtype == S_IFREG) {
+                    Ino ino = RamFs::dir_ino(i);
+                    ulong fsize = RamFs::file_size(ino);
+                    if (fsize >= 4) {
+                        ulong buf4 = BREW_HDR_BUF;
+                        RamFs::read(ino, buf4, 0, 4);
+                        ulong b0 = Mem::read_byte(buf4);
+                        ulong b1 = Mem::read_byte(buf4 + 1);
+                        ulong b2 = Mem::read_byte(buf4 + 2);
+                        ulong b3 = Mem::read_byte(buf4 + 3);
+                        if (b0 == 0x7F && b1 == 69 && b2 == 76 && b3 == 70) {
+                            Shell::write("  [*] " as void*);
+                            Shell::set_color(11, 0);
+                            Shell::write(name as void*);
+                            Shell::set_color(7, 0);
+                            Shell::write("  (" as void*);
+                            Shell::print_dec(fsize);
+                            Shell::writeln(" bytes)" as void*);
+                            found = found + 1;
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        if (found == 0) {
+            Shell::writeln("  (no packages)" as void*);
+        }
+    }
+
+    /// brew help
+    static void help() {
+        Shell::set_color(14, 0);
+        Shell::writeln("Cosmo Brew - HTTP Package Manager" as void*);
+        Shell::set_color(7, 0);
+        Shell::writeln("" as void*);
+        Shell::writeln("Commands:" as void*);
+        Shell::writeln("  brew install <pkg>     Download and install" as void*);
+        Shell::writeln("  brew uninstall <pkg>   Remove a package" as void*);
+        Shell::writeln("  brew list              List installed packages" as void*);
+        Shell::writeln("  brew help              Show this help" as void*);
+        Shell::writeln("" as void*);
+        Shell::writeln("Server: http://10.0.2.2:8080/packages/" as void*);
+        Shell::writeln("" as void*);
+        Shell::writeln("Host setup:" as void*);
+        Shell::writeln("  mkdir packages && python3 -m http.server 8080" as void*);
+    }
+
+    // ================================================================
+    // TCP接続 (SYN→SYN+ACK→ACK)
+    // ================================================================
+    static ulong tcp_connect(ulong remote_ip, ulong remote_port, ulong local_port) {
+        long cid = Tcp::create();
+        if (cid < 0) { return 0xFFFFFFFF; }
+        ulong conn_id = cid as ulong;
+
+        Tcp::bind_conn(conn_id, GUEST_IP, local_port);
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* rport_ptr = (base + 16) as ulong*;
+        ulong* raddr_ptr = (base + 32) as ulong*;
+        *rport_ptr = remote_port;
+        *raddr_ptr = remote_ip;
+
+        ulong isn = PIT::get_ticks() * 54321 + 98765;
+        ulong* send_next_ptr = (base + 40) as ulong*;
+        *send_next_ptr = isn;
+
+        // SYN送信
+        Brew::tcp_send_flags(remote_ip, remote_port, local_port, isn, 0, TCP_SYN);
+        Tcp::set_state(conn_id, TCP_SYN_SENT);
+
+        // SYN+ACK待機
+        ulong timeout = PIT::get_ticks() + 300;
+        while (PIT::get_ticks() < timeout) {
+            ulong rx_len = VirtioNet::recv(BREW_RX_BUF, 1500);
+            if (rx_len > 0) {
+                ulong et_hi = Mem::read_byte(BREW_RX_BUF + 12);
+                ulong et_lo = Mem::read_byte(BREW_RX_BUF + 13);
+                ulong etype = (et_hi << 8) | et_lo;
+
+                if (etype == ETH_TYPE_ARP) {
+                    Arp::handle_packet(BREW_RX_BUF + 14, rx_len - 14);
+                } else if (etype == ETH_TYPE_IP) {
+                    ulong ip_proto = Mem::read_byte(BREW_RX_BUF + 14 + 9);
+                    if (ip_proto == IP_PROTO_TCP) {
+                        ulong ip_ihl = Mem::read_byte(BREW_RX_BUF + 14) & 0x0F;
+                        ulong ip_hdr_len = ip_ihl * 4;
+                        TcpHeader tcp_hdr = {
+                            src_port: 0, dst_port: 0,
+                            seq_num: 0, ack_num: 0,
+                            data_offset: 0, flags: 0,
+                            window: 0, checksum: 0, urgent_ptr: 0
+                        };
+                        Tcp::parse(BREW_RX_BUF + 14 + ip_hdr_len, &tcp_hdr);
+
+                        if (tcp_hdr.dst_port == local_port &&
+                            tcp_hdr.src_port == remote_port &&
+                            (tcp_hdr.flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
+                            ulong* recv_next_ptr = (base + 56) as ulong*;
+                            *recv_next_ptr = tcp_hdr.seq_num + 1;
+                            *send_next_ptr = isn + 1;
+                            Brew::tcp_send_flags(remote_ip, remote_port, local_port,
+                                                  isn + 1, tcp_hdr.seq_num + 1, TCP_ACK);
+                            Tcp::set_state(conn_id, TCP_ESTABLISHED);
+                            return conn_id;
+                        }
+                    }
+                }
+            }
+            __asm__(`pause`);
+        }
+        Tcp::close_conn(conn_id);
+        return 0xFFFFFFFF;
+    }
+
+    // ================================================================
+    // TCPフラグパケット送信
+    // ================================================================
+    static void tcp_send_flags(ulong remote_ip, ulong remote_port,
+                                ulong local_port, ulong seq, ulong ack, ulong flags) {
+        ulong buf = BREW_TX_BUF;
+        ulong our_mac = VirtioNet::mac();
+        ulong gw_mac = GATEWAY_MAC;
+
+        // Ethernetヘッダ
+        Mem::write_byte(buf, (gw_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 1, (gw_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 2, (gw_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 3, (gw_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 4, (gw_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 5, gw_mac & 0xFF);
+        Mem::write_byte(buf + 6, (our_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 7, (our_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 8, (our_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 9, (our_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 10, (our_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 11, our_mac & 0xFF);
+        Mem::write_byte(buf + 12, 0x08);
+        Mem::write_byte(buf + 13, 0x00);
+
+        // TCPヘッダ
+        ulong tcp_start = 14 + 20;
+        TcpHeader tcp_hdr = {
+            src_port: local_port, dst_port: remote_port,
+            seq_num: seq, ack_num: ack,
+            data_offset: 5, flags: flags,
+            window: 65535, checksum: 0, urgent_ptr: 0
+        };
+        ulong tcp_len = Tcp::build(buf + tcp_start, &tcp_hdr);
+
+        // TCPチェックサム
+        ulong cksum = Brew::tcp_checksum(GUEST_IP, remote_ip, buf + tcp_start, tcp_len);
+        Mem::write_byte(buf + tcp_start + 16, (cksum >> 8) & 0xFF);
+        Mem::write_byte(buf + tcp_start + 17, cksum & 0xFF);
+
+        // IPヘッダ
+        IpHeader ip_hdr = {
+            version: 4, ihl: 5, tos: 0,
+            total_len: 20 + tcp_len,
+            id: 0, flags: 2, frag_off: 0,
+            ttl: 64, protocol: IP_PROTO_TCP,
+            checksum: 0, src_addr: GUEST_IP, dst_addr: remote_ip
+        };
+        Ip::build(buf + 14, &ip_hdr);
+
+        VirtioNet::send(buf, 14 + 20 + tcp_len);
+    }
+
+    // ================================================================
+    // TCP ACKパケット送信
+    // ================================================================
+    static void tcp_send_ack_pkt(ulong remote_ip, ulong remote_port,
+                                  ulong local_port, ulong seq, ulong ack) {
+        Brew::tcp_send_flags(remote_ip, remote_port, local_port, seq, ack, TCP_ACK);
+    }
+
+    // ================================================================
+    // TCPデータ送信
+    // ================================================================
+    static ulong tcp_send_data(ulong conn_id, ulong remote_ip,
+                                ulong remote_port, ulong local_port,
+                                ulong data, ulong data_len) {
+        ulong buf = BREW_TX_BUF;
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* send_next_ptr = (base + 40) as ulong*;
+        ulong* recv_next_ptr = (base + 56) as ulong*;
+        ulong seq = *send_next_ptr;
+        ulong ack_val = *recv_next_ptr;
+
+        ulong our_mac = VirtioNet::mac();
+        ulong gw_mac = GATEWAY_MAC;
+
+        Mem::write_byte(buf, (gw_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 1, (gw_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 2, (gw_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 3, (gw_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 4, (gw_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 5, gw_mac & 0xFF);
+        Mem::write_byte(buf + 6, (our_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 7, (our_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 8, (our_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 9, (our_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 10, (our_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 11, our_mac & 0xFF);
+        Mem::write_byte(buf + 12, 0x08);
+        Mem::write_byte(buf + 13, 0x00);
+
+        ulong tcp_start = 14 + 20;
+        TcpHeader tcp_hdr = {
+            src_port: local_port, dst_port: remote_port,
+            seq_num: seq, ack_num: ack_val,
+            data_offset: 5, flags: TCP_ACK | TCP_PSH,
+            window: 65535, checksum: 0, urgent_ptr: 0
+        };
+        ulong tcp_hdr_len = Tcp::build(buf + tcp_start, &tcp_hdr);
+
+        ulong di = 0;
+        while (di < data_len) {
+            Mem::write_byte(buf + tcp_start + tcp_hdr_len + di, Mem::read_byte(data + di));
+            di = di + 1;
+        }
+
+        ulong tcp_total = tcp_hdr_len + data_len;
+        ulong cksum = Brew::tcp_checksum(GUEST_IP, remote_ip, buf + tcp_start, tcp_total);
+        Mem::write_byte(buf + tcp_start + 16, (cksum >> 8) & 0xFF);
+        Mem::write_byte(buf + tcp_start + 17, cksum & 0xFF);
+
+        IpHeader ip_hdr = {
+            version: 4, ihl: 5, tos: 0,
+            total_len: 20 + tcp_total,
+            id: 0, flags: 2, frag_off: 0,
+            ttl: 64, protocol: IP_PROTO_TCP,
+            checksum: 0, src_addr: GUEST_IP, dst_addr: remote_ip
+        };
+        Ip::build(buf + 14, &ip_hdr);
+
+        *send_next_ptr = seq + data_len;
+        VirtioNet::send(buf, 14 + 20 + tcp_total);
+        return data_len;
+    }
+
+    // ================================================================
+    // HTTP GETリクエスト構築
+    // ================================================================
+    static ulong build_get(ulong buf, ulong path) {
+        ulong pos = 0;
+        pos = Brew::wstr(buf, pos, "GET " as ulong, 4);
+        ulong pi = 0;
+        while (true) {
+            ulong ch = Mem::read_byte(path + pi);
+            if (ch == 0) { break; }
+            Mem::write_byte(buf + pos, ch);
+            pos = pos + 1;
+            pi = pi + 1;
+        }
+        pos = Brew::wstr(buf, pos, " HTTP/1.1\r\nHost: 10.0.2.2:8080\r\nConnection: close\r\n\r\n" as ulong, 52);
+        return pos;
+    }
+
+    // ================================================================
+    // HTTPヘッダ終端検索 (\r\n\r\n)
+    // ================================================================
+    static ulong find_header_end(ulong data, ulong len) {
+        ulong i = 0;
+        while (i + 3 < len) {
+            if (Mem::read_byte(data + i) == 13 &&
+                Mem::read_byte(data + i + 1) == 10 &&
+                Mem::read_byte(data + i + 2) == 13 &&
+                Mem::read_byte(data + i + 3) == 10) {
+                return i + 4;
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // ================================================================
+    // HTTPステータスコード解析
+    // ================================================================
+    static ulong parse_status(ulong data, ulong len) {
+        // "HTTP/1.x NNN" → NNN は offset 9 から3桁
+        if (len < 12) { return 0; }
+        ulong d0 = Mem::read_byte(data + 9);
+        ulong d1 = Mem::read_byte(data + 10);
+        ulong d2 = Mem::read_byte(data + 11);
+        if (d0 < 48 || d0 > 57) { return 0; }
+        return (d0 - 48) * 100 + (d1 - 48) * 10 + (d2 - 48);
+    }
+
+    // ================================================================
+    // Content-Length解析
+    // ================================================================
+    static ulong parse_content_length(ulong data, ulong len) {
+        ulong target = "Content-Length: " as ulong;
+        ulong i = 0;
+        while (i + 16 < len) {
+            // 大文字小文字考慮: 'C'/'c'
+            ulong c0 = Mem::read_byte(data + i);
+            if (c0 == 67 || c0 == 99) {
+                ulong found = 1;
+                ulong j = 0;
+                while (j < 16) {
+                    ulong dc = Mem::read_byte(data + i + j);
+                    ulong tc = Mem::read_byte(target + j);
+                    // 簡易大文字小文字無視比較
+                    if (dc >= 65 && dc <= 90) { dc = dc + 32; }
+                    if (tc >= 65 && tc <= 90) { tc = tc + 32; }
+                    if (dc != tc) { found = 0; break; }
+                    j = j + 1;
+                }
+                if (found != 0) {
+                    // 数値解析
+                    ulong val = 0;
+                    ulong k = i + 16;
+                    while (k < len) {
+                        ulong ch = Mem::read_byte(data + k);
+                        if (ch < 48 || ch > 57) { break; }
+                        val = val * 10 + (ch - 48);
+                        k = k + 1;
+                    }
+                    return val;
+                }
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // ================================================================
+    // TCPチェックサム
+    // ================================================================
+    static ulong tcp_checksum(ulong src_ip, ulong dst_ip, ulong tcp_data, ulong tcp_len) {
+        ulong sum = 0;
+        sum = sum + ((src_ip >> 16) & 0xFFFF);
+        sum = sum + (src_ip & 0xFFFF);
+        sum = sum + ((dst_ip >> 16) & 0xFFFF);
+        sum = sum + (dst_ip & 0xFFFF);
+        sum = sum + IP_PROTO_TCP;
+        sum = sum + tcp_len;
+        ulong i = 0;
+        while (i < tcp_len) {
+            ulong hi = Mem::read_byte(tcp_data + i);
+            ulong lo = 0;
+            if (i + 1 < tcp_len) { lo = Mem::read_byte(tcp_data + i + 1); }
+            sum = sum + ((hi << 8) | lo);
+            i = i + 2;
+        }
+        while ((sum >> 16) > 0) { sum = (sum & 0xFFFF) + (sum >> 16); }
+        return (sum ^ 0xFFFF) & 0xFFFF;
+    }
+
+    // ================================================================
+    // ヘルパー: 文字列書き込み
+    // ================================================================
+    static ulong wstr(ulong buf, ulong pos, ulong src, ulong len) {
+        ulong i = 0;
+        while (i < len) {
+            Mem::write_byte(buf + pos + i, Mem::read_byte(src + i));
+            i = i + 1;
+        }
+        return pos + len;
+    }
+
+    // ================================================================
+    // ヘルパー: エフェメラルポート
+    // ================================================================
+    static ulong next_port() {
+        ulong* pp = BREW_PORT_BASE as ulong*;
+        ulong p = *pp;
+        if (p < 50000) { p = 50000; }
+        p = p + 1;
+        if (p > 60000) { p = 50000; }
+        *pp = p;
+        return p;
+    }
+}
