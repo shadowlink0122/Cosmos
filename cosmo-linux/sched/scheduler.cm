@@ -124,6 +124,40 @@ impl RoundRobinScheduler for Scheduler {
         self.count = self.count + 1;
     }
 
+    /// プロセスをキューから除外 (PIDで検索)
+    void remove_process(Pid pid) {
+        // PIDに対応するインデックスを検索
+        ulong found_idx = 0xFFFF;
+        ulong i = 0;
+        while (i < self.count) {
+            ulong addr = self.get_proc(i);
+            if (addr != 0) {
+                Process* p = addr as Process*;
+                if (p->pid == pid) {
+                    found_idx = i;
+                }
+            }
+            i = i + 1;
+        }
+        if (found_idx == 0xFFFF) { return; }
+
+        // found_idx以降を前詰め
+        ulong j = found_idx;
+        while (j + 1 < self.count) {
+            ulong next_addr = self.get_proc(j + 1);
+            self.set_proc(j, next_addr);
+            j = j + 1;
+        }
+        // 最後のスロットをクリア
+        self.set_proc(self.count - 1, 0);
+        self.count = self.count - 1;
+
+        // current_idxがずれた場合の調整
+        if (self.current_idx >= self.count && self.count > 0) {
+            self.current_idx = 0;
+        }
+    }
+
     /// 次に実行するプロセスのPIDを選択
     Pid pick_next() {
         if (self.count == 0) { return IDLE_PID; }
@@ -201,6 +235,13 @@ impl Sched {
         ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
         RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
         sched->add_process(proc);
+    }
+
+    /// プロセスをスケジューラから除外
+    static void remove(Pid pid) {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        sched->remove_process(pid);
     }
 
     /// スケジュール実行（コンテキストスイッチ含む）

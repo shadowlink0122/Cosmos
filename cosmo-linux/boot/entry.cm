@@ -185,16 +185,13 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // === hello auto-execは省略（busyboxとvaddrが競合するため）===
     // Pid hello_pid = Loader::exec("hello" as void*, &serial);
 
-    // === AUTO-EXEC TEST: busybox echo（9p経由、argv渡しテスト）===
-    pr_info(&serial, "Auto-exec: loading 'busybox echo hello world'..." as void*);
-    Pid bb_pid = Loader::exec("busybox echo hello world" as void*, &serial);
-    if (bb_pid >= 0) {
-        serial.puts("[INFO] busybox loaded, PID=" as void*);
-        print_dec(&serial, bb_pid as ulong);
-        serial.println("" as void*);
-    } else {
-        pr_err(&serial, "Failed to load busybox (9p may not be available)" as void*);
-    }
+    // === AUTO-EXEC は無効化（プロセス空間共有のため、シェルから手動実行）===
+    // Pid bb_pid = Loader::exec("busybox echo hello world" as void*, &serial);
+    // if (bb_pid >= 0) {
+    //     serial.puts("[INFO] busybox loaded, PID=" as void*);
+    //     print_dec(&serial, bb_pid as ulong);
+    //     serial.println("" as void*);
+    // }
 
     pr_info(&serial, "Entering idle loop with scheduler..." as void*);
 

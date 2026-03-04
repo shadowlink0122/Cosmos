@@ -243,12 +243,15 @@ impl Syscall {
         Process* cur = Sched::current();
         ulong cur_addr = cur as ulong;
         if (cur_addr != 0 && cur->pid != 0) {
+            Pid dying_pid = cur->pid;
             ProcessTable::do_exit(cur, code);
-            // スケジュール実行して他のプロセスに切り替え
+            // スケジューラキューから即座除外（二度とスケジュールされない）
+            Sched::remove(dying_pid);
+            // 他のプロセスに切り替え
             Sched::run();
         }
         // idleプロセスまたはフォールバック
-        __asm__(`cli; 1: hlt; jmp 1b`);
+        __asm__(`sti; 1: hlt; jmp 1b`);
     }
 
     /// sys_getpid: PID取得
