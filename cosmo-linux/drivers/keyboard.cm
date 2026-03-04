@@ -226,17 +226,43 @@ export struct Kbd {}
 
 impl Kbd {
     /// キーバッファからASCIIコードを取得（0=空）
+    /// PS/2キーボードバッファを優先、空ならシリアルRX(COM1)をポーリング
     static ulong getchar() {
+        // PS/2キーボードバッファチェック
         ulong* head_ptr = KBD_HEAD_ADDR as ulong*;
         ulong* tail_ptr = KBD_TAIL_ADDR as ulong*;
         ulong head = *head_ptr;
         ulong tail = *tail_ptr;
 
-        if (head == tail) { return 0; }
+        if (head != tail) {
+            ulong ch = kbd_read_byte(KBD_BUF_ADDR + head);
+            *head_ptr = (head + 1) % KBD_BUF_SIZE;
+            return ch;
+        }
 
-        ulong ch = kbd_read_byte(KBD_BUF_ADDR + head);
-        *head_ptr = (head + 1) % KBD_BUF_SIZE;
-        return ch;
+        // シリアルRXフォールバック (COM1: 0x3F8)
+        // LSR (Line Status Register) bit0 = data ready
+        ulong lsr = 0;
+        __asm__(`
+            movw $$0x3FD, %dx;
+            inb %dx, %al;
+            movzbq %al, %rax;
+            movq %rax, ${=r:lsr}
+        `);
+        if ((lsr & 1) != 0) {
+            ulong ch = 0;
+            __asm__(`
+                movw $$0x3F8, %dx;
+                inb %dx, %al;
+                movzbq %al, %rax;
+                movq %rax, ${=r:ch}
+            `);
+            // CR(0x0D) → LF(0x0A) 変換
+            if (ch == 13) { ch = 10; }
+            return ch;
+        }
+
+        return 0;  // 入力なし
     }
 }
 

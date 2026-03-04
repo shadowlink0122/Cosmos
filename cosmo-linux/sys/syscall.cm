@@ -116,38 +116,17 @@ impl Syscall {
 
     /// sys_read: fdから読み出し
     static long read(ulong fd, ulong buf_addr, ulong count) {
-        // stdin (fd=0): PS/2キーボード + シリアルポート からブロッキング読み取り
+        // stdin (fd=0): Kbd::getchar() からブロッキング読み取り
+        // Kbd::getchar() は PS/2 + シリアルRX のデュアル入力対応
         if (fd == 0) {
             if (count == 0) { return 0; }
             SerialPort echo_port(COM1);
             ulong bytes_read = 0;
 
             while (bytes_read < count) {
-                // PS/2キーボードバッファまたはシリアルRXから文字取得
                 ulong ch = Kbd::getchar();
                 if (ch == 0) {
-                    // シリアルポートRXチェック (COM1: LSR bit0 = data ready)
-                    ulong lsr = 0;
-                    __asm__(`
-                        movw $$0x3FD, %dx;
-                        inb %dx, %al;
-                        movzbq %al, %rax;
-                        movq %rax, ${=r:lsr}
-                    `);
-                    if ((lsr & 1) != 0) {
-                        // RBRから1バイト読み取り
-                        __asm__(`
-                            movw $$0x3F8, %dx;
-                            inb %dx, %al;
-                            movzbq %al, %rax;
-                            movq %rax, ${=r:ch}
-                        `);
-                        // CR(0x0D) → LF(0x0A) に変換
-                        if (ch == 13) { ch = 10; }
-                    }
-                }
-                if (ch == 0) {
-                    // どちらからも入力なし → sti + pause で低電力待機（ポーリング継続）
+                    // 入力なし → pause + sti で低電力待機（ポーリング継続）
                     __asm__(`sti; pause`);
                     continue;
                 }
@@ -162,7 +141,6 @@ impl Syscall {
                 if (ch == 8 || ch == 127) {
                     if (bytes_read > 0) {
                         bytes_read = bytes_read - 1;
-                        // エコーバック: BS + Space + BS
                         echo_port.putc(8);
                         echo_port.putc(32);
                         echo_port.putc(8);
@@ -175,7 +153,7 @@ impl Syscall {
                 __asm__(`movq ${r:dst}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
                 bytes_read = bytes_read + 1;
 
-                // エコーバック（シリアル入力はターミナル側でエコーされるので不要かもしれないが安全策）
+                // エコーバック
                 echo_port.putc(ch as utiny);
 
                 // Enter (0x0A) → 行完了
