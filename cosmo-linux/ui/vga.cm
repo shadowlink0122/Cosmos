@@ -76,10 +76,10 @@ impl Vga {
         if (ch == 10) {
             Vga::newline();
         } else if (ch == 8) {
+            // バックスペース: カーソル左移動のみ（文字消去はしない）
             ulong col = *col_ptr;
             if (col > 0) {
                 *col_ptr = col - 1;
-                Vga::write_at(*row_ptr, col - 1, 32, *color_ptr);
             }
         } else if (ch >= 32) {
             Vga::write_at(*row_ptr, *col_ptr, ch, *color_ptr);
