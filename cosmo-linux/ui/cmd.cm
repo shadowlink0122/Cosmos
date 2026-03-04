@@ -828,7 +828,7 @@ impl Cmd {
         if (pid >= 0) {
             // フォアグラウンド待機: 子プロセス完了まで待つ
             while (Sched::is_alive(pid) != 0) {
-                __asm__(`sti; hlt`);
+                Sched::run();
             }
         } else {
             Shell::writeln("exec: failed to load ELF" as void*);
@@ -1771,8 +1771,10 @@ impl Cmd {
             Pid pid = Loader::exec(exec_name as void*, &serial);
             if (pid >= 0) {
                 // フォアグラウンド待機: 子プロセス完了まで待つ
+                // スケジューラはシェルのメインループ内でのみ動作するため、
+                // ここで明示的にSched::run()を呼んで子プロセスに制御を移す
                 while (Sched::is_alive(pid) != 0) {
-                    __asm__(`sti; hlt`);
+                    Sched::run();
                 }
             } else {
                 Shell::write(exec_name as void*);
