@@ -7,8 +7,12 @@
 
 import ../../include/types;
 import ../../include/config;
+import ../../include/scheduler;
 import ../../drivers/serial;
 import ../../lib/printk;
+import ../../sched/process;
+import ../../sched/scheduler;
+import ../../ui/shell_io;
 
 // ゲートタイプ定数
 export const ulong GATE_INT  = 0x8E;  // Interrupt Gate, DPL=0
@@ -124,7 +128,22 @@ export void exc_page_fault() {
             }
         }
         serial.println("[#PF] User process killed (SIGSEGV)" as void*);
-        __asm__(`sti; 1: hlt; jmp 1b`);
+
+        // VGA画面にエラー表示
+        Shell::set_color(12, 0);
+        Shell::writeln("Segmentation fault (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        // プロセスを終了してシェルに復帰
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            ProcessTable::do_exit(cur, 139);  // SIGSEGV = 128+11 = 139
+        }
+
+        // 割り込み有効化してスケジューラに戻る
+        __asm__(`sti`);
+        Sched::run();
         return;
     }
 
