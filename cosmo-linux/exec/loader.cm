@@ -130,9 +130,6 @@ impl Loader {
             }
             fsize = bytes_9p;
             loaded_from_9p = 1;
-            w->puts("[INFO] Loaded from 9p: " as void*);
-            print_dec(w, fsize);
-            w->println(" bytes" as void*);
         }
 
         // ELFヘッダ検証
@@ -157,15 +154,7 @@ impl Loader {
             entry = entry + load_bias;
         }
 
-        w->puts("[INFO] ELF entry=0x" as void*);
-        w->print_hex(entry);
-        w->puts(" phnum=" as void*);
-        print_dec(w, phnum);
-        if (load_bias != 0) {
-            w->puts(" PIE bias=0x" as void*);
-            w->print_hex(load_bias);
-        }
-        w->println("" as void*);
+
 
         // PMMを取得
         ulong* pmm_ptr = LOADER_PMM_PTR as ulong*;
@@ -240,11 +229,7 @@ impl Loader {
                     j = j + 1;
                 }
 
-                w->puts("[INFO] Loaded segment: vaddr=0x" as void*);
-                w->print_hex(p_vaddr);
-                w->puts(" size=" as void*);
-                print_dec(w, p_filesz);
-                w->println("" as void*);
+
 
                 // data_end を更新
                 ulong seg_end = p_vaddr + p_memsz;
@@ -436,13 +421,7 @@ impl Loader {
         // スケジューラに登録
         Sched::add(proc);
 
-        w->puts("[INFO] Process created: PID=" as void*);
-        print_dec(w, new_pid as ulong);
-        w->puts(" entry=0x" as void*);
-        w->print_hex(entry);
-        w->puts(" sp=0x" as void*);
-        w->print_hex(sp);
-        w->println("" as void*);
+
 
         return new_pid;
     }
