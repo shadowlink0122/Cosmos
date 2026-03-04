@@ -18,18 +18,8 @@ export struct Context {}
 ///     RSPがiretqフレームから8バイトずれる。pop rbpで復元する。
 void usermode_trampoline() {
     __asm__(`
-        // [デバッグ] iretqフレームをダンプ（シリアルポート直接出力）
-        // RSP → [RIP, CS, RFLAGS, RSP, SS]
-        // 'U' を出力して到達確認
-        movb $$0x55, %al;    // 'U'
-        movw $$0x3F8, %dx;
-        outb %al, %dx;
-        movb $$0x0A, %al;    // newline
-        outb %al, %dx;
-
         // iretqでRing3に遷移
         // スタック上のフレーム: [RIP, CS, RFLAGS, RSP, SS]
-        // 注: Cmコンパイラはこの関数にプロローグを生成しない（逆アセンブルで確認済み）
         iretq
     `);
 }
@@ -133,15 +123,5 @@ impl Context {
         proc->context.r15 = 0;
         proc->context.rip = usermode_trampoline as ulong;
         proc->context.rflags = 0x200;
-
-        // [デバッグ] フレーム値を出力
-        SerialPort dbg(COM1);
-        dbg.puts("[UCTX] tramp=0x" as void*);
-        dbg.print_hex(usermode_trampoline as ulong);
-        dbg.puts(" rsp=0x" as void*);
-        dbg.print_hex(sp);
-        dbg.puts(" entry=0x" as void*);
-        dbg.print_hex(entry_fn);
-        dbg.println("" as void*);
     }
 }

@@ -1748,8 +1748,37 @@ impl Cmd {
             Shell::writeln("Usage: brew uninstall <package>" as void*);
             return;
         }
-        Shell::write("Unknown command: " as void*);
-        Shell::writeln(CMD_BUF_ADDR as void*);
+        // 未知のコマンド → RamFSにバイナリがあれば自動実行
+        // "./hello" → "hello" に正規化
+        ulong exec_name = CMD_BUF_ADDR;
+        ulong c0 = Mem::read_byte(exec_name);
+        ulong c1 = Mem::read_byte(exec_name + 1);
+        if (c0 == 46 && c1 == 47) {  // "./"
+            exec_name = exec_name + 2;
+        }
+        // "/" プレフィックスもスキップ
+        c0 = Mem::read_byte(exec_name);
+        if (c0 == 47) {  // "/"
+            exec_name = exec_name + 1;
+        }
+
+        // RamFSにファイルが存在するか確認
+        Ino ino = RamFs::lookup(exec_name as void*);
+        if (ino != 0) {
+            // バイナリとして実行
+            SerialPort serial(COM1);
+            Pid pid = Loader::exec(exec_name as void*, &serial);
+            if (pid >= 0) {
+                // 実行開始 — シェルに自動復帰
+            } else {
+                Shell::write(exec_name as void*);
+                Shell::writeln(": exec format error" as void*);
+            }
+            return;
+        }
+
+        Shell::write(CMD_BUF_ADDR as void*);
+        Shell::writeln(": command not found" as void*);
     }
 
 }
