@@ -201,16 +201,12 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // 割り込み有効化
     Cpu::sti();
 
-    // idle loop（PIT割り込み + タイマーベーススケジューリング）
-    // 注: Context::switch_toがRFLAGSを保存しないため、
-    //     syscall(IF=0)経由のexit後にIF=0でhltすると永久停止。
-    //     hltの前にstiで割り込みを確実に有効化する。
+    // idle loop（PIT割り込み + 即座スケジューリング）
+    // idleは他のrunnableプロセスがあれば即座にyieldする。
+    // Sched::tick()はtime_slice消費後のみスイッチするため遅延が発生する。
+    // Sched::run()を直接呼ぶことで、hlt復帰(10ms)ごとに即座にスイッチ。
     while (true) {
         __asm__(`sti; hlt`);
-
-        ulong need_resched = PIT::check_resched();
-        if (need_resched != 0) {
-            Sched::tick();
-        }
+        Sched::run();
     }
 }
