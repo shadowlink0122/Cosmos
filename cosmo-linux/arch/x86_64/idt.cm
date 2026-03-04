@@ -166,11 +166,36 @@ export void exc_page_fault() {
         `);
     }
 
-    // カーネルモード#PF → halt
+    // カーネルモード#PF → プロセスkill試行してidle復帰
     serial.puts("  err_code = " as void*);
     serial.print_hex(*err_ptr);
     serial.println("" as void*);
-    __asm__(`cli; 1: hlt; jmp 1b`);
+    serial.println("[#PF] Kernel PF - attempting recovery" as void*);
+
+    // VGA画面にエラー表示
+    Shell::set_color(12, 0);
+    Shell::writeln("Segmentation fault (core dumped)" as void*);
+    Shell::set_color(7, 0);
+
+    // 現在プロセスをkillしてidle loopに復帰
+    Process* cur = Sched::current();
+    ulong cur_addr = cur as ulong;
+    if (cur_addr != 0 && cur->pid > 1) {
+        Pid dying_pid = cur->pid;
+        ProcessTable::do_exit(cur, 139);
+        Sched::remove(dying_pid);
+    }
+
+    ulong idle_rip = pf_idle_loop as ulong;
+    __asm__(`
+        movq ${r:tss_rsp0}, %rsp;
+        pushq $$0x10;
+        pushq ${r:tss_rsp0};
+        pushq $$0x200;
+        pushq $$0x08;
+        pushq ${r:idle_rip};
+        iretq
+    `);
 }
 
 /// Idt — IDT管理

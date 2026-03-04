@@ -18,6 +18,9 @@ export struct Context {}
 ///     RSPがiretqフレームから8バイトずれる。pop rbpで復元する。
 void usermode_trampoline() {
     __asm__(`
+        // Cmコンパイラのプロローグ(push rbp)を元に戻す
+        // RSPがiretqフレームの先頭を指すように復元
+        pop %rbp;
         // iretqでRing3に遷移
         // スタック上のフレーム: [RIP, CS, RFLAGS, RSP, SS]
         iretq
