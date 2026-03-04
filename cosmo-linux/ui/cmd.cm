@@ -1763,22 +1763,14 @@ impl Cmd {
             exec_name = exec_name + 1;
         }
 
-        // RamFSにファイルが存在するか確認
-        Ino ino = RamFs::lookup(exec_name as void*);
-        if (ino != 0) {
-            // バイナリとして実行
-            SerialPort serial(COM1);
-            Pid pid = Loader::exec(exec_name as void*, &serial);
-            if (pid >= 0) {
-                // フォアグラウンド待機: 子プロセス完了まで待つ
-                // スケジューラはシェルのメインループ内でのみ動作するため、
-                // ここで明示的にSched::run()を呼んで子プロセスに制御を移す
-                while (Sched::is_alive(pid) != 0) {
-                    Sched::run();
-                }
-            } else {
-                Shell::write(exec_name as void*);
-                Shell::writeln(": exec format error" as void*);
+        // 未知のコマンド → バイナリとして実行試行 (RamFS + 9p 両方)
+        // "busybox echo hello" → exec_nameの最初の単語がバイナリ名
+        SerialPort serial(COM1);
+        Pid pid = Loader::exec(exec_name as void*, &serial);
+        if (pid >= 0) {
+            // フォアグラウンド待機: 子プロセス完了まで待つ
+            while (Sched::is_alive(pid) != 0) {
+                Sched::run();
             }
             return;
         }
