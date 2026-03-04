@@ -36,6 +36,8 @@ void usermode_trampoline() {
 
 impl Context {
     /// 2つのProcess間でコンテキストスイッチを実行
+    /// Linux __switch_to 同様、RFLAGS も保存/復帰する。
+    /// 復帰後は必ず sti で割り込みを有効化する (Linux: local_irq_enable 相当)。
     static void switch_to(Process* prev, Process* next) {
         __asm__(`
             movq ${r:prev}, %rdi;
@@ -52,6 +54,11 @@ impl Context {
             movq %r14, 40(%rdi);
             movq %r15, 48(%rdi);
 
+            // RFLAGS保存 (offset 64 = rflags フィールド)
+            pushfq;
+            popq %rax;
+            movq %rax, 64(%rdi);
+
             // next->context からレジスタ復帰
             movq 48(%rsi), %r15;
             movq 40(%rsi), %r14;
@@ -60,6 +67,15 @@ impl Context {
             movq 16(%rsi), %rbx;
             movq 8(%rsi), %rbp;
             movq (%rsi), %rsp;
+
+            // RFLAGS復帰
+            movq 64(%rsi), %rax;
+            pushq %rax;
+            popfq;
+
+            // 安全策: 割り込みを必ず有効化 (Linux local_irq_enable 相当)
+            // syscall中にCLI→コンテキストスイッチ→IF=0で復帰するケースを完全防止
+            sti;
 
             ret
         `);
