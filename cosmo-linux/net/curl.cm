@@ -57,6 +57,14 @@ impl Curl {
             return;
         }
 
+        // HTTPS検出 (TLS未実装)
+        ulong is_https = Curl::starts_with_str(url_addr, "https://" as ulong, 8);
+        if (is_https != 0) {
+            Shell::writeln("curl: HTTPS is not supported (TLS not implemented)" as void*);
+            Shell::writeln("  Use http:// instead" as void*);
+            return;
+        }
+
         // 1. URL解析: http://hostname/path
         ulong host_buf = CURL_HOST_BUF;
         ulong path_buf = CURL_PATH_BUF;
@@ -683,5 +691,19 @@ impl Curl {
         Shell::print_dec((ip >> 8) & 0xFF);
         Shell::putc(46);
         Shell::print_dec(ip & 0xFF);
+    }
+
+    // ====================================================================
+    // ヘルパー: 文字列前方一致判定
+    // ====================================================================
+    static ulong starts_with_str(ulong str, ulong prefix, ulong prefix_len) {
+        ulong i = 0;
+        while (i < prefix_len) {
+            ulong sc = Mem::read_byte(str + i);
+            ulong pc = Mem::read_byte(prefix + i);
+            if (sc != pc) { return 0; }
+            i = i + 1;
+        }
+        return 1;
     }
 }

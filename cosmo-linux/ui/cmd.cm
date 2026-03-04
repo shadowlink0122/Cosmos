@@ -1678,7 +1678,7 @@ impl Cmd {
             return;
         }
         if (startswith(CMD_BUF_ADDR as void*, "curl " as void*) != 0) {
-            ulong arg = Cmd::arg2(CMD_BUF_ADDR);
+            ulong arg = Cmd::arg(CMD_BUF_ADDR);
             Curl::get(arg);
             return;
         }
