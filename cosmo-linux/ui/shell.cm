@@ -156,10 +156,11 @@ export void shell_main() {
         while (input_done == 0) {
             ulong ch = Kbd::getchar();
             if (ch == 0) {
-                // sti + hlt: Context::switch_toがRFLAGSを保存しないため、
-                // 復帰時にIF=0の可能性がある。stiで確実に有効化。
-                __asm__(`sti; hlt`);
-                // hlt復帰時にスケジューラtickを実行
+                // pause: hltの代わりにpauseで高頻度ポーリング
+                // hltはIRQ(10ms)でしか復帰せず、スケジューラpreemptionと合わせて
+                // 1秒サイクルになるため、pauseで即座にリトライする。
+                __asm__(`sti; pause`);
+                // スケジューラtick（他プロセス実行用）
                 ulong need = PIT::check_resched();
                 if (need != 0) {
                     Sched::tick();
