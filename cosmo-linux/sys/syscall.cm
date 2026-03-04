@@ -344,7 +344,9 @@ impl Syscall {
     }
 
     /// sys_mmap: メモリマッピング
-    static long mmap(ulong addr, ulong length, ulong prot, ulong flags) {
+    static long mmap(ulong addr, ulong length, ulong prot, ulong flags, long fd, ulong offset) {
+        // fd != -1 のファイルマッピングは未対応
+        // musl-libc は匿名マッピング(fd=-1, offset=0)を使用
         ulong result = Mmap::do_mmap(addr, length, prot, flags);
         if (result == MAP_FAILED) { return 0 - ENOMEM; }
         return result as long;
@@ -537,7 +539,7 @@ ulong arg3, ulong arg4, ulong arg5) {
         return SyscallFs::lseek(arg0, arg1 as long, arg2);
     }
     if (nr == SYS_MMAP) {
-        return Syscall::mmap(arg0, arg1, arg2, arg3);
+        return Syscall::mmap(arg0, arg1, arg2, arg3, arg4 as long, arg5);
     }
     if (nr == SYS_MPROTECT) {
         return Syscall::do_mprotect(arg0, arg1, arg2);
@@ -712,8 +714,12 @@ ulong arg3, ulong arg4, ulong arg5) {
 
     // 未実装syscall（デバッグログ出力）
     SerialPort serial_dbg(COM1);
-    serial_dbg.puts("[WARN] unimplemented syscall: " as void*);
+    serial_dbg.puts("[WARN] unimplemented syscall: nr=" as void*);
     print_dec(&serial_dbg, nr);
+    serial_dbg.puts(" arg0=0x" as void*);
+    serial_dbg.print_hex(arg0);
+    serial_dbg.puts(" arg1=0x" as void*);
+    serial_dbg.print_hex(arg1);
     serial_dbg.println("" as void*);
     return (0 - ENOSYS);
 }
