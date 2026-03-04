@@ -1735,9 +1735,17 @@ impl Cmd {
             Brew::install(arg);
             return;
         }
+        if (streq(CMD_BUF_ADDR as void*, "brew install" as void*) != 0) {
+            Shell::writeln("Usage: brew install <package>" as void*);
+            return;
+        }
         if (startswith(CMD_BUF_ADDR as void*, "brew uninstall " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
             Brew::uninstall(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "brew uninstall" as void*) != 0) {
+            Shell::writeln("Usage: brew uninstall <package>" as void*);
             return;
         }
         Shell::write("Unknown command: " as void*);
