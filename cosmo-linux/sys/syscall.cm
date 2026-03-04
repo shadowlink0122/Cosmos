@@ -704,12 +704,107 @@ ulong arg3, ulong arg4, ulong arg5) {
         return SyscallProc::getrandom(arg0, arg1, arg2);
     }
 
+    // --- Phase 1: 追加syscall ---
+
+    // stat / lstat
+    if (nr == SYS_STAT) {
+        return SyscallFs::stat(arg0, arg1);
+    }
+    if (nr == SYS_LSTAT) {
+        return SyscallFs::lstat(arg0, arg1);
+    }
+
+    // dup3 / pipe2
+    if (nr == SYS_DUP3) {
+        return SyscallFs::dup3(arg0, arg1, arg2);
+    }
+    if (nr == SYS_PIPE2) {
+        return SyscallFs::pipe2(arg0, arg1);
+    }
+
+    // unlinkat / mkdirat / renameat / renameat2
+    if (nr == SYS_UNLINKAT) {
+        return SyscallFs::unlinkat(arg0 as long, arg1, arg2);
+    }
+    if (nr == SYS_MKDIRAT) {
+        return SyscallFs::mkdirat(arg0 as long, arg1, arg2);
+    }
+    if (nr == SYS_RENAMEAT) {
+        return SyscallFs::renameat(arg0 as long, arg1, arg2 as long, arg3);
+    }
+    if (nr == SYS_RENAMEAT2) {
+        return SyscallFs::renameat(arg0 as long, arg1, arg2 as long, arg3);
+    }
+
+    // プロセス系
+    if (nr == SYS_GETTID) {
+        return SyscallProc::gettid();
+    }
+    if (nr == SYS_SIGALTSTACK) {
+        return SyscallProc::sigaltstack(arg0, arg1);
+    }
+    if (nr == SYS_FUTEX) {
+        return SyscallProc::futex(arg0, arg1, arg2, arg3, arg4, arg5);
+    }
+    if (nr == SYS_GETRUSAGE) {
+        return SyscallProc::getrusage(arg0, arg1);
+    }
+    if (nr == SYS_SYSINFO) {
+        return SyscallProc::sysinfo(arg0);
+    }
+    if (nr == SYS_GETTIMEOFDAY) {
+        return SyscallProc::gettimeofday(arg0, arg1);
+    }
+    if (nr == SYS_MADVISE) {
+        return SyscallProc::madvise(arg0, arg1, arg2);
+    }
+    if (nr == SYS_UMASK) {
+        return SyscallProc::umask(arg0);
+    }
+    if (nr == SYS_SCHED_YIELD) {
+        return SyscallProc::sched_yield();
+    }
+    if (nr == SYS_SCHED_GETAFFINITY) {
+        return SyscallProc::sched_getaffinity(arg0, arg1, arg2);
+    }
+
     // --- stub syscall（動作に影響なし、0を返却）---
     if (nr == SYS_SET_ROBUST_LIST) {
         return 0;  // futex robust list（スレッド未対応のため無視）
     }
     if (nr == SYS_RSEQ) {
         return 0;  // restartable sequences（未対応のため無視）
+    }
+    // fchmod/fchown/fchmodat/fchownat: パーミッション操作 (常に成功)
+    if (nr == SYS_FCHMOD || nr == SYS_FCHOWN || nr == SYS_FCHMODAT || nr == SYS_FCHOWNAT) {
+        return 0;
+    }
+    // faccessat2: faccessatに委譲
+    if (nr == SYS_FACCESSAT2) {
+        return SyscallFs::faccessat(arg0 as long, arg1, arg2, arg3);
+    }
+    // statx: newfstatat互換
+    if (nr == SYS_STATX) {
+        return SyscallFs::newfstatat(arg0 as long, arg1, arg3, arg2);
+    }
+    // close_range: FDクローズ（簡易: 無視）
+    if (nr == SYS_CLOSE_RANGE) {
+        return 0;
+    }
+    // clone3: 未対応
+    if (nr == SYS_CLONE3) {
+        return 0 - ENOSYS;
+    }
+
+    // mkdir / rmdir / unlink (古いsyscall)
+    if (nr == SYS_MKDIR) {
+        return SyscallFs::mkdirat(AT_FDCWD, arg0, arg1);
+    }
+    if (nr == SYS_RMDIR) {
+        return SyscallFs::unlinkat(AT_FDCWD, arg0, 0x200);
+    }
+    if (nr == SYS_UNLINK) {
+        return SyscallFs::unlinkat(AT_FDCWD, arg0, 0);
     }
 
     // 未実装syscall（デバッグログ出力）

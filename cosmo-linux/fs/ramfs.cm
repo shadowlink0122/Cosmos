@@ -277,4 +277,43 @@ impl RamFs {
         if (ex != 0) { return ex; }
         return RamFs::create(name, S_IFDIR | 0x1FF, 0);
     }
+
+    /// ファイル名変更 (rename)
+    static long rename(void* oldname, void* newname) {
+        // 既存の新名前エントリを削除
+        Ino new_exist = RamFs::lookup(newname);
+        if (new_exist != 0) {
+            RamFs::unlink(newname);
+        }
+
+        // 旧名前エントリを検索して名前を差し替え
+        ulong* dc = DIR_CNT as ulong*;
+        ulong i = 0;
+        while (i < *dc) {
+            ulong o = i * 32;
+            ulong* u = (DIR_BASE + o + 24) as ulong*;
+            if (*u != 0) {
+                ulong* na = (DIR_BASE + o) as ulong*;
+                if (name_eq(*na, oldname as ulong) != 0) {
+                    // 名前領域にnewnameをコピー
+                    ulong ns = *na;
+                    ulong k = 0;
+                    ulong done = 0;
+                    while (k < MAX_NAME_LEN - 1) {
+                        if (done == 0) {
+                            ulong c = rb((newname as ulong) + k);
+                            wb(ns + k, c);
+                            if (c == 0) { done = 1; }
+                        }
+                        k = k + 1;
+                    }
+                    wb(ns + MAX_NAME_LEN - 1, 0);
+                    return 0;
+                }
+            }
+            i = i + 1;
+        }
+        return 0 - 2;  // -ENOENT
+    }
 }
+

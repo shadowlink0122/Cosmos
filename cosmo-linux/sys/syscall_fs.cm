@@ -370,4 +370,108 @@ impl SyscallFs {
         // 最小の空きFDにコピー
         return FdTable::dup_lowest(oldfd as long);
     }
+
+    /// sys_dup3: FD複製 (dup2 + flags)
+    static long dup3(ulong oldfd, ulong newfd, ulong flags) {
+        if (FdTable::is_valid(oldfd as long) == 0) {
+            return 0 - EBADF;
+        }
+        if (oldfd == newfd) {
+            return 0 - EINVAL;
+        }
+        return FdTable::dup2(oldfd as long, newfd as long);
+    }
+
+    /// sys_stat: パス名からファイル情報取得 (newfstatat互換)
+    static long stat(ulong pathname, ulong stat_addr) {
+        return SyscallFs::newfstatat(AT_FDCWD, pathname, stat_addr, 0);
+    }
+
+    /// sys_lstat: パス名からファイル情報取得 (シンボリックリンク非追跡)
+    /// 現在シンボリックリンク未対応のためstatと同一動作
+    static long lstat(ulong pathname, ulong stat_addr) {
+        return SyscallFs::newfstatat(AT_FDCWD, pathname, stat_addr, 0);
+    }
+
+    /// sys_unlinkat: ディレクトリFD相対でファイル削除
+    static long unlinkat(long dirfd, ulong pathname, ulong flags) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        // AT_REMOVEDIR (0x200) → rmdir
+        ulong is_removedir = flags & 0x200;
+        if (is_removedir != 0) {
+            // ディレクトリ削除はRamFSでは未サポート
+            return 0 - ENOTEMPTY;
+        }
+        // 先頭の/をスキップ
+        ulong search = pathname;
+        ulong ch = 0;
+        __asm__(`movq ${r:search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:ch}`);
+        if (ch == 47) { search = pathname + 1; }
+        // RamFSでファイルを名前で削除
+        return RamFs::unlink(search as void*);
+    }
+
+    /// sys_mkdirat: ディレクトリFD相対でディレクトリ作成
+    static long mkdirat(long dirfd, ulong pathname, ulong mode) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        // RamFSにディレクトリエントリを作成
+        ulong search = pathname;
+        ulong ch = 0;
+        __asm__(`movq ${r:search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:ch}`);
+        if (ch == 47) { search = pathname + 1; }
+
+        // 既存チェック
+        Ino existing = RamFs::lookup(search as void*);
+        if (existing != 0) { return 0 - EEXIST; }
+
+        // ディレクトリとしてエントリ作成
+        return RamFs::mkdir(search as void*);
+    }
+
+    /// sys_renameat: ファイル名変更
+    static long renameat(long olddirfd, ulong oldpath, long newdirfd, ulong newpath) {
+        if (oldpath == 0 || newpath == 0) { return 0 - EFAULT; }
+        // 先頭の/をスキップ
+        ulong old_search = oldpath;
+        ulong old_ch = 0;
+        __asm__(`movq ${r:old_search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:old_ch}`);
+        if (old_ch == 47) { old_search = oldpath + 1; }
+
+        ulong new_search = newpath;
+        ulong new_ch = 0;
+        __asm__(`movq ${r:new_search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:new_ch}`);
+        if (new_ch == 47) { new_search = newpath + 1; }
+
+        return RamFs::rename(old_search as void*, new_search as void*);
+    }
+
+    /// sys_pipe2: パイプ作成 (flags付き)
+    static long pipe2(ulong pipefd_addr, ulong flags) {
+        if (pipefd_addr == 0) { return 0 - EFAULT; }
+        // Pipe::create で読み書きのFDペアを作成
+        long pipe_id = Pipe::create();
+        if (pipe_id < 0) { return pipe_id; }
+
+        // 読み取り側FD
+        long read_fd = FdTable::alloc(pipe_id, 0, FS_PIPE);
+        if (read_fd < 0) { return read_fd; }
+
+        // 書き込み側FD
+        long write_fd = FdTable::alloc(pipe_id, 1, FS_PIPE);
+        if (write_fd < 0) {
+            FdTable::free(read_fd);
+            return write_fd;
+        }
+
+        // ユーザー空間にFDペアを書き込み (int[2] = 4バイト×2)
+        ulong read_val = read_fd as ulong;
+        ulong write_val = write_fd as ulong;
+        ulong addr0 = pipefd_addr;
+        ulong addr1 = pipefd_addr + 4;
+        // 32ビット書き込み: movl は %eXX レジスタを要求
+        __asm__(`movq ${r:addr0}, %rdi; movq ${r:read_val}, %rax; movl %eax, (%rdi)`);
+        __asm__(`movq ${r:addr1}, %rdi; movq ${r:write_val}, %rax; movl %eax, (%rdi)`);
+        return 0;
+    }
 }
+

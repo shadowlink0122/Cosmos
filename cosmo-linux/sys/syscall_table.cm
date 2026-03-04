@@ -83,13 +83,40 @@ export const ulong SYS_SET_TID_ADDRESS = 218;
 export const ulong SYS_CLOCK_GETTIME = 228;
 export const ulong SYS_EXIT_GROUP = 231;
 export const ulong SYS_OPENAT     = 257;
+export const ulong SYS_MKDIRAT    = 258;
 export const ulong SYS_NEWFSTATAT = 262;
+export const ulong SYS_UNLINKAT   = 263;
+export const ulong SYS_RENAMEAT   = 264;
 export const ulong SYS_READLINKAT = 267;
 export const ulong SYS_FACCESSAT  = 269;
-export const ulong SYS_PRLIMIT64       = 302;
-export const ulong SYS_GETRANDOM       = 318;
 export const ulong SYS_SET_ROBUST_LIST = 273;
+export const ulong SYS_PRLIMIT64       = 302;
+export const ulong SYS_RENAMEAT2       = 316;
+export const ulong SYS_GETRANDOM       = 318;
 export const ulong SYS_RSEQ            = 334;
+
+// --- 追加syscall (Phase 1: musl静的バイナリ完全対応) ---
+export const ulong SYS_SIGALTSTACK    = 131;
+export const ulong SYS_GETTID         = 186;
+export const ulong SYS_FUTEX          = 202;
+export const ulong SYS_GETRUSAGE      = 98;
+export const ulong SYS_SYSINFO        = 99;
+export const ulong SYS_PIPE2          = 293;
+export const ulong SYS_DUP3           = 292;
+export const ulong SYS_MADVISE        = 28;
+export const ulong SYS_UMASK          = 95;
+export const ulong SYS_FCHMOD         = 91;
+export const ulong SYS_FCHOWN         = 93;
+export const ulong SYS_FCHMODAT       = 268;
+export const ulong SYS_FCHOWNAT       = 260;
+export const ulong SYS_FACCESSAT2     = 439;
+export const ulong SYS_STATX          = 332;
+export const ulong SYS_CLOSE_RANGE    = 436;
+export const ulong SYS_CLONE3         = 435;
+export const ulong SYS_SCHED_GETAFFINITY = 204;
+export const ulong SYS_SCHED_YIELD    = 24;
+export const ulong SYS_GETTIMEOFDAY   = 96;
 
 /// 最大syscall番号
 export const ulong NR_SYSCALLS = 512;
+
