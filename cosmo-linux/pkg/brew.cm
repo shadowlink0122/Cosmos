@@ -212,7 +212,7 @@ impl Brew {
                         ulong b3 = Mem::read_byte(buf4 + 3);
                         if (b0 == 0x7F && b1 == 69 && b2 == 76 && b3 == 70) {
                             // ELFバイナリ
-                            Shell::write("  📦 " as void*);
+                            Shell::write("  [*] " as void*);
                             Shell::set_color(11, 0);
                             Shell::write(name as void*);
                             Shell::set_color(7, 0);
@@ -291,7 +291,7 @@ impl Brew {
 
             if (skip == 0) {
                 // パッケージ名を表示
-                Shell::write("  🍺 " as void*);
+                Shell::write("  [*] " as void*);
                 Shell::set_color(10, 0);
                 ulong ki = 0;
                 while (ki < nlen) {
