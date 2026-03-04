@@ -1681,9 +1681,18 @@ impl Cmd {
             Cmd::ping(arg);
             return;
         }
-        if (startswith(CMD_BUF_ADDR as void*, "curl " as void*) != 0) {
-            ulong arg = Cmd::arg(CMD_BUF_ADDR);
-            Curl::get(arg);
+        if (startswith(CMD_BUF_ADDR as void*, "curl " as void*) != 0 ||
+            streq(CMD_BUF_ADDR as void*, "curl" as void*) != 0) {
+            // 外部curlバイナリに委譲
+            SerialPort serial(COM1);
+            Pid pid = Loader::exec(CMD_BUF_ADDR as void*, &serial);
+            if (pid >= 0) {
+                while (Sched::is_alive(pid) != 0) {
+                    Sched::run();
+                }
+                return;
+            }
+            Shell::writeln("curl: binary not found" as void*);
             return;
         }
         if (streq(CMD_BUF_ADDR as void*, "test" as void*) != 0) {

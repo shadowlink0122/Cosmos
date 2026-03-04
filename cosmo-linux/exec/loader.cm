@@ -407,6 +407,20 @@ impl Loader {
             *argv_slot = arg_str;
             argc_val = argc_val + 1;
         }
+        // デバッグ: argv出力
+        w->puts("[exec] argc=" as void*);
+        print_dec(w, argc_val);
+        w->println("" as void*);
+        ulong dbg_i = 0;
+        while (dbg_i < argc_val) {
+            w->puts("[exec] argv[" as void*);
+            print_dec(w, dbg_i);
+            w->puts("]=\"" as void*);
+            ulong* dbg_p = (argv_strs_buf + dbg_i * 8) as ulong*;
+            w->puts(*dbg_p as void*);
+            w->println("\"" as void*);
+            dbg_i = dbg_i + 1;
+        }
 
         // --- auxiliary vector (auxv) ---
         // 16バイトアラインメント
