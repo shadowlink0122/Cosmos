@@ -41,7 +41,7 @@ import ../net/arp;
 import ../net/dns;
 import ../drivers/virtio_9p;
 import ../fs/ninepfs;
-import ../pkg/brew;
+import ../pkg/gen;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -57,7 +57,7 @@ impl Cmd {
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
         Shell::writeln("  echo cd pwd env export history kill" as void*);
         Shell::writeln("  vmstat exec test ping  cmd1 | cmd2  Tab=complete" as void*);
-        Shell::writeln("  brew install/list/search/run" as void*);
+        Shell::writeln("  gen install/list/search/run" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
 
@@ -1680,31 +1680,31 @@ impl Cmd {
             KTest::run_all();
             return;
         }
-        // brew コマンド
-        if (streq(CMD_BUF_ADDR as void*, "brew" as void*) != 0) {
-            Brew::help();
+        // gen コマンド（ホストFSパッケージマネージャ）
+        if (streq(CMD_BUF_ADDR as void*, "gen" as void*) != 0) {
+            Gen::help();
             return;
         }
-        if (streq(CMD_BUF_ADDR as void*, "brew help" as void*) != 0) {
-            Brew::help();
+        if (streq(CMD_BUF_ADDR as void*, "gen help" as void*) != 0) {
+            Gen::help();
             return;
         }
-        if (streq(CMD_BUF_ADDR as void*, "brew list" as void*) != 0) {
-            Brew::list();
+        if (streq(CMD_BUF_ADDR as void*, "gen list" as void*) != 0) {
+            Gen::list();
             return;
         }
-        if (streq(CMD_BUF_ADDR as void*, "brew search" as void*) != 0) {
-            Brew::search();
+        if (streq(CMD_BUF_ADDR as void*, "gen search" as void*) != 0) {
+            Gen::search();
             return;
         }
-        if (startswith(CMD_BUF_ADDR as void*, "brew install " as void*) != 0) {
+        if (startswith(CMD_BUF_ADDR as void*, "gen install " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
-            Brew::install(arg);
+            Gen::install(arg);
             return;
         }
-        if (startswith(CMD_BUF_ADDR as void*, "brew run " as void*) != 0) {
+        if (startswith(CMD_BUF_ADDR as void*, "gen run " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
-            Brew::run(arg);
+            Gen::run(arg);
             return;
         }
         Shell::write("Unknown command: " as void*);

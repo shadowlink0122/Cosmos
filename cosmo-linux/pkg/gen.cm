@@ -1,14 +1,14 @@
 //! platform: baremetal-x86
-// cosmo-linux::pkg::brew - Homebrew パッケージマネージャ
+// cosmo-linux::pkg::gen - ホストFSパッケージマネージャ
 //
 // ホスト側 rootfs/packages/ に配置した静的リンクELFバイナリを
 // 9pfs経由でRamFSにインストール（コピー）し、exec可能にする。
 //
 // コマンド:
-//   brew install <pkg>  — パッケージをRamFSにコピー
-//   brew list           — インストール済みパッケージ一覧
-//   brew search         — 利用可能なパッケージ検索（ホスト側）
-//   brew run <pkg>      — パッケージを実行
+//   gen install <pkg>  — パッケージをRamFSにコピー
+//   gen list           — インストール済みパッケージ一覧
+//   gen search         — 利用可能なパッケージ検索（ホスト側）
+//   gen run <pkg>      — パッケージを実行
 
 import ../include/types;
 import ../include/vfs;
@@ -26,46 +26,46 @@ import ../ui/shell_const;
 import ../ui/mem;
 
 // ============================================================
-// Brew 定数
+// Gen 定数
 // ============================================================
 
 // パッケージディレクトリ（9pfsルートからの相対パス）
-const ulong BREW_PKG_DIR = 0xA60000;   // "packages" 文字列バッファ
-const ulong BREW_TMP_BUF = 0xA61000;   // 一時読み取りバッファ (64KB)
-const ulong BREW_TMP_SIZE = 65536;     // 64KB
-const ulong BREW_NAME_BUF = 0xA71000;  // パッケージ名バッファ
+const ulong GEN_PKG_DIR = 0xA60000;   // "packages" 文字列バッファ
+const ulong GEN_TMP_BUF = 0xA61000;   // 一時読み取りバッファ (64KB)
+const ulong GEN_TMP_SIZE = 65536;     // 64KB
+const ulong GEN_NAME_BUF = 0xA71000;  // パッケージ名バッファ
 
 // ============================================================
-// Brew — パッケージマネージャ
+// Gen — ホストFSパッケージマネージャ
 // ============================================================
 
-export struct Brew {}
+export struct Gen {}
 
-impl Brew {
+impl Gen {
 
-    /// brew install <pkg> — パッケージをホストFSからRamFSにインストール
+    /// gen install <pkg> — パッケージをホストFSからRamFSにインストール
     static void install(ulong name_addr) {
         if (name_addr == 0) {
-            Shell::writeln("Usage: brew install <package>" as void*);
+            Shell::writeln("Usage: gen install <package>" as void*);
             return;
         }
 
         if (Virtio9p::is_ready() == 0) {
-            Shell::writeln("brew: host filesystem not available" as void*);
+            Shell::writeln("gen: host filesystem not available" as void*);
             return;
         }
 
         // 既にインストール済みかチェック
         Ino existing = RamFs::lookup(name_addr as void*);
         if (existing != 0) {
-            Shell::write("brew: " as void*);
+            Shell::write("gen: " as void*);
             Shell::write(name_addr as void*);
             Shell::writeln(" is already installed" as void*);
             return;
         }
 
         // パッケージパスを構築: "packages/<name>"
-        ulong path_buf = BREW_NAME_BUF;
+        ulong path_buf = GEN_NAME_BUF;
         ulong pkg_prefix = "packages/" as ulong;
         ulong pi = 0;
         while (pi < 9) {
@@ -86,7 +86,7 @@ impl Brew {
         ulong fid = 13;
         ulong walk_ok = Virtio9p::walk(0, fid, path_buf);
         if (walk_ok == 0) {
-            Shell::write("brew: package '" as void*);
+            Shell::write("gen: package '" as void*);
             Shell::write(name_addr as void*);
             Shell::writeln("' not found on host" as void*);
             return;
@@ -98,7 +98,7 @@ impl Brew {
         Virtio9p::clunk(fid);
 
         if (file_size == 0) {
-            Shell::writeln("brew: package is empty" as void*);
+            Shell::writeln("gen: package is empty" as void*);
             return;
         }
 
@@ -125,7 +125,7 @@ impl Brew {
         }
         ulong data_base = pmm->alloc_pages(order);
         if (data_base == 0) {
-            Shell::writeln("brew: failed to allocate memory" as void*);
+            Shell::writeln("gen: failed to allocate memory" as void*);
             return;
         }
         memzero(data_base as void*, p * PAGE_SIZE);
@@ -133,7 +133,7 @@ impl Brew {
         // RamFSにファイル作成
         Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1FF, data_base);
         if (ino == 0) {
-            Shell::writeln("brew: failed to create file in ramfs" as void*);
+            Shell::writeln("gen: failed to create file in ramfs" as void*);
             return;
         }
 
@@ -141,13 +141,13 @@ impl Brew {
         fid = 13;
         walk_ok = Virtio9p::walk(0, fid, path_buf);
         if (walk_ok == 0) {
-            Shell::writeln("brew: failed to reopen package" as void*);
+            Shell::writeln("gen: failed to reopen package" as void*);
             return;
         }
         ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
         if (open_ok == 0) {
             Virtio9p::clunk(fid);
-            Shell::writeln("brew: failed to open package" as void*);
+            Shell::writeln("gen: failed to open package" as void*);
             return;
         }
 
@@ -157,14 +157,14 @@ impl Brew {
         Shell::write("==> Installing..." as void*);
         while (total_read < file_size) {
             ulong remaining = file_size - total_read;
-            ulong chunk_size = BREW_TMP_SIZE;
+            ulong chunk_size = GEN_TMP_SIZE;
             if (chunk_size > remaining) { chunk_size = remaining; }
 
-            ulong bytes = Virtio9p::read(fid, BREW_TMP_BUF, offset, chunk_size);
+            ulong bytes = Virtio9p::read(fid, GEN_TMP_BUF, offset, chunk_size);
             if (bytes == 0) { break; }
 
             // RamFSのデータバッファに直接コピー
-            RamFs::write(ino, BREW_TMP_BUF, offset, bytes);
+            RamFs::write(ino, GEN_TMP_BUF, offset, bytes);
             total_read = total_read + bytes;
             offset = offset + bytes;
 
@@ -185,7 +185,7 @@ impl Brew {
         Shell::writeln(name_addr as void*);
     }
 
-    /// brew list — インストール済みパッケージ一覧
+    /// gen list — インストール済みパッケージ一覧
     static void list() {
         Shell::writeln("" as void*);
         Shell::set_color(14, 0);
@@ -204,7 +204,7 @@ impl Brew {
                     ulong fsize = RamFs::file_size(ino);
                     // ELFかチェック (最初の4バイト: 0x7f 'E' 'L' 'F')
                     if (fsize >= 4) {
-                        ulong buf4 = BREW_TMP_BUF;
+                        ulong buf4 = GEN_TMP_BUF;
                         RamFs::read(ino, buf4, 0, 4);
                         ulong b0 = Mem::read_byte(buf4);
                         ulong b1 = Mem::read_byte(buf4 + 1);
@@ -228,15 +228,15 @@ impl Brew {
         }
         if (found == 0) {
             Shell::writeln("  (no packages installed)" as void*);
-            Shell::writeln("  Use 'brew install <pkg>' to install" as void*);
+            Shell::writeln("  Use 'gen install <pkg>' to install" as void*);
         }
         Shell::writeln("" as void*);
     }
 
-    /// brew search — ホスト側の利用可能パッケージを表示
+    /// gen search — ホスト側の利用可能パッケージを表示
     static void search() {
         if (Virtio9p::is_ready() == 0) {
-            Shell::writeln("brew: host filesystem not available" as void*);
+            Shell::writeln("gen: host filesystem not available" as void*);
             return;
         }
 
@@ -263,7 +263,7 @@ impl Brew {
             return;
         }
 
-        ulong dir_buf = BREW_TMP_BUF;
+        ulong dir_buf = GEN_TMP_BUF;
         ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
         Virtio9p::clunk(fid);
 
@@ -302,7 +302,7 @@ impl Brew {
 
                 // インストール済みかチェック
                 // 名前を一時バッファにコピー
-                ulong tmp_name = BREW_NAME_BUF + 128;
+                ulong tmp_name = GEN_NAME_BUF + 128;
                 ki = 0;
                 while (ki < nlen && ki < 63) {
                     Mem::write_byte(tmp_name + ki, Mem::read_byte(dir_buf + pos + ki));
@@ -327,20 +327,20 @@ impl Brew {
         Shell::writeln("" as void*);
     }
 
-    /// brew run <pkg> — パッケージを実行
+    /// gen run <pkg> — パッケージを実行
     static void run(ulong name_addr) {
         if (name_addr == 0) {
-            Shell::writeln("Usage: brew run <package>" as void*);
+            Shell::writeln("Usage: gen run <package>" as void*);
             return;
         }
 
         // RamFSにあるか確認
         Ino ino = RamFs::lookup(name_addr as void*);
         if (ino == 0) {
-            Shell::write("brew: '" as void*);
+            Shell::write("gen: '" as void*);
             Shell::write(name_addr as void*);
             Shell::writeln("' is not installed" as void*);
-            Shell::writeln("  Use 'brew install <pkg>' first" as void*);
+            Shell::writeln("  Use 'gen install <pkg>' first" as void*);
             return;
         }
 
@@ -354,23 +354,23 @@ impl Brew {
             Shell::print_dec(pid as ulong);
             Shell::writeln(")" as void*);
         } else {
-            Shell::writeln("brew: failed to execute package" as void*);
+            Shell::writeln("gen: failed to execute package" as void*);
         }
     }
 
-    /// brew help — ヘルプ表示
+    /// gen help — ヘルプ表示
     static void help() {
         Shell::writeln("" as void*);
         Shell::set_color(14, 0);
-        Shell::writeln("Cosmo Homebrew - Package Manager" as void*);
+        Shell::writeln("Cosmo Gen - Host Package Manager" as void*);
         Shell::set_color(7, 0);
         Shell::writeln("" as void*);
         Shell::writeln("Commands:" as void*);
-        Shell::writeln("  brew install <pkg>  Install a package from host" as void*);
-        Shell::writeln("  brew list           List installed packages" as void*);
-        Shell::writeln("  brew search         Search available packages" as void*);
-        Shell::writeln("  brew run <pkg>      Run an installed package" as void*);
-        Shell::writeln("  brew help           Show this help" as void*);
+        Shell::writeln("  gen install <pkg>   Install a package from host" as void*);
+        Shell::writeln("  gen list            List installed packages" as void*);
+        Shell::writeln("  gen search          Search available packages" as void*);
+        Shell::writeln("  gen run <pkg>       Run an installed package" as void*);
+        Shell::writeln("  gen help            Show this help" as void*);
         Shell::writeln("" as void*);
         Shell::writeln("Packages are loaded from host rootfs/packages/" as void*);
         Shell::writeln("" as void*);
