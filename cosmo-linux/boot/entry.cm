@@ -202,8 +202,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Cpu::sti();
 
     // idle loop（PIT割り込み + タイマーベーススケジューリング）
+    // 注: Context::switch_toがRFLAGSを保存しないため、
+    //     syscall(IF=0)経由のexit後にIF=0でhltすると永久停止。
+    //     hltの前にstiで割り込みを確実に有効化する。
     while (true) {
-        Cpu::hlt();
+        __asm__(`sti; hlt`);
 
         ulong need_resched = PIT::check_resched();
         if (need_resched != 0) {
