@@ -244,4 +244,222 @@ impl NinePfs {
 
         return entry_count;
     }
+
+    // ============================================================
+    // 書き込み系操作
+    // ============================================================
+
+    /// ファイルにデータを書き込み: walk→lcreate/lopen→write→clunk
+    /// path: 9pfsルートからの相対パス
+    /// data: 書き込みデータバッファ
+    /// size: データサイズ
+    /// 返り値: 書き込んだバイト数 (0=失敗)
+    static ulong write_file(ulong path, ulong data, ulong size) {
+        if (Virtio9p::is_ready() == 0) { return 0; }
+
+        SerialPort dbg(COM1);
+        dbg.puts("[9pfs] write_file: path=" as void*);
+        dbg.puts(path as void*);
+        dbg.puts(" size=" as void*);
+        print_dec(&dbg, size);
+        dbg.println("" as void*);
+
+        // パスを親ディレクトリとファイル名に分離
+        ulong parent_buf = P9FS_BUF;         // 親パスバッファ
+        ulong name_buf = P9FS_BUF + 256;     // ファイル名バッファ
+        NinePfs::split_path(path, parent_buf, name_buf);
+
+        // 親ディレクトリにwalk
+        ulong parent_fid = P9FS_WORK_FID;
+        ulong parent_len = strlen(parent_buf as void*);
+        if (parent_len > 0) {
+            ulong walk_ok = Virtio9p::walk(0, parent_fid, parent_buf);
+            if (walk_ok == 0) {
+                dbg.println("[9pfs] write: parent walk failed" as void*);
+                return 0;
+            }
+        } else {
+            // ルートディレクトリ直下: walk nwname=0 でFIDをクローン
+            ulong walk_ok = Virtio9p::walk(0, parent_fid, "" as ulong);
+            if (walk_ok == 0) {
+                dbg.println("[9pfs] write: root clone failed" as void*);
+                return 0;
+            }
+        }
+
+        // lcreateでファイル作成+オープン (既存なら上書き: O_WRONLY|O_CREAT|O_TRUNC)
+        ulong create_ok = Virtio9p::lcreate(parent_fid, name_buf,
+            P9_O_WRONLY | P9_O_CREAT | P9_O_TRUNC, 0x1A4, 0);  // 0644
+
+        if (create_ok == 0) {
+            // ファイルが既に存在する可能性 → walk→lopenで開く
+            dbg.println("[9pfs] lcreate failed, trying lopen..." as void*);
+            Virtio9p::clunk(parent_fid);
+
+            // フルパスでwalk
+            ulong walk_ok2 = Virtio9p::walk(0, parent_fid, path);
+            if (walk_ok2 == 0) {
+                dbg.println("[9pfs] write: walk full path failed" as void*);
+                return 0;
+            }
+            ulong open_ok = Virtio9p::lopen(parent_fid, P9_O_WRONLY | P9_O_TRUNC);
+            if (open_ok == 0) {
+                Virtio9p::clunk(parent_fid);
+                dbg.println("[9pfs] write: lopen failed" as void*);
+                return 0;
+            }
+        }
+
+        // チャンク単位で書き込み
+        ulong total = 0;
+        ulong offset = 0;
+        while (total < size) {
+            ulong remaining = size - total;
+            ulong chunk = Virtio9p::write_data(parent_fid, data + total, offset, remaining);
+            if (chunk == 0) { break; }
+            total = total + chunk;
+            offset = offset + chunk;
+        }
+
+        dbg.puts("[9pfs] write complete: " as void*);
+        print_dec(&dbg, total);
+        dbg.println(" bytes" as void*);
+
+        Virtio9p::clunk(parent_fid);
+        return total;
+    }
+
+    /// 空ファイル新規作成
+    /// path: 9pfsルートからの相対パス
+    /// 返り値: 1=成功, 0=失敗
+    static ulong create_file(ulong path) {
+        if (Virtio9p::is_ready() == 0) { return 0; }
+
+        ulong parent_buf = P9FS_BUF;
+        ulong name_buf = P9FS_BUF + 256;
+        NinePfs::split_path(path, parent_buf, name_buf);
+
+        // 親ディレクトリにwalk
+        ulong fid = P9FS_WORK_FID;
+        ulong parent_len = strlen(parent_buf as void*);
+        if (parent_len > 0) {
+            ulong walk_ok = Virtio9p::walk(0, fid, parent_buf);
+            if (walk_ok == 0) { return 0; }
+        } else {
+            ulong walk_ok = Virtio9p::walk(0, fid, "" as ulong);
+            if (walk_ok == 0) { return 0; }
+        }
+
+        // lcreateで空ファイル作成
+        ulong ok = Virtio9p::lcreate(fid, name_buf,
+            P9_O_WRONLY | P9_O_CREAT, 0x1A4, 0);  // 0644
+
+        Virtio9p::clunk(fid);
+        return ok;
+    }
+
+    /// ディレクトリ作成
+    /// path: 9pfsルートからの相対パス
+    /// 返り値: 1=成功, 0=失敗
+    static ulong do_mkdir(ulong path) {
+        if (Virtio9p::is_ready() == 0) { return 0; }
+
+        ulong parent_buf = P9FS_BUF;
+        ulong name_buf = P9FS_BUF + 256;
+        NinePfs::split_path(path, parent_buf, name_buf);
+
+        // 親ディレクトリにwalk
+        ulong fid = P9FS_WORK_FID;
+        ulong parent_len = strlen(parent_buf as void*);
+        if (parent_len > 0) {
+            ulong walk_ok = Virtio9p::walk(0, fid, parent_buf);
+            if (walk_ok == 0) { return 0; }
+        } else {
+            ulong walk_ok = Virtio9p::walk(0, fid, "" as ulong);
+            if (walk_ok == 0) { return 0; }
+        }
+
+        // mkdirで作成 (0755)
+        ulong ok = Virtio9p::mkdir_9p(fid, name_buf, 0x1ED, 0);
+
+        Virtio9p::clunk(fid);
+        return ok;
+    }
+
+    /// ファイル/ディレクトリ削除
+    /// path: 9pfsルートからの相対パス
+    /// flags: 0=ファイル, 0x200=ディレクトリ (AT_REMOVEDIR)
+    /// 返り値: 1=成功, 0=失敗
+    static ulong remove(ulong path, ulong flags) {
+        if (Virtio9p::is_ready() == 0) { return 0; }
+
+        ulong parent_buf = P9FS_BUF;
+        ulong name_buf = P9FS_BUF + 256;
+        NinePfs::split_path(path, parent_buf, name_buf);
+
+        // 親ディレクトリにwalk
+        ulong fid = P9FS_WORK_FID;
+        ulong parent_len = strlen(parent_buf as void*);
+        if (parent_len > 0) {
+            ulong walk_ok = Virtio9p::walk(0, fid, parent_buf);
+            if (walk_ok == 0) { return 0; }
+        } else {
+            ulong walk_ok = Virtio9p::walk(0, fid, "" as ulong);
+            if (walk_ok == 0) { return 0; }
+        }
+
+        // unlinkatで削除
+        ulong ok = Virtio9p::unlinkat(fid, name_buf, flags);
+
+        Virtio9p::clunk(fid);
+        return ok;
+    }
+
+    // ============================================================
+    // ヘルパー
+    // ============================================================
+
+    /// パスを親ディレクトリとファイル名に分離
+    /// "packages/hello" → parent="packages", name="hello"
+    /// "hello" → parent="", name="hello"
+    static void split_path(ulong path, ulong parent_out, ulong name_out) {
+        // 最後の '/' の位置を検索
+        ulong len = strlen(path as void*);
+        ulong last_slash = 0xFFFFFFFF;
+        ulong i = 0;
+        while (i < len) {
+            ulong ch = Mem::read_byte(path + i);
+            if (ch == 47) { last_slash = i; }  // '/'
+            i = i + 1;
+        }
+
+        if (last_slash == 0xFFFFFFFF) {
+            // スラッシュなし: ルート直下
+            Mem::write_byte(parent_out, 0);  // 空文字列
+            // 名前コピー
+            i = 0;
+            while (i < len && i < 255) {
+                Mem::write_byte(name_out + i, Mem::read_byte(path + i));
+                i = i + 1;
+            }
+            Mem::write_byte(name_out + i, 0);
+        } else {
+            // 親パスコピー
+            i = 0;
+            while (i < last_slash && i < 255) {
+                Mem::write_byte(parent_out + i, Mem::read_byte(path + i));
+                i = i + 1;
+            }
+            Mem::write_byte(parent_out + i, 0);
+
+            // ファイル名コピー
+            ulong ni = 0;
+            ulong start = last_slash + 1;
+            while (start + ni < len && ni < 255) {
+                Mem::write_byte(name_out + ni, Mem::read_byte(path + start + ni));
+                ni = ni + 1;
+            }
+            Mem::write_byte(name_out + ni, 0);
+        }
+    }
 }

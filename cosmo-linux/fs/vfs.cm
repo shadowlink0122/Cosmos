@@ -14,6 +14,14 @@ import ./fd_table;
 import ./ramfs;
 import ./ninepfs;
 import ../lib/kstring;
+import ../drivers/virtio_9p;
+import ../ui/mem;
+
+// 9pFS用パスバッファ (FDごとに相対パスを保存)
+// 最大8ファイル同時オープン × 128バイト/パス = 1KB
+const ulong VFS_9P_PATH_BASE = 0xBA0000;
+const ulong VFS_9P_PATH_SIZE = 128;
+const ulong VFS_9P_MAX_FDS   = 8;
 
 /// Vfs — 仮想ファイルシステムAPI
 export struct Vfs {}
@@ -26,9 +34,40 @@ impl Vfs {
 
         // 9pfsパス判定: /mnt/host で始まるパス
         if (NinePfs::is_9p_path(name as ulong) != 0) {
-            // 9pfsではFDテーブルをバイパスし、直接読み取り
-            // read_file/list_dirでアクセスするため、ダミーFDは割り当てない
-            return 0 - ENOSYS;  // VFS open経由ではなく直接APIを使用
+            // 相対パス取得
+            ulong rel_path = NinePfs::strip_prefix(name as ulong);
+
+            // 空きパスバッファを検索
+            ulong slot = Vfs::alloc_9p_slot();
+            if (slot == 0xFFFFFFFF) { return 0 - EMFILE; }
+
+            // 相対パスをバッファにコピー
+            ulong path_buf = VFS_9P_PATH_BASE + slot * VFS_9P_PATH_SIZE;
+            ulong pi = 0;
+            while (pi < VFS_9P_PATH_SIZE - 1) {
+                ulong ch = Mem::read_byte(rel_path + pi);
+                Mem::write_byte(path_buf + pi, ch);
+                if (ch == 0) { break; }
+                pi = pi + 1;
+            }
+            Mem::write_byte(path_buf + pi, 0);
+
+            // O_CREATの場合: ファイルを作成
+            if ((flags & O_CREAT) != 0) {
+                ulong rch = Mem::read_byte(path_buf);
+                if (rch != 0) {
+                    NinePfs::create_file(path_buf);
+                }
+            }
+
+            // FD割り当て (inoフィールドにパスバッファアドレスを格納)
+            Fd fd = FdTable::alloc(path_buf as long, flags, FS_9PFS);
+            if (fd < 0) {
+                Vfs::free_9p_slot(slot);
+                return fd;
+            }
+
+            return fd;
         }
 
         // ramfsで検索
@@ -70,6 +109,18 @@ impl Vfs {
         // コンソール (stdin) — 未実装: 0を返す
         if (fs_type == FS_CONSOLE) { return 0; }
 
+        // 9pfs
+        if (fs_type == FS_9PFS) {
+            Ino path_addr = FdTable::get_ino(fd);
+            ulong offset = FdTable::get_offset(fd);
+            // ファイル全体を一時バッファに読み込み（offセット対応）
+            ulong total = NinePfs::read_file(path_addr as ulong, buf, count);
+            if (total > 0) {
+                FdTable::set_offset(fd, offset + total);
+            }
+            return total as long;
+        }
+
         // ramfs
         if (fs_type == FS_RAMFS) {
             Ino ino = FdTable::get_ino(fd);
@@ -95,6 +146,17 @@ impl Vfs {
             return count as long;
         }
 
+        // 9pfs
+        if (fs_type == FS_9PFS) {
+            Ino path_addr = FdTable::get_ino(fd);
+            ulong written = NinePfs::write_file(path_addr as ulong, buf, count);
+            if (written > 0) {
+                ulong offset = FdTable::get_offset(fd);
+                FdTable::set_offset(fd, offset + written);
+            }
+            return written as long;
+        }
+
         // ramfs
         if (fs_type == FS_RAMFS) {
             Ino ino = FdTable::get_ino(fd);
@@ -112,6 +174,18 @@ impl Vfs {
     /// FDを閉じる
     static long close(Fd fd) {
         if (FdTable::is_valid(fd) == 0) { return 0 - EBADF; }
+
+        ulong fs_type = FdTable::get_fs_type(fd);
+
+        // 9pFSの場合、パスバッファスロットを解放
+        if (fs_type == FS_9PFS) {
+            Ino path_addr = FdTable::get_ino(fd);
+            ulong slot = ((path_addr as ulong) - VFS_9P_PATH_BASE) / VFS_9P_PATH_SIZE;
+            if (slot < VFS_9P_MAX_FDS) {
+                Vfs::free_9p_slot(slot);
+            }
+        }
+
         FdTable::free(fd);
         return 0;
     }
@@ -119,6 +193,36 @@ impl Vfs {
     /// ディレクトリエントリを読み出し（簡易版）
     static ulong readdir(ulong idx) {
         return RamFs::dir_name(idx);
+    }
+
+    // ============================================================
+    // 9pFS パスバッファ管理
+    // ============================================================
+
+    /// 空き9pFSパスバッファスロットを割り当て
+    /// 返り値: スロット番号 (0xFFFFFFFF=空きなし)
+    static ulong alloc_9p_slot() {
+        ulong i = 0;
+        while (i < VFS_9P_MAX_FDS) {
+            ulong addr = VFS_9P_PATH_BASE + i * VFS_9P_PATH_SIZE;
+            ulong first = Mem::read_byte(addr);
+            // 未使用チェック: 最初のバイトが0xFFなら空き
+            ulong marker_addr = VFS_9P_PATH_BASE + VFS_9P_MAX_FDS * VFS_9P_PATH_SIZE + i;
+            ulong marker = Mem::read_byte(marker_addr);
+            if (marker == 0) {
+                Mem::write_byte(marker_addr, 1);
+                return i;
+            }
+            i = i + 1;
+        }
+        return 0xFFFFFFFF;
+    }
+
+    /// 9pFSパスバッファスロットを解放
+    static void free_9p_slot(ulong slot) {
+        if (slot >= VFS_9P_MAX_FDS) { return; }
+        ulong marker_addr = VFS_9P_PATH_BASE + VFS_9P_MAX_FDS * VFS_9P_PATH_SIZE + slot;
+        Mem::write_byte(marker_addr, 0);
     }
 }
 
