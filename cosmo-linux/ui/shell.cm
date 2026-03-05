@@ -127,6 +127,15 @@ export void shell_main() {
     // 環境変数初期化
     Env::setup();
 
+    // デフォルトパッケージの自動インストール
+    Shell::set_color(14, 0);
+    Shell::writeln("Installing default packages..." as void*);
+    Shell::set_color(7, 0);
+    Gen::install("bash" as ulong);
+    Gen::install("git" as ulong);
+    Gen::install("gcc" as ulong);
+    Shell::writeln("" as void*);
+
     // 履歴ナビゲーション位置
     ulong hist_pos = 0;
 
