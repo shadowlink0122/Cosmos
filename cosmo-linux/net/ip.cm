@@ -33,7 +33,7 @@ export struct IpHeader {
 // ============================================================
 
 /// IP IDカウンタ (固定メモリ)
-const ulong IP_ID_COUNTER = 0xA10200;
+const ulong IP_ID_COUNTER = 0x1940000;  // High Mem
 
 export struct Ip {}
 

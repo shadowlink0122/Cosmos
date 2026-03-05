@@ -520,18 +520,97 @@ impl Syscall {
     /// sys_ioctl: デバイス制御
     static long do_ioctl(ulong fd, ulong cmd, ulong arg) {
         // TIOCGWINSZ = 0x5413: ウィンドウサイズ取得
+        // struct winsize { u16 ws_row, ws_col, ws_xpixel, ws_ypixel } = 8バイト
         if (cmd == 0x5413) {
             if (arg != 0) {
-                ulong* ws = arg as ulong*;
-                *ws = (80 << 16) | 25;
+                // ws_row = 25 (offset 0, 2バイト)
+                ulong a0 = arg;
+                ulong v_row = 25;
+                __asm__(`movq ${r:a0}, %rdi; movq ${r:v_row}, %rax; movw %ax, (%rdi)`);
+                // ws_col = 80 (offset 2, 2バイト)
+                ulong a2 = arg + 2;
+                ulong v_col = 80;
+                __asm__(`movq ${r:a2}, %rdi; movq ${r:v_col}, %rax; movw %ax, (%rdi)`);
+                // ws_xpixel = 640 (offset 4)
+                ulong a4 = arg + 4;
+                ulong v_xp = 640;
+                __asm__(`movq ${r:a4}, %rdi; movq ${r:v_xp}, %rax; movw %ax, (%rdi)`);
+                // ws_ypixel = 400 (offset 6)
+                ulong a6 = arg + 6;
+                ulong v_yp = 400;
+                __asm__(`movq ${r:a6}, %rdi; movq ${r:v_yp}, %rax; movw %ax, (%rdi)`);
             }
             return 0;
         }
         // TCGETS = 0x5401: termios取得
         if (cmd == 0x5401) {
-            return 0 - ENOTTY;
+            if (arg != 0) {
+                // struct termios をゼロクリアして基本値を設定
+                memzero(arg as void*, 60);
+                // c_lflag (offset 12): ECHO|ICANON|ISIG
+                ulong* lflag = (arg + 12) as ulong*;
+                *lflag = 0x8A3B;  // ECHO=8, ICANON=2, ISIG=1 etc.
+            }
+            return 0;
+        }
+        // TCSETS/TCSETSW/TCSETSF = 0x5402/0x5403/0x5404
+        if (cmd == 0x5402 || cmd == 0x5403 || cmd == 0x5404) {
+            return 0;  // 設定を受け付けるが無視
+        }
+        // FIONREAD = 0x541B: 読み取り可能バイト数
+        if (cmd == 0x541B) {
+            if (arg != 0) {
+                ulong* bytes_avail = arg as ulong*;
+                *bytes_avail = 0;  // stub: 0バイト
+            }
+            return 0;
         }
         return 0 - ENOTTY;
+    }
+
+    /// sys_poll: FDレディネスチェック
+    /// struct pollfd { int fd; short events; short revents; }
+    static long do_poll(ulong fds, ulong nfds, long timeout) {
+        ulong ready = 0;
+        ulong i = 0;
+        while (i < nfds) {
+            ulong entry = fds + i * 8;  // sizeof(struct pollfd) = 8
+            // fd (4バイト)
+            ulong poll_fd = 0;
+            __asm__(`movq ${r:entry}, %rdi; movslq (%rdi), %rax; movq %rax, ${=r:poll_fd}`);
+            // events (2バイト, offset 4)
+            ulong events = 0;
+            ulong ev_addr = entry + 4;
+            __asm__(`movq ${r:ev_addr}, %rdi; xorq %rax,%rax; movzwl (%rdi),%eax; movq %rax, ${=r:events}`);
+
+            // reventsを計算
+            ulong revents = 0;
+            // stdin(fd=0): 常に読み取り可能としない
+            // stdout/stderr(fd=1,2): 常に書き込み可能
+            if (poll_fd == 1 || poll_fd == 2) {
+                revents = events & 4;  // POLLOUT = 4
+            } else if (FdTable::is_valid(poll_fd as long) != 0) {
+                // 有効なFD: 書き込み可能 + 読み取り可能(pipe/ファイル)
+                ulong fs = FdTable::get_fs_type(poll_fd as long);
+                if (fs == FS_PIPE || fs == FS_RAMFS || fs == FS_9PFS) {
+                    revents = events & 5;  // POLLIN|POLLOUT = 1|4
+                } else {
+                    revents = events & 4;  // POLLOUT
+                }
+            } else if (poll_fd as long < 0) {
+                // 無効なFD: 無視
+                revents = 0;
+            } else {
+                revents = 0x20;  // POLLNVAL
+            }
+
+            // reventsを書き込み (offset 6, 2バイト)
+            ulong rev_addr = entry + 6;
+            __asm__(`movq ${r:rev_addr}, %rdi; movq ${r:revents}, %rax; movw %ax, (%rdi)`);
+            if (revents != 0) { ready = ready + 1; }
+            i = i + 1;
+        }
+        return ready as long;
     }
 }
 
@@ -739,8 +818,17 @@ ulong arg3, ulong arg4, ulong arg5) {
         return 0;
     }
     if (nr == SYS_POLL) {
-        // poll: イベント0個を返す (タイムアウト)
-        return 0;
+        return Syscall::do_poll(arg0, arg1, arg2 as long);
+    }
+    // ppoll (SYS_PPOLL = 271)
+    if (nr == 271) {
+        // ppoll(fds, nfds, timeout, sigmask) → pollに委譲
+        return Syscall::do_poll(arg0, arg1, 0 - 1);
+    }
+    // eventfd2 (SYS_EVENTFD2 = 290)
+    if (nr == 290) {
+        // stub: ダミーFDを返す
+        return FdTable::alloc(0, 0, FS_DEVFS);
     }
 
     // --- ユーザー/グループ ---

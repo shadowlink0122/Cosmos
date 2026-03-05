@@ -30,7 +30,7 @@ export struct TcpHeader {
 // ============================================================
 
 const ulong MAX_TCP_CONNS = 16;
-const ulong TCP_CONN_BASE = 0xA20000;
+const ulong TCP_CONN_BASE = 0x1950000;  // High Mem
 const ulong TCP_CONN_SIZE = 96;
 
 /// TCPコネクション

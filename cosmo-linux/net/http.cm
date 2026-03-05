@@ -62,9 +62,9 @@ export struct HttpResponse {
 // ============================================================
 
 /// HTTPバッファ領域
-const ulong HTTP_BUF_BASE = 0xA60000;
-const ulong HTTP_PATH_BUF = 0xA60000;  // パス用256バイト
-const ulong HTTP_RESP_BUF = 0xA61000;  // レスポンス用4096バイト
+const ulong HTTP_BUF_BASE = 0x1960000;   // High Mem
+const ulong HTTP_PATH_BUF = 0x1960000;   // パス用256バイト
+const ulong HTTP_RESP_BUF = 0x1961000;   // レスポンス用4096バイト
 
 export struct Http {}
 

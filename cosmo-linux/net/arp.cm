@@ -19,7 +19,7 @@ import ../net/ip;
 // ============================================================
 
 const ulong ARP_TABLE_SIZE = 16;
-const ulong ARP_TABLE_BASE = 0xA10000;  // ARPテーブル固定メモリ
+const ulong ARP_TABLE_BASE = 0x1930000;  // High Mem (25MB+192KB)
 
 // ARPエントリサイズ: ip(8) + mac(8) + valid(8) + ttl(8) = 32バイト
 const ulong ARP_ENTRY_SIZE = 32;
