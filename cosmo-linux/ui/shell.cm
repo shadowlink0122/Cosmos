@@ -28,6 +28,7 @@ import ../init/init;
 import ../fs/ramfs;
 import ../sched/scheduler;
 import ../drivers/pit;
+import ../drivers/mouse;
 
 // ============================================================
 // Tab補完用コマンドリスト
@@ -87,7 +88,7 @@ ulong shell_fill_cmd_list(ulong buf) {
     cmd_entry(buf, n, "curl" as ulong);     n = n + 1;
     cmd_entry(buf, n, "hostls" as ulong);   n = n + 1;
     cmd_entry(buf, n, "hostcat" as ulong);  n = n + 1;
-    cmd_entry(buf, n, "gen" as ulong);      n = n + 1;
+    cmd_entry(buf, n, "apt" as ulong);      n = n + 1;
     cmd_entry(buf, n, "brew" as ulong);     n = n + 1;
     return n;
 }
@@ -97,6 +98,11 @@ ulong shell_fill_cmd_list(ulong buf) {
 // ============================================================
 
 export void shell_main() {
+    // スクロールバックバッファ初期化
+    Vga::scrollback_init();
+    // PS/2マウス初期化 (ホイールスクロール対応)
+    Mouse::setup();
+
     // VGA画面クリア＆ウェルカムバナー
     Shell::set_color(7, 0);
     Vga::clear_screen();
@@ -168,6 +174,15 @@ export void shell_main() {
         while (input_done == 0) {
             ulong ch = Kbd::getchar();
             if (ch == 0) {
+                // マウスホイール/トラックパッドスクロールチェック
+                long scroll_ev = Mouse::get_scroll();
+                if (scroll_ev > 0) {
+                    // 蓄積された上方向スクロール → 1行だけ実行
+                    Vga::scroll_up();
+                } else if (scroll_ev < 0) {
+                    // 蓄積された下方向スクロール → 1行だけ実行
+                    Vga::scroll_down();
+                }
                 // pause: hltの代わりにpauseで高頻度ポーリング
                 // hltはIRQ(10ms)でしか復帰せず、スケジューラpreemptionと合わせて
                 // 1秒サイクルになるため、pauseで即座にリトライする。
@@ -178,6 +193,19 @@ export void shell_main() {
                     Sched::tick();
                 }
             } else if (ch == 10) {
+                // スクロールバック中ならライブモードに復帰
+                ulong* sb_active = 0xC08018 as ulong*;  // SCROLLBACK_ACTIVE_ADDR
+                if (*sb_active != 0) {
+                    ulong* sb_pos = 0xC08010 as ulong*;  // SCROLLBACK_POS_ADDR
+                    *sb_pos = 0;
+                    *sb_active = 0;
+                    // ライブ画面を復元
+                    ulong si = 0;
+                    while (si < 25 * 80 * 2) {
+                        Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
+                        si = si + 1;
+                    }
+                }
                 // Enter: コマンド実行
                 Shell::putc(10);
                 ulong len = *len_ptr;
@@ -346,12 +374,37 @@ export void shell_main() {
                             *cur_ptr = *len_ptr;
                         }
                     } else {
+                        // 最下端: 未入力状態に復元
                         ulong old_len = *len_ptr;
+
+                        // VGA: バックスペース + スペース上書き + バックスペース (文字消去)
                         ulong k = 0;
                         while (k < old_len) {
-                            Vga::putc(8);
+                            Vga::putc(8);    // カーソル左
                             k = k + 1;
                         }
+                        k = 0;
+                        while (k < old_len) {
+                            Vga::putc(32);   // スペースで上書き
+                            k = k + 1;
+                        }
+                        k = 0;
+                        while (k < old_len) {
+                            Vga::putc(8);    // カーソルを元に戻す
+                            k = k + 1;
+                        }
+
+                        // シリアル: \r + ESC[K (行消去) でプロンプト後を消去
+                        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+                        SerialPort* ser = (*ser_ptr) as SerialPort*;
+                        ser->putc(13);    // \r (行頭)
+                        ser->putc(27); ser->putc(91); ser->putc(75);  // ESC[K (行末消去)
+                        // プロンプト再描画
+                        ser->puts("cosmo:" as void*);
+                        ulong cwd_disp = Cwd::get();
+                        ser->puts(cwd_disp as void*);
+                        ser->puts("$ " as void*);
+
                         *len_ptr = 0;
                         *cur_ptr = 0;
                     }
@@ -650,6 +703,18 @@ export void shell_main() {
                     }
                 }
             } else {
+                // スクロールバック中ならライブモードに復帰
+                ulong* sb_active2 = 0xC08018 as ulong*;
+                if (*sb_active2 != 0) {
+                    ulong* sb_pos2 = 0xC08010 as ulong*;
+                    *sb_pos2 = 0;
+                    *sb_active2 = 0;
+                    ulong si = 0;
+                    while (si < 25 * 80 * 2) {
+                        Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
+                        si = si + 1;
+                    }
+                }
                 // 表示可能文字: カーソル位置に挿入
                 ulong len = *len_ptr;
                 ulong cursor = *cur_ptr;

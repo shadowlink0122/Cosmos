@@ -2,11 +2,32 @@
 // cosmo-linux::ui::vga - VGAテキストモードドライバ
 //
 // VGAバッファ (0xB8000) への直接書き込み。
-// カーソル更新、スクロール、画面クリアを提供。
+// カーソル更新、スクロール、画面クリア、スクロールバックを提供。
 
 import ./shell_const;
 import ./mem;
 import ../drivers/serial;
+
+// ============================================================
+// スクロールバックバッファ定数
+// ============================================================
+
+/// スクロールバック最大行数
+const ulong SCROLLBACK_MAX_LINES = 200;
+/// 1行のバイト数 (VGA_COLS * 2 = 160)
+const ulong SCROLLBACK_LINE_SIZE = 160;
+/// スクロールバックバッファ基点アドレス (32KB, 0xC00000～)
+const PhysAddr SCROLLBACK_BUF_ADDR = 0xC00000;
+/// バッファに保存された総行数
+const PhysAddr SCROLLBACK_COUNT_ADDR = 0xC08000;
+/// リングバッファ書き込み位置
+const PhysAddr SCROLLBACK_HEAD_ADDR = 0xC08008;
+/// 現在のスクロールバック位置 (0=最新, >0で過去)
+const PhysAddr SCROLLBACK_POS_ADDR = 0xC08010;
+/// スクロールバック中フラグ (0=ライブ, 1=バックスクロール中)
+const PhysAddr SCROLLBACK_ACTIVE_ADDR = 0xC08018;
+/// ライブ画面退避バッファ (VGAバッファのコピー, 4000バイト)
+const PhysAddr SCROLLBACK_LIVE_ADDR = 0xC08100;
 
 /// Vga — VGAテキストモードドライバ
 export struct Vga {}
@@ -30,8 +51,42 @@ impl Vga {
         outb(0x3D5, pos & 0xFF);
     }
 
-    /// 1行スクロール
+    /// スクロールバック初期化
+    static void scrollback_init() {
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong* head = SCROLLBACK_HEAD_ADDR as ulong*;
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+        ulong* active = SCROLLBACK_ACTIVE_ADDR as ulong*;
+        *count = 0;
+        *head = 0;
+        *pos = 0;
+        *active = 0;
+    }
+
+    /// 最上行をスクロールバックバッファに退避
+    static void scrollback_save_line() {
+        ulong* head = SCROLLBACK_HEAD_ADDR as ulong*;
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong dest = SCROLLBACK_BUF_ADDR + (*head) * SCROLLBACK_LINE_SIZE;
+        // VGAの最上行(row=0)をコピー
+        ulong c = 0;
+        while (c < VGA_COLS) {
+            ulong src_off = c * 2;
+            Mem::write_byte(dest + src_off, Mem::read_byte(VGA_BUF + src_off));
+            Mem::write_byte(dest + src_off + 1, Mem::read_byte(VGA_BUF + src_off + 1));
+            c = c + 1;
+        }
+        *head = (*head + 1) % SCROLLBACK_MAX_LINES;
+        if (*count < SCROLLBACK_MAX_LINES) {
+            *count = *count + 1;
+        }
+    }
+
+    /// 1行スクロール (最上行をバッファに退避)
     static void scroll() {
+        // スクロールバック: 最上行を退避
+        Vga::scrollback_save_line();
+
         ulong r = 1;
         while (r < VGA_ROWS) {
             ulong c = 0;
@@ -51,6 +106,110 @@ impl Vga {
         while (c < VGA_COLS) {
             Vga::write_at(VGA_ROWS - 1, c, 32, *color_ptr);
             c = c + 1;
+        }
+    }
+
+    /// 上スクロール (過去の内容を表示)
+    static void scroll_up() {
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+        ulong* active = SCROLLBACK_ACTIVE_ADDR as ulong*;
+        if (*count == 0) { return; }
+        if (*pos >= *count) { return; }
+
+        // 初回: ライブ画面を退避
+        if (*active == 0) {
+            *active = 1;
+            ulong i = 0;
+            while (i < VGA_ROWS * VGA_COLS * 2) {
+                Mem::write_byte(SCROLLBACK_LIVE_ADDR + i, Mem::read_byte(VGA_BUF + i));
+                i = i + 1;
+            }
+        }
+
+        *pos = *pos + 1;
+        Vga::render_scrollback();
+    }
+
+    /// 下スクロール (最新に向かって戻る)
+    static void scroll_down() {
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+        ulong* active = SCROLLBACK_ACTIVE_ADDR as ulong*;
+        if (*active == 0) { return; }
+        if (*pos == 0) { return; }
+
+        *pos = *pos - 1;
+
+        if (*pos == 0) {
+            // ライブ表示に復帰
+            *active = 0;
+            ulong i = 0;
+            while (i < VGA_ROWS * VGA_COLS * 2) {
+                Mem::write_byte(VGA_BUF + i, Mem::read_byte(SCROLLBACK_LIVE_ADDR + i));
+                i = i + 1;
+            }
+        } else {
+            Vga::render_scrollback();
+        }
+    }
+
+    /// スクロールバック位置の内容をVGAに描画
+    ///
+    /// 画面構成 (pos行分バックスクロール):
+    ///   上部: スクロールバックバッファからの行 (最大pos行)
+    ///   下部: ライブ画面退避バッファからの行
+    static void render_scrollback() {
+        ulong* head = SCROLLBACK_HEAD_ADDR as ulong*;
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+
+        ulong sb_lines = *pos;     // バックスクロール行数
+        ulong avail = *count;      // バッファ内の総行数
+
+        // 表示するバッファ行数をクランプ
+        if (sb_lines > avail) { sb_lines = avail; }
+        if (sb_lines > VGA_ROWS) { sb_lines = VGA_ROWS; }
+
+        // === 上部: スクロールバックバッファからの行 ===
+        ulong r = 0;
+        while (r < sb_lines) {
+            // バッファの古い方から新しい方へ表示
+            // r=0 → 最も古い表示行, r=sb_lines-1 → 最も新しい表示行
+            ulong back_idx = *pos - r;  // pos(最古)からrだけ新しい方向
+            ulong buf_idx = (*head + SCROLLBACK_MAX_LINES - back_idx) % SCROLLBACK_MAX_LINES;
+            ulong src = SCROLLBACK_BUF_ADDR + buf_idx * SCROLLBACK_LINE_SIZE;
+            ulong c = 0;
+            while (c < VGA_COLS) {
+                ulong off = c * 2;
+                Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2, Mem::read_byte(src + off));
+                Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2 + 1, Mem::read_byte(src + off + 1));
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+
+        // === 下部: ライブ画面退避バッファからの行 ===
+        while (r < VGA_ROWS) {
+            ulong live_row = r - sb_lines;
+            if (live_row < VGA_ROWS) {
+                ulong c = 0;
+                while (c < VGA_COLS) {
+                    ulong live_off = (live_row * VGA_COLS + c) * 2;
+                    Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2,
+                                    Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off));
+                    Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2 + 1,
+                                    Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off + 1));
+                    c = c + 1;
+                }
+            } else {
+                // 空行
+                ulong c = 0;
+                while (c < VGA_COLS) {
+                    Vga::write_at(r, c, 32, 0x07);
+                    c = c + 1;
+                }
+            }
+            r = r + 1;
         }
     }
 
@@ -76,7 +235,7 @@ impl Vga {
         if (ch == 10) {
             Vga::newline();
         } else if (ch == 8) {
-            // バックスペース: カーソル左移動のみ（文字消去はしない）
+            // バックスペース: カーソル左移動のみ
             ulong col = *col_ptr;
             if (col > 0) {
                 *col_ptr = col - 1;

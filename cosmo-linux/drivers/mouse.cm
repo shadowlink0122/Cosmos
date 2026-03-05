@@ -272,7 +272,7 @@ void mouse_irq_handler() {
         jz 2f;
         movsbq %al, %rax;
         movq $$0x93318, %rdi;
-        movq %rax, (%rdi);
+        addq %rax, (%rdi);     // 加算型: 複数パケットを蓄積
         jmp 2f;
 
         20:;
@@ -292,7 +292,7 @@ void mouse_irq_handler() {
         testb $$0x10, %al;
         jz 21f;
         movq $$0x93318, %rdi;
-        movq $$1, (%rdi);      // スクロール上 = +1
+        addq $$1, (%rdi);      // 加算型: スクロール上を蓄積
         jmp 2f;
         21:;
 
@@ -300,7 +300,7 @@ void mouse_irq_handler() {
         testb $$0x20, %al;
         jz 2f;
         movq $$0x93318, %rdi;
-        movq $$-1, (%rdi);     // スクロール下 = -1
+        subq $$1, (%rdi);      // 加算型: スクロール下を蓄積
 
         2:;
         xorq %rcx, %rcx;    // 位相リセット
