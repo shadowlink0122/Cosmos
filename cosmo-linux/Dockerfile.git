@@ -1,0 +1,43 @@
+# musl静的リンク Git ビルド (Cosmo Linux用)
+#
+# ビルド:
+#   docker build --platform linux/amd64 -f Dockerfile.git -t cosmo-git .
+# 取得:
+#   docker run --rm --platform linux/amd64 cosmo-git > rootfs/packages/git
+#   chmod +x rootfs/packages/git
+FROM alpine:3.20
+
+# ビルドツール + 依存ライブラリ (全て静的リンク用)
+RUN apk add --no-cache \
+    build-base perl file wget autoconf \
+    zlib-dev zlib-static \
+    openssl-dev openssl-libs-static \
+    curl-dev curl-static \
+    pcre2-dev \
+    expat-dev expat-static \
+    nghttp2-static brotli-static
+
+# Git 2.47.1 ソースからビルド (完全静的リンク)
+RUN wget https://github.com/git/git/archive/refs/tags/v2.47.1.tar.gz && \
+    tar xzf v2.47.1.tar.gz && \
+    cd git-2.47.1 && \
+    make -j$(nproc) \
+    prefix=/usr \
+    CFLAGS="-Os" \
+    LDFLAGS="-static" \
+    NO_TCLTK=1 \
+    NO_GETTEXT=1 \
+    NO_PYTHON=1 \
+    NO_PERL=1 \
+    NO_SVN_TESTS=1 \
+    NO_NSEC=1 \
+    NO_REGEX=NeedsStartEnd \
+    USE_LIBPCRE2=1 \
+    CURL_LDFLAGS="-lcurl -lssl -lcrypto -lz -lnghttp2 -lbrotlidec -lbrotlicommon" \
+    git && \
+    strip git && \
+    cp git /out-git && \
+    file /out-git && \
+    ls -lh /out-git
+
+CMD ["cat", "/out-git"]
