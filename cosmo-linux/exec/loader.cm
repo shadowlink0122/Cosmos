@@ -492,22 +492,30 @@ impl Loader {
 
         // ============================================================
         // ユーザースタック上にargc/argv/envp/auxvを構築
-        // cmdlineをスペースで分割して動的にargv[]を構築
         //
+        // Linux ABI準拠のスタックレイアウト:
         // [高アドレス = スタックトップ]
         //   ランダムバイト (16B, AT_RANDOM用)
-        //   argv文字列群 (各引数のNUL終端文字列)
+        //   argv文字列群 + envp文字列群
+        //   (アラインメントパディング)
         //   auxv[]: { AT_PAGESZ:4096, ... AT_NULL:0 }
-        //   envp[0] = NULL
+        //   envp[env_count] = NULL
+        //   envp[0..env_count-1]
         //   argv[argc] = NULL
-        //   argv[argc-1] → 文字列ポインタ
-        //   ...
-        //   argv[0] → 文字列ポインタ
+        //   argv[0..argc-1]
         //   argc
         // [低アドレス = RSP]
+        //
+        // 重要: musl-libcはスタック上の argc → argv[] → NULL →
+        //       envp[] → NULL → auxv[] の順序を厳密にチェックする。
+        //       auxvはenvp NULLの直後に連続して配置すること。
         // ============================================================
 
         ulong sp = proc->user_stack;
+
+        // ============================================================
+        // Phase 1: 文字列データ領域（スタック上位に配置）
+        // ============================================================
 
         // --- ランダムバイト (16バイト) ---
         sp = sp - 16;
@@ -521,7 +529,6 @@ impl Loader {
         }
 
         // --- cmdlineをスペースで分割し、各引数文字列をスタックにコピー ---
-        // argv_strsにポインタを記録（最大16引数）
         ulong argv_strs_buf = 0x95300;  // 一時ポインタ配列(16*8=128B)
         ulong argc_val = 0;
         ulong ci = 0;
@@ -561,6 +568,7 @@ impl Loader {
             *argv_slot = arg_str;
             argc_val = argc_val + 1;
         }
+
         // デバッグ: argv出力
         w->puts("[exec] argc=" as void*);
         print_dec(w, argc_val);
@@ -576,55 +584,7 @@ impl Loader {
             dbg_i = dbg_i + 1;
         }
 
-        // --- auxiliary vector (auxv) ---
-        // 16バイトアラインメント
-        sp = sp & ~15;
-
-        // AT_NULL = 終端
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_NULL, 0);
-        // AT_RANDOM
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_RANDOM, random_addr);
-        // AT_PHNUM
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_PHNUM, phnum);
-        // AT_PHENT
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_PHENT, phentsize);
-        // AT_PHDR
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_PHDR, phdr_addr);
-        // AT_ENTRY
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_ENTRY, entry);
-        // AT_EGID
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_EGID, 0);
-        // AT_GID
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_GID, 0);
-        // AT_EUID
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_EUID, 0);
-        // AT_UID
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_UID, 0);
-        // AT_PAGESZ
-        sp = sp - 16;
-        Loader::write_auxv(sp, 0, AT_PAGESZ, 4096);
-        // AT_BASE (インタープリターベース)
-        if (has_interp != 0) {
-            sp = sp - 16;
-            Loader::write_auxv(sp, 0, AT_BASE, interp_base);
-        }
-
-        // ============================================================
-        // envp: デフォルト環境変数をスタック上に構築
-        // ============================================================
-
-        // 環境変数文字列をスタック上にコピー (高位アドレスから低位へ)
-        // 各変数: "KEY=VALUE\0"
+        // --- envp文字列をスタック上にコピー ---
         ulong env_strs_buf = 0x95500;  // 一時ポインタ配列(16*8=128B)
         ulong env_count = 0;
 
@@ -677,15 +637,62 @@ impl Loader {
         ulong* env_s6 = (env_strs_buf + env_count * 8) as ulong*;
         *env_s6 = env_pwd; env_count = env_count + 1;
 
+        // ============================================================
+        // Phase 2: ポインタテーブル（文字列の後、低アドレス方向に配置）
+        // 順序: auxv → envp NULL → envp[] → argv NULL → argv[] → argc
+        // ============================================================
+
         // 16バイトアラインメント
         sp = sp & ~15;
 
-        // envp[env_count] = NULL (終端)
+        // --- auxiliary vector (auxv) ---
+        // auxvは逆順にpush（AT_NULLが最初にpush＝最高アドレス）
+
+        // AT_NULL = 終端
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_NULL, 0);
+        // AT_RANDOM
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_RANDOM, random_addr);
+        // AT_PHNUM
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHNUM, phnum);
+        // AT_PHENT
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHENT, phentsize);
+        // AT_PHDR
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHDR, phdr_addr);
+        // AT_ENTRY
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_ENTRY, app_entry);
+        // AT_EGID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_EGID, 0);
+        // AT_GID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_GID, 0);
+        // AT_EUID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_EUID, 0);
+        // AT_UID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_UID, 0);
+        // AT_PAGESZ
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PAGESZ, 4096);
+        // AT_BASE (インタープリターベース)
+        if (has_interp != 0) {
+            sp = sp - 16;
+            Loader::write_auxv(sp, 0, AT_BASE, interp_base);
+        }
+
+        // --- envp NULL (終端) ---
         sp = sp - 8;
         ulong* envp_null = sp as ulong*;
         *envp_null = 0;
 
-        // envp[env_count-1] ... envp[0] (逆順push)
+        // --- envp[env_count-1] ... envp[0] (逆順push) ---
         ulong envi = env_count;
         while (envi > 0) {
             envi = envi - 1;
