@@ -19,6 +19,7 @@ import ../fs/ramfs;
 import ../fs/ninepfs;
 import ../mm/pmm;
 import ../mm/vmm;
+import ../mm/mmap;
 import ../sched/process;
 import ../sched/scheduler;
 import ../arch/x86_64/context;
@@ -95,6 +96,9 @@ impl Loader {
     /// 先頭ワードをファイル名として検索し、全体をargvとして構築
     /// 戻り値: 新プロセスのPID（失敗時 -1）
     static Pid exec(void* cmdline, SerialPort* w) {
+        // 前プロセスのユーザー空間ページを全解放（メモリリーク防止）
+        Mmap::cleanup_all();
+
         ulong fsize = 0;
         ulong loaded_from_9p = 0;
         ulong cmd = cmdline as ulong;

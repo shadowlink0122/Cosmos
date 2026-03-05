@@ -274,4 +274,80 @@ impl Mmap {
         }
         return cnt;
     }
+
+    /// ユーザー空間の全ページ解放（exec時のクリーンアップ）
+    /// ELFセグメント(0x400000-data_end), brk領域, mmap VMA, ユーザースタックを解放
+    static void cleanup_all() {
+        ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        PageTable pt(cr3);
+
+        // 1. ELFセグメント領域の解放 (0x400000 - 0x600000)
+        //    bashの典型的なレイアウトをカバー
+        ulong va = 0x400000;
+        while (va < 0x600000) {
+            PhysAddr phys = pt.translate(va);
+            if (phys != 0) {
+                // identity map範囲(0-1GiB)のページは解放しない
+                if (phys >= 0x10000000) {
+                    pmm->free_pages(phys & ~0xFFF, 0);
+                }
+            }
+            pt.unmap_page(va);
+            va = va + 0x1000;
+        }
+
+        // 2. brk(ヒープ)領域の解放 (0x800000 - 0xA00000)
+        va = HEAP_BASE;
+        while (va < 0xA00000) {
+            PhysAddr phys = pt.translate(va);
+            if (phys != 0) {
+                if (phys >= 0x10000000) {
+                    pmm->free_pages(phys & ~0xFFF, 0);
+                }
+            }
+            pt.unmap_page(va);
+            va = va + 0x1000;
+        }
+
+        // 3. mmap VMA領域の解放
+        ulong i = 0;
+        while (i < VMA_MAX) {
+            Vma* vma = Mmap::get_vma(i);
+            if (vma->used != 0) {
+                ulong mva = vma->start;
+                while (mva < vma->end) {
+                    PhysAddr phys = pt.translate(mva);
+                    if (phys != 0) {
+                        if (phys >= 0x10000000) {
+                            pmm->free_pages(phys & ~0xFFF, 0);
+                        }
+                    }
+                    pt.unmap_page(mva);
+                    mva = mva + 0x1000;
+                }
+                vma->used = 0;
+            }
+            i = i + 1;
+        }
+
+        // 4. ユーザースタック領域の解放 (0x7FFB0000 - 0x80000000)
+        va = 0x7FFB0000;
+        while (va < 0x80000000) {
+            PhysAddr phys = pt.translate(va);
+            if (phys != 0) {
+                if (phys >= 0x10000000) {
+                    pmm->free_pages(phys & ~0xFFF, 0);
+                }
+            }
+            pt.unmap_page(va);
+            va = va + 0x1000;
+        }
+
+        // 5. TLBフルフラッシュ
+        __asm__(`movq %cr3, %rax; movq %rax, %cr3`);
+    }
 }
