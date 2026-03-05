@@ -38,11 +38,11 @@ const VirtAddr PIE_LOAD_BASE = 0x400000;
 
 /// ELFデータ読み込み一時バッファ (DATA_POOLの後に配置)
 const PhysAddr ELF_TMP_BUF = 0x4000000;   // 64MB地点 (DATA_POOL=17-49MBと重ならない)
-// ELFバッファ最大サイズ (8MB)
-const ulong ELF_MAX_SIZE = 0x800000;
+// ELFバッファ最大サイズ (64MB — cc1/cmなど大型バイナリ対応)
+const ulong ELF_MAX_SIZE = 0x4000000;
 
 /// インタープリターELF読み込み一時バッファ (4MB)
-const PhysAddr INTERP_TMP_BUF = 0x4800000;  // 72MB地点 (ELF_TMP_BUFの直後)
+const PhysAddr INTERP_TMP_BUF = 0x8000000;  // 128MB地点 (ELF_TMP_BUFの64MB後)
 const ulong INTERP_MAX_SIZE = 0x400000;
 
 /// インタープリターロードベースアドレス

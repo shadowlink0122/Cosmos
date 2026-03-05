@@ -48,7 +48,7 @@ KERNEL_OBJ  = $(BUILD)/kernel.o
 CM_SOURCES = $(shell find . -name '*.cm' 2>/dev/null)
 
 # QEMU設定
-QEMU_MEM    ?= 256M
+QEMU_MEM    ?= 512M
 QEMU_TIMEOUT ?= 10
 TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || echo "")
 
@@ -254,6 +254,27 @@ test: $(TEST_ELF)
 		echo "✗ FAIL — テスト失敗あり"; exit 1; \
 	else \
 		echo "? UNKNOWN — テスト結果マーカー未検出"; exit 1; \
+	fi
+
+# GCCコンパイル済みバイナリ実行テスト
+test-gcc: $(ELF)
+	@echo "=== GCC コンパイル済みバイナリ実行テスト ==="
+	@rm -f $(BUILD)/serial_gcc_test.log /tmp/cosmo_qemu_mon.sock
+	@$(QEMU) -kernel $(ELF) -m $(QEMU_MEM) -smp 1 \
+		-serial file:$(BUILD)/serial_gcc_test.log \
+		-nic user,model=virtio-net-pci \
+		-virtfs local,path=./rootfs,mount_tag=host,security_model=none,id=host0 \
+		-display none \
+		-monitor unix:/tmp/cosmo_qemu_mon.sock,server=on,wait=off \
+		-no-reboot & sleep 20 && \
+	python3 scripts/qemu_sendkeys.py "hellogcc:10" && \
+	rm -f /tmp/cosmo_qemu_mon.sock
+	@echo ""
+	@echo "--- 結果 ---"
+	@if grep -q "Hello from GCC!" $(BUILD)/serial_gcc_test.log 2>/dev/null; then \
+		echo "✓ PASS — hellogcc: Hello from GCC! 出力確認"; \
+	else \
+		echo "✗ FAIL — hellogcc: 期待出力なし"; exit 1; \
 	fi
 
 clean:

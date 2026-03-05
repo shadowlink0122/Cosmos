@@ -23,7 +23,8 @@ const ulong MAX_PIPES = 8;
 
 /// パイプテーブル固定メモリアドレス
 /// 各パイプ: buf(4096) + read_pos(8) + write_pos(8) + count(8) + used(8) = 4128
-const PhysAddr PIPE_TABLE_ADDR = 0x500000;
+/// 注: 0x500000はELF LOADセグメント(0x400000~)と衝突するため、安全な位置へ移動
+const PhysAddr PIPE_TABLE_ADDR = 0xBC0000;  // 12MB地点 (ELFロード領域外)
 const ulong PIPE_ENTRY_SIZE = 4128;
 
 // ============================================================
@@ -64,7 +65,7 @@ impl Pipe {
         ulong* write_pos = (base + PIPE_BUF_SIZE + 8) as ulong*;
         ulong* data_count = (base + PIPE_BUF_SIZE + 16) as ulong*;
 
-        if (*data_count == 0) { return 0; }  // EOF (空)
+        if (*data_count == 0) { return 0; }  // EOF (空パイプ)
 
         ulong to_read = count;
         if (to_read > *data_count) { to_read = *data_count; }

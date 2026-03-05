@@ -46,7 +46,7 @@ impl SyscallFork {
     /// - vforkセマンティクス: 子が exec/exitするまで親は待機
     ///
     /// 返り値: 親=子PID, 子=0, エラー=負のerrno
-    static long do_fork() {
+    static long do_fork(ulong new_stack) {
         SerialPort dbg(COM1);
         dbg.println("[fork] do_fork called" as void*);
 
@@ -122,6 +122,87 @@ impl SyscallFork {
 
         // スケジューラに登録
         Sched::add(child);
+
+        // 親のsyscall復帰フレームを異子モード復帰用に保存 (0x96200-0x96278)
+        // カーネルRSP (0x96000の値) からpush 15個分のオフセットで復帰レジスタを取得
+        // push順序: RCX(RIP),R11(RFLAGS),RDI,RSI,RDX,R10,R8,R9,RBX,RBP,R12,R13,R14,R15,RAX
+        // stack_base = kernel_rsp (= *0x96000), frame_top = stack_base - 120
+        // frame_top + 0   = RAX(nr)
+        // frame_top + 8   = R15
+        // frame_top + 16  = R14
+        // ...
+        // frame_top + 112 = RCX(RIP)
+        ulong frame_top = 0;
+        __asm__(`
+            movq 0x96000, %rax;   // カーネルRSP base
+            subq $$120, %rax;     // 15 pushes * 8 = 120
+            movq %rax, ${=r:frame_top}
+        `);
+
+        // ユーザーRSP保存 (0x96008 → 0x96200)
+        ulong* saved_user_rsp = 0x96200 as ulong*;
+        ulong* user_rsp_src = 0x96008 as ulong*;
+        *saved_user_rsp = *user_rsp_src;
+        // clone new_stack指定時はそちらを使用
+        if (new_stack != 0) {
+            *saved_user_rsp = new_stack;
+        }
+        // RCX(RIP) = frame_top + 112
+        ulong* ft_rcx = (frame_top + 112) as ulong*;
+        ulong* sv_rcx = 0x96210 as ulong*;
+        *sv_rcx = *ft_rcx;
+        // R11(RFLAGS) = frame_top + 104
+        ulong* ft_r11 = (frame_top + 104) as ulong*;
+        ulong* sv_r11 = 0x96218 as ulong*;
+        *sv_r11 = *ft_r11;
+        // RDI = frame_top + 96
+        ulong* ft_rdi = (frame_top + 96) as ulong*;
+        ulong* sv_rdi = 0x96220 as ulong*;
+        *sv_rdi = *ft_rdi;
+        // RSI = frame_top + 88
+        ulong* ft_rsi = (frame_top + 88) as ulong*;
+        ulong* sv_rsi = 0x96228 as ulong*;
+        *sv_rsi = *ft_rsi;
+        // RDX = frame_top + 80
+        ulong* ft_rdx = (frame_top + 80) as ulong*;
+        ulong* sv_rdx = 0x96230 as ulong*;
+        *sv_rdx = *ft_rdx;
+        // R10 = frame_top + 72
+        ulong* ft_r10 = (frame_top + 72) as ulong*;
+        ulong* sv_r10 = 0x96238 as ulong*;
+        *sv_r10 = *ft_r10;
+        // R8 = frame_top + 64
+        ulong* ft_r8 = (frame_top + 64) as ulong*;
+        ulong* sv_r8 = 0x96240 as ulong*;
+        *sv_r8 = *ft_r8;
+        // R9 = frame_top + 56
+        ulong* ft_r9 = (frame_top + 56) as ulong*;
+        ulong* sv_r9 = 0x96248 as ulong*;
+        *sv_r9 = *ft_r9;
+        // RBX = frame_top + 48
+        ulong* ft_rbx = (frame_top + 48) as ulong*;
+        ulong* sv_rbx = 0x96250 as ulong*;
+        *sv_rbx = *ft_rbx;
+        // RBP = frame_top + 40
+        ulong* ft_rbp = (frame_top + 40) as ulong*;
+        ulong* sv_rbp = 0x96258 as ulong*;
+        *sv_rbp = *ft_rbp;
+        // R12 = frame_top + 32
+        ulong* ft_r12 = (frame_top + 32) as ulong*;
+        ulong* sv_r12 = 0x96260 as ulong*;
+        *sv_r12 = *ft_r12;
+        // R13 = frame_top + 24
+        ulong* ft_r13 = (frame_top + 24) as ulong*;
+        ulong* sv_r13 = 0x96268 as ulong*;
+        *sv_r13 = *ft_r13;
+        // R14 = frame_top + 16
+        ulong* ft_r14 = (frame_top + 16) as ulong*;
+        ulong* sv_r14 = 0x96270 as ulong*;
+        *sv_r14 = *ft_r14;
+        // R15 = frame_top + 8
+        ulong* ft_r15 = (frame_top + 8) as ulong*;
+        ulong* sv_r15 = 0x96278 as ulong*;
+        *sv_r15 = *ft_r15;
 
         dbg.puts("[fork] success: parent=" as void*);
         print_dec(&dbg, parent->pid as ulong);
@@ -349,29 +430,52 @@ impl SyscallFork {
     /// flags にSIGCHLD (17) が含まれていればfork動作
     static long do_clone(ulong flags, ulong new_stack, ulong parent_tid, ulong child_tid, ulong tls) {
         // 基本的にfork動作（スレッド未対応）
-        return SyscallFork::do_fork();
+        return SyscallFork::do_fork(new_stack);
     }
 }
 
 /// fork子プロセスのエントリポイント
 /// switch_toのretから呼ばれ、fork返り値0でユーザーモードに戻る
 ///
-/// 簡易実装: 子プロセスはexecveを待つカーネルタスクとして起動し、
-/// シェルが wait4 → 新コマンド受付の流れで動作する
+/// 親のsyscall復帰コンテキストを復元し、RAX=0(fork戻り値)で
+/// sysretqによりユーザーモードに復帰する。
 void fork_child_entry() {
     SerialPort dbg(COM1);
-    dbg.println("[fork] child process started" as void*);
+    dbg.println("[fork] child process started, returning to usermode" as void*);
 
-    // 子プロセスはこのエントリポイントで起動する
-    // 実際のLinuxでは、親のsyscall復帰アドレスにrax=0で戻るが、
-    // 現在のアーキテクチャでは fork→exec パターンを前提に、
-    // 子プロセスは即座にexit(0)する
-    //
-    // TODO: 親のユーザーモードコンテキストを完全複製して
-    //       子プロセスがfork()から0を返して実行を続行するようにする
-    Process* me = Sched::current();
-    ProcessTable::do_exit(me, 0);
+    // saved_user_rsp (0x96200) : 子プロセスのユーザーRSP
+    // 親のRCX(RIP)はカーネルスタックの復帰フレームから復元
+    // → 簡易化: 親のRCX/R11/全レジスタを0x96210から復元
+    // do_fork内で保存済み
 
-    // スケジューラに制御を戻す
-    Sched::run();
+    // ユーザーモード復帰: sysretq
+    // RAX = 0 (fork子プロセスの戻り値)
+    // RCX = 親のRIP (syscall次命令)
+    // R11 = 親のRFLAGS
+    // RSP = saved_user_rsp
+    __asm__(`
+        // RAX = 0 (fork戻り値)
+        xorq %rax, %rax;
+
+        // 保存済みレジスタ復元
+        movq 0x96210, %rcx;   // RIP
+        movq 0x96218, %r11;   // RFLAGS
+        movq 0x96220, %rdi;   // RDI
+        movq 0x96228, %rsi;   // RSI
+        movq 0x96230, %rdx;   // RDX
+        movq 0x96238, %r10;   // R10
+        movq 0x96240, %r8;    // R8
+        movq 0x96248, %r9;    // R9
+        movq 0x96250, %rbx;   // RBX
+        movq 0x96258, %rbp;   // RBP
+        movq 0x96260, %r12;   // R12
+        movq 0x96268, %r13;   // R13
+        movq 0x96270, %r14;   // R14
+        movq 0x96278, %r15;   // R15
+
+        // RSP復元
+        movq 0x96200, %rsp;   // saved_user_rsp
+
+        sysretq
+    `);
 }

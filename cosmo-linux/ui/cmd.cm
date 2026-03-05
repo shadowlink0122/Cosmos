@@ -60,7 +60,7 @@ impl Cmd {
         Shell::writeln("  echo cd pwd env export history kill" as void*);
         Shell::writeln("  vmstat exec test ping curl  cmd1 | cmd2  Tab=complete" as void*);
         Shell::writeln("  cm version/help" as void*);
-        Shell::writeln("  gen install/list/search/run" as void*);
+        Shell::writeln("  apt install/list/search/run" as void*);
         Shell::writeln("  brew install/uninstall/list/help" as void*);
         Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
     }
@@ -1717,34 +1717,34 @@ impl Cmd {
             Shell::writeln("  cm help         Show this help" as void*);
             return;
         }
-        // gen コマンド（ホストFSパッケージマネージャ）
-        if (streq(CMD_BUF_ADDR as void*, "gen" as void*) != 0) {
+        // apt コマンド（ホストFSパッケージマネージャ）
+        if (streq(CMD_BUF_ADDR as void*, "apt" as void*) != 0) {
             Gen::help();
             return;
         }
-        if (streq(CMD_BUF_ADDR as void*, "gen help" as void*) != 0) {
+        if (streq(CMD_BUF_ADDR as void*, "apt help" as void*) != 0) {
             Gen::help();
             return;
         }
-        if (streq(CMD_BUF_ADDR as void*, "gen list" as void*) != 0) {
+        if (streq(CMD_BUF_ADDR as void*, "apt list" as void*) != 0) {
             Gen::list();
             return;
         }
-        if (streq(CMD_BUF_ADDR as void*, "gen search" as void*) != 0) {
+        if (streq(CMD_BUF_ADDR as void*, "apt search" as void*) != 0) {
             Gen::search();
             return;
         }
-        if (startswith(CMD_BUF_ADDR as void*, "gen install " as void*) != 0) {
+        if (startswith(CMD_BUF_ADDR as void*, "apt install " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
             Gen::install(arg);
             return;
         }
-        if (startswith(CMD_BUF_ADDR as void*, "gen uninstall " as void*) != 0) {
+        if (startswith(CMD_BUF_ADDR as void*, "apt uninstall " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
             Gen::uninstall(arg);
             return;
         }
-        if (startswith(CMD_BUF_ADDR as void*, "gen run " as void*) != 0) {
+        if (startswith(CMD_BUF_ADDR as void*, "apt run " as void*) != 0) {
             ulong arg = Cmd::arg2(CMD_BUF_ADDR);
             Gen::run(arg);
             return;

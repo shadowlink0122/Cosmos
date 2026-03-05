@@ -195,7 +195,16 @@ impl Syscall {
         }
         if (fs_type == FS_PIPE) {
             ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
-            return Pipe::read(pipe_id, buf_addr, count);
+            // ブロッキングread: パイプ空ならSched::run()で子プロセスに実行権を渡してリトライ
+            ulong retry = 0;
+            while (retry < 500) {
+                long result = Pipe::read(pipe_id, buf_addr, count);
+                if (result != 0) { return result; }
+                // パイプ空→コンテキストスイッチして他プロセス(子)を実行
+                Sched::run();
+                retry = retry + 1;
+            }
+            return 0;  // タイムアウト → EOF
         }
         // ramfsファイル → VFS経由
         return Vfs::read(fd as long, buf_addr, count);
@@ -291,7 +300,7 @@ impl Syscall {
         Process* cur = Sched::current();
         ulong cur_addr = cur as ulong;
         if (cur_addr == 0) { return 0 - ECHILD; }
-        long result = ProcessTable::do_wait(cur, wait_pid);
+        long result = ProcessTable::do_wait(cur, wait_pid, options);
 
         // 成功時: wstatusを書き込み
         // Linux規約: WIFEXITED(s) = ((s) & 0x7f) == 0
@@ -786,7 +795,7 @@ ulong arg3, ulong arg4, ulong arg5) {
 
     // --- fork/clone/execve (Milestone 5) ---
     if (nr == SYS_FORK || nr == SYS_VFORK) {
-        return SyscallFork::do_fork();
+        return SyscallFork::do_fork(0);
     }
     if (nr == SYS_CLONE) {
         return SyscallFork::do_clone(arg0, arg1, arg2, arg3, arg4);
@@ -1022,7 +1031,7 @@ ulong arg3, ulong arg4, ulong arg5) {
     }
     // clone3: clone委譲
     if (nr == SYS_CLONE3) {
-        return SyscallFork::do_fork();
+        return SyscallFork::do_fork(0);
     }
 
     // --- Milestone 5: stub syscall ---
@@ -1220,6 +1229,24 @@ ulong arg3, ulong arg4, ulong arg5) {
             *res_nsec = 10000000;  // 10ms解像度 (100Hz PIT)
         }
         return 0;
+    }
+
+    // readlink / readlinkat: シンボリックリンク読み取り
+    if (nr == 89 || nr == SYS_READLINKAT) {
+        // stub: /proc/self/exe → "gcc" (実行パス名を返す)
+        ulong path_addr = arg0;
+        if (nr == SYS_READLINKAT) { path_addr = arg1; }
+        ulong out_buf = arg1;
+        ulong out_size = arg2;
+        if (nr == SYS_READLINKAT) { out_buf = arg2; out_size = arg3; }
+        // "gcc" を返却 (4バイト)
+        if (out_size >= 3) {
+            Mem::write_byte(out_buf, 103);      // 'g'
+            Mem::write_byte(out_buf + 1, 99);   // 'c'
+            Mem::write_byte(out_buf + 2, 99);   // 'c'
+            return 3;  // 書き込んだバイト数
+        }
+        return 0 - EINVAL;
     }
 
     // 未実装syscall（デバッグログ出力）

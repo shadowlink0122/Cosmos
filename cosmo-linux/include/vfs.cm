@@ -71,7 +71,7 @@ export const ulong MAX_DIR_ENTRIES = 64;
 export const ulong MAX_NAME_LEN = 32;
 
 /// ファイルデータ最大サイズ（2MiB: 大きな実行ファイルに対応）
-export const ulong MAX_FILE_SIZE = 0x800000;  // 8MB（git=3.9MB等の大きなバイナリ対応）
+export const ulong MAX_FILE_SIZE = 0x4000000;  // 64MB（cc1/cm等の大型バイナリ対応）
 
 /// ルートinode番号
 export const Ino ROOT_INO = 1;
