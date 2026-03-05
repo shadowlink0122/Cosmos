@@ -730,11 +730,16 @@ impl KTest {
             KTest::assert_eq(pktsz_val, 3, "Mouse pktsz=3 (standard)" as void*);
         }
 
-        // Mouse::get_scroll() テスト
-        *mouse_scroll = 1;  // スクロール上をシミュレート
+        // Mouse::get_scroll() テスト (閾値ベース)
+        // 閾値未満: 蓄積値1は閾値2未満なので0を返す
+        *mouse_scroll = 1;
+        long sv0 = Mouse::get_scroll();
+        KTest::assert_eq(sv0 as ulong, 0, "Mouse get_scroll below threshold returns 0" as void*);
+        // 蓄積値は保持されている(1のまま)ので、+1して2にすると閾値到達
+        *mouse_scroll = 2;
         long sv = Mouse::get_scroll();
-        KTest::assert_eq(sv as ulong, 1, "Mouse get_scroll returns 1" as void*);
+        KTest::assert_eq(sv as ulong, 2, "Mouse get_scroll at threshold returns value" as void*);
         // 読み取り後にリセットされているか
-        KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll reset after read" as void*);
+        KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll reset after threshold read" as void*);
     }
 }

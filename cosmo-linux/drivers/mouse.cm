@@ -206,12 +206,21 @@ impl Mouse {
         __asm__(`sti`);
     }
 
-    /// スクロールイベントを取得してリセット (0=なし, 正=上, 負=下)
+    /// スクロールイベントを取得 (閾値ベース)
+    /// 蓄積値の絶対値が閾値以上 → 値を返してリセット
+    /// 閾値未満 → 0を返し蓄積値を保持
+    /// 2本指スクロールは連続パケットで蓄積されるため閾値を超える
+    /// 1本指操作のノイズは閾値に到達しない
     static long get_scroll() {
         ulong* scroll = MOUSE_SCROLL_ADDR as ulong*;
         long val = *scroll as long;
-        *scroll = 0;
-        return val;
+        // 閾値: 蓄積値が±2以上のとき発火
+        if (val >= 2 || val <= -2) {
+            *scroll = 0;
+            return val;
+        }
+        // 閾値未達: 蓄積値を保持して0を返す
+        return 0;
     }
 }
 
@@ -239,6 +248,19 @@ void mouse_irq_handler() {
         // 位相取得
         movq $$0x93310, %rdi;
         movq (%rdi), %rcx;  // %rcx = phase
+
+        // === パケット同期バリデーション ===
+        // phase=0 (パケット先頭) の場合、bit 3が1であることを確認
+        // PS/2仕様: 第1バイトのbit 3は常に1
+        // 0の場合はパケット同期がずれている → 破棄してEOIのみ送信
+        testq %rcx, %rcx;
+        jnz 30f;             // phase != 0ならスキップ
+        testb $$0x08, %bl;   // bit 3チェック
+        jnz 30f;             // bit 3 = 1なら正常
+        // 同期エラー: phaseを0に保ったままEOIへジャンプ
+        xorq %rcx, %rcx;
+        jmp 1f;
+        30:;
 
         // パケットバッファに格納
         movq $$0x93300, %rdi;

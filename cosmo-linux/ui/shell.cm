@@ -175,12 +175,11 @@ export void shell_main() {
             ulong ch = Kbd::getchar();
             if (ch == 0) {
                 // マウスホイール/トラックパッドスクロールチェック
+                // get_scroll()は閾値ベース: 蓄積値が十分な場合のみ非0を返す
                 long scroll_ev = Mouse::get_scroll();
                 if (scroll_ev > 0) {
-                    // 蓄積された上方向スクロール → 1行だけ実行
                     Vga::scroll_up();
                 } else if (scroll_ev < 0) {
-                    // 蓄積された下方向スクロール → 1行だけ実行
                     Vga::scroll_down();
                 }
                 // pause: hltの代わりにpauseで高頻度ポーリング
