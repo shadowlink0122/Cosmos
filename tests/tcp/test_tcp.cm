@@ -47,8 +47,19 @@ export void test_tcp_conn() {
     if (conn_r >= 0) { conn_ok = 1; }
     KTest::assert_eq(conn_ok, 1, "TCP connect" as void*);
 
+    // メッセージ構築 — 配列で定義
     ulong msg = 0x9E400;
-    Mem::write_byte(msg, 72); Mem::write_byte(msg+1, 105); Mem::write_byte(msg+2, 0);
+    ulong[3] msg_data;
+    msg_data[0] = 72;   // 'H'
+    msg_data[1] = 105;  // 'i'
+    msg_data[2] = 0;    // NUL終端
+
+    ulong i = 0;
+    while (i < 3) {
+        Mem::write_byte(msg + i, msg_data[i]);
+        i = i + 1;
+    }
+
     long send_r = Socket::send(client_fd as ulong, msg, 2);
     ulong send_ok = 0;
     if (send_r >= 0) { send_ok = 1; }

@@ -35,11 +35,18 @@ export void test_ramfs() {
     Ino ghost = RamFs::lookup("_no_such_file" as void*);
     KTest::assert_eq(ghost as ulong, 0, "RamFS lookup nonexistent returns 0" as void*);
 
-    // write + read
+    // write + read — テストデータを配列で定義
     ulong write_buf = 0x9F000;
-    Mem::write_byte(write_buf, 72);      // 'H'
-    Mem::write_byte(write_buf + 1, 105); // 'i'
-    Mem::write_byte(write_buf + 2, 33);  // '!'
+    ulong[3] wdata;
+    wdata[0] = 72;   // 'H'
+    wdata[1] = 105;  // 'i'
+    wdata[2] = 33;   // '!'
+
+    ulong i = 0;
+    while (i < 3) {
+        Mem::write_byte(write_buf + i, wdata[i]);
+        i = i + 1;
+    }
     long wn = RamFs::write(ino, write_buf, 0, 3);
     KTest::assert_eq(wn as ulong, 3, "RamFS write 3 bytes" as void*);
 
@@ -48,13 +55,12 @@ export void test_ramfs() {
     long rn = RamFs::read(ino, read_buf, 0, 3);
     KTest::assert_eq(rn as ulong, 3, "RamFS read 3 bytes" as void*);
 
-    // データ整合性
-    ulong rb0 = Mem::read_byte(read_buf);
-    ulong rb1 = Mem::read_byte(read_buf + 1);
-    ulong rb2 = Mem::read_byte(read_buf + 2);
-    KTest::assert_eq(rb0, 72, "RamFS data[0]='H'" as void*);
-    KTest::assert_eq(rb1, 105, "RamFS data[1]='i'" as void*);
-    KTest::assert_eq(rb2, 33, "RamFS data[2]='!'" as void*);
+    // データ整合性 — ループで検証
+    i = 0;
+    while (i < 3) {
+        KTest::assert_eq(Mem::read_byte(read_buf + i), wdata[i], "RamFS data verify" as void*);
+        i = i + 1;
+    }
 
     // file_size
     ulong fsize = RamFs::file_size(ino);
