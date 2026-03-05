@@ -131,6 +131,10 @@ impl Syscall {
             ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
             return Pipe::write(pipe_id, buf_addr, count);
         }
+        // RamFS/9pFS→VFS経由
+        if (fs_type == FS_RAMFS || fs_type == FS_9PFS) {
+            return Vfs::write(fd as long, buf_addr, count);
+        }
         return (0 - EBADF);
     }
 
@@ -279,12 +283,38 @@ impl Syscall {
         return Signal::send(pid as long, sig);
     }
 
-    /// sys_wait4: 子プロセス終了待ち
-    static long wait4(long wait_pid) {
+    /// sys_wait4: 子プロセス終了待ち (wstatus書き込み対応)
+    /// wait_pid: -1=任意の子, >0=指定 PID
+    /// wstatus_addr: WIFEXITED/WEXITSTATUS 互換の終了ステータスを書き込む
+    /// options/rusage: 現状stub
+    static long wait4(long wait_pid, ulong wstatus_addr, ulong options, ulong rusage_addr) {
         Process* cur = Sched::current();
         ulong cur_addr = cur as ulong;
         if (cur_addr == 0) { return 0 - ECHILD; }
-        return ProcessTable::do_wait(cur, wait_pid);
+        long result = ProcessTable::do_wait(cur, wait_pid);
+
+        // 成功時: wstatusを書き込み
+        // Linux規約: WIFEXITED(s) = ((s) & 0x7f) == 0
+        //             WEXITSTATUS(s) = ((s) >> 8) & 0xff
+        // exit_code << 8 で正常終了を表現
+        if (result >= 0 && wstatus_addr != 0) {
+            ulong exit_status = (result as ulong) << 8;
+            ulong* wstatus = wstatus_addr as ulong*;
+            *wstatus = exit_status;
+        }
+
+        // rusage: ゼロクリア
+        if (rusage_addr != 0) {
+            memzero(rusage_addr as void*, 144);
+        }
+
+        // 成功時は子プロセスのPIDを返すべきだが、
+        // 現状do_waitはexit_codeを返すので、簡易的に1を返す
+        // TODO: do_waitを修正して子PIDを返すようにする
+        if (result >= 0) {
+            return 1;  // 子PIDの代替値
+        }
+        return result;
     }
 
     /// sys_uname: システム情報取得 (Linux utsname構造体に書き込み)
@@ -607,7 +637,7 @@ ulong arg3, ulong arg4, ulong arg5) {
         return 0;
     }
     if (nr == SYS_WAIT4) {
-        return Syscall::wait4(arg0 as long);
+        return Syscall::wait4(arg0 as long, arg1, arg2, arg3);
     }
     if (nr == SYS_KILL) {
         return Syscall::kill(arg0, arg1);
@@ -881,6 +911,49 @@ ulong arg3, ulong arg4, ulong arg5) {
         return 0;  // 9pFS等は成功として返す
     }
 
+    // --- Milestone 7: Homebrew依存ツール対応 ---
+    if (nr == SYS_SYMLINK) {
+        return SyscallFs::symlinkat(arg0, AT_FDCWD, arg1);
+    }
+    if (nr == SYS_SYMLINKAT) {
+        return SyscallFs::symlinkat(arg0, arg1 as long, arg2);
+    }
+    if (nr == SYS_LINK) {
+        return SyscallFs::linkat(AT_FDCWD, arg0, AT_FDCWD, arg1, 0);
+    }
+    if (nr == SYS_LINKAT) {
+        return SyscallFs::linkat(arg0 as long, arg1, arg2 as long, arg3, arg4);
+    }
+    if (nr == SYS_UTIMENSAT) {
+        return SyscallFs::utimensat(arg0 as long, arg1, arg2, arg3);
+    }
+    if (nr == SYS_TRUNCATE) {
+        return SyscallFs::truncate(arg0, arg1);
+    }
+    if (nr == SYS_FALLOCATE) {
+        return SyscallFs::fallocate(arg0, arg1, arg2, arg3);
+    }
+    if (nr == SYS_TGKILL) {
+        // tgkill(tgid, tid, sig) → kill(tid, sig)
+        return Syscall::kill(arg1, arg2);
+    }
+    if (nr == SYS_GETRLIMIT) {
+        return SyscallProc::prlimit64(0, arg0, 0, arg1);
+    }
+    if (nr == SYS_SETRLIMIT) {
+        return SyscallProc::prlimit64(0, arg0, arg1, 0);
+    }
+    if (nr == SYS_TIMES) {
+        // struct tms をゼロクリア
+        if (arg0 != 0) {
+            memzero(arg0 as void*, 32);
+        }
+        return 0;  // clock ticks
+    }
+    if (nr == SYS_MREMAP) {
+        // mremap: 常に失敗（ENOMEM）
+        return 0 - ENOMEM;
+    }
     // mkdir / rmdir / unlink (古いsyscall)
     if (nr == SYS_MKDIR) {
         return SyscallFs::mkdirat(AT_FDCWD, arg0, arg1);

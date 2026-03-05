@@ -481,5 +481,51 @@ impl SyscallFs {
         __asm__(`movq ${r:addr1}, %rdi; movq ${r:write_val}, %rax; movl %eax, (%rdi)`);
         return 0;
     }
+
+    // ============================================================
+    // Milestone 7: Homebrew依存ツール対応 FS syscall
+    // ============================================================
+
+    /// sys_symlinkat: シンボリックリンク作成
+    /// symlink(target, linkpath) → symlinkat(target, AT_FDCWD, linkpath)
+    /// 現状: stub (常に成功を返す、実際のリンクは作成しない)
+    static long symlinkat(ulong target, long newdirfd, ulong linkpath) {
+        if (target == 0 || linkpath == 0) { return 0 - EFAULT; }
+        // stub: シンボリックリンク未サポート→成功して無視
+        return 0;
+    }
+
+    /// sys_linkat: ハードリンク作成
+    /// 現状: stub (常に成功を返す)
+    static long linkat(long olddirfd, ulong oldpath, long newdirfd, ulong newpath, ulong flags) {
+        if (oldpath == 0 || newpath == 0) { return 0 - EFAULT; }
+        // stub: ハードリンク未サポート→成功して無視
+        return 0;
+    }
+
+    /// sys_utimensat: ファイルタイムスタンプ更新
+    /// 現状: stub (タイムスタンプ管理なし→常に成功)
+    static long utimensat(long dirfd, ulong pathname, ulong times_addr, ulong flags) {
+        // タイムスタンプ管理未実装→常に成功
+        return 0;
+    }
+
+    /// sys_truncate: パス名でファイル切り詰め
+    static long truncate(ulong pathname, ulong length) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        ulong search = pathname;
+        ulong ch = 0;
+        __asm__(`movq ${r:search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:ch}`);
+        if (ch == 47) { search = pathname + 1; }
+        Ino ino = RamFs::lookup(search as void*);
+        if (ino == 0) { return 0 - ENOENT; }
+        RamFs::truncate(ino);
+        return 0;
+    }
+
+    /// sys_fallocate: ファイル領域割り当て（stub）
+    static long fallocate(ulong fd, ulong mode, ulong offset, ulong len) {
+        return 0;  // stub: 常に成功
+    }
 }
 

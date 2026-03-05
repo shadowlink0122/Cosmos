@@ -142,3 +142,17 @@ export const ulong SYS_GETPGRP    = 111;
 export const ulong SYS_SETSID     = 112;
 export const ulong SYS_FTRUNCATE  = 77;
 
+// --- Milestone 7: Homebrew依存ツール対応 ---
+export const ulong SYS_SYMLINK     = 88;
+export const ulong SYS_SYMLINKAT   = 266;
+export const ulong SYS_LINK        = 86;
+export const ulong SYS_LINKAT      = 265;
+export const ulong SYS_UTIMENSAT   = 280;
+export const ulong SYS_TRUNCATE    = 76;
+export const ulong SYS_FALLOCATE   = 285;
+export const ulong SYS_TGKILL      = 234;
+export const ulong SYS_GETRLIMIT   = 97;
+export const ulong SYS_SETRLIMIT   = 160;
+export const ulong SYS_TIMES       = 100;
+export const ulong SYS_MREMAP      = 25;
+
