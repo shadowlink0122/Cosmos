@@ -175,12 +175,27 @@ export void shell_main() {
             ulong ch = Kbd::getchar();
             if (ch == 0) {
                 // マウスホイール/トラックパッドスクロールチェック
-                // get_scroll()は閾値ベース: 蓄積値が十分な場合のみ非0を返す
+                // macOSナチュラルスクロール: 方向反転
+                //   2本指上スワイプ(正値) → 下スクロール(最新に戻る)
+                //   2本指下スワイプ(負値) → 上スクロール(過去を表示)
+                // 速度: 蓄積値の絶対値に応じて複数行スクロール
                 long scroll_ev = Mouse::get_scroll();
                 if (scroll_ev > 0) {
-                    Vga::scroll_up();
+                    // ナチュラルスクロール: 正値 → 下方向(最新に戻る)
+                    long lines = scroll_ev;
+                    if (lines > 5) { lines = 5; }  // 最大5行
+                    while (lines > 0) {
+                        Vga::scroll_down();
+                        lines = lines - 1;
+                    }
                 } else if (scroll_ev < 0) {
-                    Vga::scroll_down();
+                    // ナチュラルスクロール: 負値 → 上方向(過去を表示)
+                    long lines = 0 - scroll_ev;  // 絶対値
+                    if (lines > 5) { lines = 5; }  // 最大5行
+                    while (lines > 0) {
+                        Vga::scroll_up();
+                        lines = lines - 1;
+                    }
                 }
                 // pause: hltの代わりにpauseで高頻度ポーリング
                 // hltはIRQ(10ms)でしか復帰せず、スケジューラpreemptionと合わせて
