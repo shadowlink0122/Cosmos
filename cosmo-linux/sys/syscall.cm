@@ -429,9 +429,21 @@ impl Syscall {
     /// 参照: linux/arch/x86/kernel/process_64.c
     /// musl-libcはTLS(Thread Local Storage)セットアップに使用
     static long arch_prctl(ulong code, ulong addr) {
+        SerialPort dbg_ap(COM1);
+        dbg_ap.puts("[arch_prctl] code=0x" as void*);
+        dbg_ap.print_hex(code);
+        dbg_ap.puts(" addr=0x" as void*);
+        dbg_ap.print_hex(addr);
+        dbg_ap.println("" as void*);
+
         // ARCH_SET_FS = 0x1002: FSベースレジスタ設定 (TLS用)
         if (code == 0x1002) {
             Cpu::wrmsr(0xC0000100, addr);  // IA32_FS_BASE
+            // 設定確認
+            ulong verify = Cpu::rdmsr(0xC0000100);
+            dbg_ap.puts("[arch_prctl] FS_BASE set=0x" as void*);
+            dbg_ap.print_hex(verify);
+            dbg_ap.println("" as void*);
             return 0;
         }
         // ARCH_GET_FS = 0x1003: FSベースレジスタ取得
