@@ -225,3 +225,40 @@ test: $(TEST_ELF)
 clean:
 	rm -rf $(BUILD)
 	@echo "✓ クリーン完了"
+
+# ============================================================
+# Homebrew依存ツール: Dockerビルド (x86_64 musl静的リンク)
+# ============================================================
+
+DOCKER_PLATFORM = --platform linux/amd64
+
+# bash 5.2.37
+brew-bash:
+	docker build $(DOCKER_PLATFORM) -f Dockerfile.bash -t cosmo-bash .
+	docker run --rm $(DOCKER_PLATFORM) cosmo-bash > rootfs/packages/bash
+	chmod +x rootfs/packages/bash
+	@file rootfs/packages/bash
+	@ls -lh rootfs/packages/bash
+
+# Git 2.47.1
+brew-git:
+	docker build $(DOCKER_PLATFORM) -f Dockerfile.git -t cosmo-git .
+	docker run --rm $(DOCKER_PLATFORM) cosmo-git > rootfs/packages/git
+	chmod +x rootfs/packages/git
+	@file rootfs/packages/git
+	@ls -lh rootfs/packages/git
+
+# Ruby 3.4.2
+brew-ruby:
+	docker build $(DOCKER_PLATFORM) -f Dockerfile.ruby -t cosmo-ruby .
+	docker run --rm $(DOCKER_PLATFORM) cosmo-ruby > rootfs/packages/ruby
+	chmod +x rootfs/packages/ruby
+	@file rootfs/packages/ruby
+	@ls -lh rootfs/packages/ruby
+
+# 全ツール一括ビルド
+brew-tools: brew-bash brew-git brew-ruby
+	@echo "✓ Homebrew依存ツール全ビルド完了"
+	@echo "  bash: $$(ls -lh rootfs/packages/bash | awk '{print $$5}')"
+	@echo "  git:  $$(ls -lh rootfs/packages/git | awk '{print $$5}')"
+	@echo "  ruby: $$(ls -lh rootfs/packages/ruby | awk '{print $$5}')"
