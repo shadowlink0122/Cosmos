@@ -619,10 +619,81 @@ impl Loader {
             Loader::write_auxv(sp, 0, AT_BASE, interp_base);
         }
 
-        // --- envp[0] = NULL ---
+        // ============================================================
+        // envp: デフォルト環境変数をスタック上に構築
+        // ============================================================
+
+        // 環境変数文字列をスタック上にコピー (高位アドレスから低位へ)
+        // 各変数: "KEY=VALUE\0"
+        ulong env_strs_buf = 0x95500;  // 一時ポインタ配列(16*8=128B)
+        ulong env_count = 0;
+
+        // PATH
+        sp = sp - 80; sp = sp & ~7;
+        ulong env_path = sp;
+        Loader::copy_str(sp, "PATH=/usr/local/bin:/usr/bin:/bin:/sbin" as void*);
+        ulong* env_s0 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s0 = env_path; env_count = env_count + 1;
+
+        // HOME
+        sp = sp - 16; sp = sp & ~7;
+        ulong env_home = sp;
+        Loader::copy_str(sp, "HOME=/root" as void*);
+        ulong* env_s1 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s1 = env_home; env_count = env_count + 1;
+
+        // SHELL
+        sp = sp - 24; sp = sp & ~7;
+        ulong env_shell = sp;
+        Loader::copy_str(sp, "SHELL=/bin/sh" as void*);
+        ulong* env_s2 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s2 = env_shell; env_count = env_count + 1;
+
+        // USER
+        sp = sp - 16; sp = sp & ~7;
+        ulong env_user = sp;
+        Loader::copy_str(sp, "USER=root" as void*);
+        ulong* env_s3 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s3 = env_user; env_count = env_count + 1;
+
+        // TERM
+        sp = sp - 24; sp = sp & ~7;
+        ulong env_term = sp;
+        Loader::copy_str(sp, "TERM=linux" as void*);
+        ulong* env_s4 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s4 = env_term; env_count = env_count + 1;
+
+        // LANG
+        sp = sp - 24; sp = sp & ~7;
+        ulong env_lang = sp;
+        Loader::copy_str(sp, "LANG=C.UTF-8" as void*);
+        ulong* env_s5 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s5 = env_lang; env_count = env_count + 1;
+
+        // PWD
+        sp = sp - 16; sp = sp & ~7;
+        ulong env_pwd = sp;
+        Loader::copy_str(sp, "PWD=/" as void*);
+        ulong* env_s6 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s6 = env_pwd; env_count = env_count + 1;
+
+        // 16バイトアラインメント
+        sp = sp & ~15;
+
+        // envp[env_count] = NULL (終端)
         sp = sp - 8;
         ulong* envp_null = sp as ulong*;
         *envp_null = 0;
+
+        // envp[env_count-1] ... envp[0] (逆順push)
+        ulong envi = env_count;
+        while (envi > 0) {
+            envi = envi - 1;
+            sp = sp - 8;
+            ulong* envp_ptr = sp as ulong*;
+            ulong* envp_src = (env_strs_buf + envi * 8) as ulong*;
+            *envp_ptr = *envp_src;
+        }
 
         // --- argv[argc] = NULL ---
         sp = sp - 8;
@@ -669,5 +740,20 @@ impl Loader {
         ulong* val_ptr = (base + offset + 8) as ulong*;
         *type_ptr = atype;
         *val_ptr = value;
+    }
+
+    /// 文字列をメモリにコピーするヘルパ (NULL終端含む)
+    static void copy_str(ulong dst, void* src) {
+        ulong s = src as ulong;
+        ulong i = 0;
+        while (true) {
+            ulong ch = 0;
+            ulong sa = s + i;
+            __asm__(`movq ${r:sa}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
+            ulong da = dst + i;
+            __asm__(`movq ${r:da}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+            if (ch == 0) { break; }
+            i = i + 1;
+        }
     }
 }

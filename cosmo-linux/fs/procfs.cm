@@ -100,6 +100,53 @@ impl ProcFs {
         return pos - buf;
     }
 
+    /// /proc/cpuinfo — CPU情報
+    static ulong cpuinfo(ulong buf) {
+        ulong pos = buf;
+        pos = write_str(pos, "processor\t: 0\n" as void*);
+        pos = write_str(pos, "vendor_id\t: CosmoLinux\n" as void*);
+        pos = write_str(pos, "cpu family\t: 6\n" as void*);
+        pos = write_str(pos, "model\t\t: 0\n" as void*);
+        pos = write_str(pos, "model name\t: Cosmo Virtual CPU\n" as void*);
+        pos = write_str(pos, "stepping\t: 0\n" as void*);
+        pos = write_str(pos, "cpu MHz\t\t: 1000.000\n" as void*);
+        pos = write_str(pos, "bogomips\t: 2000.00\n" as void*);
+        pos = write_str(pos, "flags\t\t: fpu sse sse2 rdrand\n" as void*);
+        pos = write_str(pos, "address sizes\t: 48 bits physical, 48 bits virtual\n" as void*);
+        procfs_wb(pos, 0);
+        return pos - buf;
+    }
+
+    /// /proc/stat — カーネル統計
+    static ulong stat(ulong buf) {
+        ulong ticks = PIT::get_ticks();
+        ulong pos = buf;
+        pos = write_str(pos, "cpu  " as void*);
+        pos = write_dec(pos, ticks / 10);
+        pos = write_str(pos, " 0 0 " as void*);
+        pos = write_dec(pos, ticks);
+        pos = write_str(pos, " 0 0 0 0 0 0\n" as void*);
+        pos = write_str(pos, "processes 1\n" as void*);
+        pos = write_str(pos, "procs_running 1\n" as void*);
+        procfs_wb(pos, 0);
+        return pos - buf;
+    }
+
+    /// /proc/self/status — プロセスステータス
+    static ulong self_status(ulong buf) {
+        ulong pos = buf;
+        pos = write_str(pos, "Name:\tprocess\n" as void*);
+        pos = write_str(pos, "State:\tR (running)\n" as void*);
+        pos = write_str(pos, "Pid:\t1\n" as void*);
+        pos = write_str(pos, "PPid:\t0\n" as void*);
+        pos = write_str(pos, "Uid:\t0\t0\t0\t0\n" as void*);
+        pos = write_str(pos, "Gid:\t0\t0\t0\t0\n" as void*);
+        pos = write_str(pos, "VmSize:\t4096 kB\n" as void*);
+        pos = write_str(pos, "Threads:\t1\n" as void*);
+        procfs_wb(pos, 0);
+        return pos - buf;
+    }
+
     /// procfsファイル読み出し
     static ulong read_file(void* name, ulong buf) {
         if (streq(name, "version" as void*) != 0) {
@@ -110,6 +157,15 @@ impl ProcFs {
         }
         if (streq(name, "uptime" as void*) != 0) {
             return ProcFs::uptime(buf);
+        }
+        if (streq(name, "cpuinfo" as void*) != 0) {
+            return ProcFs::cpuinfo(buf);
+        }
+        if (streq(name, "stat" as void*) != 0) {
+            return ProcFs::stat(buf);
+        }
+        if (streq(name, "self/status" as void*) != 0) {
+            return ProcFs::self_status(buf);
         }
         return 0;
     }
