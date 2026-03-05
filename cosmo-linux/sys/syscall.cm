@@ -501,8 +501,14 @@ impl Syscall {
             }
             return total;
         }
-        // stdout/stderr: シリアル出力
+        // stdout/stderr: シリアル出力 + VGA画面出力
         SerialPort serial(COM1);
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        ulong is_user = 0;
+        if (cur_addr != 0) {
+            is_user = cur->is_user;
+        }
         long total = 0;
         ulong i = 0;
         while (i < iovcnt) {
@@ -521,6 +527,14 @@ impl Syscall {
                     movq %rax, ${=r:ch}
                 `);
                 serial.putc(ch as utiny);
+                // ユーザープロセスの場合VGA画面にも出力
+                if (is_user != 0) {
+                    if (ch == 10) {
+                        Vga::putc(10);
+                    } else if (ch >= 32 && ch < 127) {
+                        Vga::putc(ch);
+                    }
+                }
                 j = j + 1;
             }
             total = total + (len as long);

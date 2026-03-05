@@ -166,7 +166,7 @@ run-bash: $(ELF)
 		-monitor unix:/tmp/cosmo_qemu_mon.sock,server=on,wait=off \
 		-no-reboot &
 	@sleep 4
-	@python3 scripts/qemu_sendkeys.py "gen install bash:12" "exec bash --version:5"
+	@python3 scripts/qemu_sendkeys.py "gen install bash:12" "bash --version:5"
 	@echo ""
 	@echo "--- シリアルログ (bash) ---"
 	@cat $(BUILD)/serial_bash.log 2>/dev/null | tail -60
