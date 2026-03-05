@@ -473,15 +473,16 @@ impl Loader {
         }
         memzero(proc_mem as void*, PAGE_SIZE);
         Process* proc = proc_mem as Process*;
-        Process new_proc(new_pid, 1);  // parent=shell(PID 1)
-        // 構造体コピー
-        ulong k = 0;
-        while (k < 16) {
-            ulong* src_f = (((&new_proc) as ulong) + k * 8) as ulong*;
-            ulong* dst_f = (proc_mem + k * 8) as ulong*;
-            *dst_f = *src_f;
-            k = k + 1;
-        }
+
+        // プロセスフィールドを直接設定（構造体コピーの代わりに安全な方法）
+        proc->pid = new_pid;
+        proc->parent_pid = 1;  // parent=shell(PID 1)
+        proc->state = TASK_READY;
+        proc->exit_code = 0;
+        proc->time_slice = 10;
+        proc->priority = 20;
+        proc->pending_signal = 0;
+        proc->is_user = 0;
 
         // カーネルスタック割り当て
         proc->alloc_stack(pmm);

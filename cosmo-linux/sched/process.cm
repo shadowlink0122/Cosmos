@@ -23,8 +23,8 @@ import ./scheduler;
 /// グローバルプロセステーブル配置先
 const PhysAddr PROC_TABLE_BASE = 0x300000;
 
-/// 次のPID
-const PhysAddr NEXT_PID_ADDR = 0x300000 + 64 * 256;
+/// 次のPID（カーネル固定データ領域に配置 — PMMと非衝突）
+const PhysAddr NEXT_PID_ADDR = 0x91040;
 
 /// スケジューラポインタ配置アドレス（scheduler.cmと共有）
 const PhysAddr SCHED_PTR_ADDR = 0x91000;
