@@ -134,6 +134,7 @@ export void shell_main() {
     Gen::install("bash" as ulong);
     Gen::install("git" as ulong);
     Gen::install("gcc" as ulong);
+    Gen::install("ruby" as ulong);
     Shell::writeln("" as void*);
 
     // 履歴ナビゲーション位置
