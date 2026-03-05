@@ -491,6 +491,40 @@ impl Loader {
         proc->brk_addr = data_end;
 
         // ============================================================
+        // 初期TLS領域の確保
+        // musl-libcはarch_prctl(SET_FS)でTLSを設定する前に、
+        // スタックカナリア(%fs:0x28)やTLSセルフポインタ(%fs:0)に
+        // アクセスする。初期TLS領域を確保してFS_BASE MSRを設定する。
+        //
+        // musl TLSレイアウト (x86_64):
+        //   [FS base + 0x00] = セルフポインタ (= FS base自身)
+        //   [FS base + 0x28] = スタックカナリア値
+        //   [FS base + 0x30] = その他TLSデータ
+        // ============================================================
+        ulong tls_base_vaddr = 0x7FFC0000;  // TLS用の固定仮想アドレス
+        PhysAddr tls_phys = pmm->alloc_pages(0);
+        if (tls_phys != 0) {
+            memzero(tls_phys as void*, PAGE_SIZE);
+            pt.map_page(tls_base_vaddr, tls_phys, 7, pmm);  // PRESENT|WRITE|USER
+            __asm__(`movq %cr3, %rax; movq %rax, %cr3`);  // TLBフラッシュ
+
+            // セルフポインタ: %fs:0 → TLSブロック自身のアドレス
+            ulong* tls_self = tls_base_vaddr as ulong*;
+            *tls_self = tls_base_vaddr;
+
+            // スタックカナリア: %fs:0x28 → 疑似乱数値
+            ulong* tls_canary = (tls_base_vaddr + 0x28) as ulong*;
+            *tls_canary = 0x5F3759DF5F3759DF;  // 固定カナリア値
+
+            // FS_BASE MSRを設定 (arch_prctlが後で上書きする)
+            Cpu::wrmsr(0xC0000100, tls_base_vaddr);
+
+            w->puts("[exec] TLS initialized at 0x" as void*);
+            w->print_hex(tls_base_vaddr);
+            w->println("" as void*);
+        }
+
+        // ============================================================
         // ユーザースタック上にargc/argv/envp/auxvを構築
         //
         // Linux ABI準拠のスタックレイアウト:
