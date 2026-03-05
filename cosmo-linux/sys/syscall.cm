@@ -1089,8 +1089,37 @@ ulong arg3, ulong arg4, ulong arg5) {
         return 0;  // clock ticks
     }
     if (nr == SYS_MREMAP) {
-        // mremap: 常に失敗（ENOMEM）
-        return 0 - ENOMEM;
+        // mremap(old_addr, old_size, new_size, flags, [new_addr])
+        // arg0=old_addr, arg1=old_size, arg2=new_size, arg3=flags
+        ulong old_addr = arg0;
+        ulong old_size = arg1;
+        ulong new_size = arg2;
+        ulong flags = arg3;
+
+        // サイズ縮小: 旧アドレスをそのまま返す
+        if (new_size <= old_size) {
+            return old_addr as long;
+        }
+
+        // MREMAP_MAYMOVE(1): 新領域をmmap→データコピー→旧領域munmap
+        ulong new_addr = Mmap::do_mmap(0, new_size, 7, 0x22);  // PROT_RWX, MAP_ANON|MAP_PRIVATE
+        if (new_addr == MAP_FAILED) { return 0 - ENOMEM; }
+
+        // データコピー (old_size バイト)
+        ulong ci = 0;
+        while (ci < old_size) {
+            ulong byte = 0;
+            ulong src = old_addr + ci;
+            __asm__(`movq ${r:src}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:byte}`);
+            ulong dst = new_addr + ci;
+            __asm__(`movq ${r:dst}, %rdi; movq ${r:byte}, %rax; movb %al, (%rdi)`);
+            ci = ci + 1;
+        }
+
+        // 旧領域を解放
+        Mmap::do_munmap(old_addr, old_size);
+
+        return new_addr as long;
     }
     // mkdir / rmdir / unlink (古いsyscall)
     if (nr == SYS_MKDIR) {
