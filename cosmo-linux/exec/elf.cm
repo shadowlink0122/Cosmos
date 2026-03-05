@@ -35,6 +35,12 @@ export const ulong EM_X86_64 = 62;
 /// PT_LOAD (ロード可能セグメント)
 export const ulong PT_LOAD = 1;
 
+/// PT_INTERP (動的リンカーパス)
+export const ulong PT_INTERP = 3;
+
+/// PT_PHDR (プログラムヘッダテーブル)
+export const ulong PT_PHDR = 6;
+
 // ============================================================
 // ELF64 ヘッダ構造（64バイト）
 // ============================================================

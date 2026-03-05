@@ -40,6 +40,14 @@ const PhysAddr ELF_TMP_BUF = 0x2000000;   // 32MB地点
 // ELFバッファ最大サイズ (8MB)
 const ulong ELF_MAX_SIZE = 0x800000;
 
+/// インタープリターELF読み込み一時バッファ (4MB)
+const PhysAddr INTERP_TMP_BUF = 0x2800000;  // 40MB地点
+const ulong INTERP_MAX_SIZE = 0x400000;
+
+/// インタープリターロードベースアドレス
+/// ユーザー空間の上位アドレスに配置
+const VirtAddr INTERP_LOAD_BASE = 0x7F000000;
+
 /// ローダー用PMMポインタアドレス
 const PhysAddr LOADER_PMM_PTR = 0x95010;
 
@@ -67,8 +75,12 @@ const ulong AT_EUID   = 12;
 const ulong AT_GID    = 13;
 /// AT_EGID: 実効GID
 const ulong AT_EGID   = 14;
+/// AT_BASE: インタープリターベースアドレス
+const ulong AT_BASE   = 7;
 /// AT_RANDOM: ランダムバイトのアドレス（16バイト）
 const ulong AT_RANDOM = 25;
+/// AT_EXECFN: 実行ファイル名
+const ulong AT_EXECFN = 31;
 
 // ============================================================
 // Loader struct/impl
@@ -166,6 +178,77 @@ impl Loader {
             load_bias = PIE_LOAD_BASE;
             entry = entry + load_bias;
             w->println("[exec] PIE detected, applying load bias" as void*);
+        }
+
+        // ============================================================
+        // PT_INTERP 検出: 動的リンカーのパスを取得
+        // ============================================================
+        ulong has_interp = 0;
+        ulong interp_entry = 0;
+        ulong interp_base = INTERP_LOAD_BASE;
+        ulong interp_phdr_addr = 0;
+        ulong interp_phnum = 0;
+        ulong interp_phentsize = 0;
+        ulong app_entry = entry;  // アプリの元のエントリー保存
+
+        // PT_INTERPセグメントを検索
+        ulong pi = 0;
+        while (pi < phnum) {
+            ulong pi_addr = ELF_TMP_BUF + phoff + pi * phentsize;
+            ulong pi_type = Elf::ph_type(pi_addr);
+            if (pi_type == PT_INTERP) {
+                // インタープリターパスを取得
+                ulong interp_offset = Elf::ph_offset(pi_addr);
+                ulong interp_size = Elf::ph_filesz(pi_addr);
+                ulong interp_path = ELF_TMP_BUF + interp_offset;
+
+                w->puts("[exec] PT_INTERP detected: " as void*);
+                w->println(interp_path as void*);
+
+                // インタープリターELFをロード
+                // まず9pFSから検索（/lib/xxx → ファイル名のみ）
+                // パスの最後の '/' 以降をファイル名として使用
+                ulong interp_fname = interp_path;
+                ulong ij = 0;
+                while (ij < interp_size) {
+                    ulong ich = Mem::read_byte(interp_path + ij);
+                    if (ich == 0) { break; }
+                    if (ich == 47) { interp_fname = interp_path + ij + 1; }  // '/'
+                    ij = ij + 1;
+                }
+
+                w->puts("[exec] Loading interpreter: " as void*);
+                w->println(interp_fname as void*);
+
+                // 9pFSからインタープリターを読み込み
+                ulong interp_bytes = NinePfs::read_file(
+                    interp_fname, INTERP_TMP_BUF, INTERP_MAX_SIZE);
+                if (interp_bytes == 0) {
+                    // RamFSからも検索
+                    Ino interp_ino = RamFs::lookup(interp_fname as void*);
+                    if (interp_ino != 0) {
+                        ulong interp_fsize = RamFs::file_size(interp_ino);
+                        RamFs::read(interp_ino, INTERP_TMP_BUF, 0, interp_fsize);
+                        interp_bytes = interp_fsize;
+                    }
+                }
+
+                if (interp_bytes > 0 && Elf::validate(INTERP_TMP_BUF) != 0) {
+                    has_interp = 1;
+                    interp_entry = Elf::get_entry(INTERP_TMP_BUF);
+                    interp_phentsize = Elf::get_phentsize(INTERP_TMP_BUF);
+                    interp_phnum = Elf::get_phnum(INTERP_TMP_BUF);
+
+                    w->puts("[exec] Interpreter loaded: entry=0x" as void*);
+                    w->print_hex(interp_entry);
+                    w->puts(" phnum=" as void*);
+                    print_dec(w, interp_phnum);
+                    w->println("" as void*);
+                } else {
+                    w->println("[exec] WARNING: interpreter not found, trying static" as void*);
+                }
+            }
+            pi = pi + 1;
         }
 
 
@@ -303,6 +386,77 @@ impl Loader {
 
         // data_endをページアラインメント
         data_end = (data_end + 0xFFF) & ~0xFFF;
+
+        // ============================================================
+        // インタープリターのPT_LOADセグメントをロード
+        // ============================================================
+        if (has_interp != 0) {
+            ulong interp_phoff = Elf::get_phoff(INTERP_TMP_BUF);
+            ulong ii = 0;
+            while (ii < interp_phnum) {
+                ulong iph = INTERP_TMP_BUF + interp_phoff + ii * interp_phentsize;
+                ulong ip_type = Elf::ph_type(iph);
+
+                if (ip_type == PT_LOAD) {
+                    ulong ip_offset = Elf::ph_offset(iph);
+                    ulong ip_vaddr  = Elf::ph_vaddr(iph) + interp_base;
+                    ulong ip_filesz = Elf::ph_filesz(iph);
+                    ulong ip_memsz  = Elf::ph_memsz(iph);
+
+                    w->puts("[exec] INTERP LOAD: vaddr=0x" as void*);
+                    w->print_hex(ip_vaddr);
+                    w->puts(" filesz=0x" as void*);
+                    w->print_hex(ip_filesz);
+                    w->println("" as void*);
+
+                    // ページマッピング
+                    ulong PAGE_MASK2 = 0xFFFFFFFFFFFFF000;
+                    ulong ip_start = ip_vaddr & PAGE_MASK2;
+                    ulong ip_end = (ip_vaddr + ip_memsz + 0xFFF) & PAGE_MASK2;
+
+                    ulong ip_page = ip_start;
+                    while (ip_page < ip_end) {
+                        PhysAddr ip_phys = pmm->alloc_pages(0);
+                        if (ip_phys == 0) { break; }
+                        memzero(ip_phys as void*, PAGE_SIZE);
+                        pt.map_page(ip_page, ip_phys, 7, pmm);
+                        ip_page = ip_page + PAGE_SIZE;
+                    }
+
+                    // TLBフラッシュ
+                    __asm__(`movq %cr3, %rax; movq %rax, %cr3`);
+
+                    // データコピー
+                    ulong isrc = INTERP_TMP_BUF + ip_offset;
+                    ulong idst = ip_vaddr;
+                    ulong ij2 = 0;
+                    while (ij2 < ip_filesz) {
+                        ulong ibyte = 0;
+                        ulong is2 = isrc + ij2;
+                        __asm__(`
+                            movq ${r:is2}, %rdi;
+                            xorq %rax, %rax;
+                            movb (%rdi), %al;
+                            movq %rax, ${=r:ibyte}
+                        `);
+                        ulong id2 = idst + ij2;
+                        __asm__(`
+                            movq ${r:id2}, %rdi;
+                            movq ${r:ibyte}, %rax;
+                            movb %al, (%rdi)
+                        `);
+                        ij2 = ij2 + 1;
+                    }
+                }
+                ii = ii + 1;
+            }
+
+            // エントリーポイントをインタープリターに切り替え
+            entry = interp_entry + interp_base;
+            w->puts("[exec] Entry switched to interpreter: 0x" as void*);
+            w->print_hex(entry);
+            w->println("" as void*);
+        }
 
         // プロセス作成
         Pid new_pid = ProcessTable::alloc_pid();
@@ -459,6 +613,11 @@ impl Loader {
         // AT_PAGESZ
         sp = sp - 16;
         Loader::write_auxv(sp, 0, AT_PAGESZ, 4096);
+        // AT_BASE (インタープリターベース)
+        if (has_interp != 0) {
+            sp = sp - 16;
+            Loader::write_auxv(sp, 0, AT_BASE, interp_base);
+        }
 
         // --- envp[0] = NULL ---
         sp = sp - 8;
