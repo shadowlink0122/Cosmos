@@ -18,27 +18,23 @@ export struct Context {}
 ///     RSPがiretqフレームから8バイトずれる。pop rbpで復元する。
 ///
 /// 重要: iretqはCS/SSのみ復元し、DS/ES/FS/GSは復元しない。
-///       カーネルモードのセグメントセレクタがそのまま残ると、
-///       ユーザーモードで%fs:offsetアクセス時に権限違反(PAGE FAULT)になる。
-///       iretq前にDS/ES/FS/GSをユーザーデータセグメント(0x1B)に設定する。
+///       DS/ESはユーザーデータセグメント(0x1B)に設定する。
+///       FS/GSには触れない — x86_64 Long Modeでは、FSセグメントレジスタへの
+///       書き込み（0を含む）がFS_BASE MSRをリセットしてしまうため。
+///       FS_BASEはELFローダーで事前設定され、arch_prctlで管理される。
 void usermode_trampoline() {
     __asm__(`
         // Cmコンパイラのプロローグ(push rbp; mov rbp,rsp; sub rsp,N)を完全に元に戻す
         // leave = mov rsp,rbp; pop rbp (sub rspも含めて復元)
         leave;
 
-        // DS/ES/FS/GSをユーザーデータセグメント(USER_DS | RPL=3 = 0x1B)に設定
+        // DS/ESのみユーザーデータセグメント(USER_DS | RPL=3 = 0x1B)に設定
         // iretqはCS/SSのみ復元するため、データセグメントは手動で設定する必要がある
+        // 注意: FS/GSには絶対に触れないこと！
+        //       x86_64ではFS/GSへのmovがFS_BASE/GS_BASE MSRを0にリセットする
         movq $$0x1B, %rax;
         movw %ax, %ds;
         movw %ax, %es;
-        // FSはmusl-libcがarch_prctl(SET_FS)で制御するため0にしておく
-        // GDTセレクタを設定するとFS_BASE MSRが0にリセットされるため、
-        // FSセレクタは設定しない（FS_BASE MSRはarch_prctlで管理）
-        xorw %ax, %ax;
-        movw %ax, %fs;
-        // GSも同様にクリア
-        movw %ax, %gs;
 
         // iretqでRing3に遷移
         // スタック上のフレーム: [RIP, CS, RFLAGS, RSP, SS]
