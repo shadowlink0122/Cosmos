@@ -15,7 +15,7 @@ release/v<version>             - リリース準備
 
 ## コミット前チェック
 // turbo
-1. `make -C cosmo-linux` でビルド確認
-2. `make -C cosmo-linux test` でテスト確認
+1. `make` でビルド確認
+2. `make test` でテスト確認
 3. 不要な変更・デバッグ出力がないか確認
 4. ローカルパス情報(`/Users/`等)が含まれていないか確認

@@ -38,14 +38,14 @@ Cosmo Linux の Cm コードが設計パターンに準拠しているかを確�
 
 ```bash
 # typedef の使用状況
-grep -rn "typedef" cosmo-linux/include/
+grep -rn "typedef" include/
 
 # interface の定義
-grep -rn "interface" cosmo-linux/include/
+grep -rn "interface" include/
 
 # impl の実装確認
-grep -rn "^impl " cosmo-linux/
+grep -rn "^impl " 
 
 # 生のulong引数（潜在的な問題）
-grep -rn "export.*ulong " cosmo-linux/ --include="*.cm" | grep -v "const\|typedef"
+grep -rn "export.*ulong "  --include="*.cm" | grep -v "const\|typedef"
 ```

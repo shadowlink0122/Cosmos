@@ -22,3 +22,6 @@ Thumbs.db
 
 # QEMU virtfs 共有ディレクトリ
 rootfs/
+
+# シリアルログ
+serial*.log

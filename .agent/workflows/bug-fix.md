@@ -6,7 +6,7 @@ description: バグ修正の手順
 
 ## 1. バグ記録
 // turbo
-1. `docs/cosmo-linux/` に `00N_bug_<概要>.md` を作成
+1. `docs/` に `00N_bug_<概要>.md` を作成
 2. 再現手順、期待される動作、実際の動作を記載
 3. スクリーンショットやシリアルログがあれば添付
 
@@ -14,8 +14,8 @@ description: バグ修正の手順
 // turbo
 1. QEMUでシリアル出力を確認
    ```bash
-   make -C cosmo-linux test
-   cat .tmp/cosmo-linux/serial.log
+   make test
+   cat .tmp/serial.log
    ```
 2. 最小再現コードを作成
 
@@ -29,11 +29,11 @@ description: バグ修正の手順
 1. 修正コード作成
 2. 修正理由をコメントに記載
 // turbo
-3. `make -C cosmo-linux` でビルド確認
+3. `make` でビルド確認
 
 ## 5. 検証
 // turbo
-1. `make -C cosmo-linux test` でテスト
+1. `make test` でテスト
 2. シリアルログで正常動作を確認
 3. バグドキュメントに修正内容と確認結果を追記
 
@@ -43,7 +43,7 @@ description: バグ修正の手順
 2. `make tl0` でCm全テスト実行（PASS数が増加すること）
 3. `make install` でインストール
 4. `cm -v` でバージョン番号が正しいことを確認
-5. Cosmo Linux を `make -C cosmo-linux` でリビルド確認
+5. Cosmo Linux を `make` でリビルド確認
 
 ## 6. コミット
 // turbo

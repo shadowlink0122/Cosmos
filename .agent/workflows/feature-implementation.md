@@ -11,7 +11,7 @@ description: 新機能の実装手順
 
 ## 1. 設計フェーズ
 // turbo
-1. `docs/cosmo-linux/`に設計ドキュメント作成
+1. `docs/`に設計ドキュメント作成
    - ファイル名に`00N_`プレフィックスを付ける
    - 例: `006_memory_management.md`
 2. typedef / interface / impl の設計を明記
@@ -32,8 +32,8 @@ description: 新機能の実装手順
 
 ## 4. ビルド検証
 // turbo
-1. `make -C cosmo-linux` でビルド確認
-2. `make -C cosmo-linux test` でテスト
+1. `make` でビルド確認
+2. `make test` でテスト
 
 ## 4.1 Cmコンパイラの修正を含む場合
 // turbo
@@ -45,7 +45,7 @@ description: 新機能の実装手順
 
 ## 5. ドキュメント更新
 // turbo
-1. `docs/cosmo-linux/` にドキュメントを追加/更新
+1. `docs/` にドキュメントを追加/更新
 2. 実装完了した設計ドキュメントは `docs/archive/` に移動
 
 ## 6. コミット

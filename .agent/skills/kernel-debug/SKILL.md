@@ -13,12 +13,12 @@ QEMU上でのカーネル例外、ブート失敗、シリアル出力異常を�
 ```bash
 # ターミナル1: GDBサーバ付きQEMU起動
 qemu-system-x86_64 \
-  -kernel .tmp/cosmo-linux/cosmo-linux.elf \
+  -kernel .tmp/cosmo-linux.elf \
   -m 256M -smp 1 -serial stdio -display none \
   -no-reboot -S -gdb tcp::1234
 
 # ターミナル2: GDB接続
-gdb .tmp/cosmo-linux/cosmo-linux.elf
+gdb .tmp/cosmo-linux.elf
 > target remote :1234
 > break start_kernel
 > continue
@@ -28,9 +28,9 @@ gdb .tmp/cosmo-linux/cosmo-linux.elf
 ```bash
 # 割り込みログ
 qemu-system-x86_64 \
-  -kernel .tmp/cosmo-linux/cosmo-linux.elf \
+  -kernel .tmp/cosmo-linux.elf \
   -m 256M -smp 1 -serial stdio -display none \
-  -d int,cpu_reset -D .tmp/cosmo-linux/qemu.log \
+  -d int,cpu_reset -D .tmp/qemu.log \
   -no-reboot
 ```
 
@@ -53,13 +53,13 @@ qemu-system-x86_64 \
 
 ## バグ記録テンプレート
 
-バグ発見時は `docs/cosmo-linux/00N_bug_<概要>.md` を作成:
+バグ発見時は `docs/00N_bug_<概要>.md` を作成:
 
 ```markdown
 # Bug: <概要>
 
 ## 再現手順
-1. `make -C cosmo-linux test`
+1. `make test`
 2. シリアルログを確認
 
 ## 期待される動作

@@ -12,14 +12,14 @@ description: セキュリティチェック - ローカルパス情報の検出�
 // turbo
 1. ローカルパスの検出
 ```bash
-grep -rn "/Users/" cosmo-linux/ .agent/ --include="*.md" --include="*.cm"
-grep -rn "/home/" cosmo-linux/ .agent/ --include="*.md" --include="*.cm"
+grep -rn "/Users/"  .agent/ --include="*.md" --include="*.cm"
+grep -rn "/home/"  .agent/ --include="*.md" --include="*.cm"
 ```
 
 // turbo
 2. 絶対パスの検出
 ```bash
-grep -rn "file:///" cosmo-linux/ .agent/ --include="*.md"
+grep -rn "file:///"  .agent/ --include="*.md"
 ```
 
 3. 検出された場合は相対パスに修正

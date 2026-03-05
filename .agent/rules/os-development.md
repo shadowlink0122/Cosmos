@@ -17,7 +17,7 @@
 ## ディレクトリ構造
 
 ```
-cosmo-linux/
+
 ├── docs/           # 番号付き設計文書 (00N_xxx.md)
 ├── boot/           # ブートローダ + エントリポイント
 ├── arch/x86_64/    # アーキテクチャ依存コード
@@ -45,7 +45,7 @@ cosmo-linux/
 ```
 
 ### バグ記録
-バグ発見時は**必ず** `docs/cosmo-linux/` に `00N_bug_<概要>.md` を作成:
+バグ発見時は**必ず** `docs/` に `00N_bug_<概要>.md` を作成:
 - 再現手順
 - 原因分析
 - 修正内容
@@ -63,7 +63,7 @@ cosmo-linux/
 ## ビルド・テスト
 
 ```bash
-make -C cosmo-linux          # ビルド
-make -C cosmo-linux run      # QEMU起動
-make -C cosmo-linux test     # テスト（自動検証）
+make          # ビルド
+make run      # QEMU起動
+make test     # テスト（自動検証）
 ```

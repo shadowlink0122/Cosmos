@@ -6,14 +6,14 @@ description: リリース準備の手順
 
 ## 1. バージョン更新
 // turbo
-1. `cosmo-linux/include/config.cm` のバージョン定数を更新
-2. `cosmo-linux/boot/entry.cm` のバナー文字列を更新
+1. `include/config.cm` のバージョン定数を更新
+2. `boot/entry.cm` のバナー文字列を更新
 
 ## 2. テスト
 // turbo-all
-1. `make -C cosmo-linux clean`
-2. `make -C cosmo-linux`
-3. `make -C cosmo-linux test`
+1. `make clean`
+2. `make`
+3. `make test`
 
 ## 3. ドキュメント確認
 1. 全 00N_ ドキュメントが最新か確認

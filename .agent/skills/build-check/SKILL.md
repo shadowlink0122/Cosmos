@@ -12,20 +12,20 @@ description: Cosmo Linux ビルドとテストの完全チェック
 ### 1. クリーンビルド
 // turbo
 ```bash
-make -C cosmo-linux clean
-make -C cosmo-linux
+make clean
+make
 ```
 
 ### 2. QEMUブートテスト
 // turbo
 ```bash
-make -C cosmo-linux test
+make test
 ```
 
 ### 3. シリアルログ確認
 // turbo
 ```bash
-cat .tmp/cosmo-linux/serial.log
+cat .tmp/serial.log
 ```
 
 ### 4. 結果判定
