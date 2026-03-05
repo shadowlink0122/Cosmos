@@ -78,7 +78,37 @@ impl Vfs {
                 ino = RamFs::create(name, S_IFREG | 0x1B6, 0);
                 if (ino == 0) { return 0 - ENOSPC; }
             } else {
-                return 0 - ENOENT;
+                // 9pFSフォールバック: /lib/ 等のパスを9pFS経由でロード
+                // パスの先頭 '/' をスキップしてファイル名として検索
+                ulong search_name = name as ulong;
+                ulong sch = 0;
+                __asm__(`movq ${r:search_name}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sch}`);
+                if (sch == 47) { search_name = search_name + 1; }
+
+                // 9pFSから読取を試行 → RamFSにキャッシュ
+                // 一時バッファとして0xB00000(11MB地点)を使用
+                ulong tmp_buf = 0xB00000;
+                ulong bytes = NinePfs::read_file(search_name, tmp_buf, MAX_FILE_SIZE);
+                if (bytes > 0) {
+                    // RamFSにキャッシュ: ファイル名の最後のコンポーネントを使用
+                    ulong fname = search_name;
+                    ulong fi = 0;
+                    while (fi < 256) {
+                        ulong fch = 0;
+                        ulong faddr = search_name + fi;
+                        __asm__(`movq ${r:faddr}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:fch}`);
+                        if (fch == 0) { break; }
+                        if (fch == 47) { fname = faddr + 1; }  // '/'
+                        fi = fi + 1;
+                    }
+                    ino = RamFs::create(fname as void*, S_IFREG | 0x1B6, bytes);
+                    if (ino != 0) {
+                        RamFs::write(ino, tmp_buf, 0, bytes);
+                    }
+                }
+                if (ino == 0) {
+                    return 0 - ENOENT;
+                }
             }
         }
 

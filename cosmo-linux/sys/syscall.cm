@@ -377,10 +377,29 @@ impl Syscall {
 
     /// sys_mmap: メモリマッピング
     static long mmap(ulong addr, ulong length, ulong prot, ulong flags, long fd, ulong offset) {
-        // fd != -1 のファイルマッピングは未対応
-        // musl-libc は匿名マッピング(fd=-1, offset=0)を使用
+        // MAP_ANONYMOUS = 0x20
+        ulong MAP_ANONYMOUS = 0x20;
+
+        // まずページ割当（匿名/ファイルマッピング共通）
         ulong result = Mmap::do_mmap(addr, length, prot, flags);
         if (result == MAP_FAILED) { return 0 - ENOMEM; }
+
+        // FILE_BACKED: fd >= 0 かつ MAP_ANONYMOUS フラグなしの場合
+        // fdからoffset位置のデータを読み取り、マップされた領域にコピー
+        if (fd >= 0 && (flags & MAP_ANONYMOUS) == 0) {
+            // ファイルデータをページにコピー（pread64相当）
+            ulong copy_len = length;
+            ulong copied = 0;
+            while (copied < copy_len) {
+                ulong chunk = copy_len - copied;
+                if (chunk > 4096) { chunk = 4096; }  // 1ページずつ
+                // pread64(fd, result+copied, chunk, offset+copied)
+                long bytes = SyscallFs::pread64(fd as ulong, result + copied, chunk, offset + copied);
+                if (bytes <= 0) { break; }
+                copied = copied + bytes as ulong;
+            }
+        }
+
         return result as long;
     }
 

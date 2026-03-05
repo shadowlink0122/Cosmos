@@ -225,8 +225,20 @@ impl Loader {
                 w->println(interp_fname as void*);
 
                 // 9pFSからインタープリターを読み込み
+                // 1. まずファイル名のみで検索
                 ulong interp_bytes = NinePfs::read_file(
                     interp_fname, INTERP_TMP_BUF, INTERP_MAX_SIZE);
+                // 2. 失敗時: フルパス(先頭/スキップ)で再検索
+                //    例: /lib/ld-musl-x86_64.so.1 → lib/ld-musl-x86_64.so.1
+                if (interp_bytes == 0) {
+                    ulong full_path = interp_path;
+                    ulong fp_ch = Mem::read_byte(full_path);
+                    if (fp_ch == 47) { full_path = full_path + 1; }  // 先頭'/'スキップ
+                    w->puts("[exec] Retry with full path: " as void*);
+                    w->println(full_path as void*);
+                    interp_bytes = NinePfs::read_file(
+                        full_path, INTERP_TMP_BUF, INTERP_MAX_SIZE);
+                }
                 if (interp_bytes == 0) {
                     // RamFSからも検索
                     Ino interp_ino = RamFs::lookup(interp_fname as void*);
