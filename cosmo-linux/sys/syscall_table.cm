@@ -156,3 +156,23 @@ export const ulong SYS_SETRLIMIT   = 160;
 export const ulong SYS_TIMES       = 100;
 export const ulong SYS_MREMAP      = 25;
 
+// --- Milestone 9: Homebrew — bash/Git/Ruby対応 ---
+export const ulong SYS_RT_SIGRETURN  = 15;
+export const ulong SYS_GETDENTS     = 78;
+export const ulong SYS_SETITIMER    = 38;
+export const ulong SYS_GETITIMER    = 36;
+export const ulong SYS_ALARM        = 37;
+export const ulong SYS_FLOCK        = 73;
+export const ulong SYS_CHMOD        = 90;
+export const ulong SYS_CHOWN        = 92;
+export const ulong SYS_LCHOWN       = 94;
+export const ulong SYS_SENDMSG      = 46;
+export const ulong SYS_RECVMSG      = 47;
+export const ulong SYS_RENAME       = 82;
+export const ulong SYS_GETGROUPS    = 115;
+export const ulong SYS_SETGROUPS    = 116;
+export const ulong SYS_SETUID       = 105;
+export const ulong SYS_SETGID       = 106;
+export const ulong SYS_GETSID       = 124;
+export const ulong SYS_MINCORE      = 27;
+export const ulong SYS_CLOCK_GETRES = 229;

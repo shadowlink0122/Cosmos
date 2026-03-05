@@ -1053,6 +1053,96 @@ ulong arg3, ulong arg4, ulong arg5) {
         return SyscallFs::unlinkat(AT_FDCWD, arg0, 0);
     }
 
+    // --- Milestone 9: Homebrew — bash/Git/Ruby対応 ---
+
+    // rt_sigreturn: シグナルハンドラからの復帰
+    // 現状シグナルハンドラを実際にディスパッチしないためno-op
+    if (nr == SYS_RT_SIGRETURN) {
+        return 0;
+    }
+    // getdents: 旧式ディレクトリ読み取り → getdents64に委譲
+    if (nr == SYS_GETDENTS) {
+        return SyscallFs::getdents64(arg0, arg1, arg2);
+    }
+    // setitimer: インターバルタイマー設定 (stub)
+    if (nr == SYS_SETITIMER) {
+        // old_valueに現在のタイマー値を返す（ゼロクリア）
+        if (arg2 != 0) {
+            memzero(arg2 as void*, 32);  // struct itimerval = 32バイト
+        }
+        return 0;
+    }
+    // getitimer: インターバルタイマー取得 (stub)
+    if (nr == SYS_GETITIMER) {
+        if (arg1 != 0) {
+            memzero(arg1 as void*, 32);
+        }
+        return 0;
+    }
+    // alarm: シグナルアラーム (stub: 残り0秒を返す)
+    if (nr == SYS_ALARM) {
+        return 0;
+    }
+    // flock: ファイルロック (stub: 常に成功)
+    if (nr == SYS_FLOCK) {
+        return 0;
+    }
+    // chmod / chown / lchown (古いsyscall)
+    if (nr == SYS_CHMOD) {
+        return 0;  // 常に成功
+    }
+    if (nr == SYS_CHOWN || nr == SYS_LCHOWN) {
+        return 0;  // 常に成功
+    }
+    // rename (古いsyscall) → renameat委譲
+    if (nr == SYS_RENAME) {
+        return SyscallFs::renameat(AT_FDCWD, arg0, AT_FDCWD, arg1);
+    }
+    // sendmsg / recvmsg (stub: 未サポート → EOPNOTSUPP)
+    if (nr == SYS_SENDMSG) {
+        return 0 - EOPNOTSUPP;
+    }
+    if (nr == SYS_RECVMSG) {
+        return 0 - EOPNOTSUPP;
+    }
+    // getgroups / setgroups (stub)
+    if (nr == SYS_GETGROUPS) {
+        return 0;  // 0グループ
+    }
+    if (nr == SYS_SETGROUPS) {
+        return 0;
+    }
+    // setuid / setgid (root固定なので常に成功)
+    if (nr == SYS_SETUID || nr == SYS_SETGID) {
+        return 0;
+    }
+    // getsid: セッションID取得
+    if (nr == SYS_GETSID) {
+        return Syscall::getpid();  // PIDをSIDとして返す
+    }
+    // mincore: メモリページ状態 (stub: 全てレジデント)
+    if (nr == SYS_MINCORE) {
+        if (arg2 != 0) {
+            ulong pages = (arg1 + 4095) / 4096;
+            ulong mi = 0;
+            while (mi < pages) {
+                Mem::write_byte(arg2 + mi, 1);  // レジデントフラグ
+                mi = mi + 1;
+            }
+        }
+        return 0;
+    }
+    // clock_getres: クロック解像度
+    if (nr == SYS_CLOCK_GETRES) {
+        if (arg1 != 0) {
+            ulong* res_sec = arg1 as ulong*;
+            ulong* res_nsec = (arg1 + 8) as ulong*;
+            *res_sec = 0;
+            *res_nsec = 10000000;  // 10ms解像度 (100Hz PIT)
+        }
+        return 0;
+    }
+
     // 未実装syscall（デバッグログ出力）
     SerialPort serial_dbg(COM1);
     serial_dbg.puts("[WARN] unimplemented syscall: nr=" as void*);

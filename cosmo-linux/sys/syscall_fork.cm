@@ -23,6 +23,8 @@ import ../sched/scheduler;
 import ../arch/x86_64/context;
 import ../arch/x86_64/usermode;
 import ../exec/loader;
+import ../fs/ramfs;
+import ../fs/ninepfs;
 import ../ui/mem;
 
 // ============================================================
@@ -187,6 +189,143 @@ impl SyscallFork {
         dbg.puts("[execve] cmdline=\"" as void*);
         dbg.puts(cmdline_buf as void*);
         dbg.println("\"" as void*);
+
+        // ============================================================
+        // Shebang (#!) 検出
+        // ファイルの先頭2バイトを読み、#!ならインタープリターを解析して
+        // "interpreter [arg] script_path original_args" 形式のcmdlineに書き換える
+        // ============================================================
+        ulong shebang_buf = 0x95600;  // shebang一時バッファ (256B)
+        ulong shebang_detected = 0;
+
+        // ファイル名部分を取得（cmdlineの先頭ワード）
+        ulong fname_end = 0;
+        while (fname_end < pos) {
+            ulong fc = Mem::read_byte(cmdline_buf + fname_end);
+            if (fc == 0 || fc == 32) { break; }
+            fname_end = fname_end + 1;
+        }
+
+        // ファイルをNULL終端してヘッダを読む
+        ulong fname_tmp = 0x95580;  // ファイル名一時バッファ
+        ulong fi2 = 0;
+        while (fi2 < fname_end && fi2 < 120) {
+            Mem::write_byte(fname_tmp + fi2, Mem::read_byte(cmdline_buf + fi2));
+            fi2 = fi2 + 1;
+        }
+        Mem::write_byte(fname_tmp + fi2, 0);
+
+        // RamFS/9pFSからファイルの先頭128バイトを読む  
+        ulong hdr_read = 0;
+        Ino sheb_ino = RamFs::lookup(fname_tmp as void*);
+        if (sheb_ino != 0) {
+            hdr_read = RamFs::read(sheb_ino, shebang_buf, 0, 128) as ulong;
+        } else {
+            hdr_read = NinePfs::read_file(fname_tmp, shebang_buf, 128);
+        }
+
+        if (hdr_read >= 2) {
+            ulong b0 = Mem::read_byte(shebang_buf);
+            ulong b1 = Mem::read_byte(shebang_buf + 1);
+            // '#' = 35, '!' = 33
+            if (b0 == 35 && b1 == 33) {
+                shebang_detected = 1;
+                dbg.println("[execve] Shebang detected!" as void*);
+
+                // インタープリターパスを抽出 (#!の後からLFまで)
+                ulong interp_start = 2;
+                // 先頭スペースをスキップ
+                while (interp_start < hdr_read) {
+                    ulong sc = Mem::read_byte(shebang_buf + interp_start);
+                    if (sc != 32 && sc != 9) { break; }  // スペース/タブ
+                    interp_start = interp_start + 1;
+                }
+
+                // インタープリターパスの終端を探す（スペースまたはLF）
+                ulong interp_end = interp_start;
+                while (interp_end < hdr_read) {
+                    ulong sc = Mem::read_byte(shebang_buf + interp_end);
+                    if (sc == 0 || sc == 10 || sc == 13 || sc == 32) { break; }
+                    interp_end = interp_end + 1;
+                }
+
+                // オプション引数を抽出（あれば）
+                ulong opt_start = interp_end;
+                while (opt_start < hdr_read) {
+                    ulong sc = Mem::read_byte(shebang_buf + opt_start);
+                    if (sc != 32 && sc != 9) { break; }
+                    opt_start = opt_start + 1;
+                }
+                ulong opt_end = opt_start;
+                ulong osc = Mem::read_byte(shebang_buf + opt_end);
+                if (osc != 0 && osc != 10 && osc != 13) {
+                    while (opt_end < hdr_read) {
+                        ulong sc2 = Mem::read_byte(shebang_buf + opt_end);
+                        if (sc2 == 0 || sc2 == 10 || sc2 == 13) { break; }
+                        opt_end = opt_end + 1;
+                    }
+                }
+
+                // インタープリターのファイル名部分を抽出（最後の'/'以降）
+                ulong interp_fname = interp_start;
+                ulong ik = interp_start;
+                while (ik < interp_end) {
+                    if (Mem::read_byte(shebang_buf + ik) == 47) {  // '/'
+                        interp_fname = ik + 1;
+                    }
+                    ik = ik + 1;
+                }
+
+                // 新しいcmdlineを構築:
+                // "interpreter [opt] script_path [original_args]"
+                ulong new_cmdline = 0x95700;  // 新cmdlineバッファ (512B)
+                ulong np = 0;
+
+                // インタープリターファイル名をコピー
+                ulong ii = interp_fname;
+                while (ii < interp_end && np < 500) {
+                    Mem::write_byte(new_cmdline + np, Mem::read_byte(shebang_buf + ii));
+                    np = np + 1;
+                    ii = ii + 1;
+                }
+
+                // オプション引数（あれば）
+                if (opt_end > opt_start) {
+                    Mem::write_byte(new_cmdline + np, 32);  // スペース
+                    np = np + 1;
+                    ulong oi = opt_start;
+                    while (oi < opt_end && np < 500) {
+                        Mem::write_byte(new_cmdline + np, Mem::read_byte(shebang_buf + oi));
+                        np = np + 1;
+                        oi = oi + 1;
+                    }
+                }
+
+                // スクリプトパスと残りの引数
+                Mem::write_byte(new_cmdline + np, 32);  // スペース
+                np = np + 1;
+                // 元のcmdlineをそのまま追加
+                ulong ci = 0;
+                while (ci < pos && np < 500) {
+                    Mem::write_byte(new_cmdline + np, Mem::read_byte(cmdline_buf + ci));
+                    np = np + 1;
+                    ci = ci + 1;
+                }
+                Mem::write_byte(new_cmdline + np, 0);
+
+                // cmdline_bufを新しいcmdlineで上書き
+                ulong ri = 0;
+                while (ri <= np) {
+                    Mem::write_byte(cmdline_buf + ri, Mem::read_byte(new_cmdline + ri));
+                    ri = ri + 1;
+                }
+                pos = np;
+
+                dbg.puts("[execve] shebang rewritten: \"" as void*);
+                dbg.puts(cmdline_buf as void*);
+                dbg.println("\"" as void*);
+            }
+        }
 
         // Loader::exec で新プロセスを作成（既存のものを使う）
         Pid pid = Loader::exec(cmdline_buf as void*, &dbg);
