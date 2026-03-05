@@ -18,6 +18,8 @@ import ../arch/x86_64/idt;
 const PhysAddr MOUSE_PACKET_ADDR = 0x93300;  // 4バイト (ホイールモード)
 const PhysAddr MOUSE_PHASE_ADDR  = 0x93310;  // 現在のパケット位相 (0-3)
 const PhysAddr MOUSE_SCROLL_ADDR = 0x93318;  // スクロールイベント: +1=上, -1=下, 0=なし
+const PhysAddr MOUSE_DEVID_ADDR  = 0x93320;  // Device ID (0=標準, 3=IM, 4=IMEX)
+const PhysAddr MOUSE_PKTSZ_ADDR  = 0x93328;  // パケットサイズ (3 or 4)
 
 // ============================================================
 // PS/2マウスポートアクセス
@@ -153,11 +155,22 @@ impl Mouse {
         mouse_aux_write(80);   mouse_aux_read();   // 80
 
         // Get Device ID → 3(IntelliMouse)確認
-        mouse_aux_write(0xF2); mouse_aux_read();   // Get Device ID
-        mouse_aux_read();  // Device ID (3ならホイールモード)
+        mouse_aux_write(0xF2); mouse_aux_read();   // Get Device ID ACK
+        ulong dev_id = mouse_aux_read();  // Device ID (0=標準, 3=IM, 4=IMEX)
 
-        // デフォルト設定に戻す
-        mouse_aux_write(0xF6); mouse_aux_read();   // Set Defaults
+        // Device IDとパケットサイズを保存
+        ulong* devid_ptr = MOUSE_DEVID_ADDR as ulong*;
+        *devid_ptr = dev_id;
+        ulong* pktsz_ptr = MOUSE_PKTSZ_ADDR as ulong*;
+        if (dev_id == 3 || dev_id == 4) {
+            *pktsz_ptr = 4;  // IntelliMouse: 4バイトパケット
+        } else {
+            *pktsz_ptr = 3;  // 標準: 3バイトパケット
+        }
+
+        // 注意: Set Defaults (0xF6) を呼ばない
+        // Set Defaultsを呼ぶとDevice IDが0にリセットされ、
+        // IntelliMouseプロトコルが無効化されてしまう
 
         // データ報告有効化
         mouse_aux_write(0xF4); mouse_aux_read();   // Enable Data Reporting
@@ -207,12 +220,16 @@ impl Mouse {
 // ============================================================
 
 /// PS/2マウス IRQ12 ハンドラ
+/// パケットサイズを動的判定 (MOUSE_PKTSZ_ADDR: 3 or 4)
+/// 4バイトモード: 4バイト目のホイールデータでスクロール
+/// 3バイトモード: QEMUトラックパッドのボタン4/5でスクロール
 void mouse_irq_handler() {
     __asm__(`
         pushq %rax;
         pushq %rbx;
         pushq %rcx;
         pushq %rdx;
+        pushq %rdi;
 
         // データ読み取り
         xorq %rax, %rax;
@@ -221,7 +238,7 @@ void mouse_irq_handler() {
 
         // 位相取得
         movq $$0x93310, %rdi;
-        movq (%rdi), %rcx;  // %rcx = phase (0-3)
+        movq (%rdi), %rcx;  // %rcx = phase
 
         // パケットバッファに格納
         movq $$0x93300, %rdi;
@@ -230,23 +247,60 @@ void mouse_irq_handler() {
 
         // 位相更新
         incq %rcx;
-        cmpq $$4, %rcx;     // ホイールモード: 4バイトパケット
+
+        // パケットサイズ取得 (MOUSE_PKTSZ_ADDR)
+        movq $$0x93328, %rdi;
+        movq (%rdi), %rdx;  // %rdx = パケットサイズ (3 or 4)
+
+        // パケットサイズが0の場合は4をデフォルトとする
+        testq %rdx, %rdx;
+        jnz 10f;
+        movq $$4, %rdx;
+        10:;
+
+        cmpq %rdx, %rcx;    // phase == パケットサイズ?
         jl 1f;
 
-        // パケット完了: ホイールバイト(4バイト目)を解析
+        // パケット完了
+        cmpq $$4, %rdx;
+        jne 20f;
+
+        // === 4バイトモード (IntelliMouse): ホイールバイト解析 ===
         movq $$0x93300, %rdi;
         movzbq 3(%rdi), %rax;  // 4バイト目 = ホイール (符号付き)
-
-        // ホイール値チェック (0=移動なし)
         testb %al, %al;
         jz 2f;
-
-        // 符号拡張して方向判定
         movsbq %al, %rax;
-        // 正=上スクロール, 負=下スクロール
-        // (PS/2: 正=ホイール上回転=コンテンツを上スクロール)
         movq $$0x93318, %rdi;
         movq %rax, (%rdi);
+        jmp 2f;
+
+        20:;
+        // === 3バイトモード: ボタンバイトからスクロール検出 ===
+        // QEMUトラックパッド: ボタン4(上スクロール)=0x09, ボタン5(下スクロール)=0x11
+        // パケット1バイト目のビット:
+        //   bit 0 = 左ボタン, bit 1 = 右ボタン, bit 2 = 中ボタン
+        //   bit 3 = always 1 (有効マーカー)
+        //   bit 4 = ボタン4 (スクロール上, QEMUトラックパッド)
+        //   bit 5 = ボタン5 (スクロール下, QEMUトラックパッド)
+        // 注: QEMUはトラックパッドスクロールをボタンプレス→リリースとして
+        //     連続パケットで送信するため、プレスのみ検出すればよい
+        movq $$0x93300, %rdi;
+        movzbq (%rdi), %rax;   // 1バイト目 = ボタン状態
+
+        // ボタン4チェック (bit 4 → スクロール上)
+        testb $$0x10, %al;
+        jz 21f;
+        movq $$0x93318, %rdi;
+        movq $$1, (%rdi);      // スクロール上 = +1
+        jmp 2f;
+        21:;
+
+        // ボタン5チェック (bit 5 → スクロール下)
+        testb $$0x20, %al;
+        jz 2f;
+        movq $$0x93318, %rdi;
+        movq $$-1, (%rdi);     // スクロール下 = -1
 
         2:;
         xorq %rcx, %rcx;    // 位相リセット
@@ -260,6 +314,7 @@ void mouse_irq_handler() {
         outb %al, $$0xA0;
         outb %al, $$0x20;
 
+        popq %rdi;
         popq %rdx;
         popq %rcx;
         popq %rbx;

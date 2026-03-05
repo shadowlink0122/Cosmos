@@ -707,12 +707,28 @@ impl KTest {
         // --- マウスパケット状態 テスト ---
         ulong* mouse_phase = 0x93310 as ulong*;  // MOUSE_PHASE_ADDR
         ulong* mouse_scroll = 0x93318 as ulong*;  // MOUSE_SCROLL_ADDR
+        ulong* mouse_devid = 0x93320 as ulong*;   // MOUSE_DEVID_ADDR
+        ulong* mouse_pktsz = 0x93328 as ulong*;   // MOUSE_PKTSZ_ADDR
         // phaseは0-3を循環（IRQでインクリメントされる可能性がある）
         ulong phase_val = *mouse_phase;
         ulong phase_ok = 0;
         if (phase_val < 4) { phase_ok = 1; }
         KTest::assert_eq(phase_ok, 1, "Mouse phase in valid range (0-3)" as void*);
         KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll initialized to 0" as void*);
+
+        // Device ID検証: 0, 3, 4のいずれか
+        ulong devid_val = *mouse_devid;
+        ulong devid_ok = 0;
+        if (devid_val == 0 || devid_val == 3 || devid_val == 4) { devid_ok = 1; }
+        KTest::assert_eq(devid_ok, 1, "Mouse device ID valid (0/3/4)" as void*);
+
+        // パケットサイズ検証: Device IDに応じて3 or 4
+        ulong pktsz_val = *mouse_pktsz;
+        if (devid_val == 3 || devid_val == 4) {
+            KTest::assert_eq(pktsz_val, 4, "Mouse pktsz=4 (IntelliMouse)" as void*);
+        } else {
+            KTest::assert_eq(pktsz_val, 3, "Mouse pktsz=3 (standard)" as void*);
+        }
 
         // Mouse::get_scroll() テスト
         *mouse_scroll = 1;  // スクロール上をシミュレート
