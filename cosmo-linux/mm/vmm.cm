@@ -158,8 +158,10 @@ impl PageTable {
                 ulong k = 0;
                 while (k < 512) {
                     PhysAddr sub_phys = huge_base + k * PAGE_SIZE;
-                    // 元のフラグを継承 (PRESENT | WRITE、HUGEフラグは除外)
-                    ulong sub_flags = (pd_entry & 0x67) | PTE_PRESENT;  // RWX + User等
+                    // 元のフラグを継承しつつ、リクエストされたUSERフラグも適用
+                    // カーネルidentity mapのHugePageにはUSER=0だが、
+                    // ユーザーページマッピング時は全PTEにUSERを伝播させる
+                    ulong sub_flags = (pd_entry & 0x67) | PTE_PRESENT | (flags & PTE_USER);
                     self.write_entry(pt, k, sub_phys | sub_flags);
                     k = k + 1;
                 }

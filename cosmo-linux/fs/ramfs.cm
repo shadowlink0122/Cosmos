@@ -28,11 +28,11 @@ const PhysAddr NAME_BASE = 0x1005000;   // ファイル名領域 (64 * 32 = 2KB)
 const PhysAddr NEXT_INO  = 0x1006000;   // 次のinode番号
 const PhysAddr DIR_CNT   = 0x1006008;   // ディレクトリエントリ数
 
-// ファイルデータバッファプール (2MB領域)
-// 最大64ファイル × 64KB/ファイル = 4MB → 2MBで十分(実際は小さいファイルが多い)
+// ファイルデータバッファプール (32MB領域)
+// MAX_FILE_SIZE=2MBで最大16ファイル = 32MB
 const PhysAddr DATA_POOL_BASE = 0x1100000;   // 17MB地点
 const PhysAddr DATA_POOL_NEXT = 0x1006010;   // 次の割り当てオフセット
-const ulong    DATA_POOL_SIZE = 0x200000;     // 2MB
+const ulong    DATA_POOL_SIZE = 0x2000000;    // 32MB
 
 // 内部ヘルパー
 ulong find_ino(Ino ino) {

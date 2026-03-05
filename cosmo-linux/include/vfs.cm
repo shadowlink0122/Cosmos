@@ -70,8 +70,8 @@ export const ulong MAX_DIR_ENTRIES = 64;
 /// ファイル名最大長
 export const ulong MAX_NAME_LEN = 32;
 
-/// ファイルデータ最大サイズ（1ページ = 4KiB）
-export const ulong MAX_FILE_SIZE = 65536;
+/// ファイルデータ最大サイズ（2MiB: 大きな実行ファイルに対応）
+export const ulong MAX_FILE_SIZE = 0x200000;
 
 /// ルートinode番号
 export const Ino ROOT_INO = 1;

@@ -35,13 +35,13 @@ const VirtAddr ELF_LOAD_BASE = 0x400000;
 /// PIEのロード先ベースアドレス
 const VirtAddr PIE_LOAD_BASE = 0x400000;
 
-/// ELFデータ読み込み一時バッファ (ユーザー空間vaddrと重ならない位置)
-const PhysAddr ELF_TMP_BUF = 0x2000000;   // 32MB地点
+/// ELFデータ読み込み一時バッファ (DATA_POOLの後に配置)
+const PhysAddr ELF_TMP_BUF = 0x4000000;   // 64MB地点 (DATA_POOL=17-49MBと重ならない)
 // ELFバッファ最大サイズ (8MB)
 const ulong ELF_MAX_SIZE = 0x800000;
 
 /// インタープリターELF読み込み一時バッファ (4MB)
-const PhysAddr INTERP_TMP_BUF = 0x2800000;  // 40MB地点
+const PhysAddr INTERP_TMP_BUF = 0x4800000;  // 72MB地点 (ELF_TMP_BUFの直後)
 const ulong INTERP_MAX_SIZE = 0x400000;
 
 /// インタープリターロードベースアドレス
@@ -380,6 +380,7 @@ impl Loader {
                 // data_end を更新
                 ulong seg_end = p_vaddr + p_memsz;
                 if (seg_end > data_end) { data_end = seg_end; }
+
             }
             i = i + 1;
         }
