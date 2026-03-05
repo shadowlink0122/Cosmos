@@ -151,6 +151,40 @@ s.sendall(b'quit\n'); s.close()"
 	@cat $(BUILD)/serial_curl.log 2>/dev/null | tail -40
 	@rm -f /tmp/cosmo_qemu_mon.sock
 
+# bashテスト: gen install bash → exec bash --version → シリアルログ確認
+run-bash: $(ELF)
+	@echo "=== bash --version 統合テスト ==="
+	@rm -f $(BUILD)/serial_bash.log /tmp/cosmo_qemu_mon.sock
+	@$(QEMU) \
+		-kernel $(ELF) \
+		-m $(QEMU_MEM) \
+		-smp 1 \
+		-serial file:$(BUILD)/serial_bash.log \
+		-nic user,model=virtio-net-pci \
+		-virtfs local,path=./rootfs,mount_tag=host,security_model=none,id=host0 \
+		-display none \
+		-monitor unix:/tmp/cosmo_qemu_mon.sock,server=on,wait=off \
+		-no-reboot &
+	@sleep 4
+	@python3 scripts/qemu_sendkeys.py "gen install bash:12" "exec bash --version:5"
+	@echo ""
+	@echo "--- シリアルログ (bash) ---"
+	@cat $(BUILD)/serial_bash.log 2>/dev/null | tail -60
+	@echo ""
+	@echo "--- 結果 ---"
+	@if grep -q "arch_prctl" $(BUILD)/serial_bash.log 2>/dev/null; then \
+		echo "✓ arch_prctl呼出し検出 — TLS初期化成功"; \
+	else \
+		echo "△ arch_prctl未検出"; \
+	fi
+	@if grep -q "PAGE FAULT" $(BUILD)/serial_bash.log 2>/dev/null; then \
+		echo "✗ FAIL — PAGE FAULT検出"; \
+		grep "CR2" $(BUILD)/serial_bash.log; exit 1; \
+	else \
+		echo "✓ PASS — PAGE FAULT なし"; \
+	fi
+	@rm -f /tmp/cosmo_qemu_mon.sock
+
 # brew install用HTTPサーバ (別端末で実行)
 # rootfs/packages/ のバイナリをゲストから HTTP GET で取得可能にする
 serve:

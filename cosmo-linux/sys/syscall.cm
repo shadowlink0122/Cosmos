@@ -439,6 +439,11 @@ impl Syscall {
         // ARCH_SET_FS = 0x1002: FSベースレジスタ設定 (TLS用)
         if (code == 0x1002) {
             Cpu::wrmsr(0xC0000100, addr);  // IA32_FS_BASE
+
+            // TLS_BASEストアも更新（トランポリンのiretq直前wrmsrで使用）
+            ulong* tls_store = 0x96100 as ulong*;
+            *tls_store = addr;
+
             // 設定確認
             ulong verify = Cpu::rdmsr(0xC0000100);
             dbg_ap.puts("[arch_prctl] FS_BASE set=0x" as void*);

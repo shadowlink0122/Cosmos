@@ -516,6 +516,18 @@ impl Loader {
             ulong* tls_canary = (tls_base_vaddr + 0x28) as ulong*;
             *tls_canary = 0x5F3759DF5F3759DF;  // 固定カナリア値
 
+            // TLS_BASE値を固定アドレスに保存
+            // usermode_trampolineのiretq直前でwrmsr(FS_BASE)に使用
+            // コンテキストスイッチでMSR値が失われるため、毎回読み出して設定する
+            ulong* tls_store = 0x96100 as ulong*;
+            *tls_store = tls_base_vaddr;
+
+            // デバッグ: TLS_BASEストアの値を確認
+            ulong verify_store = *tls_store;
+            w->puts("[exec] TLS_BASE store @0x96100 = 0x" as void*);
+            w->print_hex(verify_store);
+            w->println("" as void*);
+
             // FS_BASE MSRを設定 (arch_prctlが後で上書きする)
             Cpu::wrmsr(0xC0000100, tls_base_vaddr);
 

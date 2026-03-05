@@ -19,25 +19,29 @@ export struct Context {}
 ///
 /// 重要: iretqはCS/SSのみ復元し、DS/ES/FS/GSは復元しない。
 ///       DS/ESはユーザーデータセグメント(0x1B)に設定する。
-///       FS/GSには触れない — x86_64 Long Modeでは、FSセグメントレジスタへの
-///       書き込み（0を含む）がFS_BASE MSRをリセットしてしまうため。
-///       FS_BASEはELFローダーで事前設定され、arch_prctlで管理される。
+///       FS_BASEは固定アドレス(0x96100)から読み出してMSRに設定する。
+///       FS/GSセグメントレジスタには一切触れない。
 void usermode_trampoline() {
     __asm__(`
-        // Cmコンパイラのプロローグ(push rbp; mov rbp,rsp; sub rsp,N)を完全に元に戻す
-        // leave = mov rsp,rbp; pop rbp (sub rspも含めて復元)
+        // Cmコンパイラのプロローグを元に戻す
         leave;
 
-        // DS/ESのみユーザーデータセグメント(USER_DS | RPL=3 = 0x1B)に設定
-        // iretqはCS/SSのみ復元するため、データセグメントは手動で設定する必要がある
-        // 注意: FS/GSには絶対に触れないこと！
-        //       x86_64ではFS/GSへのmovがFS_BASE/GS_BASE MSRを0にリセットする
+        // DS/ESをユーザーデータセグメント(0x1B)に設定
+        // 注意: DS/ES書き込みがFS_BASE MSRに影響する場合があるため、
+        //       wrmsrよりも先に実行する
         movq $$0x1B, %rax;
         movw %ax, %ds;
         movw %ax, %es;
 
+        // FS_BASE MSRを設定 (iretq直前に必ず最後に実行)
+        // DS/ES書き込み後にwrmsrすることで、FS_BASE値が確実に保持される
+        movl $$0xC0000100, %ecx;     // IA32_FS_BASE
+        movq 0x96100, %rax;          // TLS_BASE値読み出し
+        movq %rax, %rdx;
+        shrq $$32, %rdx;             // EDX = 上位32bit
+        wrmsr;
+
         // iretqでRing3に遷移
-        // スタック上のフレーム: [RIP, CS, RFLAGS, RSP, SS]
         iretq
     `);
 }
