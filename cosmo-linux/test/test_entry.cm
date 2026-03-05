@@ -10,6 +10,7 @@ import ../include/config;
 import ../include/scheduler;
 import ../drivers/serial;
 import ../drivers/pit;
+import ../drivers/mouse;
 
 import ../drivers/keyboard;
 import ../lib/kstring;
@@ -132,13 +133,19 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // === 9. テストIO初期化 ===
     TestIO::init();
 
-    // === 10. ネットワーク初期化 ===
+    // === 10. PIC/PIT/キーボード/マウス初期化 ===
+    pr_info(&serial, "Initializing hardware drivers..." as void*);
+    PIT::setup(&serial);
+    Kbd::setup(&serial);
+    Mouse::setup();
+
+    // === 11. ネットワーク初期化 ===
     pr_info(&serial, "Initializing network stack..." as void*);
     Loopback::setup();
     Tcp::setup();
     Socket::setup();
 
-    // === 11. テスト実行 ===
+    // === 12. テスト実行 ===
     pr_info(&serial, "Running kernel tests..." as void*);
     KTest::run_all();
 
