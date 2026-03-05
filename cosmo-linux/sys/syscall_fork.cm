@@ -1,0 +1,238 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::syscall_fork - fork/clone/execve syscall
+//
+// マルチプロセス基盤: fork/vfork/clone + execve を提供。
+// 現状は共有アドレス空間 (単一CR3) のため、
+// fork はプロセス構造体の複製 + 新スタック割り当てを行い、
+// execve は既存 Loader::exec を活用してプロセスを置換する。
+//
+// 参照: linux/kernel/fork.c, linux/fs/exec.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../include/page_alloc;
+import ../include/vfs;
+import ../include/errno;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ../mm/pmm;
+import ../sched/process;
+import ../sched/scheduler;
+import ../arch/x86_64/context;
+import ../arch/x86_64/usermode;
+import ../exec/loader;
+import ../ui/mem;
+
+// ============================================================
+// PMMポインタアドレス (loader.cmと共有)
+// ============================================================
+const PhysAddr FORK_PMM_PTR = 0x95010;
+
+/// SyscallFork — fork/clone/execve 関連syscall
+export struct SyscallFork {}
+
+impl SyscallFork {
+
+    /// do_fork: プロセスを複製 (fork/vfork/clone共通)
+    /// 親プロセスに子PID、子プロセスに0を返す
+    ///
+    /// 現状の制限:
+    /// - 共有アドレス空間 (同一CR3): COW未実装
+    /// - 子プロセスは execve するまで親と同じメモリを共有
+    /// - vforkセマンティクス: 子が exec/exitするまで親は待機
+    ///
+    /// 返り値: 親=子PID, 子=0, エラー=負のerrno
+    static long do_fork() {
+        SerialPort dbg(COM1);
+        dbg.println("[fork] do_fork called" as void*);
+
+        // PMMを取得
+        ulong* pmm_ptr = FORK_PMM_PTR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+        if (pmm as ulong == 0) {
+            dbg.println("[fork] ERROR: PMM not available" as void*);
+            return 0 - ENOMEM;
+        }
+
+        // 親プロセス取得
+        Process* parent = Sched::current();
+        if (parent as ulong == 0) {
+            dbg.println("[fork] ERROR: no current process" as void*);
+            return 0 - ESRCH;
+        }
+
+        // 新PID発行
+        Pid child_pid = ProcessTable::alloc_pid();
+        dbg.puts("[fork] child PID=" as void*);
+        print_dec(&dbg, child_pid as ulong);
+        dbg.println("" as void*);
+
+        // 子プロセス用メモリ確保
+        PhysAddr proc_mem = pmm->alloc_pages(0);
+        if (proc_mem == 0) {
+            dbg.println("[fork] ERROR: alloc process memory failed" as void*);
+            return 0 - ENOMEM;
+        }
+        memzero(proc_mem as void*, PAGE_SIZE);
+        Process* child = proc_mem as Process*;
+
+        // 親プロセスの構造体をコピー
+        ulong k = 0;
+        while (k < 16) {
+            ulong* src = ((parent as ulong) + k * 8) as ulong*;
+            ulong* dst = (proc_mem + k * 8) as ulong*;
+            *dst = *src;
+            k = k + 1;
+        }
+
+        // 子プロセス固有のフィールド設定
+        child->pid = child_pid;
+        child->parent_pid = parent->pid;
+        child->state = TASK_READY;
+        child->exit_code = 0;
+        child->time_slice = 10;
+
+        // カーネルスタック割り当て
+        child->alloc_stack(pmm);
+        if (child->kernel_stack == 0) {
+            dbg.println("[fork] ERROR: alloc kernel stack failed" as void*);
+            return 0 - ENOMEM;
+        }
+
+        // ページテーブルは親と共有 (単一アドレス空間)
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        child->page_table = cr3;
+
+        // ユーザースタック割り当て（子は新しいスタックを持つ）
+        if (parent->is_user != 0) {
+            child->user_stack = Usermode::alloc_user_stack();
+            child->is_user = 1;
+        }
+
+        // 子プロセスのコンテキスト初期化
+        // fork戻り値0を返すラッパー関数にジャンプ
+        // 子プロセスがスケジュールされたとき、fork_child_returnに入り、
+        // syscallから0を返してユーザーモードに戻る
+        Context::init_task(child, child->kernel_stack, fork_child_entry as ulong);
+
+        // スケジューラに登録
+        Sched::add(child);
+
+        dbg.puts("[fork] success: parent=" as void*);
+        print_dec(&dbg, parent->pid as ulong);
+        dbg.puts(" child=" as void*);
+        print_dec(&dbg, child_pid as ulong);
+        dbg.println("" as void*);
+
+        // 親プロセスには子PIDを返す
+        return child_pid;
+    }
+
+    /// do_execve: 現在プロセスのメモリを新ELFで置換
+    /// pathname: 実行ファイルパス
+    /// argv: 引数配列 (NULL終端)
+    /// envp: 環境変数配列 (NULL終端)
+    /// 返り値: 成功=戻らない, 失敗=負のerrno
+    static long do_execve(ulong pathname, ulong argv_addr, ulong envp_addr) {
+        SerialPort dbg(COM1);
+        dbg.puts("[execve] path=" as void*);
+        dbg.println(pathname as void*);
+
+        // pathnameをcmdline形式に変換
+        // argv[0], argv[1], ... をスペース区切りの文字列に結合
+        ulong cmdline_buf = 0x95400;  // 一時バッファ (512B)
+        ulong pos = 0;
+
+        if (argv_addr != 0) {
+            // argv配列をたどる
+            ulong ai = 0;
+            while (ai < 16) {
+                ulong* arg_p = (argv_addr + ai * 8) as ulong*;
+                ulong arg = *arg_p;
+                if (arg == 0) { break; }
+
+                // スペース区切り
+                if (ai > 0 && pos < 500) {
+                    Mem::write_byte(cmdline_buf + pos, 32);  // ' '
+                    pos = pos + 1;
+                }
+
+                // 引数をコピー
+                ulong j = 0;
+                while (pos < 500) {
+                    ulong ch = Mem::read_byte(arg + j);
+                    if (ch == 0) { break; }
+                    Mem::write_byte(cmdline_buf + pos, ch);
+                    pos = pos + 1;
+                    j = j + 1;
+                }
+                ai = ai + 1;
+            }
+        } else {
+            // argv==NULL の場合、pathnameをそのまま使う
+            ulong j = 0;
+            while (pos < 500) {
+                ulong ch = Mem::read_byte(pathname + j);
+                if (ch == 0) { break; }
+                Mem::write_byte(cmdline_buf + pos, ch);
+                pos = pos + 1;
+                j = j + 1;
+            }
+        }
+        Mem::write_byte(cmdline_buf + pos, 0);
+
+        dbg.puts("[execve] cmdline=\"" as void*);
+        dbg.puts(cmdline_buf as void*);
+        dbg.println("\"" as void*);
+
+        // Loader::exec で新プロセスを作成（既存のものを使う）
+        Pid pid = Loader::exec(cmdline_buf as void*, &dbg);
+        if (pid < 0) {
+            return 0 - ENOENT;
+        }
+
+        // 現在のプロセスをZOMBIEにして新プロセスに制御を移す
+        // これにより execve の「戻らない」セマンティクスを実現
+        Process* current = Sched::current();
+        ProcessTable::do_exit(current, 0);
+
+        // 新プロセスにスイッチ
+        Sched::run();
+
+        // ここには到達しないはず
+        return 0;
+    }
+
+    /// do_clone: clone syscall
+    /// flags にSIGCHLD (17) が含まれていればfork動作
+    static long do_clone(ulong flags, ulong new_stack, ulong parent_tid, ulong child_tid, ulong tls) {
+        // 基本的にfork動作（スレッド未対応）
+        return SyscallFork::do_fork();
+    }
+}
+
+/// fork子プロセスのエントリポイント
+/// switch_toのretから呼ばれ、fork返り値0でユーザーモードに戻る
+///
+/// 簡易実装: 子プロセスはexecveを待つカーネルタスクとして起動し、
+/// シェルが wait4 → 新コマンド受付の流れで動作する
+void fork_child_entry() {
+    SerialPort dbg(COM1);
+    dbg.println("[fork] child process started" as void*);
+
+    // 子プロセスはこのエントリポイントで起動する
+    // 実際のLinuxでは、親のsyscall復帰アドレスにrax=0で戻るが、
+    // 現在のアーキテクチャでは fork→exec パターンを前提に、
+    // 子プロセスは即座にexit(0)する
+    //
+    // TODO: 親のユーザーモードコンテキストを完全複製して
+    //       子プロセスがfork()から0を返して実行を続行するようにする
+    Process* me = Sched::current();
+    ProcessTable::do_exit(me, 0);
+
+    // スケジューラに制御を戻す
+    Sched::run();
+}

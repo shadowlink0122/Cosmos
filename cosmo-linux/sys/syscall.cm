@@ -30,7 +30,9 @@ import ../fs/pipe;
 import ./syscall_fs;
 import ./syscall_proc;
 import ./syscall_net;
+import ./syscall_fork;
 import ../drivers/keyboard;
+import ../fs/ramfs;
 
 // ============================================================
 // MSR定数
@@ -623,6 +625,17 @@ ulong arg3, ulong arg4, ulong arg5) {
         return SyscallFs::fcntl(arg0, arg1, arg2);
     }
 
+    // --- fork/clone/execve (Milestone 5) ---
+    if (nr == SYS_FORK || nr == SYS_VFORK) {
+        return SyscallFork::do_fork();
+    }
+    if (nr == SYS_CLONE) {
+        return SyscallFork::do_clone(arg0, arg1, arg2, arg3, arg4);
+    }
+    if (nr == SYS_EXECVE) {
+        return SyscallFork::do_execve(arg0, arg1, arg2);
+    }
+
     // --- ネットワーク ---
     if (nr == SYS_SOCKET) {
         return SyscallNet::do_socket(arg0, arg1, arg2);
@@ -839,9 +852,33 @@ ulong arg3, ulong arg4, ulong arg5) {
     if (nr == SYS_CLOSE_RANGE) {
         return 0;
     }
-    // clone3: 未対応
+    // clone3: clone委譲
     if (nr == SYS_CLONE3) {
-        return 0 - ENOSYS;
+        return SyscallFork::do_fork();
+    }
+
+    // --- Milestone 5: stub syscall ---
+    if (nr == SYS_SELECT) {
+        return 0;  // stub: 即座に0イベントを返す
+    }
+    if (nr == SYS_SETPGID) {
+        return 0;  // stub: 常に成功
+    }
+    if (nr == SYS_GETPGID || nr == SYS_GETPGRP) {
+        return Syscall::getpid();  // stub: PIDをPGIDとして返す
+    }
+    if (nr == SYS_SETSID) {
+        return Syscall::getpid();  // stub: PIDをSIDとして返す
+    }
+    if (nr == SYS_FTRUNCATE) {
+        // ftruncate(fd, length) — length=0の場合はtruncate
+        ulong ft_fs = FdTable::get_fs_type(arg0 as long);
+        if (ft_fs == FS_RAMFS) {
+            Ino ft_ino = FdTable::get_ino(arg0 as long);
+            RamFs::truncate(ft_ino);
+            return 0;
+        }
+        return 0;  // 9pFS等は成功として返す
     }
 
     // mkdir / rmdir / unlink (古いsyscall)

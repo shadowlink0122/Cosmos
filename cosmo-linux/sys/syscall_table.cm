@@ -134,3 +134,11 @@ export const ulong SYS_SHUTDOWN       = 48;
 /// 最大syscall番号
 export const ulong NR_SYSCALLS = 512;
 
+// --- Milestone 5: マルチプロセス ---
+export const ulong SYS_SELECT     = 23;
+export const ulong SYS_SETPGID    = 109;
+export const ulong SYS_GETPGID    = 121;
+export const ulong SYS_GETPGRP    = 111;
+export const ulong SYS_SETSID     = 112;
+export const ulong SYS_FTRUNCATE  = 77;
+
