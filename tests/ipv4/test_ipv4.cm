@@ -1,0 +1,57 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::ipv4::test_ipv4 - IPv4 テスト
+//
+// IPv4パケットのパース、チェックサム計算を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../include/net;
+import ../../net/core/ip;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// IPv4 テストスイート
+export void test_ipv4() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[IPv4]" as void*);
+    TestIO::set_color(7, 0);
+
+    ulong pkt = 0x9E200;
+    Mem::write_byte(pkt, 0x45); Mem::write_byte(pkt+1, 0);
+    Mem::write_byte(pkt+2, 0); Mem::write_byte(pkt+3, 20);
+    Mem::write_byte(pkt+4, 0); Mem::write_byte(pkt+5, 0);
+    Mem::write_byte(pkt+6, 0); Mem::write_byte(pkt+7, 0);
+    Mem::write_byte(pkt+8, 64); Mem::write_byte(pkt+9, 6);
+    Mem::write_byte(pkt+10, 0); Mem::write_byte(pkt+11, 0);
+    Mem::write_byte(pkt+12, 127); Mem::write_byte(pkt+13, 0);
+    Mem::write_byte(pkt+14, 0); Mem::write_byte(pkt+15, 1);
+    Mem::write_byte(pkt+16, 127); Mem::write_byte(pkt+17, 0);
+    Mem::write_byte(pkt+18, 0); Mem::write_byte(pkt+19, 1);
+
+    IpHeader hdr = { version: 0, ihl: 0, tos: 0, total_len: 0, id: 0, flags: 0, frag_off: 0, ttl: 0, protocol: 0, checksum: 0, src_addr: 0, dst_addr: 0 };
+    Ip::parse(pkt, &hdr);
+    KTest::assert_eq(hdr.version, 4, "IP version=4" as void*);
+    KTest::assert_eq(hdr.ihl, 5, "IP ihl=5" as void*);
+    KTest::assert_eq(hdr.ttl, 64, "IP ttl=64" as void*);
+    KTest::assert_eq(hdr.protocol, 6, "IP proto=TCP(6)" as void*);
+
+    // チェックサムフィールド=0でチェックサム計算 → 正しいチェックサム値が得られる
+    Mem::write_byte(pkt+10, 0); Mem::write_byte(pkt+11, 0);
+    ulong computed = Ip::checksum(pkt, 20);
+    ulong ck_ok = 0;
+    if (computed > 0) { ck_ok = 1; }
+    KTest::assert_eq(ck_ok, 1, "IP checksum computed>0" as void*);
+
+    // チェックサム値を書き込んで再計算 → 0になるべき（正当性検証）
+    Mem::write_byte(pkt+10, (computed >> 8) & 0xFF);
+    Mem::write_byte(pkt+11, computed & 0xFF);
+    ulong verify = Ip::checksum(pkt, 20);
+    KTest::assert_eq(verify, 0, "IP checksum verified=0" as void*);
+
+    KTest::assert_eq((hdr.src_addr >> 24) & 0xFF, 127, "IP src[0]=127" as void*);
+    KTest::assert_eq((hdr.dst_addr >> 24) & 0xFF, 127, "IP dst[0]=127" as void*);
+    KTest::assert_eq(hdr.total_len, 20, "IP total_len=20" as void*);
+}

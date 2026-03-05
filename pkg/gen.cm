@@ -15,7 +15,7 @@ import ../include/types;
 import ../include/vfs;
 import ../include/page_alloc;
 import ../drivers/serial;
-import ../drivers/virtio_9p;
+import ../drivers/virtio/virtio_9p;
 import ../fs/ramfs;
 import ../fs/ninepfs;
 import ../mm/pmm;

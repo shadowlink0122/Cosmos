@@ -1,0 +1,43 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::vma::test_vma - VMA/Mmap テスト
+//
+// 仮想メモリ領域の mmap/munmap/find_vma を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../mm/mmap;
+import ../test_io;
+import ../ktest;
+
+/// VMA テストスイート
+export void test_vma() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[VMA/Mmap]" as void*);
+    TestIO::set_color(7, 0);
+
+    // 初期VMA数
+    ulong initial = Mmap::count();
+    KTest::pass("initial VMA count read" as void*);
+
+    // mmap — 匿名マッピング
+    ulong addr = Mmap::do_mmap(0, 4096, PROT_READ | PROT_WRITE,
+    MAP_PRIVATE | MAP_ANONYMOUS);
+    if (addr != MAP_FAILED) {
+        KTest::assert_true(1, "mmap anonymous succeeds" as void*);
+    } else {
+        KTest::assert_true(0, "mmap anonymous succeeds" as void*);
+    }
+    KTest::assert_eq(Mmap::count(), initial + 1, "VMA count +1" as void*);
+
+    // find_vma
+    Vma* vma = Mmap::find_vma(addr);
+    ulong vma_addr = vma as ulong;
+    KTest::assert_nonzero(vma_addr, "find_vma returns valid" as void*);
+
+    // munmap
+    long ret = Mmap::do_munmap(addr, 4096);
+    KTest::assert_eq(ret as ulong, 0, "munmap returns 0" as void*);
+    KTest::assert_eq(Mmap::count(), initial, "VMA count restored" as void*);
+}

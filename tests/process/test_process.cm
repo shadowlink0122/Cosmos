@@ -1,0 +1,43 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::process::test_process - Process テスト
+//
+// プロセステーブルの current/find_by_pid を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/scheduler;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../sched/process;
+import ../test_io;
+import ../ktest;
+
+/// Process テストスイート
+export void test_process() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[Process]" as void*);
+    TestIO::set_color(7, 0);
+
+    // 現在のプロセス
+    Process* cur = Sched::current();
+    ulong cur_addr = cur as ulong;
+    KTest::assert_nonzero(cur_addr, "current process exists" as void*);
+
+    if (cur_addr != 0) {
+        if (cur->pid >= 0) {
+            KTest::assert_true(1, "current PID >= 0" as void*);
+        } else {
+            KTest::assert_true(0, "current PID >= 0" as void*);
+        }
+    }
+
+    // PID 0 (idle) を検索
+    Process* idle = ProcessTable::find_by_pid(0);
+    ulong idle_addr = idle as ulong;
+    KTest::assert_nonzero(idle_addr, "find PID 0 (idle)" as void*);
+
+    // 存在しないPID
+    Process* ghost = ProcessTable::find_by_pid(999);
+    ulong ghost_addr = ghost as ulong;
+    KTest::assert_eq(ghost_addr, 0, "find PID 999 returns null" as void*);
+}

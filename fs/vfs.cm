@@ -14,7 +14,7 @@ import ./fd_table;
 import ./ramfs;
 import ./ninepfs;
 import ../lib/kstring;
-import ../drivers/virtio_9p;
+import ../drivers/virtio/virtio_9p;
 import ../ui/mem;
 
 // 9pFS用パスバッファ (FDごとに相対パスを保存)

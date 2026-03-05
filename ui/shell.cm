@@ -23,12 +23,12 @@ import ./env;
 import ./history;
 import ./cmd;
 import ../drivers/serial;
-import ../drivers/keyboard;
+import ../drivers/input/keyboard;
 import ../init/init;
 import ../fs/ramfs;
 import ../sched/scheduler;
-import ../drivers/pit;
-import ../drivers/mouse;
+import ../drivers/timer/pit;
+import ../drivers/input/mouse;
 
 // ============================================================
 // Tab補完用コマンドリスト

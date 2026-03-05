@@ -1,0 +1,143 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::input::test_input - Input (キーボード・マウス) テスト
+//
+// キーボードバッファ、PS/2コントローラCCB、PICマスク、マウスパケット状態を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../drivers/input/keyboard;
+import ../../drivers/input/mouse;
+import ../../lib/printk;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// Input テストスイート
+export void test_input() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[Input]" as void*);
+    TestIO::set_color(7, 0);
+
+    // --- キーボードバッファ テスト ---
+    // head/tailを直接操作してバッファの読み書きを検証
+    ulong* head_ptr = 0x93040 as ulong*;  // KBD_HEAD_ADDR
+    ulong* tail_ptr = 0x93048 as ulong*;  // KBD_TAIL_ADDR
+    ulong old_head = *head_ptr;
+    ulong old_tail = *tail_ptr;
+
+    // バッファをリセット
+    *head_ptr = 0;
+    *tail_ptr = 0;
+
+    // 空バッファからの読み取り → 0 (入力なし)
+    ulong ch = Kbd::getchar();
+    KTest::assert_eq(ch, 0, "KBD empty buffer returns 0" as void*);
+
+    // バッファに直接書き込み ('A' = 65)
+    Mem::write_byte(0x93000, 65);  // KBD_BUF_ADDR[0] = 'A'
+    *tail_ptr = 1;  // tail=1にすることでデータあり
+    ch = Kbd::getchar();
+    KTest::assert_eq(ch, 65, "KBD read 'A' from buffer" as void*);
+
+    // 読み取り後はheadが進んでバッファが空に
+    KTest::assert_eq(*head_ptr, *tail_ptr, "KBD buffer empty after read" as void*);
+
+    // 複数バイト書き込みテスト
+    Mem::write_byte(0x93000, 72);  // 'H'
+    Mem::write_byte(0x93001, 105); // 'i'
+    *head_ptr = 0;
+    *tail_ptr = 2;
+    ulong c1 = Kbd::getchar();
+    ulong c2 = Kbd::getchar();
+    KTest::assert_eq(c1, 72, "KBD multi-byte read[0]='H'" as void*);
+    KTest::assert_eq(c2, 105, "KBD multi-byte read[1]='i'" as void*);
+
+    // バッファ復元
+    *head_ptr = old_head;
+    *tail_ptr = old_tail;
+
+    // --- PS/2コントローラ CCB テスト ---
+    // CCBを読み取ってIRQ1/IRQ12ビットが正しく設定されているか検証
+    // 割り込み無効化してCCBを読み取り
+    __asm__(`cli`);
+
+    // Output Bufferフラッシュ
+    ulong fi = 0;
+    while (fi < 16) {
+        ulong st = 0;
+        __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:st}`);
+        if ((st & 1) == 0) { break; }
+        __asm__(`inb $$0x60, %al`);
+        fi = fi + 1;
+    }
+
+    // CCB読み取りコマンド
+    mouse_wait_input();
+    __asm__(`movb $$0x20, %al; outb %al, $$0x64`);
+    ulong ccb = mouse_read_data();
+
+    __asm__(`sti`);
+
+    // bit 0 = IRQ1有効
+    KTest::assert_eq(ccb & 1, 1, "CCB bit0 IRQ1 enabled" as void*);
+    // bit 1 = IRQ12有効
+    KTest::assert_eq(ccb & 2, 2, "CCB bit1 IRQ12 enabled" as void*);
+    // bit 4 = 第1ポートクロック (0=有効)
+    KTest::assert_eq(ccb & 0x10, 0, "CCB bit4 kbd clock enabled" as void*);
+    // bit 5 = 第2ポートクロック (0=有効)
+    KTest::assert_eq(ccb & 0x20, 0, "CCB bit5 aux clock enabled" as void*);
+
+    // --- PICマスク テスト ---
+    // マスターPICマスク読み取り
+    ulong pic1_mask = 0;
+    __asm__(`inb $$0x21, %al; movzbq %al, %rax; movq %rax, ${=r:pic1_mask}`);
+    // IRQ1 (キーボード) がアンマスクされている (bit 1 = 0)
+    KTest::assert_eq(pic1_mask & 2, 0, "PIC1 IRQ1 unmasked" as void*);
+    // IRQ2 (カスケード) がアンマスクされている (bit 2 = 0)
+    KTest::assert_eq(pic1_mask & 4, 0, "PIC1 IRQ2 cascade unmasked" as void*);
+
+    // スレーブPICマスク読み取り
+    ulong pic2_mask = 0;
+    __asm__(`inb $$0xA1, %al; movzbq %al, %rax; movq %rax, ${=r:pic2_mask}`);
+    // IRQ12 (マウス) がアンマスクされている (bit 4 = 0)
+    KTest::assert_eq(pic2_mask & 0x10, 0, "PIC2 IRQ12 unmasked" as void*);
+
+    // --- マウスパケット状態 テスト ---
+    ulong* mouse_phase = 0x93310 as ulong*;  // MOUSE_PHASE_ADDR
+    ulong* mouse_scroll = 0x93318 as ulong*;  // MOUSE_SCROLL_ADDR
+    ulong* mouse_devid = 0x93320 as ulong*;   // MOUSE_DEVID_ADDR
+    ulong* mouse_pktsz = 0x93328 as ulong*;   // MOUSE_PKTSZ_ADDR
+    // phaseは0-3を循環（IRQでインクリメントされる可能性がある）
+    ulong phase_val = *mouse_phase;
+    ulong phase_ok = 0;
+    if (phase_val < 4) { phase_ok = 1; }
+    KTest::assert_eq(phase_ok, 1, "Mouse phase in valid range (0-3)" as void*);
+    KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll initialized to 0" as void*);
+
+    // Device ID検証: 0, 3, 4のいずれか
+    ulong devid_val = *mouse_devid;
+    ulong devid_ok = 0;
+    if (devid_val == 0 || devid_val == 3 || devid_val == 4) { devid_ok = 1; }
+    KTest::assert_eq(devid_ok, 1, "Mouse device ID valid (0/3/4)" as void*);
+
+    // パケットサイズ検証: Device IDに応じて3 or 4
+    ulong pktsz_val = *mouse_pktsz;
+    if (devid_val == 3 || devid_val == 4) {
+        KTest::assert_eq(pktsz_val, 4, "Mouse pktsz=4 (IntelliMouse)" as void*);
+    } else {
+        KTest::assert_eq(pktsz_val, 3, "Mouse pktsz=3 (standard)" as void*);
+    }
+
+    // Mouse::get_scroll() テスト (閾値ベース)
+    // 閾値未満: 蓄積値1は閾値2未満なので0を返す
+    *mouse_scroll = 1;
+    long sv0 = Mouse::get_scroll();
+    KTest::assert_eq(sv0 as ulong, 0, "Mouse get_scroll below threshold returns 0" as void*);
+    // 蓄積値は保持されている(1のまま)ので、+1して2にすると閾値到達
+    *mouse_scroll = 2;
+    long sv = Mouse::get_scroll();
+    KTest::assert_eq(sv as ulong, 2, "Mouse get_scroll at threshold returns value" as void*);
+    // 読み取り後にリセットされているか
+    KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll reset after threshold read" as void*);
+}

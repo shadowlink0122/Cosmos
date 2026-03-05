@@ -1,0 +1,66 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::tcp::test_tcp - TCP テスト
+//
+// TCP接続のサーバ/クライアント作成、バインド、リスン、送受信を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../include/net;
+import ../../net/transport/socket;
+import ../../net/transport/tcp;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// TCP テストスイート
+export void test_tcp_conn() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[TCP]" as void*);
+    TestIO::set_color(7, 0);
+
+    Tcp::setup();
+    long server_fd = Socket::create(AF_INET, SOCK_STREAM, 0);
+    ulong sf_ok = 0;
+    if (server_fd >= 0) { sf_ok = 1; }
+    KTest::assert_eq(sf_ok, 1, "TCP server socket" as void*);
+
+    long bind_r = Socket::bind(server_fd as ulong, 0, 8080);
+    ulong bind_ok = 0;
+    if (bind_r >= 0) { bind_ok = 1; }
+    KTest::assert_eq(bind_ok, 1, "TCP bind :8080" as void*);
+
+    long listen_r = Socket::listen(server_fd as ulong, 5);
+    ulong listen_ok = 0;
+    if (listen_r >= 0) { listen_ok = 1; }
+    KTest::assert_eq(listen_ok, 1, "TCP listen" as void*);
+
+    long client_fd = Socket::create(AF_INET, SOCK_STREAM, 0);
+    ulong cf_ok = 0;
+    if (client_fd >= 0) { cf_ok = 1; }
+    KTest::assert_eq(cf_ok, 1, "TCP client socket" as void*);
+
+    // 127.0.0.1 = 0x7F000001
+    long conn_r = Socket::connect(client_fd as ulong, 0x7F000001, 8080);
+    ulong conn_ok = 0;
+    if (conn_r >= 0) { conn_ok = 1; }
+    KTest::assert_eq(conn_ok, 1, "TCP connect" as void*);
+
+    ulong msg = 0x9E400;
+    Mem::write_byte(msg, 72); Mem::write_byte(msg+1, 105); Mem::write_byte(msg+2, 0);
+    long send_r = Socket::send(client_fd as ulong, msg, 2);
+    ulong send_ok = 0;
+    if (send_r >= 0) { send_ok = 1; }
+    KTest::assert_eq(send_ok, 1, "TCP send" as void*);
+
+    // recvテスト（server側で受信）
+    ulong recv_buf = 0x9E500;
+    long recv_r = Socket::recv(server_fd as ulong, recv_buf, 64);
+    ulong recv_ok = 0;
+    if (recv_r >= 0) { recv_ok = 1; }
+    KTest::assert_eq(recv_ok, 1, "TCP recv" as void*);
+
+    Socket::close(client_fd as ulong);
+    Socket::close(server_fd as ulong);
+}

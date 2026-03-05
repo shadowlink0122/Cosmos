@@ -1,0 +1,481 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::syscall_fork - fork/clone/execve syscall
+//
+// マルチプロセス基盤: fork/vfork/clone + execve を提供。
+// 現状は共有アドレス空間 (単一CR3) のため、
+// fork はプロセス構造体の複製 + 新スタック割り当てを行い、
+// execve は既存 Loader::exec を活用してプロセスを置換する。
+//
+// 参照: linux/kernel/fork.c, linux/fs/exec.c
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/scheduler;
+import ../../include/page_alloc;
+import ../../include/vfs;
+import ../../include/errno;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../mm/pmm;
+import ../../sched/process;
+import ../../sched/scheduler;
+import ../../arch/x86_64/context;
+import ../../arch/x86_64/usermode;
+import ../../exec/loader;
+import ../../fs/ramfs;
+import ../../fs/ninepfs;
+import ../../ui/mem;
+
+// ============================================================
+// PMMポインタアドレス (loader.cmと共有)
+// ============================================================
+const PhysAddr FORK_PMM_PTR = 0x95010;
+
+/// SyscallFork — fork/clone/execve 関連syscall
+export struct SyscallFork {}
+
+impl SyscallFork {
+
+    /// do_fork: プロセスを複製 (fork/vfork/clone共通)
+    /// 親プロセスに子PID、子プロセスに0を返す
+    ///
+    /// 現状の制限:
+    /// - 共有アドレス空間 (同一CR3): COW未実装
+    /// - 子プロセスは execve するまで親と同じメモリを共有
+    /// - vforkセマンティクス: 子が exec/exitするまで親は待機
+    ///
+    /// 返り値: 親=子PID, 子=0, エラー=負のerrno
+    static long do_fork(ulong new_stack) {
+        SerialPort dbg(COM1);
+        dbg.println("[fork] do_fork called" as void*);
+
+        // PMMを取得
+        ulong* pmm_ptr = FORK_PMM_PTR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+        if (pmm as ulong == 0) {
+            dbg.println("[fork] ERROR: PMM not available" as void*);
+            return 0 - ENOMEM;
+        }
+
+        // 親プロセス取得
+        Process* parent = Sched::current();
+        if (parent as ulong == 0) {
+            dbg.println("[fork] ERROR: no current process" as void*);
+            return 0 - ESRCH;
+        }
+
+        // 新PID発行
+        Pid child_pid = ProcessTable::alloc_pid();
+        dbg.puts("[fork] child PID=" as void*);
+        print_dec(&dbg, child_pid as ulong);
+        dbg.println("" as void*);
+
+        // 子プロセス用メモリ確保
+        PhysAddr proc_mem = pmm->alloc_pages(0);
+        if (proc_mem == 0) {
+            dbg.println("[fork] ERROR: alloc process memory failed" as void*);
+            return 0 - ENOMEM;
+        }
+        memzero(proc_mem as void*, PAGE_SIZE);
+        Process* child = proc_mem as Process*;
+
+        // 親プロセスの構造体をコピー
+        ulong k = 0;
+        while (k < 16) {
+            ulong* src = ((parent as ulong) + k * 8) as ulong*;
+            ulong* dst = (proc_mem + k * 8) as ulong*;
+            *dst = *src;
+            k = k + 1;
+        }
+
+        // 子プロセス固有のフィールド設定
+        child->pid = child_pid;
+        child->parent_pid = parent->pid;
+        child->state = TASK_READY;
+        child->exit_code = 0;
+        child->time_slice = 10;
+
+        // カーネルスタック割り当て
+        child->alloc_stack(pmm);
+        if (child->kernel_stack == 0) {
+            dbg.println("[fork] ERROR: alloc kernel stack failed" as void*);
+            return 0 - ENOMEM;
+        }
+
+        // ページテーブルは親と共有 (単一アドレス空間)
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        child->page_table = cr3;
+
+        // ユーザースタック割り当て（子は新しいスタックを持つ）
+        if (parent->is_user != 0) {
+            child->user_stack = Usermode::alloc_user_stack();
+            child->is_user = 1;
+        }
+
+        // 子プロセスのコンテキスト初期化
+        // fork戻り値0を返すラッパー関数にジャンプ
+        // 子プロセスがスケジュールされたとき、fork_child_returnに入り、
+        // syscallから0を返してユーザーモードに戻る
+        Context::init_task(child, child->kernel_stack, fork_child_entry as ulong);
+
+        // スケジューラに登録
+        Sched::add(child);
+
+        // 親のsyscall復帰フレームを異子モード復帰用に保存 (0x96200-0x96278)
+        // カーネルRSP (0x96000の値) からpush 15個分のオフセットで復帰レジスタを取得
+        // push順序: RCX(RIP),R11(RFLAGS),RDI,RSI,RDX,R10,R8,R9,RBX,RBP,R12,R13,R14,R15,RAX
+        // stack_base = kernel_rsp (= *0x96000), frame_top = stack_base - 120
+        // frame_top + 0   = RAX(nr)
+        // frame_top + 8   = R15
+        // frame_top + 16  = R14
+        // ...
+        // frame_top + 112 = RCX(RIP)
+        ulong frame_top = 0;
+        __asm__(`
+            movq 0x96000, %rax;   // カーネルRSP base
+            subq $$120, %rax;     // 15 pushes * 8 = 120
+            movq %rax, ${=r:frame_top}
+        `);
+
+        // ユーザーRSP保存 (0x96008 → 0x96200)
+        ulong* saved_user_rsp = 0x96200 as ulong*;
+        ulong* user_rsp_src = 0x96008 as ulong*;
+        *saved_user_rsp = *user_rsp_src;
+        // clone new_stack指定時はそちらを使用
+        if (new_stack != 0) {
+            *saved_user_rsp = new_stack;
+        }
+        // RCX(RIP) = frame_top + 112
+        ulong* ft_rcx = (frame_top + 112) as ulong*;
+        ulong* sv_rcx = 0x96210 as ulong*;
+        *sv_rcx = *ft_rcx;
+        // R11(RFLAGS) = frame_top + 104
+        ulong* ft_r11 = (frame_top + 104) as ulong*;
+        ulong* sv_r11 = 0x96218 as ulong*;
+        *sv_r11 = *ft_r11;
+        // RDI = frame_top + 96
+        ulong* ft_rdi = (frame_top + 96) as ulong*;
+        ulong* sv_rdi = 0x96220 as ulong*;
+        *sv_rdi = *ft_rdi;
+        // RSI = frame_top + 88
+        ulong* ft_rsi = (frame_top + 88) as ulong*;
+        ulong* sv_rsi = 0x96228 as ulong*;
+        *sv_rsi = *ft_rsi;
+        // RDX = frame_top + 80
+        ulong* ft_rdx = (frame_top + 80) as ulong*;
+        ulong* sv_rdx = 0x96230 as ulong*;
+        *sv_rdx = *ft_rdx;
+        // R10 = frame_top + 72
+        ulong* ft_r10 = (frame_top + 72) as ulong*;
+        ulong* sv_r10 = 0x96238 as ulong*;
+        *sv_r10 = *ft_r10;
+        // R8 = frame_top + 64
+        ulong* ft_r8 = (frame_top + 64) as ulong*;
+        ulong* sv_r8 = 0x96240 as ulong*;
+        *sv_r8 = *ft_r8;
+        // R9 = frame_top + 56
+        ulong* ft_r9 = (frame_top + 56) as ulong*;
+        ulong* sv_r9 = 0x96248 as ulong*;
+        *sv_r9 = *ft_r9;
+        // RBX = frame_top + 48
+        ulong* ft_rbx = (frame_top + 48) as ulong*;
+        ulong* sv_rbx = 0x96250 as ulong*;
+        *sv_rbx = *ft_rbx;
+        // RBP = frame_top + 40
+        ulong* ft_rbp = (frame_top + 40) as ulong*;
+        ulong* sv_rbp = 0x96258 as ulong*;
+        *sv_rbp = *ft_rbp;
+        // R12 = frame_top + 32
+        ulong* ft_r12 = (frame_top + 32) as ulong*;
+        ulong* sv_r12 = 0x96260 as ulong*;
+        *sv_r12 = *ft_r12;
+        // R13 = frame_top + 24
+        ulong* ft_r13 = (frame_top + 24) as ulong*;
+        ulong* sv_r13 = 0x96268 as ulong*;
+        *sv_r13 = *ft_r13;
+        // R14 = frame_top + 16
+        ulong* ft_r14 = (frame_top + 16) as ulong*;
+        ulong* sv_r14 = 0x96270 as ulong*;
+        *sv_r14 = *ft_r14;
+        // R15 = frame_top + 8
+        ulong* ft_r15 = (frame_top + 8) as ulong*;
+        ulong* sv_r15 = 0x96278 as ulong*;
+        *sv_r15 = *ft_r15;
+
+        dbg.puts("[fork] success: parent=" as void*);
+        print_dec(&dbg, parent->pid as ulong);
+        dbg.puts(" child=" as void*);
+        print_dec(&dbg, child_pid as ulong);
+        dbg.println("" as void*);
+
+        // 親プロセスには子PIDを返す
+        return child_pid;
+    }
+
+    /// do_execve: 現在プロセスのメモリを新ELFで置換
+    /// pathname: 実行ファイルパス
+    /// argv: 引数配列 (NULL終端)
+    /// envp: 環境変数配列 (NULL終端)
+    /// 返り値: 成功=戻らない, 失敗=負のerrno
+    static long do_execve(ulong pathname, ulong argv_addr, ulong envp_addr) {
+        SerialPort dbg(COM1);
+        dbg.puts("[execve] path=" as void*);
+        dbg.println(pathname as void*);
+
+        // pathnameをcmdline形式に変換
+        // argv[0], argv[1], ... をスペース区切りの文字列に結合
+        ulong cmdline_buf = 0x95400;  // 一時バッファ (512B)
+        ulong pos = 0;
+
+        if (argv_addr != 0) {
+            // argv配列をたどる
+            ulong ai = 0;
+            while (ai < 16) {
+                ulong* arg_p = (argv_addr + ai * 8) as ulong*;
+                ulong arg = *arg_p;
+                if (arg == 0) { break; }
+
+                // スペース区切り
+                if (ai > 0 && pos < 500) {
+                    Mem::write_byte(cmdline_buf + pos, 32);  // ' '
+                    pos = pos + 1;
+                }
+
+                // 引数をコピー
+                ulong j = 0;
+                while (pos < 500) {
+                    ulong ch = Mem::read_byte(arg + j);
+                    if (ch == 0) { break; }
+                    Mem::write_byte(cmdline_buf + pos, ch);
+                    pos = pos + 1;
+                    j = j + 1;
+                }
+                ai = ai + 1;
+            }
+        } else {
+            // argv==NULL の場合、pathnameをそのまま使う
+            ulong j = 0;
+            while (pos < 500) {
+                ulong ch = Mem::read_byte(pathname + j);
+                if (ch == 0) { break; }
+                Mem::write_byte(cmdline_buf + pos, ch);
+                pos = pos + 1;
+                j = j + 1;
+            }
+        }
+        Mem::write_byte(cmdline_buf + pos, 0);
+
+        dbg.puts("[execve] cmdline=\"" as void*);
+        dbg.puts(cmdline_buf as void*);
+        dbg.println("\"" as void*);
+
+        // ============================================================
+        // Shebang (#!) 検出
+        // ファイルの先頭2バイトを読み、#!ならインタープリターを解析して
+        // "interpreter [arg] script_path original_args" 形式のcmdlineに書き換える
+        // ============================================================
+        ulong shebang_buf = 0x95600;  // shebang一時バッファ (256B)
+        ulong shebang_detected = 0;
+
+        // ファイル名部分を取得（cmdlineの先頭ワード）
+        ulong fname_end = 0;
+        while (fname_end < pos) {
+            ulong fc = Mem::read_byte(cmdline_buf + fname_end);
+            if (fc == 0 || fc == 32) { break; }
+            fname_end = fname_end + 1;
+        }
+
+        // ファイルをNULL終端してヘッダを読む
+        ulong fname_tmp = 0x95580;  // ファイル名一時バッファ
+        ulong fi2 = 0;
+        while (fi2 < fname_end && fi2 < 120) {
+            Mem::write_byte(fname_tmp + fi2, Mem::read_byte(cmdline_buf + fi2));
+            fi2 = fi2 + 1;
+        }
+        Mem::write_byte(fname_tmp + fi2, 0);
+
+        // RamFS/9pFSからファイルの先頭128バイトを読む  
+        ulong hdr_read = 0;
+        Ino sheb_ino = RamFs::lookup(fname_tmp as void*);
+        if (sheb_ino != 0) {
+            hdr_read = RamFs::read(sheb_ino, shebang_buf, 0, 128) as ulong;
+        } else {
+            hdr_read = NinePfs::read_file(fname_tmp, shebang_buf, 128);
+        }
+
+        if (hdr_read >= 2) {
+            ulong b0 = Mem::read_byte(shebang_buf);
+            ulong b1 = Mem::read_byte(shebang_buf + 1);
+            // '#' = 35, '!' = 33
+            if (b0 == 35 && b1 == 33) {
+                shebang_detected = 1;
+                dbg.println("[execve] Shebang detected!" as void*);
+
+                // インタープリターパスを抽出 (#!の後からLFまで)
+                ulong interp_start = 2;
+                // 先頭スペースをスキップ
+                while (interp_start < hdr_read) {
+                    ulong sc = Mem::read_byte(shebang_buf + interp_start);
+                    if (sc != 32 && sc != 9) { break; }  // スペース/タブ
+                    interp_start = interp_start + 1;
+                }
+
+                // インタープリターパスの終端を探す（スペースまたはLF）
+                ulong interp_end = interp_start;
+                while (interp_end < hdr_read) {
+                    ulong sc = Mem::read_byte(shebang_buf + interp_end);
+                    if (sc == 0 || sc == 10 || sc == 13 || sc == 32) { break; }
+                    interp_end = interp_end + 1;
+                }
+
+                // オプション引数を抽出（あれば）
+                ulong opt_start = interp_end;
+                while (opt_start < hdr_read) {
+                    ulong sc = Mem::read_byte(shebang_buf + opt_start);
+                    if (sc != 32 && sc != 9) { break; }
+                    opt_start = opt_start + 1;
+                }
+                ulong opt_end = opt_start;
+                ulong osc = Mem::read_byte(shebang_buf + opt_end);
+                if (osc != 0 && osc != 10 && osc != 13) {
+                    while (opt_end < hdr_read) {
+                        ulong sc2 = Mem::read_byte(shebang_buf + opt_end);
+                        if (sc2 == 0 || sc2 == 10 || sc2 == 13) { break; }
+                        opt_end = opt_end + 1;
+                    }
+                }
+
+                // インタープリターのファイル名部分を抽出（最後の'/'以降）
+                ulong interp_fname = interp_start;
+                ulong ik = interp_start;
+                while (ik < interp_end) {
+                    if (Mem::read_byte(shebang_buf + ik) == 47) {  // '/'
+                        interp_fname = ik + 1;
+                    }
+                    ik = ik + 1;
+                }
+
+                // 新しいcmdlineを構築:
+                // "interpreter [opt] script_path [original_args]"
+                ulong new_cmdline = 0x95700;  // 新cmdlineバッファ (512B)
+                ulong np = 0;
+
+                // インタープリターファイル名をコピー
+                ulong ii = interp_fname;
+                while (ii < interp_end && np < 500) {
+                    Mem::write_byte(new_cmdline + np, Mem::read_byte(shebang_buf + ii));
+                    np = np + 1;
+                    ii = ii + 1;
+                }
+
+                // オプション引数（あれば）
+                if (opt_end > opt_start) {
+                    Mem::write_byte(new_cmdline + np, 32);  // スペース
+                    np = np + 1;
+                    ulong oi = opt_start;
+                    while (oi < opt_end && np < 500) {
+                        Mem::write_byte(new_cmdline + np, Mem::read_byte(shebang_buf + oi));
+                        np = np + 1;
+                        oi = oi + 1;
+                    }
+                }
+
+                // スクリプトパスと残りの引数
+                Mem::write_byte(new_cmdline + np, 32);  // スペース
+                np = np + 1;
+                // 元のcmdlineをそのまま追加
+                ulong ci = 0;
+                while (ci < pos && np < 500) {
+                    Mem::write_byte(new_cmdline + np, Mem::read_byte(cmdline_buf + ci));
+                    np = np + 1;
+                    ci = ci + 1;
+                }
+                Mem::write_byte(new_cmdline + np, 0);
+
+                // cmdline_bufを新しいcmdlineで上書き
+                ulong ri = 0;
+                while (ri <= np) {
+                    Mem::write_byte(cmdline_buf + ri, Mem::read_byte(new_cmdline + ri));
+                    ri = ri + 1;
+                }
+                pos = np;
+
+                dbg.puts("[execve] shebang rewritten: \"" as void*);
+                dbg.puts(cmdline_buf as void*);
+                dbg.println("\"" as void*);
+            }
+        }
+
+        // Loader::exec で新プロセスを作成（既存のものを使う）
+        Pid pid = Loader::exec(cmdline_buf as void*, &dbg);
+        if (pid < 0) {
+            return 0 - ENOENT;
+        }
+
+        // 現在のプロセスをZOMBIEにして新プロセスに制御を移す
+        // これにより execve の「戻らない」セマンティクスを実現
+        Process* current = Sched::current();
+        ProcessTable::do_exit(current, 0);
+
+        // 新プロセスにスイッチ
+        Sched::run();
+
+        // ここには到達しないはず
+        return 0;
+    }
+
+    /// do_clone: clone syscall
+    /// flags にSIGCHLD (17) が含まれていればfork動作
+    static long do_clone(ulong flags, ulong new_stack, ulong parent_tid, ulong child_tid, ulong tls) {
+        // 基本的にfork動作（スレッド未対応）
+        return SyscallFork::do_fork(new_stack);
+    }
+}
+
+/// fork子プロセスのエントリポイント
+/// switch_toのretから呼ばれ、fork返り値0でユーザーモードに戻る
+///
+/// 親のsyscall復帰コンテキストを復元し、RAX=0(fork戻り値)で
+/// sysretqによりユーザーモードに復帰する。
+void fork_child_entry() {
+    SerialPort dbg(COM1);
+    dbg.println("[fork] child process started, returning to usermode" as void*);
+
+    // saved_user_rsp (0x96200) : 子プロセスのユーザーRSP
+    // 親のRCX(RIP)はカーネルスタックの復帰フレームから復元
+    // → 簡易化: 親のRCX/R11/全レジスタを0x96210から復元
+    // do_fork内で保存済み
+
+    // ユーザーモード復帰: sysretq
+    // RAX = 0 (fork子プロセスの戻り値)
+    // RCX = 親のRIP (syscall次命令)
+    // R11 = 親のRFLAGS
+    // RSP = saved_user_rsp
+    __asm__(`
+        // RAX = 0 (fork戻り値)
+        xorq %rax, %rax;
+
+        // 保存済みレジスタ復元
+        movq 0x96210, %rcx;   // RIP
+        movq 0x96218, %r11;   // RFLAGS
+        movq 0x96220, %rdi;   // RDI
+        movq 0x96228, %rsi;   // RSI
+        movq 0x96230, %rdx;   // RDX
+        movq 0x96238, %r10;   // R10
+        movq 0x96240, %r8;    // R8
+        movq 0x96248, %r9;    // R9
+        movq 0x96250, %rbx;   // RBX
+        movq 0x96258, %rbp;   // RBP
+        movq 0x96260, %r12;   // R12
+        movq 0x96268, %r13;   // R13
+        movq 0x96270, %r14;   // R14
+        movq 0x96278, %r15;   // R15
+
+        // RSP復元
+        movq 0x96200, %rsp;   // saved_user_rsp
+
+        sysretq
+    `);
+}

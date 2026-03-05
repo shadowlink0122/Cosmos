@@ -17,7 +17,7 @@ import ./shell_util;
 import ./env;
 import ./history;
 import ../drivers/serial;
-import ../drivers/pit;
+import ../drivers/timer/pit;
 import ../sched/process;
 import ../sched/scheduler;
 import ../mm/pmm;
@@ -29,19 +29,18 @@ import ../init/init;
 import ../sys/signal;
 import ../mm/mmap;
 import ../exec/loader;
-import ../test/ktest;
 import ../drivers/pci;
-import ../drivers/virtio;
-import ../drivers/virtio_net;
+import ../drivers/virtio/virtio;
+import ../drivers/virtio/virtio_net;
 import ../include/net;
-import ../net/ethernet;
-import ../net/ip;
-import ../net/icmp;
-import ../net/arp;
-import ../net/dns;
-import ../drivers/virtio_9p;
+import ../net/core/ethernet;
+import ../net/core/ip;
+import ../net/transport/icmp;
+import ../net/core/arp;
+import ../net/app/dns;
+import ../drivers/virtio/virtio_9p;
 import ../fs/ninepfs;
-import ../net/curl;
+import ../net/app/curl;
 import ../pkg/gen;
 import ../pkg/brew;
 
@@ -1696,7 +1695,7 @@ impl Cmd {
             return;
         }
         if (streq(CMD_BUF_ADDR as void*, "test" as void*) != 0) {
-            KTest::run_all();
+            Shell::writeln("Run 'make test' to execute kernel tests." as void*);
             return;
         }
         // cm コマンド（Cmコンパイラ情報）

@@ -9,7 +9,7 @@ import ../include/types;
 import ../include/config;
 import ../include/vfs;
 import ../drivers/serial;
-import ../drivers/pit;
+import ../drivers/timer/pit;
 import ../lib/printk;
 import ../lib/kstring;
 import ../mm/pmm;

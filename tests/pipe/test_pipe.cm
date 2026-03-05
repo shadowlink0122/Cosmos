@@ -1,0 +1,58 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::pipe::test_pipe - Pipe テスト
+//
+// パイプの作成、読み書き、データ整合性を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../fs/pipe;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// Pipe テストスイート
+export void test_pipe() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[Pipe]" as void*);
+    TestIO::set_color(7, 0);
+
+    // パイプ作成
+    long pipe_id = Pipe::create();
+    if (pipe_id >= 0) {
+        KTest::assert_true(1, "pipe create succeeds" as void*);
+    } else {
+        KTest::assert_true(0, "pipe create succeeds" as void*);
+    }
+
+    // 空パイプから読み込み → 0
+    ulong buf = 0x9D100;
+    long n = Pipe::read(pipe_id as ulong, buf, 32);
+    KTest::assert_eq(n as ulong, 0, "empty pipe read returns 0" as void*);
+
+    // 書き込み
+    ulong msg_addr = "Hello" as ulong;
+    n = Pipe::write(pipe_id as ulong, msg_addr, 5);
+    KTest::assert_eq(n as ulong, 5, "pipe write 5 bytes" as void*);
+
+    // 読み込み
+    memzero(buf as void*, 32);
+    n = Pipe::read(pipe_id as ulong, buf, 32);
+    KTest::assert_eq(n as ulong, 5, "pipe read returns 5 bytes" as void*);
+
+    // 読み込みデータ検証 (先頭バイト = 'H' = 72)
+    ulong first = 0;
+    __asm__(`
+        movq ${r:buf}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:first}
+    `);
+    KTest::assert_eq(first, 72, "pipe data integrity (H=72)" as void*);
+
+    // パイプ解放
+    Pipe::destroy(pipe_id as ulong);
+    KTest::pass("pipe destroy" as void*);
+}

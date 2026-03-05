@@ -8,7 +8,7 @@
 import ../include/types;
 import ../include/vfs;
 import ../drivers/serial;
-import ../drivers/virtio_9p;
+import ../drivers/virtio/virtio_9p;
 import ../lib/kstring;
 import ../lib/printk;
 

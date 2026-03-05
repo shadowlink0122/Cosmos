@@ -1,0 +1,79 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::ramfs::test_ramfs - RamFS テスト
+//
+// RamFSのファイル作成・lookup・read/write・unlink・mkdirを検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../fs/ramfs;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// RamFS テストスイート
+export void test_ramfs() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[RamFS]" as void*);
+    TestIO::set_color(7, 0);
+
+    // ファイル作成 (テスト用データバッファを明示指定)
+    ulong test_data_buf = 0x9F000;  // テスト用データ領域
+    memzero(test_data_buf as void*, 256);
+    Ino ino = RamFs::create("_test_file" as void*, S_IFREG | 0x1FF, test_data_buf);
+    ulong ino_ok = 0;
+    if (ino != 0) { ino_ok = 1; }
+    KTest::assert_eq(ino_ok, 1, "RamFS create file" as void*);
+
+    // lookup
+    Ino found = RamFs::lookup("_test_file" as void*);
+    KTest::assert_eq(found as ulong, ino as ulong, "RamFS lookup returns same ino" as void*);
+
+    // 存在しないファイルのlookup
+    Ino ghost = RamFs::lookup("_no_such_file" as void*);
+    KTest::assert_eq(ghost as ulong, 0, "RamFS lookup nonexistent returns 0" as void*);
+
+    // write + read
+    ulong write_buf = 0x9F000;
+    Mem::write_byte(write_buf, 72);      // 'H'
+    Mem::write_byte(write_buf + 1, 105); // 'i'
+    Mem::write_byte(write_buf + 2, 33);  // '!'
+    long wn = RamFs::write(ino, write_buf, 0, 3);
+    KTest::assert_eq(wn as ulong, 3, "RamFS write 3 bytes" as void*);
+
+    ulong read_buf = 0x9F100;
+    memzero(read_buf as void*, 16);
+    long rn = RamFs::read(ino, read_buf, 0, 3);
+    KTest::assert_eq(rn as ulong, 3, "RamFS read 3 bytes" as void*);
+
+    // データ整合性
+    ulong rb0 = Mem::read_byte(read_buf);
+    ulong rb1 = Mem::read_byte(read_buf + 1);
+    ulong rb2 = Mem::read_byte(read_buf + 2);
+    KTest::assert_eq(rb0, 72, "RamFS data[0]='H'" as void*);
+    KTest::assert_eq(rb1, 105, "RamFS data[1]='i'" as void*);
+    KTest::assert_eq(rb2, 33, "RamFS data[2]='!'" as void*);
+
+    // file_size
+    ulong fsize = RamFs::file_size(ino);
+    KTest::assert_eq(fsize, 3, "RamFS file_size=3" as void*);
+
+    // unlink
+    long ul = RamFs::unlink("_test_file" as void*);
+    KTest::assert_eq(ul as ulong, 0, "RamFS unlink returns 0" as void*);
+    Ino after_del = RamFs::lookup("_test_file" as void*);
+    KTest::assert_eq(after_del as ulong, 0, "RamFS lookup after unlink=0" as void*);
+
+    // mkdir
+    Ino dir_ino = RamFs::mkdir("_test_dir" as void*);
+    ulong dir_ok = 0;
+    if (dir_ino != 0) { dir_ok = 1; }
+    KTest::assert_eq(dir_ok, 1, "RamFS mkdir" as void*);
+    ulong dir_mode = RamFs::get_mode(dir_ino);
+    KTest::assert_eq(dir_mode & S_IFMT, S_IFDIR, "RamFS mkdir mode=S_IFDIR" as void*);
+
+    // クリーンアップ
+    RamFs::unlink("_test_dir" as void*);
+}

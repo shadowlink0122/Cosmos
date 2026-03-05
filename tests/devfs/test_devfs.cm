@@ -1,0 +1,69 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::devfs::test_devfs - DevFS テスト
+//
+// /dev/null, /dev/zero, /dev/random の動作検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../fs/devfs;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// DevFS テストスイート
+export void test_devfs() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[DevFS]" as void*);
+    TestIO::set_color(7, 0);
+
+    // /dev/null lookup
+    ulong dev = DevFs::lookup("null" as void*);
+    KTest::assert_eq(dev, DEV_NULL, "lookup /dev/null" as void*);
+
+    dev = DevFs::lookup("zero" as void*);
+    KTest::assert_eq(dev, DEV_ZERO, "lookup /dev/zero" as void*);
+
+    dev = DevFs::lookup("random" as void*);
+    KTest::assert_eq(dev, DEV_RANDOM, "lookup /dev/random" as void*);
+
+    dev = DevFs::lookup("nonexistent" as void*);
+    KTest::assert_eq(dev, 0, "lookup nonexistent returns 0" as void*);
+
+    // /dev/null read → EOF (0)
+    ulong buf_addr = 0x9D000;  // テスト用一時バッファ
+    long n = DevFs::read(DEV_NULL, buf_addr, 64);
+    KTest::assert_eq(n as ulong, 0, "/dev/null read returns 0 (EOF)" as void*);
+
+    // /dev/null write → count
+    n = DevFs::write(DEV_NULL, buf_addr, 100);
+    KTest::assert_eq(n as ulong, 100, "/dev/null write returns count" as void*);
+
+    // /dev/zero read → fills zeros
+    // バッファに0xFF埋め
+    ulong i = 0;
+    while (i < 16) {
+        ulong addr = buf_addr + i;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movb $$0xFF, (%rdi)
+        `);
+        i = i + 1;
+    }
+    n = DevFs::read(DEV_ZERO, buf_addr, 16);
+    KTest::assert_eq(n as ulong, 16, "/dev/zero read returns count" as void*);
+    // 最初のバイトがゼロか確認
+    ulong first_byte = 0;
+    __asm__(`
+        movq ${r:buf_addr}, %rdi;
+        xorq %rax, %rax;
+        movb (%rdi), %al;
+        movq %rax, ${=r:first_byte}
+    `);
+    KTest::assert_eq(first_byte, 0, "/dev/zero fills with zeros" as void*);
+
+    // /dev/random read → nonzero return
+    n = DevFs::read(DEV_RANDOM, buf_addr, 32);
+    KTest::assert_eq(n as ulong, 32, "/dev/random read returns count" as void*);
+}

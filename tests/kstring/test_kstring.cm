@@ -1,0 +1,59 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::kstring::test_kstring - KString テスト
+//
+// strlen, strcmp, streq, memcpy, memzero のユニットテスト。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// KString テストスイート
+export void test_kstring() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[KString]" as void*);
+    TestIO::set_color(7, 0);
+
+    // strlen
+    Size len = KString::strlen("Hello" as void*);
+    KTest::assert_eq(len, 5, "strlen(\"Hello\")=5" as void*);
+    len = KString::strlen("" as void*);
+    KTest::assert_eq(len, 0, "strlen(\"\")=0" as void*);
+
+    // strcmp
+    long cmp = KString::strcmp("abc" as void*, "abc" as void*);
+    KTest::assert_eq(cmp as ulong, 0, "strcmp equal=0" as void*);
+    cmp = KString::strcmp("abc" as void*, "abd" as void*);
+    ulong cmp_neg = 0;
+    if (cmp < 0) { cmp_neg = 1; }
+    KTest::assert_eq(cmp_neg, 1, "strcmp \"abc\"<\"abd\"" as void*);
+
+    // streq
+    ulong eq = KString::streq("test" as void*, "test" as void*);
+    KTest::assert_eq(eq, 1, "streq equal=1" as void*);
+    eq = KString::streq("test" as void*, "rest" as void*);
+    KTest::assert_eq(eq, 0, "streq differ=0" as void*);
+
+    // memcpy
+    ulong src_buf = 0x9F200;
+    ulong dst_buf = 0x9F300;
+    Mem::write_byte(src_buf, 65);     // 'A'
+    Mem::write_byte(src_buf + 1, 66); // 'B'
+    Mem::write_byte(src_buf + 2, 67); // 'C'
+    memzero(dst_buf as void*, 8);
+    memcpy(dst_buf as void*, src_buf as void*, 3);
+    KTest::assert_eq(Mem::read_byte(dst_buf), 65, "memcpy[0]='A'" as void*);
+    KTest::assert_eq(Mem::read_byte(dst_buf + 1), 66, "memcpy[1]='B'" as void*);
+    KTest::assert_eq(Mem::read_byte(dst_buf + 2), 67, "memcpy[2]='C'" as void*);
+
+    // memzero
+    Mem::write_byte(dst_buf, 0xFF);
+    Mem::write_byte(dst_buf + 1, 0xFF);
+    memzero(dst_buf as void*, 2);
+    KTest::assert_eq(Mem::read_byte(dst_buf), 0, "memzero[0]=0" as void*);
+    KTest::assert_eq(Mem::read_byte(dst_buf + 1), 0, "memzero[1]=0" as void*);
+}

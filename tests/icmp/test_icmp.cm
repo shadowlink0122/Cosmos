@@ -1,0 +1,48 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::icmp::test_icmp - ICMP テスト
+//
+// ICMPパケットのビルド・パース、Echo Reply生成を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../include/net;
+import ../../net/transport/icmp;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// ICMP テストスイート
+export void test_icmp() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[ICMP]" as void*);
+    TestIO::set_color(7, 0);
+
+    ulong echo_buf = 0x9E600;
+    IcmpHeader echo_hdr = { icmp_type: ICMP_ECHO_REQUEST, code: 0, checksum: 0, id: 0x1234, seq: 1 };
+    Icmp::build(echo_buf, &echo_hdr);
+    KTest::assert_eq(Mem::read_byte(echo_buf), ICMP_ECHO_REQUEST, "ICMP type=8" as void*);
+    KTest::assert_eq(Mem::read_byte(echo_buf + 1), 0, "ICMP code=0" as void*);
+
+    ulong ck_h = Mem::read_byte(echo_buf + 2);
+    ulong ck_l = Mem::read_byte(echo_buf + 3);
+    ulong ck_val = (ck_h * 256) + ck_l;
+    // build後のチェックサムは0（build内では計算しない）
+    KTest::assert_eq(ck_val, 0, "ICMP checksum=0 (no calc in build)" as void*);
+
+    IcmpHeader parsed = { icmp_type: 0, code: 0, checksum: 0, id: 0, seq: 0 };
+    Icmp::parse(echo_buf, &parsed);
+    KTest::assert_eq(parsed.icmp_type, ICMP_ECHO_REQUEST, "ICMP parse type=8" as void*);
+    KTest::assert_eq(parsed.id, 0x1234, "ICMP id=0x1234" as void*);
+    KTest::assert_eq(parsed.seq, 1, "ICMP seq=1" as void*);
+
+    ulong reply_buf = 0x9E700;
+    Icmp::handle_echo(echo_buf, 8, reply_buf);
+    KTest::assert_eq(Mem::read_byte(reply_buf), ICMP_ECHO_REPLY, "ICMP reply type=0" as void*);
+
+    IcmpHeader reply_hdr = { icmp_type: 0, code: 0, checksum: 0, id: 0, seq: 0 };
+    Icmp::parse(reply_buf, &reply_hdr);
+    KTest::assert_eq(reply_hdr.id, 0x1234, "ICMP reply id=0x1234" as void*);
+    KTest::assert_eq(reply_hdr.seq, 1, "ICMP reply seq=1" as void*);
+}

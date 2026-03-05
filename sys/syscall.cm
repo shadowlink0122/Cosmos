@@ -14,7 +14,7 @@ import ../include/signal;
 import ../drivers/serial;
 import ../lib/printk;
 import ../arch/x86_64/cpu;
-import ./syscall_table;
+import ./table;
 import ./signal;
 import ../fs/vfs;
 import ../fs/fd_table;
@@ -27,11 +27,11 @@ import ../ui/shell_io;
 import ../ui/vga;
 import ../fs/pipe;
 // ABI拡張: 分野別syscall
-import ./syscall_fs;
-import ./syscall_proc;
-import ./syscall_net;
-import ./syscall_fork;
-import ../drivers/keyboard;
+import ./handlers/fs;
+import ./handlers/proc;
+import ./handlers/net;
+import ./handlers/fork;
+import ../drivers/input/keyboard;
 import ../fs/ramfs;
 
 // ============================================================

@@ -36,7 +36,7 @@ ELF   = $(BUILD)/cosmo-linux.elf
 TEST_ELF64 = $(BUILD)/test64.elf
 TEST_ELF   = $(BUILD)/test.elf
 TEST_OBJ   = $(BUILD)/test_kernel.o
-TEST_SRC   = test/test_entry.cm
+TEST_SRC   = tests/test_entry.cm
 
 # ソース
 BOOT_ASM    = boot/header.S

@@ -1,0 +1,48 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::fd_table::test_fd_table - FDテーブル テスト
+//
+// ファイルディスクリプタテーブルの alloc/free/dup2 を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/vfs;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../fs/fd_table;
+import ../test_io;
+import ../ktest;
+
+/// FDテーブル テストスイート
+export void test_fd_table() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[FdTable]" as void*);
+    TestIO::set_color(7, 0);
+
+    // stdin/stdout/stderr は有効
+    KTest::assert_eq(FdTable::is_valid(0), 1, "fd 0 (stdin) valid" as void*);
+    KTest::assert_eq(FdTable::is_valid(1), 1, "fd 1 (stdout) valid" as void*);
+    KTest::assert_eq(FdTable::is_valid(2), 1, "fd 2 (stderr) valid" as void*);
+
+    // 未使用FDは無効
+    KTest::assert_eq(FdTable::is_valid(15), 0, "fd 15 invalid" as void*);
+
+    // alloc/free サイクル
+    Fd fd = FdTable::alloc(42, O_RDWR, FS_DEVFS);
+    if (fd >= 3) {
+        KTest::assert_true(1, "alloc returns fd >= 3" as void*);
+    } else {
+        KTest::assert_true(0, "alloc returns fd >= 3" as void*);
+    }
+    KTest::assert_eq(FdTable::is_valid(fd), 1, "allocated fd valid" as void*);
+    KTest::assert_eq(FdTable::get_fs_type(fd), FS_DEVFS, "fs_type = FS_DEVFS" as void*);
+
+    // dup2
+    Fd dup_fd = FdTable::dup2(fd, 10);
+    KTest::assert_eq(dup_fd as ulong, 10, "dup2 returns newfd" as void*);
+    KTest::assert_eq(FdTable::is_valid(10), 1, "dup2 target valid" as void*);
+    KTest::assert_eq(FdTable::get_fs_type(10), FS_DEVFS, "dup2 target fs_type" as void*);
+
+    // クリーンアップ
+    FdTable::free(fd);
+    FdTable::free(10);
+}
