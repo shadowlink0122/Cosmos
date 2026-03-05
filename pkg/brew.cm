@@ -109,7 +109,7 @@ impl Brew {
         ulong conn_id = Brew::tcp_connect(remote_ip, remote_port, local_port);
         if (conn_id == 0xFFFFFFFF) {
             Shell::writeln("brew: connection failed (is host HTTP server running?)" as void*);
-            Shell::writeln("  Start server: cd packages && python3 -m http.server 8080" as void*);
+            Shell::writeln("  Start server: make serve" as void*);
             return;
         }
 
@@ -408,7 +408,7 @@ impl Brew {
         Shell::writeln("Server: http://10.0.2.2:8080/packages/" as void*);
         Shell::writeln("" as void*);
         Shell::writeln("Host setup:" as void*);
-        Shell::writeln("  mkdir packages && python3 -m http.server 8080" as void*);
+        Shell::writeln("  make serve" as void*);
     }
 
     // ================================================================

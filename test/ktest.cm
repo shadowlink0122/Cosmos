@@ -20,6 +20,7 @@ import ../lib/kstring;
 import ../fs/devfs;
 import ../fs/pipe;
 import ../fs/fd_table;
+import ../fs/ramfs;
 import ../sys/signal;
 import ../sched/process;
 import ../mm/mmap;
@@ -105,6 +106,13 @@ impl KTest {
             TestIO::write(" actual=" as void*);
             TestIO::print_dec(actual);
             TestIO::putc(10);
+            // シリアルにも値を出力 (10進)
+            SerialPort s(COM1);
+            s.puts("    expected=" as void*);
+            KTest::serial_dec(&s, expected);
+            s.puts(" actual=" as void*);
+            KTest::serial_dec(&s, actual);
+            s.putc(10);
         }
     }
 
@@ -114,6 +122,25 @@ impl KTest {
             KTest::pass(name);
         } else {
             KTest::fail(name);
+        }
+    }
+
+    /// シリアルポートに10進数出力
+    static void serial_dec(SerialPort* s, ulong val) {
+        if (val == 0) { s->putc(48); return; }
+        ulong buf_addr = 0x9FE00;
+        ulong pos = 0;
+        ulong v = val;
+        while (v > 0) {
+            ulong digit = v - (v / 10) * 10;
+            Mem::write_byte(buf_addr + pos, digit + 48);
+            pos = pos + 1;
+            v = v / 10;
+        }
+        while (pos > 0) {
+            pos = pos - 1;
+            ulong ch = Mem::read_byte(buf_addr + pos);
+            s->putc(ch);
         }
     }
 
@@ -172,6 +199,8 @@ impl KTest {
         KTest::test_ipv4();
         KTest::test_tcp_conn();
         KTest::test_icmp();
+        KTest::test_ramfs();
+        KTest::test_kstring();
 
         KTest::summary();
     }
@@ -741,5 +770,122 @@ impl KTest {
         KTest::assert_eq(sv as ulong, 2, "Mouse get_scroll at threshold returns value" as void*);
         // 読み取り後にリセットされているか
         KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll reset after threshold read" as void*);
+    }
+
+    // ============================================================
+    // RamFS テスト
+    // ============================================================
+
+    static void test_ramfs() {
+        TestIO::set_color(14, 0);
+        TestIO::writeln("[RamFS]" as void*);
+        TestIO::set_color(7, 0);
+
+        // ファイル作成 (テスト用データバッファを明示指定)
+        ulong test_data_buf = 0x9F000;  // テスト用データ領域
+        memzero(test_data_buf as void*, 256);
+        Ino ino = RamFs::create("_test_file" as void*, S_IFREG | 0x1FF, test_data_buf);
+        ulong ino_ok = 0;
+        if (ino != 0) { ino_ok = 1; }
+        KTest::assert_eq(ino_ok, 1, "RamFS create file" as void*);
+
+        // lookup
+        Ino found = RamFs::lookup("_test_file" as void*);
+        KTest::assert_eq(found as ulong, ino as ulong, "RamFS lookup returns same ino" as void*);
+
+        // 存在しないファイルのlookup
+        Ino ghost = RamFs::lookup("_no_such_file" as void*);
+        KTest::assert_eq(ghost as ulong, 0, "RamFS lookup nonexistent returns 0" as void*);
+
+        // write + read
+        ulong write_buf = 0x9F000;
+        Mem::write_byte(write_buf, 72);      // 'H'
+        Mem::write_byte(write_buf + 1, 105); // 'i'
+        Mem::write_byte(write_buf + 2, 33);  // '!'
+        long wn = RamFs::write(ino, write_buf, 0, 3);
+        KTest::assert_eq(wn as ulong, 3, "RamFS write 3 bytes" as void*);
+
+        ulong read_buf = 0x9F100;
+        memzero(read_buf as void*, 16);
+        long rn = RamFs::read(ino, read_buf, 0, 3);
+        KTest::assert_eq(rn as ulong, 3, "RamFS read 3 bytes" as void*);
+
+        // データ整合性
+        ulong rb0 = Mem::read_byte(read_buf);
+        ulong rb1 = Mem::read_byte(read_buf + 1);
+        ulong rb2 = Mem::read_byte(read_buf + 2);
+        KTest::assert_eq(rb0, 72, "RamFS data[0]='H'" as void*);
+        KTest::assert_eq(rb1, 105, "RamFS data[1]='i'" as void*);
+        KTest::assert_eq(rb2, 33, "RamFS data[2]='!'" as void*);
+
+        // file_size
+        ulong fsize = RamFs::file_size(ino);
+        KTest::assert_eq(fsize, 3, "RamFS file_size=3" as void*);
+
+        // unlink
+        long ul = RamFs::unlink("_test_file" as void*);
+        KTest::assert_eq(ul as ulong, 0, "RamFS unlink returns 0" as void*);
+        Ino after_del = RamFs::lookup("_test_file" as void*);
+        KTest::assert_eq(after_del as ulong, 0, "RamFS lookup after unlink=0" as void*);
+
+        // mkdir
+        Ino dir_ino = RamFs::mkdir("_test_dir" as void*);
+        ulong dir_ok = 0;
+        if (dir_ino != 0) { dir_ok = 1; }
+        KTest::assert_eq(dir_ok, 1, "RamFS mkdir" as void*);
+        ulong dir_mode = RamFs::get_mode(dir_ino);
+        KTest::assert_eq(dir_mode & S_IFMT, S_IFDIR, "RamFS mkdir mode=S_IFDIR" as void*);
+
+        // クリーンアップ
+        RamFs::unlink("_test_dir" as void*);
+    }
+
+    // ============================================================
+    // kstring テスト
+    // ============================================================
+
+    static void test_kstring() {
+        TestIO::set_color(14, 0);
+        TestIO::writeln("[KString]" as void*);
+        TestIO::set_color(7, 0);
+
+        // strlen
+        Size len = KString::strlen("Hello" as void*);
+        KTest::assert_eq(len, 5, "strlen(\"Hello\")=5" as void*);
+        len = KString::strlen("" as void*);
+        KTest::assert_eq(len, 0, "strlen(\"\")=0" as void*);
+
+        // strcmp
+        long cmp = KString::strcmp("abc" as void*, "abc" as void*);
+        KTest::assert_eq(cmp as ulong, 0, "strcmp equal=0" as void*);
+        cmp = KString::strcmp("abc" as void*, "abd" as void*);
+        ulong cmp_neg = 0;
+        if (cmp < 0) { cmp_neg = 1; }
+        KTest::assert_eq(cmp_neg, 1, "strcmp \"abc\"<\"abd\"" as void*);
+
+        // streq
+        ulong eq = KString::streq("test" as void*, "test" as void*);
+        KTest::assert_eq(eq, 1, "streq equal=1" as void*);
+        eq = KString::streq("test" as void*, "rest" as void*);
+        KTest::assert_eq(eq, 0, "streq differ=0" as void*);
+
+        // memcpy
+        ulong src_buf = 0x9F200;
+        ulong dst_buf = 0x9F300;
+        Mem::write_byte(src_buf, 65);     // 'A'
+        Mem::write_byte(src_buf + 1, 66); // 'B'
+        Mem::write_byte(src_buf + 2, 67); // 'C'
+        memzero(dst_buf as void*, 8);
+        memcpy(dst_buf as void*, src_buf as void*, 3);
+        KTest::assert_eq(Mem::read_byte(dst_buf), 65, "memcpy[0]='A'" as void*);
+        KTest::assert_eq(Mem::read_byte(dst_buf + 1), 66, "memcpy[1]='B'" as void*);
+        KTest::assert_eq(Mem::read_byte(dst_buf + 2), 67, "memcpy[2]='C'" as void*);
+
+        // memzero
+        Mem::write_byte(dst_buf, 0xFF);
+        Mem::write_byte(dst_buf + 1, 0xFF);
+        memzero(dst_buf as void*, 2);
+        KTest::assert_eq(Mem::read_byte(dst_buf), 0, "memzero[0]=0" as void*);
+        KTest::assert_eq(Mem::read_byte(dst_buf + 1), 0, "memzero[1]=0" as void*);
     }
 }
