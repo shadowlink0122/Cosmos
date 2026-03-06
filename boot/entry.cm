@@ -172,6 +172,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Init::banner(&serial);
     pr_info(&serial, "Creating shell task..." as void*);
 
+    // GUIモードフラグを設定（Shell/VGA関数がテキストモード出力をスキップ）
+    // シェルタスク作成前に設定する必要がある
+    ulong* gui_mode_early = 0x95038 as ulong*;
+    *gui_mode_early = 1;
+
     shell_init(&serial as ulong, &pmm as ulong);
 
     Process shell(ProcessTable::alloc_pid(), 0);
