@@ -1,0 +1,75 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::dock - macOS風Dock
+//
+// 画面下部に半透明のDockバーを描画。
+// アプリアイコン（簡易表示）を配置。
+
+import ../include/types;
+import ../include/config;
+import ../drivers/video/framebuffer;
+import ../drivers/video/font;
+
+// ============================================================
+// Dock定数
+// ============================================================
+
+/// Dock高さ
+export const ulong DOCK_HEIGHT = 60;
+/// Dockマージン（画面下端からのオフセット）
+const ulong DOCK_MARGIN = 8;
+/// Dock背景色（半透明ダークグレー風）
+const ulong DOCK_BG = 0x2A2A2E;
+/// Dock枠色
+const ulong DOCK_BORDER = 0x505058;
+/// Dock角丸半径
+const ulong DOCK_RADIUS = 14;
+/// アイコンサイズ
+const ulong ICON_SIZE = 40;
+/// アイコン間隔
+const ulong ICON_GAP = 12;
+
+/// Dock — macOS風Dock
+export struct Dock {}
+
+impl Dock {
+    /// Dock描画
+    static void draw() {
+        ulong sw = Fb::width();
+        ulong sh = Fb::height();
+
+        // Dock幅（アイコン数に応じる）
+        ulong num_icons = 4;
+        ulong dock_w = num_icons * ICON_SIZE + (num_icons + 1) * ICON_GAP;
+        ulong dock_x = (sw - dock_w) / 2;
+        ulong dock_y = sh - DOCK_HEIGHT - DOCK_MARGIN;
+
+        // Dock背景（角丸矩形）
+        Fb::fill_rounded_rect(dock_x, dock_y, dock_w, DOCK_HEIGHT, DOCK_RADIUS, DOCK_BG);
+        // 枠線（上部のみ）
+        Fb::hline(dock_x + DOCK_RADIUS, dock_y, dock_w - DOCK_RADIUS * 2, DOCK_BORDER);
+
+        // アイコン描画
+        ulong ix = dock_x + ICON_GAP;
+        ulong iy = dock_y + (DOCK_HEIGHT - ICON_SIZE) / 2;
+
+        // 1. ターミナルアイコン（黒四角 + ">_"）
+        Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x1C1C1E);
+        Fb::draw_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x555555);
+        Font::draw_string(ix + 6, iy + 12, ">_" as void*, 0x50FA7B, 0x1C1C1E);
+        ix = ix + ICON_SIZE + ICON_GAP;
+
+        // 2. ファイルアイコン（青四角 + "F"）
+        Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x007AFF);
+        Font::draw_char(ix + 16, iy + 12, 0x46, 0xFFFFFF, 0x007AFF);  // 'F'
+        ix = ix + ICON_SIZE + ICON_GAP;
+
+        // 3. 設定アイコン（グレー四角 + "*"）
+        Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x636366);
+        Font::draw_char(ix + 16, iy + 12, 0x2A, 0xFFFFFF, 0x636366);  // '*'
+        ix = ix + ICON_SIZE + ICON_GAP;
+
+        // 4. Aboutアイコン（紫四角 + "?"）
+        Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x5856D6);
+        Font::draw_char(ix + 16, iy + 12, 0x3F, 0xFFFFFF, 0x5856D6);  // '?'
+    }
+}

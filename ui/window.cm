@@ -149,8 +149,11 @@ impl Window {
             Font::draw_string(title_x, y + 6, title_addr as void*, TITLEBAR_FG, TITLEBAR_BG);
         }
 
-        // コンテンツ領域 (白背景)
-        Fb::fill_rect(x + 1, y + TITLEBAR_HEIGHT + 1, w - 2, h - TITLEBAR_HEIGHT - 2, WINDOW_BG);
+        // コンテンツ領域
+        ulong* wc = (b + 0x30) as ulong*;
+        ulong content_bg = WINDOW_BG;
+        if (*wc == 1) { content_bg = 0x000000; }  // ターミナル → 黒背景
+        Fb::fill_rect(x + 1, y + TITLEBAR_HEIGHT + 1, w - 2, h - TITLEBAR_HEIGHT - 2, content_bg);
     }
 
     /// ウィンドウ移動

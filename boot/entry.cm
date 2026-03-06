@@ -46,6 +46,7 @@ import ../ui/menubar;
 import ../ui/window;
 import ../ui/wm;
 import ../ui/terminal;
+import ../ui/dock;
 
 // ============================================================
 // start_kernel — エントリポイント
@@ -242,6 +243,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // idle loop
     while (true) {
         __asm__(`sti; hlt`);
+        // マウスイベント処理（カーソル移動、再描画）
+        Wm::process_mouse();
         Sched::run();
     }
 }

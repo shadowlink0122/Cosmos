@@ -20,6 +20,10 @@ const PhysAddr MOUSE_PHASE_ADDR  = 0x93310;  // 現在のパケット位相 (0-3
 const PhysAddr MOUSE_SCROLL_ADDR = 0x93318;  // スクロールイベント: +1=上, -1=下, 0=なし
 const PhysAddr MOUSE_DEVID_ADDR  = 0x93320;  // Device ID (0=標準, 3=IM, 4=IMEX)
 const PhysAddr MOUSE_PKTSZ_ADDR  = 0x93328;  // パケットサイズ (3 or 4)
+const PhysAddr MOUSE_DX_ADDR     = 0x93330;  // X移動デルタ蓄積
+const PhysAddr MOUSE_DY_ADDR     = 0x93338;  // Y移動デルタ蓄積
+const PhysAddr MOUSE_BTN_ADDR    = 0x93340;  // ボタン状態 (bit0=左, bit1=右, bit2=中)
+const PhysAddr MOUSE_EVENT_ADDR  = 0x93348;  // イベントフラグ (0=なし, 1=移動あり)
 
 // ============================================================
 // PS/2マウスポートアクセス
@@ -110,6 +114,14 @@ impl Mouse {
         *phase = 0;
         ulong* scroll = MOUSE_SCROLL_ADDR as ulong*;
         *scroll = 0;
+        ulong* dx = MOUSE_DX_ADDR as ulong*;
+        *dx = 0;
+        ulong* dy = MOUSE_DY_ADDR as ulong*;
+        *dy = 0;
+        ulong* btn = MOUSE_BTN_ADDR as ulong*;
+        *btn = 0;
+        ulong* evt = MOUSE_EVENT_ADDR as ulong*;
+        *evt = 0;
 
         // === 割り込み無効化 ===
         // PS/2コントローラの初期化中にキーボードIRQハンドラが
@@ -207,20 +219,43 @@ impl Mouse {
     }
 
     /// スクロールイベントを取得 (閾値ベース)
-    /// 蓄積値の絶対値が閾値以上 → 値を返してリセット
-    /// 閾値未満 → 0を返し蓄積値を保持
-    /// 2本指スクロールは連続パケットで蓄積されるため閾値を超える
-    /// 1本指操作のノイズは閾値に到達しない
     static long get_scroll() {
         ulong* scroll = MOUSE_SCROLL_ADDR as ulong*;
         long val = *scroll as long;
-        // 閾値: 蓄積値が±2以上のとき発火
         if (val >= 2 || val <= -2) {
             *scroll = 0;
             return val;
         }
-        // 閾値未達: 蓄積値を保持して0を返す
         return 0;
+    }
+
+    /// XY移動デルタ取得 & リセット
+    static long get_dx() {
+        ulong* dx = MOUSE_DX_ADDR as ulong*;
+        long val = *dx as long;
+        *dx = 0;
+        return val;
+    }
+
+    static long get_dy() {
+        ulong* dy = MOUSE_DY_ADDR as ulong*;
+        long val = *dy as long;
+        *dy = 0;
+        return val;
+    }
+
+    /// ボタン状態取得
+    static ulong get_buttons() {
+        ulong* btn = MOUSE_BTN_ADDR as ulong*;
+        return *btn;
+    }
+
+    /// イベント有無チェック & リセット
+    static ulong has_event() {
+        ulong* evt = MOUSE_EVENT_ADDR as ulong*;
+        ulong val = *evt;
+        *evt = 0;
+        return val;
     }
 }
 
@@ -283,7 +318,41 @@ void mouse_irq_handler() {
         cmpq %rdx, %rcx;    // phase == パケットサイズ?
         jl 1f;
 
-        // パケット完了
+        // パケット完了 — XY移動を取得してカーソル移動に使用
+        movq $$0x93300, %rdi;
+
+        // byte 0 = ボタン状態 → MOUSE_BTN_ADDR
+        movzbq (%rdi), %rax;
+        andq $$0x07, %rax;     // bit0-2 = 左/右/中ボタン
+        movq $$0x93340, %rdi;
+        movq %rax, (%rdi);
+
+        // byte 1 = X移動 (符号付き) → MOUSE_DX_ADDR
+        movq $$0x93300, %rdi;
+        movzbq 1(%rdi), %rax;
+        movzbq (%rdi), %rbx;
+        testb $$0x10, %bl;     // byte0 bit4 = X sign
+        jz 40f;
+        orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
+        40:;
+        movq $$0x93330, %rdi;
+        addq %rax, (%rdi);
+
+        // byte 2 = Y移動 (符号付き) → MOUSE_DY_ADDR
+        movq $$0x93300, %rdi;
+        movzbq 2(%rdi), %rax;
+        movzbq (%rdi), %rbx;
+        testb $$0x20, %bl;     // byte0 bit5 = Y sign
+        jz 41f;
+        orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
+        41:;
+        movq $$0x93338, %rdi;
+        addq %rax, (%rdi);
+
+        // イベントフラグ設定
+        movq $$0x93348, %rdi;
+        movq $$1, (%rdi);
+
         cmpq $$4, %rdx;
         jne 20f;
 

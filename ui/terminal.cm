@@ -13,8 +13,8 @@ import ../ui/window;
 // ターミナル定数
 // ============================================================
 
-/// ターミナル背景色 (macOS Terminal風ダーク)
-const ulong TERM_BG = 0x1E1E1E;
+/// ターミナル背景色 (純黒)
+const ulong TERM_BG = 0x000000;
 /// ターミナルテキスト色
 const ulong TERM_FG = 0xCCCCCC;
 /// プロンプト色 (緑)
