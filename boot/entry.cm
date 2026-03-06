@@ -256,15 +256,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // 割り込み有効化
     Cpu::sti();
 
-    // idle loop (pause ベース — マウスの即時応答)
+    // idle loop (hlt ベース — IRQ12 で即座にwakeup)
     while (true) {
-        __asm__(`sti; pause`);
-        // マウスイベント処理（カーソル移動）
+        __asm__(`sti; hlt`);
+        // マウスイベント処理（VRAM直描画で高速）
         Wm::process_mouse();
-        // スケジューラ
-        ulong need = PIT::check_resched();
-        if (need != 0) {
-            Sched::run();
-        }
+        Sched::run();
     }
 }

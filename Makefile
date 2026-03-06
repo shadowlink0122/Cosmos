@@ -48,7 +48,7 @@ KERNEL_OBJ  = $(BUILD)/kernel.o
 CM_SOURCES = $(shell find . -name '*.cm' 2>/dev/null)
 
 # QEMU設定
-QEMU_MEM    ?= 4G
+QEMU_MEM    ?= 2G
 QEMU_TIMEOUT ?= 10
 TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || echo "")
 
@@ -117,7 +117,6 @@ run: $(ELF)
 		-kernel $(ELF) \
 		-m $(QEMU_MEM) \
 		-smp 4 \
-		-accel hvf \
 		-vga std \
 		-serial stdio \
 		-nic user,model=virtio-net-pci \
