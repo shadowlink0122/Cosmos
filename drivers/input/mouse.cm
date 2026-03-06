@@ -274,6 +274,7 @@ void mouse_irq_handler() {
         pushq %rcx;
         pushq %rdx;
         pushq %rdi;
+        pushq %rsi;
 
         // データ読み取り
         xorq %rax, %rax;
@@ -405,6 +406,7 @@ void mouse_irq_handler() {
         outb %al, $$0xA0;
         outb %al, $$0x20;
 
+        popq %rsi;
         popq %rdi;
         popq %rdx;
         popq %rcx;
