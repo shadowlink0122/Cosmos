@@ -184,6 +184,11 @@ impl Mouse {
         // Set Defaultsを呼ぶとDevice IDが0にリセットされ、
         // IntelliMouseプロトコルが無効化されてしまう
 
+        // サンプルレートを100Hz (10ms間隔) に設定
+        // IntelliMouseネゴシエーション後に設定することでDevice IDは維持される
+        mouse_aux_write(0xF3); mouse_aux_read();   // Set Sample Rate
+        mouse_aux_write(100);  mouse_aux_read();   // 100Hz = 10ms
+
         // データ報告有効化
         mouse_aux_write(0xF4); mouse_aux_read();   // Enable Data Reporting
 
