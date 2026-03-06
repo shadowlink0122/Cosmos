@@ -24,6 +24,19 @@ export struct Console {}
 impl Console {
     /// ログレベル付きメッセージ出力
     static void printk(SerialPort* w, ulong level, void* msg) {
+        // ANSIカラー開始
+        if (level == LOG_EMERG || level == LOG_ALERT || level == LOG_CRIT || level == LOG_ERR) {
+            w->putc(27); w->puts("[31m" as void*);  // 赤
+        }
+        if (level == LOG_WARN) {
+            w->putc(27); w->puts("[33m" as void*);  // 黄
+        }
+        if (level == LOG_INFO || level == LOG_NOTICE) {
+            w->putc(27); w->puts("[36m" as void*);  // シアン
+        }
+        if (level == LOG_DEBUG) {
+            w->putc(27); w->puts("[90m" as void*);  // 灰
+        }
         w->putc(91);  // '['
         if (level == LOG_EMERG)  { w->puts("EMERG" as void*); }
         if (level == LOG_ALERT)  { w->puts("ALERT" as void*); }
@@ -34,6 +47,8 @@ impl Console {
         if (level == LOG_INFO)   { w->puts("INFO" as void*); }
         if (level == LOG_DEBUG)  { w->puts("DEBUG" as void*); }
         w->putc(93);  // ']'
+        // ANSIリセット
+        w->putc(27); w->puts("[0m" as void*);
         w->putc(32);  // ' '
         w->println(msg);
     }

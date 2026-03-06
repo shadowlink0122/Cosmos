@@ -44,9 +44,11 @@ impl KTest {
         TestIO::write("  [PASS] " as void*);
         TestIO::set_color(7, 0);
         TestIO::writeln(name);
-        // シリアルにも出力
+        // シリアルにも出力 (ANSI緑)
         SerialPort s(COM1);
+        s.putc(27); s.puts("[32m" as void*);  // ESC[32m = 緑
         s.puts("  [PASS] " as void*);
+        s.putc(27); s.puts("[0m" as void*);   // ESC[0m = リセット
         s.println(name);
     }
 
@@ -60,9 +62,11 @@ impl KTest {
         TestIO::write("  [FAIL] " as void*);
         TestIO::set_color(7, 0);
         TestIO::writeln(name);
-        // シリアルにも出力
+        // シリアルにも出力 (ANSI赤)
         SerialPort s(COM1);
+        s.putc(27); s.puts("[31m" as void*);  // ESC[31m = 赤
         s.puts("  [FAIL] " as void*);
+        s.putc(27); s.puts("[0m" as void*);   // ESC[0m = リセット
         s.println(name);
     }
 
