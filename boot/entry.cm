@@ -206,6 +206,10 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // === 13. GUI 初期化 (BGA直接モード設定) ===
     pr_info(&serial, "Initializing GUI desktop..." as void*);
 
+    // GUIモードフラグを設定（Shell::putcがVGA出力をスキップ）
+    ulong* gui_mode = 0x95038 as ulong*;
+    *gui_mode = 1;
+
     Fb::init(&boot_info);
     serial.puts("  FB: " as void*);
     print_dec(&serial, Fb::width());
