@@ -225,18 +225,18 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     // ターミナルウィンドウを作成
     ulong term_win = Wm::create_terminal();
-    Terminal::init(term_win);
+    Terminal::init(0, term_win);
 
     // 初期画面描画
     Wm::compose();
 
     // ターミナルにウェルカムメッセージ
-    Terminal::puts("Welcome to Cosmo Linux v0.1.0" as void*);
-    Terminal::putc(10);
-    Terminal::puts("Type 'help' for available commands." as void*);
-    Terminal::putc(10);
-    Terminal::putc(10);
-    Terminal::prompt();
+    Terminal::puts(0, "Welcome to Cosmo Linux v0.1.0" as void*);
+    Terminal::putc(0, 10);
+    Terminal::puts(0, "Type 'help' for available commands." as void*);
+    Terminal::putc(0, 10);
+    Terminal::putc(0, 10);
+    Terminal::prompt(0);
     Fb::flip();
     Desktop::draw_cursor_direct();
 
