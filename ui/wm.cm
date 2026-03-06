@@ -83,11 +83,53 @@ impl Wm {
 
         long dx = Mouse::get_dx();
         long dy = Mouse::get_dy();
+        ulong buttons = Mouse::get_buttons();
 
+        ulong moved = 0;
         if (dx != 0 || dy != 0) {
             // PS/2マウスはYが上向き正なので反転
             Desktop::move_cursor(dx, 0 - dy);
-            // 全画面再描画
+            moved = 1;
+        }
+
+        // 左ボタンクリック判定
+        // ボタン押下状態を追跡
+        ulong* prev_btn = 0xD80900 as ulong*;
+        ulong was_pressed = *prev_btn & 1;
+        ulong is_pressed = buttons & 1;
+        *prev_btn = buttons;
+
+        if (is_pressed != 0 && was_pressed == 0) {
+            // クリック: ウィンドウボタンチェック
+            ulong mx = Desktop::cursor_x();
+            ulong my = Desktop::cursor_y();
+
+            ulong i = 0;
+            while (i < MAX_WINDOWS) {
+                if (Window::is_visible(i) != 0) {
+                    ulong btn = Window::hit_button(i, mx, my);
+                    if (btn == 1) {
+                        // 赤 → 閉じる
+                        Window::close(i);
+                        moved = 1;
+                        break;
+                    } else if (btn == 2) {
+                        // 黄 → 縮小（非表示）
+                        Window::close(i);
+                        moved = 1;
+                        break;
+                    } else if (btn == 3) {
+                        // 緑 → 全画面トグル
+                        Window::toggle_maximize(i);
+                        moved = 1;
+                        break;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+
+        if (moved != 0) {
             Wm::compose();
         }
     }

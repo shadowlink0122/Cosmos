@@ -49,9 +49,14 @@ const PhysAddr WIN_STATE_ADDR = 0xD81000;
 //   0x10: width (8B)
 //   0x18: height (8B)
 //   0x20: visible (8B)
-//   0x28: title_addr (8B) — タイトル文字列アドレス
+//   0x28: title_addr (8B)
 //   0x30: content_type (8B) — 0=空, 1=ターミナル
 //   0x38: z_order (8B)
+//   0x40: prev_x (8B) — 全画面前の位置
+//   0x48: prev_y (8B)
+//   0x50: prev_w (8B)
+//   0x58: prev_h (8B)
+//   0x60: maximized (8B) — 0=通常, 1=全画面
 
 /// Window — ウィンドウ構造体アクセサ
 export struct Window {}
@@ -179,4 +184,82 @@ impl Window {
     static ulong get_h(ulong idx) { ulong* p = (Window::base(idx) + 0x18) as ulong*; return *p; }
     static ulong is_visible(ulong idx) { ulong* p = (Window::base(idx) + 0x20) as ulong*; return *p; }
     static ulong get_content_type(ulong idx) { ulong* p = (Window::base(idx) + 0x30) as ulong*; return *p; }
+    static ulong is_maximized(ulong idx) { ulong* p = (Window::base(idx) + 0x60) as ulong*; return *p; }
+
+    /// ウィンドウ内のボタンクリック判定
+    /// 戻り値: 0=なし, 1=閉じる, 2=縮小, 3=全画面
+    static ulong hit_button(ulong idx, ulong mx, ulong my) {
+        ulong x = Window::get_x(idx);
+        ulong y = Window::get_y(idx);
+        ulong w = Window::get_w(idx);
+        ulong btn_y = y + TITLEBAR_HEIGHT / 2;
+
+        // タイトルバー内かチェック
+        if (my < y || my > y + TITLEBAR_HEIGHT) { return 0; }
+        if (mx < x || mx > x + w) { return 0; }
+
+        // 赤ボタン (閉じる) — x+16
+        ulong bx1 = x + 16;
+        if (mx >= bx1 - BTN_RADIUS && mx <= bx1 + BTN_RADIUS &&
+            my >= btn_y - BTN_RADIUS && my <= btn_y + BTN_RADIUS) {
+            return 1;
+        }
+        // 黄ボタン (縮小) — x+36
+        ulong bx2 = x + 16 + BTN_SPACING;
+        if (mx >= bx2 - BTN_RADIUS && mx <= bx2 + BTN_RADIUS &&
+            my >= btn_y - BTN_RADIUS && my <= btn_y + BTN_RADIUS) {
+            return 2;
+        }
+        // 緑ボタン (全画面) — x+56
+        ulong bx3 = x + 16 + BTN_SPACING * 2;
+        if (mx >= bx3 - BTN_RADIUS && mx <= bx3 + BTN_RADIUS &&
+            my >= btn_y - BTN_RADIUS && my <= btn_y + BTN_RADIUS) {
+            return 3;
+        }
+        return 0;
+    }
+
+    /// 全画面切り替え
+    static void toggle_maximize(ulong idx) {
+        ulong b = Window::base(idx);
+        ulong* maximized = (b + 0x60) as ulong*;
+
+        if (*maximized == 0) {
+            // 現在の位置/サイズを保存
+            ulong* px = (b + 0x40) as ulong*;
+            ulong* py = (b + 0x48) as ulong*;
+            ulong* pw = (b + 0x50) as ulong*;
+            ulong* ph = (b + 0x58) as ulong*;
+            *px = Window::get_x(idx);
+            *py = Window::get_y(idx);
+            *pw = Window::get_w(idx);
+            *ph = Window::get_h(idx);
+
+            // 全画面化（メニューバーの下から）
+            ulong* wx = b as ulong*;
+            ulong* wy = (b + 8) as ulong*;
+            ulong* ww = (b + 0x10) as ulong*;
+            ulong* wh = (b + 0x18) as ulong*;
+            *wx = 0;
+            *wy = MENUBAR_HEIGHT;
+            *ww = Fb::width();
+            *wh = Fb::height() - MENUBAR_HEIGHT;
+            *maximized = 1;
+        } else {
+            // 元の位置/サイズに復元
+            ulong* px = (b + 0x40) as ulong*;
+            ulong* py = (b + 0x48) as ulong*;
+            ulong* pw = (b + 0x50) as ulong*;
+            ulong* ph = (b + 0x58) as ulong*;
+            ulong* wx = b as ulong*;
+            ulong* wy = (b + 8) as ulong*;
+            ulong* ww = (b + 0x10) as ulong*;
+            ulong* wh = (b + 0x18) as ulong*;
+            *wx = *px;
+            *wy = *py;
+            *ww = *pw;
+            *wh = *ph;
+            *maximized = 0;
+        }
+    }
 }

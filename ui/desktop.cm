@@ -14,6 +14,7 @@ import ../drivers/video/font;
 
 /// macOS Sonoma風 グラデーション色
 const ulong DESKTOP_TOP     = 0x1B2838;  // 深い紺
+const ulong DESKTOP_MID     = 0x2E2C50;  // 中間色
 const ulong DESKTOP_BOTTOM  = 0x4A2F6A;  // 紫
 
 /// カーソル状態アドレス
@@ -28,11 +29,17 @@ const PhysAddr CURSOR_STATE_ADDR = 0xD80800;
 export struct Desktop {}
 
 impl Desktop {
-    /// デスクトップ背景を描画
+    /// デスクトップ背景を描画（高速版）
+    /// フルグラデーション計算は重いため、上部のみグラデーション、
+    /// 残りはフラットカラーで描画
     static void draw_background() {
         ulong w = Fb::width();
         ulong h = Fb::height();
-        Fb::gradient_v(0, 0, w, h, DESKTOP_TOP, DESKTOP_BOTTOM);
+        // 上部1/4のみグラデーション
+        ulong grad_h = h / 4;
+        Fb::gradient_v(0, 0, w, grad_h, DESKTOP_TOP, DESKTOP_MID);
+        // 残りはフラットカラー
+        Fb::fill_rect(0, grad_h, w, h - grad_h, DESKTOP_BOTTOM);
     }
 
     /// マウスカーソル初期化
