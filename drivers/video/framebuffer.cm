@@ -120,6 +120,11 @@ impl Fb {
         ulong fb_phys = Fb::pci_read32(0, 2, 0, 0x10);
         fb_phys = fb_phys & 0xFFFFFFF0;  // 下位4ビットはフラグ
 
+        // 5. フレームバッファ領域のページマッピングを動的追加
+        //    fb_phys (0xFD000000) は 3-4GiB 範囲にある
+        //    PDPT[3] → PD3 のマッピングを64ビットモードで直接書き込み
+        Fb::map_framebuffer(fb_phys);
+
         // フレームバッファ情報を格納
         ulong pitch = req_width * (req_bpp / 8);
 
@@ -136,6 +141,42 @@ impl Fb {
         *pitch_ptr   = pitch;
         *bpp_ptr     = req_bpp;
         *backbuf_ptr = FB_BACKBUF_ADDR;
+    }
+
+    /// フレームバッファ領域のページマッピングを動的に追加
+    /// 3-4GiB 範囲（0xC0000000-0xFFFFFFFF）を 2MiB ページでマッピング
+    static void map_framebuffer(ulong fb_phys) {
+        // PD3 用のページディレクトリを安全なアドレスに作成
+        // 0xD08000 (13MB + 32KB) — カーネルデータと衝突しない領域
+        ulong pd3_addr = 0xD08000;
+
+        // PD3 をゼロ初期化 (512エントリ × 8バイト = 4096バイト)
+        memzero(pd3_addr as void*, 4096);
+
+        // PD3 の各エントリに 2MiB ページマッピングを設定
+        // 3GiB (0xC0000000) から 2MiB ずつ
+        ulong i = 0;
+        while (i < 512) {
+            ulong phys = 0xC0000000 + i * 0x200000;
+            // PDE: phys | PS(2MiB) | Write | Present = phys | 0x83
+            ulong entry = phys | 0x83;
+            ulong* pde = (pd3_addr + i * 8) as ulong*;
+            *pde = entry;
+            i = i + 1;
+        }
+
+        // PDPT[3] にPD3のアドレスを書き込み
+        // PDPT は 0x2000 にある (header.S で設定)
+        // PDPT[3] = offset 3*8 = 0x2018
+        ulong pdpt3_addr = 0x2018;
+        ulong* pdpt3 = pdpt3_addr as ulong*;
+        *pdpt3 = pd3_addr | 0x03;  // Present + Write
+
+        // TLB フラッシュ (CR3 再ロード)
+        __asm__(`
+            movq %cr3, %rax;
+            movq %rax, %cr3
+        `);
     }
 
     /// フレームバッファが有効か
