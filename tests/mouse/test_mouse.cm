@@ -1,0 +1,82 @@
+//! platform: baremetal-x86
+// tests/mouse/test_mouse.cm - PS/2マウステスト
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../ui/mem;
+import ../../drivers/input/mouse;
+import ../ktest;
+
+// マウス状態メモリアドレス
+const PhysAddr TEST_MOUSE_PHASE  = 0x93310;
+const PhysAddr TEST_MOUSE_SCROLL = 0x93318;
+const PhysAddr TEST_MOUSE_DX     = 0x93330;
+const PhysAddr TEST_MOUSE_DY     = 0x93338;
+const PhysAddr TEST_MOUSE_BTN    = 0x93340;
+const PhysAddr TEST_MOUSE_EVENT  = 0x93348;
+const PhysAddr TEST_MOUSE_PKTSZ  = 0x93328;
+
+/// マウスドライバテスト
+export void test_mouse() {
+    // 状態をリセット
+    ulong* phase = TEST_MOUSE_PHASE as ulong*;
+    ulong* scroll = TEST_MOUSE_SCROLL as ulong*;
+    ulong* dx = TEST_MOUSE_DX as ulong*;
+    ulong* dy = TEST_MOUSE_DY as ulong*;
+    ulong* btn = TEST_MOUSE_BTN as ulong*;
+    ulong* evt = TEST_MOUSE_EVENT as ulong*;
+    ulong* pktsz = TEST_MOUSE_PKTSZ as ulong*;
+
+    *phase = 0;
+    *scroll = 0;
+    *dx = 0;
+    *dy = 0;
+    *btn = 0;
+    *evt = 0;
+
+    // Test 1: 状態初期化
+    KTest::assert_eq(*phase, 0, "Mouse phase=0" as void*);
+    KTest::assert_eq(*dx, 0, "Mouse dx=0" as void*);
+    KTest::assert_eq(*dy, 0, "Mouse dy=0" as void*);
+
+    // Test 2: get_dx/get_dy リセット動作
+    *dx = 10;
+    *dy = 20;
+    long got_dx = Mouse::get_dx();
+    long got_dy = Mouse::get_dy();
+    KTest::assert_eq(got_dx as ulong, 10, "Mouse get_dx()=10" as void*);
+    KTest::assert_eq(got_dy as ulong, 20, "Mouse get_dy()=20" as void*);
+    KTest::assert_eq(*dx, 0, "Mouse dx reset after get" as void*);
+    KTest::assert_eq(*dy, 0, "Mouse dy reset after get" as void*);
+
+    // Test 3: get_buttons
+    *btn = 5;  // 左+中ボタン
+    KTest::assert_eq(Mouse::get_buttons(), 5, "Mouse buttons=0x05" as void*);
+
+    // Test 4: has_event リセット動作
+    *evt = 1;
+    KTest::assert_eq(Mouse::has_event(), 1, "Mouse has_event=1" as void*);
+    KTest::assert_eq(Mouse::has_event(), 0, "Mouse has_event reset=0" as void*);
+
+    // Test 5: get_scroll 閾値テスト
+    *scroll = 1;
+    KTest::assert_eq(Mouse::get_scroll() as ulong, 0, "Mouse scroll=1 below threshold" as void*);
+    *scroll = 3;
+    long sv = Mouse::get_scroll();
+    KTest::assert_eq(sv as ulong, 3, "Mouse scroll=3 above threshold" as void*);
+    KTest::assert_eq(*scroll, 0, "Mouse scroll reset after get" as void*);
+
+    // Test 6: 負のデルタ (符号拡張テスト)
+    ulong neg_val = 0xFFFFFFFFFFFFFFFA;  // -6
+    *dx = neg_val;
+    long neg_dx = Mouse::get_dx();
+    KTest::assert_eq(neg_dx as ulong, neg_val, "Mouse negative dx=-6" as void*);
+
+    // Test 7: パケットサイズ
+    *pktsz = 4;
+    KTest::assert_eq(*pktsz, 4, "Mouse pkt_size=4 IntelliMouse" as void*);
+    *pktsz = 3;
+    KTest::assert_eq(*pktsz, 3, "Mouse pkt_size=3 standard" as void*);
+}

@@ -156,6 +156,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
     pr_info(&serial, "Initializing hardware drivers..." as void*);
     PIT::setup(&serial);
     Kbd::setup(&serial);
+    Mouse::setup();
+    pr_info(&serial, "PS/2 mouse initialized (IRQ12)" as void*);
 
     // === 11. ネットワーク初期化 ===
     pr_info(&serial, "Initializing network..." as void*);
