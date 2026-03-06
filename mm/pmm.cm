@@ -147,9 +147,14 @@ impl BuddyAllocator {
 
         if (aligned_end <= aligned_base) { return; }
 
-        // カーネル領域・PMM管理領域を保護
-        PhysAddr safe_start = PMM_DATA_BASE + MAX_PAGES + PAGE_SIZE;
-        safe_start = (safe_start + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        // カーネル領域・PMM管理領域・固定データ構造を保護
+        // 保護対象 (0 - 18MB):
+        //   0x000000-0x200000  カーネルコード・スタック
+        //   0x200000-0x212000  PMMビットマップ
+        //   0xD00000-0xD10000  フレームバッファ情報
+        //   0xD80000-0xDA0000  カーソル/ウィンドウ/マウス状態
+        //   0xE00000-0x1100000 バックバッファ (1024*768*4 = 3MB)
+        PhysAddr safe_start = 0x1200000;  // 18MB
         if (aligned_base < safe_start) { aligned_base = safe_start; }
         if (aligned_end <= aligned_base) { return; }
 
