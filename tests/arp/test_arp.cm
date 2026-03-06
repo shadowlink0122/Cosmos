@@ -1,0 +1,47 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::arp::test_arp - ARP テスト
+//
+// ARPテーブルの update/lookup を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../include/net;
+import ../../net/core/arp;
+import ../test_io;
+import ../ktest;
+
+/// ARP テストスイート
+export void test_arp() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[ARP]" as void*);
+    TestIO::set_color(7, 0);
+
+    Arp::setup();
+    KTest::pass("ARP setup" as void*);
+
+    // テーブル更新: IP → MAC のマッピング登録
+    ulong test_ip = 0x0A000202;  // 10.0.2.2
+    ulong test_mac = 0x525400123456;
+    Arp::update(test_ip, test_mac);
+    KTest::pass("ARP update" as void*);
+
+    // lookup — 登録済みIP
+    ulong mac_out = 0;
+    ulong found = Arp::lookup(test_ip, &mac_out);
+    KTest::assert_eq(found, 1, "ARP lookup found" as void*);
+    KTest::assert_eq(mac_out, test_mac, "ARP lookup MAC matches" as void*);
+
+    // lookup — 未登録IP
+    ulong unknown_mac = 0;
+    ulong not_found = Arp::lookup(0xC0A80101, &unknown_mac);
+    KTest::assert_eq(not_found, 0, "ARP lookup unknown=0" as void*);
+
+    // 上書き更新
+    ulong new_mac = 0xAABBCCDDEEFF;
+    Arp::update(test_ip, new_mac);
+    ulong updated_mac = 0;
+    Arp::lookup(test_ip, &updated_mac);
+    KTest::assert_eq(updated_mac, new_mac, "ARP update overwrites" as void*);
+}

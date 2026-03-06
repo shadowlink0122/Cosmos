@@ -1,0 +1,60 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::ethernet::test_ethernet - Ethernet テスト
+//
+// Ethernetフレームのパースと構築を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../include/net;
+import ../../net/core/ethernet;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// Ethernet テストスイート
+export void test_ethernet() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[Ethernet]" as void*);
+    TestIO::set_color(7, 0);
+
+    // Ethernetフレーム構築用ヘッダ
+    EthHeader build_hdr = {
+        dst_hi: 0xFFFFFFFF,     // ブロードキャストMAC上位4B
+        dst_lo: 0xFFFF,         // ブロードキャストMAC下位2B
+        src_hi: 0x52540012,
+        src_lo: 0x3456,
+        eth_type: 0x0800,       // IPv4
+        padding: 0
+    };
+
+    ulong frame_buf = 0x9D800;
+    ulong frame_len = Ethernet::build(frame_buf, &build_hdr);
+    KTest::assert_eq(frame_len, 14, "Ethernet build returns 14" as void*);
+
+    // 構築したフレームをパースして検証
+    EthHeader parsed = { dst_hi: 0, dst_lo: 0, src_hi: 0, src_lo: 0, eth_type: 0, padding: 0 };
+    ulong parse_len = Ethernet::parse(frame_buf, &parsed);
+    KTest::assert_eq(parse_len, 14, "Ethernet parse returns 14" as void*);
+    KTest::assert_eq(parsed.dst_hi, 0xFFFFFFFF, "Ethernet dst_hi=broadcast" as void*);
+    KTest::assert_eq(parsed.dst_lo, 0xFFFF, "Ethernet dst_lo=broadcast" as void*);
+    KTest::assert_eq(parsed.src_hi, 0x52540012, "Ethernet src_hi" as void*);
+    KTest::assert_eq(parsed.src_lo, 0x3456, "Ethernet src_lo" as void*);
+    KTest::assert_eq(parsed.eth_type, 0x0800, "Ethernet eth_type=IPv4" as void*);
+
+    // ARP ethertype
+    EthHeader arp_hdr = {
+        dst_hi: 0xFFFFFFFF, dst_lo: 0xFFFF,
+        src_hi: 0x52540012, src_lo: 0x3456,
+        eth_type: 0x0806,       // ARP
+        padding: 0
+    };
+    Ethernet::build(frame_buf, &arp_hdr);
+    Ethernet::parse(frame_buf, &parsed);
+    KTest::assert_eq(parsed.eth_type, 0x0806, "Ethernet eth_type=ARP" as void*);
+
+    // NULLデータ → 0
+    KTest::assert_eq(Ethernet::parse(0, &parsed), 0, "Ethernet parse null=0" as void*);
+    KTest::assert_eq(Ethernet::build(0, &build_hdr), 0, "Ethernet build null=0" as void*);
+}

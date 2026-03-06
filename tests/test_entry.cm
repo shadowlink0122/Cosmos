@@ -35,6 +35,10 @@ import ../include/net;
 import ../net/core/loopback;
 import ../net/transport/socket;
 import ../net/transport/tcp;
+import ../net/core/arp;
+import ../net/core/ethernet;
+import ../net/transport/udp;
+import ../mm/vmm;
 import ./ktest;
 
 // テストスイートのインポート
@@ -52,6 +56,16 @@ import ./tcp/test_tcp;
 import ./icmp/test_icmp;
 import ./ramfs/test_ramfs;
 import ./kstring/test_kstring;
+import ./vfs/test_vfs;
+import ./procfs/test_procfs;
+import ./elf/test_elf;
+import ./kmalloc/test_kmalloc;
+import ./syscall/test_syscall;
+import ./arp/test_arp;
+import ./ethernet/test_ethernet;
+import ./udp/test_udp;
+import ./pmm/test_pmm;
+import ./vmm/test_vmm;
 
 // ============================================================
 // テスト用エントリポイント
@@ -160,6 +174,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Loopback::setup();
     Tcp::setup();
     Socket::setup();
+    Arp::setup();
 
     // === 12. テスト実行 ===
     pr_info(&serial, "Running kernel tests..." as void*);
@@ -184,6 +199,16 @@ void main(ulong mb2_info, ulong mb2_magic) {
     test_icmp();
     test_ramfs();
     test_kstring();
+    test_vfs();
+    test_procfs();
+    test_elf();
+    test_kmalloc();
+    test_syscall();
+    test_arp();
+    test_ethernet();
+    test_udp();
+    test_pmm();
+    test_vmm();
 
     KTest::summary();
 

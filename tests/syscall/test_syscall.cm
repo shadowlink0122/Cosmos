@@ -1,0 +1,70 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::syscall::test_syscall - Syscall テスト
+//
+// syscall番号定数の正当性を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../sys/table;
+import ../test_io;
+import ../ktest;
+
+/// Syscall テストスイート
+export void test_syscall() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[Syscall]" as void*);
+    TestIO::set_color(7, 0);
+
+    // Linux x86_64 syscall番号の検証 — 配列ペア [actual, expected]
+    ulong[30] checks;
+    checks[0]  = SYS_READ;       checks[1]  = 0;
+    checks[2]  = SYS_WRITE;      checks[3]  = 1;
+    checks[4]  = SYS_OPEN;       checks[5]  = 2;
+    checks[6]  = SYS_CLOSE;      checks[7]  = 3;
+    checks[8]  = SYS_MMAP;       checks[9]  = 9;
+    checks[10] = SYS_MUNMAP;     checks[11] = 11;
+    checks[12] = SYS_BRK;        checks[13] = 12;
+    checks[14] = SYS_GETPID;     checks[15] = 39;
+    checks[16] = SYS_FORK;       checks[17] = 57;
+    checks[18] = SYS_EXECVE;     checks[19] = 59;
+    checks[20] = SYS_EXIT;       checks[21] = 60;
+    checks[22] = SYS_WAIT4;      checks[23] = 61;
+    checks[24] = SYS_KILL;       checks[25] = 62;
+    checks[26] = SYS_ARCH_PRCTL; checks[27] = 158;
+    checks[28] = SYS_EXIT_GROUP; checks[29] = 231;
+
+    ulong[15] labels;
+    labels[0]  = "SYS_READ=0" as ulong;
+    labels[1]  = "SYS_WRITE=1" as ulong;
+    labels[2]  = "SYS_OPEN=2" as ulong;
+    labels[3]  = "SYS_CLOSE=3" as ulong;
+    labels[4]  = "SYS_MMAP=9" as ulong;
+    labels[5]  = "SYS_MUNMAP=11" as ulong;
+    labels[6]  = "SYS_BRK=12" as ulong;
+    labels[7]  = "SYS_GETPID=39" as ulong;
+    labels[8]  = "SYS_FORK=57" as ulong;
+    labels[9]  = "SYS_EXECVE=59" as ulong;
+    labels[10] = "SYS_EXIT=60" as ulong;
+    labels[11] = "SYS_WAIT4=61" as ulong;
+    labels[12] = "SYS_KILL=62" as ulong;
+    labels[13] = "SYS_ARCH_PRCTL=158" as ulong;
+    labels[14] = "SYS_EXIT_GROUP=231" as ulong;
+
+    ulong i = 0;
+    while (i < 15) {
+        KTest::assert_eq(checks[i * 2], checks[i * 2 + 1], labels[i] as void*);
+        i = i + 1;
+    }
+
+    // NR_SYSCALLS 上限チェック
+    KTest::assert_eq(NR_SYSCALLS, 512, "NR_SYSCALLS=512" as void*);
+
+    // 番号の一意性: 主要syscallが異なる値を持つ
+    ulong unique = 1;
+    if (SYS_READ == SYS_WRITE) { unique = 0; }
+    if (SYS_OPEN == SYS_CLOSE) { unique = 0; }
+    if (SYS_FORK == SYS_EXECVE) { unique = 0; }
+    KTest::assert_eq(unique, 1, "syscall numbers unique" as void*);
+}

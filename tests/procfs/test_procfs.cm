@@ -1,0 +1,69 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::procfs::test_procfs - ProcFS テスト
+//
+// /proc 仮想ファイルの読み取りを検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../fs/procfs;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// ProcFS テストスイート
+export void test_procfs() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[ProcFS]" as void*);
+    TestIO::set_color(7, 0);
+
+    ulong buf = 0x9D400;
+
+    // /proc/version — 内容が非空であることを検証
+    memzero(buf as void*, 256);
+    ulong len = ProcFs::version(buf);
+    KTest::assert_nonzero(len, "procfs version len>0" as void*);
+    // 先頭が 'C' (Cosmo) で始まるか
+    KTest::assert_eq(Mem::read_byte(buf), 67, "procfs version starts with 'C'" as void*);
+
+    // /proc/meminfo — MemTotal が含まれる
+    memzero(buf as void*, 256);
+    len = ProcFs::meminfo(buf);
+    KTest::assert_nonzero(len, "procfs meminfo len>0" as void*);
+    // 先頭が 'M' (MemTotal) で始まるか
+    KTest::assert_eq(Mem::read_byte(buf), 77, "procfs meminfo starts with 'M'" as void*);
+
+    // /proc/uptime — 数値が含まれる
+    memzero(buf as void*, 256);
+    len = ProcFs::uptime(buf);
+    KTest::assert_nonzero(len, "procfs uptime len>0" as void*);
+
+    // /proc/cpuinfo — processor が含まれる
+    memzero(buf as void*, 512);
+    len = ProcFs::cpuinfo(buf);
+    KTest::assert_nonzero(len, "procfs cpuinfo len>0" as void*);
+    // 先頭が 'p' (processor) で始まるか
+    KTest::assert_eq(Mem::read_byte(buf), 112, "procfs cpuinfo starts with 'p'" as void*);
+
+    // /proc/stat — cpu で始まる
+    memzero(buf as void*, 256);
+    len = ProcFs::stat(buf);
+    KTest::assert_nonzero(len, "procfs stat len>0" as void*);
+    KTest::assert_eq(Mem::read_byte(buf), 99, "procfs stat starts with 'c'" as void*);
+
+    // /proc/self/status — Name で始まる
+    memzero(buf as void*, 256);
+    len = ProcFs::self_status(buf);
+    KTest::assert_nonzero(len, "procfs self/status len>0" as void*);
+    KTest::assert_eq(Mem::read_byte(buf), 78, "procfs self/status starts with 'N'" as void*);
+
+    // read_file ディスパッチ — 存在しないファイル → 0
+    len = ProcFs::read_file("nonexistent" as void*, buf);
+    KTest::assert_eq(len, 0, "procfs read_file unknown=0" as void*);
+
+    // read_file — "version" → 非零
+    len = ProcFs::read_file("version" as void*, buf);
+    KTest::assert_nonzero(len, "procfs read_file version>0" as void*);
+}

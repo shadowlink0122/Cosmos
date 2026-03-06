@@ -1,0 +1,65 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::vfs::test_vfs - VFS テスト
+//
+// VFS経由のファイルオープン、読み書き、クローズを検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/vfs;
+import ../../include/errno;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../fs/vfs;
+import ../../fs/ramfs;
+import ../../fs/fd_table;
+import ../test_io;
+import ../ktest;
+import ../../ui/mem;
+
+/// VFS テストスイート
+export void test_vfs() {
+    TestIO::set_color(14, 0);
+    TestIO::writeln("[VFS]" as void*);
+    TestIO::set_color(7, 0);
+
+    // O_CREAT で新規ファイル作成
+    Fd fd = Vfs::open("_vfs_test" as void*, O_CREAT | O_RDWR);
+    ulong fd_ok = 0;
+    if (fd >= 0) { fd_ok = 1; }
+    KTest::assert_eq(fd_ok, 1, "VFS open O_CREAT" as void*);
+
+    // close
+    long close_ret = Vfs::close(fd);
+    ulong close_ok = 0;
+    if (close_ret >= 0) { close_ok = 1; }
+    KTest::assert_eq(close_ok, 1, "VFS close" as void*);
+
+    // reopen で読み込み検証
+    Fd fd2 = Vfs::open("_vfs_test" as void*, O_RDONLY);
+    ulong fd2_ok = 0;
+    if (fd2 >= 0) { fd2_ok = 1; }
+    KTest::assert_eq(fd2_ok, 1, "VFS reopen O_RDONLY" as void*);
+    Vfs::close(fd2);
+
+    // 存在しないファイル → エラー
+    Fd err_fd2 = Vfs::open("_vfs_nonexistent" as void*, O_RDONLY);
+    ulong is_enoent = 0;
+    if (err_fd2 < 0) { is_enoent = 1; }
+    KTest::assert_eq(is_enoent, 1, "VFS open nonexistent returns error" as void*);
+
+    // 無効なFDからの読み → EBADF
+    long err = Vfs::read(99, 0x9D300, 1);
+    ulong is_ebadf = 0;
+    if (err < 0) { is_ebadf = 1; }
+    KTest::assert_eq(is_ebadf, 1, "VFS read invalid fd returns error" as void*);
+
+    // NULLパス → EINVAL
+    Fd null_fd = Vfs::open(0 as void*, O_RDONLY);
+    ulong is_einval = 0;
+    if (null_fd < 0) { is_einval = 1; }
+    KTest::assert_eq(is_einval, 1, "VFS open NULL returns error" as void*);
+
+    // クリーンアップ
+    RamFs::unlink("_vfs_test" as void*);
+}
