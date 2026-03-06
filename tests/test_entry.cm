@@ -68,6 +68,7 @@ import ./pmm/test_pmm;
 import ./vmm/test_vmm;
 import ./mouse/test_mouse;
 import ./irq/test_irq;
+import ./gui/test_gui;
 
 // ============================================================
 // テスト用エントリポイント
@@ -213,6 +214,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     test_vmm();
     test_mouse();
     test_irq();
+    test_gui();
 
     KTest::summary();
 
