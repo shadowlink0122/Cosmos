@@ -195,15 +195,11 @@ export void shell_main() {
                         lines = lines - 1;
                     }
                 }
-                // pause: hltの代わりにpauseで高頻度ポーリング
-                // hltはIRQ(10ms)でしか復帰せず、スケジューラpreemptionと合わせて
-                // 1秒サイクルになるため、pauseで即座にリトライする。
-                __asm__(`sti; pause`);
+                // hlt: キーボードIRQ1またはPIT IRQ0で即wakeup
+                // CPU使用率を最小化しつつ入力応答は維持
+                __asm__(`sti; hlt`);
                 // スケジューラtick（他プロセス実行用）
-                ulong need = PIT::check_resched();
-                if (need != 0) {
-                    Sched::tick();
-                }
+                Sched::tick();
             } else if (ch == 10) {
                 // スクロールバック中ならライブモードに復帰
                 ulong* sb_active = 0xC08018 as ulong*;  // SCROLLBACK_ACTIVE_ADDR

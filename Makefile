@@ -116,7 +116,7 @@ run: $(ELF)
 	$(QEMU) \
 		-kernel $(ELF) \
 		-m $(QEMU_MEM) \
-		-smp 4 \
+		-smp 1 \
 		-vga std \
 		-serial stdio \
 		-nic user,model=virtio-net-pci \
