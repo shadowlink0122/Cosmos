@@ -200,34 +200,30 @@ void main(ulong mb2_info, ulong mb2_magic) {
     //     serial.println("" as void*);
     // }
 
-    // === 13. GUI 初期化 ===
-    if (boot_info.fb_addr != 0) {
-        pr_info(&serial, "Initializing GUI desktop..." as void*);
-        Fb::init(&boot_info);
-        Font::init();
-        Wm::init();
-        Desktop::init_cursor();
+    // === 13. GUI 初期化 (BGA直接モード設定) ===
+    pr_info(&serial, "Initializing GUI desktop..." as void*);
+    Fb::init(&boot_info);
+    Font::init();
+    Wm::init();
+    Desktop::init_cursor();
 
-        // ターミナルウィンドウを作成
-        ulong term_win = Wm::create_terminal();
-        Terminal::init(term_win);
+    // ターミナルウィンドウを作成
+    ulong term_win = Wm::create_terminal();
+    Terminal::init(term_win);
 
-        // 初期画面描画
-        Wm::compose();
+    // 初期画面描画
+    Wm::compose();
 
-        // ターミナルにウェルカムメッセージ
-        Terminal::puts("Welcome to Cosmo Linux v0.1.0" as void*);
-        Terminal::putc(10);
-        Terminal::puts("Type 'help' for available commands." as void*);
-        Terminal::putc(10);
-        Terminal::putc(10);
-        Terminal::prompt();
-        Fb::flip();
+    // ターミナルにウェルカムメッセージ
+    Terminal::puts("Welcome to Cosmo Linux v0.1.0" as void*);
+    Terminal::putc(10);
+    Terminal::puts("Type 'help' for available commands." as void*);
+    Terminal::putc(10);
+    Terminal::putc(10);
+    Terminal::prompt();
+    Fb::flip();
 
-        pr_info(&serial, "GUI desktop initialized" as void*);
-    } else {
-        pr_info(&serial, "No framebuffer, using text mode" as void*);
-    }
+    pr_info(&serial, "GUI desktop initialized" as void*);
 
     pr_info(&serial, "Entering idle loop with scheduler..." as void*);
 
