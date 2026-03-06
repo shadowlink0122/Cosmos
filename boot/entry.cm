@@ -215,29 +215,6 @@ void main(ulong mb2_info, ulong mb2_magic) {
     print_dec(&serial, Fb::bpp());
     serial.println("" as void*);
 
-    // VGAテキストモードを無効化（フレームバッファへの透過を防止）
-    // 1. VGAテキストカーソルを非表示
-    __asm__(`
-        movw $$0x0A, %dx;
-        movw $$0x3D4, %dx;
-        movb $$0x0A, %al;
-        outb %al, %dx;
-        movw $$0x3D5, %dx;
-        movb $$0x20, %al;
-        outb %al, %dx
-    `);
-    // 2. VGAテキストバッファをクリア (0xB8000, 80*25*2 = 4000 bytes)
-    ulong vga_i = 0;
-    while (vga_i < 4000) {
-        ulong vaddr = 0xB8000 + vga_i;
-        __asm__(`
-            movq ${r:vaddr}, %rdi;
-            xorb %al, %al;
-            movb %al, (%rdi)
-        `);
-        vga_i = vga_i + 1;
-    }
-
     Font::init();
     Wm::init();
     Desktop::init_cursor();
@@ -252,6 +229,16 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     // 初期画面描画
     Wm::compose();
+
+    // ターミナルにウェルカムメッセージ
+    Terminal::puts("Welcome to Cosmo Linux v0.1.0" as void*);
+    Terminal::putc(10);
+    Terminal::puts("Type 'help' for available commands." as void*);
+    Terminal::putc(10);
+    Terminal::putc(10);
+    Terminal::prompt();
+    Fb::flip();
+    Desktop::draw_cursor_direct();
 
     pr_info(&serial, "GUI desktop initialized" as void*);
 
