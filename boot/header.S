@@ -16,14 +16,25 @@ section .multiboot_header
 align 4
 
 MULTIBOOT_MAGIC   equ 0x1BADB002
-; ビット0: アラインメント, ビット1: メモリ情報要求
-MULTIBOOT_FLAGS   equ 0x03
+; ビット0: アラインメント, ビット1: メモリ情報, ビット2: VBEビデオモード要求
+MULTIBOOT_FLAGS   equ 0x07
 MULTIBOOT_CHECKSUM equ -(MULTIBOOT_MAGIC + MULTIBOOT_FLAGS)
 
 header_start:
     dd MULTIBOOT_MAGIC
     dd MULTIBOOT_FLAGS
     dd MULTIBOOT_CHECKSUM
+    ; アドレスフィールド (ビット16未設定なので無視されるが、構造上必要)
+    dd 0   ; header_addr
+    dd 0   ; load_addr
+    dd 0   ; load_end_addr
+    dd 0   ; bss_end_addr
+    dd 0   ; entry_addr
+    ; ビデオモードフィールド (ビット2設定時に参照)
+    dd 0   ; mode_type: 0=グラフィック, 1=テキスト
+    dd 1024 ; width
+    dd 768  ; height
+    dd 32   ; depth (bpp)
 header_end:
 
 ; =============================================================================

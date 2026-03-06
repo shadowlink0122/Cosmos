@@ -1,0 +1,102 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::desktop - デスクトップ背景
+//
+// macOS Sonoma 風のグラデーション背景とマウスカーソル。
+
+import ../include/types;
+import ../include/config;
+import ../drivers/video/framebuffer;
+import ../drivers/video/font;
+
+// ============================================================
+// デスクトップカラー
+// ============================================================
+
+/// macOS Sonoma風 グラデーション色
+const ulong DESKTOP_TOP     = 0x1B2838;  // 深い紺
+const ulong DESKTOP_BOTTOM  = 0x4A2F6A;  // 紫
+
+/// カーソル状態アドレス
+const PhysAddr CURSOR_STATE_ADDR = 0xD80800;
+// レイアウト:
+//   0x00: x (8バイト)
+//   0x08: y (8バイト)
+//   0x10: old_x (8バイト)
+//   0x18: old_y (8バイト)
+
+/// Desktop — デスクトップ描画
+export struct Desktop {}
+
+impl Desktop {
+    /// デスクトップ背景を描画
+    static void draw_background() {
+        ulong w = Fb::width();
+        ulong h = Fb::height();
+        Fb::gradient_v(0, 0, w, h, DESKTOP_TOP, DESKTOP_BOTTOM);
+    }
+
+    /// マウスカーソル初期化
+    static void init_cursor() {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+        *cx = Fb::width() / 2;
+        *cy = Fb::height() / 2;
+    }
+
+    /// マウスカーソル位置更新
+    static void move_cursor(long dx, long dy) {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+
+        long new_x = (*cx as long) + dx;
+        long new_y = (*cy as long) + dy;
+
+        if (new_x < 0) { new_x = 0; }
+        if (new_y < 0) { new_y = 0; }
+        if (new_x >= Fb::width() as long) { new_x = (Fb::width() - 1) as long; }
+        if (new_y >= Fb::height() as long) { new_y = (Fb::height() - 1) as long; }
+
+        *cx = new_x as ulong;
+        *cy = new_y as ulong;
+    }
+
+    /// マウスカーソル描画 (macOS風の白矢印)
+    static void draw_cursor() {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+        ulong x = *cx;
+        ulong y = *cy;
+
+        // 12×18 の矢印カーソル
+        // 黒アウトライン + 白塗り
+        ulong[12] widths;
+        widths[0] = 1;  widths[1] = 2;  widths[2] = 3;
+        widths[3] = 4;  widths[4] = 5;  widths[5] = 6;
+        widths[6] = 7;  widths[7] = 8;  widths[8] = 9;
+        widths[9] = 10; widths[10] = 11; widths[11] = 5;
+
+        ulong row = 0;
+        while (row < 12) {
+            ulong w = widths[row];
+            // 黒アウトライン
+            Fb::fill_rect(x, y + row, w + 1, 1, 0x000000);
+            // 白内部
+            if (w > 1) {
+                Fb::fill_rect(x + 1, y + row, w - 1, 1, 0xFFFFFF);
+            }
+            row = row + 1;
+        }
+    }
+
+    /// カーソルX座標取得
+    static ulong cursor_x() {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        return *cx;
+    }
+
+    /// カーソルY座標取得
+    static ulong cursor_y() {
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+        return *cy;
+    }
+}

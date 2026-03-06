@@ -117,6 +117,7 @@ run: $(ELF)
 		-kernel $(ELF) \
 		-m $(QEMU_MEM) \
 		-smp 1 \
+		-vga std \
 		-serial stdio \
 		-nic user,model=virtio-net-pci \
 		-virtfs local,path=./rootfs,mount_tag=host,security_model=none,id=host0 \

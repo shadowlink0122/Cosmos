@@ -161,7 +161,87 @@ impl Multiboot {
             w->println("" as void*);
         }
 
+        // VBE フレームバッファ情報 (flags bit 11)
+        // Multiboot1 info 構造体:
+        //   offset 72: vbe_control_info (u32)
+        //   offset 76: vbe_mode_info (u32)
+        //   offset 80: vbe_mode (u16)
+        //   ...
+        // VBE モード情報ブロック (vbe_mode_info が指すアドレス):
+        //   offset 18: x_resolution (u16)
+        //   offset 20: y_resolution (u16)
+        //   offset 25: bits_per_pixel (u8)
+        //   offset 40: phys_base_ptr (u32) — リニアフレームバッファアドレス
+        //   offset 16: bytes_per_scanline (u16) — pitch
+        ulong vbe_flag = flags & 0x800;  // bit 11
+        if (vbe_flag != 0) {
+            ulong vbe_mode_info_addr = 0;
+            __asm__(`
+                movq ${r:mb_info}, %rdi;
+                xorq %rax, %rax;
+                movl 76(%rdi), %eax;
+                movq %rax, ${=r:vbe_mode_info_addr}
+            `);
+
+            if (vbe_mode_info_addr != 0) {
+                ulong fb_addr = 0;
+                ulong fb_width = 0;
+                ulong fb_height = 0;
+                ulong fb_pitch = 0;
+                ulong fb_bpp = 0;
+                __asm__(`
+                    movq ${r:vbe_mode_info_addr}, %rdi;
+                    xorq %rax, %rax;
+                    movzwl 18(%rdi), %eax;
+                    movq %rax, ${=r:fb_width};
+                    xorq %rax, %rax;
+                    movzwl 20(%rdi), %eax;
+                    movq %rax, ${=r:fb_height};
+                    xorq %rax, %rax;
+                    movzbl 25(%rdi), %eax;
+                    movq %rax, ${=r:fb_bpp};
+                    xorq %rax, %rax;
+                    movl 40(%rdi), %eax;
+                    movq %rax, ${=r:fb_addr};
+                    xorq %rax, %rax;
+                    movzwl 16(%rdi), %eax;
+                    movq %rax, ${=r:fb_pitch}
+                `);
+
+                info->fb_addr = fb_addr;
+                info->fb_width = fb_width as U32;
+                info->fb_height = fb_height as U32;
+                info->fb_pitch = fb_pitch as U32;
+                info->fb_bpp = fb_bpp as U32;
+
+                w->puts("  Framebuffer: " as void*);
+                print_dec(w, fb_width);
+                w->puts("x" as void*);
+                print_dec(w, fb_height);
+                w->puts("x" as void*);
+                print_dec(w, fb_bpp);
+                w->puts(" @ 0x" as void*);
+                // 16進アドレス出力
+                Multiboot::print_hex(w, fb_addr);
+                w->println("" as void*);
+            }
+        }
+
         pr_info(w, "Multiboot1 parsing complete" as void*);
+    }
+
+    /// 16進数出力ヘルパー
+    static void print_hex(SerialPort* w, ulong val) {
+        ulong i = 0;
+        while (i < 8) {
+            ulong nibble = (val >> (28 - i * 4)) & 0xF;
+            if (nibble < 10) {
+                w->putc(48 + nibble);
+            } else {
+                w->putc(55 + nibble);  // 'A'=65, 65-10=55
+            }
+            i = i + 1;
+        }
     }
 }
 

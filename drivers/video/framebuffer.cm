@@ -1,0 +1,297 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::video::framebuffer - フレームバッファドライバ
+//
+// VBEリニアフレームバッファへのピクセル・矩形・描画プリミティブ。
+// ダブルバッファリング対応。
+
+import ../../include/types;
+import ../../include/config;
+import ../../boot/multiboot2;
+import ../../lib/kstring;
+
+// ============================================================
+// フレームバッファ状態（固定メモリアドレスに格納）
+// ============================================================
+
+/// フレームバッファ情報格納アドレス
+const PhysAddr FB_INFO_ADDR = 0xD00000;  // 13MB地点
+// レイアウト:
+//   0x00: fb_addr (8バイト)
+//   0x08: width   (8バイト)
+//   0x10: height  (8バイト)
+//   0x18: pitch   (8バイト)
+//   0x20: bpp     (8バイト)
+//   0x28: backbuf (8バイト) — バックバッファアドレス
+
+/// バックバッファアドレス (14MB地点, 1024*768*4 = 3MB)
+const PhysAddr FB_BACKBUF_ADDR = 0xE00000;
+
+/// Fb — フレームバッファドライバ
+export struct Fb {}
+
+impl Fb {
+    /// フレームバッファ初期化
+    static void init(BootInfo* info) {
+        ulong* fb_addr_ptr  = FB_INFO_ADDR as ulong*;
+        ulong* width_ptr    = (FB_INFO_ADDR + 8) as ulong*;
+        ulong* height_ptr   = (FB_INFO_ADDR + 16) as ulong*;
+        ulong* pitch_ptr    = (FB_INFO_ADDR + 24) as ulong*;
+        ulong* bpp_ptr      = (FB_INFO_ADDR + 32) as ulong*;
+        ulong* backbuf_ptr  = (FB_INFO_ADDR + 40) as ulong*;
+
+        *fb_addr_ptr = info->fb_addr;
+        *width_ptr   = info->fb_width as ulong;
+        *height_ptr  = info->fb_height as ulong;
+        *pitch_ptr   = info->fb_pitch as ulong;
+        *bpp_ptr     = info->fb_bpp as ulong;
+        *backbuf_ptr = FB_BACKBUF_ADDR;
+    }
+
+    /// フレームバッファが有効か
+    static ulong is_available() {
+        ulong* fb_addr_ptr = FB_INFO_ADDR as ulong*;
+        if (*fb_addr_ptr != 0) { return 1; }
+        return 0;
+    }
+
+    /// 画面幅
+    static ulong width() {
+        ulong* ptr = (FB_INFO_ADDR + 8) as ulong*;
+        return *ptr;
+    }
+
+    /// 画面高さ
+    static ulong height() {
+        ulong* ptr = (FB_INFO_ADDR + 16) as ulong*;
+        return *ptr;
+    }
+
+    /// pitch (1行のバイト数)
+    static ulong pitch() {
+        ulong* ptr = (FB_INFO_ADDR + 24) as ulong*;
+        return *ptr;
+    }
+
+    /// BPP
+    static ulong bpp() {
+        ulong* ptr = (FB_INFO_ADDR + 32) as ulong*;
+        return *ptr;
+    }
+
+    /// フレームバッファアドレス
+    static ulong addr() {
+        ulong* ptr = FB_INFO_ADDR as ulong*;
+        return *ptr;
+    }
+
+    /// バックバッファアドレス
+    static ulong backbuf() {
+        ulong* ptr = (FB_INFO_ADDR + 40) as ulong*;
+        return *ptr;
+    }
+
+    // ============================================================
+    // 描画プリミティブ
+    // ============================================================
+
+    /// ピクセル書き込み (バックバッファ)
+    /// color: 0xAARRGGBB (32bpp ARGB)
+    static void put_pixel(ulong x, ulong y, ulong color) {
+        ulong w = Fb::width();
+        ulong h = Fb::height();
+        if (x >= w || y >= h) { return; }
+        ulong offset = y * Fb::pitch() + x * 4;
+        ulong* pixel = (Fb::backbuf() + offset) as ulong*;
+        // 32ビット書き込み
+        ulong addr = Fb::backbuf() + offset;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:color}, %rax;
+            movl %eax, (%rdi)
+        `);
+    }
+
+    /// ピクセル直接書き込み (VRAM)
+    static void put_pixel_direct(ulong x, ulong y, ulong color) {
+        ulong w = Fb::width();
+        ulong h = Fb::height();
+        if (x >= w || y >= h) { return; }
+        ulong addr = Fb::addr() + y * Fb::pitch() + x * 4;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:color}, %rax;
+            movl %eax, (%rdi)
+        `);
+    }
+
+    /// 矩形塗りつぶし (バックバッファ)
+    static void fill_rect(ulong x, ulong y, ulong w, ulong h, ulong color) {
+        ulong scr_w = Fb::width();
+        ulong scr_h = Fb::height();
+        ulong pitch = Fb::pitch();
+        ulong buf = Fb::backbuf();
+
+        ulong ey = y + h;
+        if (ey > scr_h) { ey = scr_h; }
+        ulong ew = x + w;
+        if (ew > scr_w) { ew = scr_w; }
+
+        ulong cy = y;
+        while (cy < ey) {
+            ulong row_addr = buf + cy * pitch;
+            ulong cx = x;
+            while (cx < ew) {
+                ulong addr = row_addr + cx * 4;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    movq ${r:color}, %rax;
+                    movl %eax, (%rdi)
+                `);
+                cx = cx + 1;
+            }
+            cy = cy + 1;
+        }
+    }
+
+    /// 水平線
+    static void hline(ulong x, ulong y, ulong w, ulong color) {
+        Fb::fill_rect(x, y, w, 1, color);
+    }
+
+    /// 垂直線
+    static void vline(ulong x, ulong y, ulong h, ulong color) {
+        Fb::fill_rect(x, y, 1, h, color);
+    }
+
+    /// 矩形枠 (塗りつぶしなし)
+    static void draw_rect(ulong x, ulong y, ulong w, ulong h, ulong color) {
+        Fb::hline(x, y, w, color);           // 上辺
+        Fb::hline(x, y + h - 1, w, color);   // 下辺
+        Fb::vline(x, y, h, color);            // 左辺
+        Fb::vline(x + w - 1, y, h, color);    // 右辺
+    }
+
+    /// バックバッファ → VRAM フリップ
+    static void flip() {
+        ulong src = Fb::backbuf();
+        ulong dst = Fb::addr();
+        ulong size = Fb::height() * Fb::pitch();
+
+        // 8バイト単位の高速コピー
+        ulong count = size / 8;
+        __asm__(`
+            movq ${r:src}, %rsi;
+            movq ${r:dst}, %rdi;
+            movq ${r:count}, %rcx;
+            rep movsq
+        `);
+    }
+
+    /// 画面全体をクリア
+    static void clear(ulong color) {
+        Fb::fill_rect(0, 0, Fb::width(), Fb::height(), color);
+    }
+
+    /// 2色間のグラデーション色を計算 (t: 0-255)
+    static ulong lerp_color(ulong c1, ulong c2, ulong t) {
+        ulong r1 = (c1 >> 16) & 0xFF;
+        ulong g1 = (c1 >> 8) & 0xFF;
+        ulong b1 = c1 & 0xFF;
+        ulong r2 = (c2 >> 16) & 0xFF;
+        ulong g2 = (c2 >> 8) & 0xFF;
+        ulong b2 = c2 & 0xFF;
+
+        ulong r = r1 + ((r2 - r1) * t) / 255;
+        ulong g = g1 + ((g2 - g1) * t) / 255;
+        ulong b = b1 + ((b2 - b1) * t) / 255;
+
+        return (r << 16) | (g << 8) | b;
+    }
+
+    /// 垂直グラデーション塗りつぶし
+    static void gradient_v(ulong x, ulong y, ulong w, ulong h, ulong c1, ulong c2) {
+        ulong row = 0;
+        while (row < h) {
+            ulong t = (row * 255) / h;
+            ulong color = Fb::lerp_color(c1, c2, t);
+            Fb::fill_rect(x, y + row, w, 1, color);
+            row = row + 1;
+        }
+    }
+
+    /// 角丸矩形塗りつぶし (radius=角丸半径)
+    static void fill_rounded_rect(ulong x, ulong y, ulong w, ulong h, ulong r, ulong color) {
+        // 中央部分
+        if (h > r * 2) {
+            Fb::fill_rect(x, y + r, w, h - r * 2, color);
+        }
+        // 上部
+        Fb::fill_rect(x + r, y, w - r * 2, r, color);
+        // 下部
+        Fb::fill_rect(x + r, y + h - r, w - r * 2, r, color);
+
+        // 四隅（簡易的な角丸: 円近似）
+        ulong ry = 0;
+        while (ry < r) {
+            // 円の方程式: x^2 + y^2 = r^2 → x = sqrt(r^2 - y^2)
+            // 整数近似
+            ulong dy = r - ry;
+            ulong rx = Fb::isqrt(r * r - dy * dy);
+
+            // 左上
+            Fb::fill_rect(x + r - rx, y + ry, rx, 1, color);
+            // 右上
+            Fb::fill_rect(x + w - r, y + ry, rx, 1, color);
+            // 左下
+            Fb::fill_rect(x + r - rx, y + h - r + (r - ry) - 1, rx, 1, color);
+            // 右下
+            Fb::fill_rect(x + w - r, y + h - r + (r - ry) - 1, rx, 1, color);
+
+            ry = ry + 1;
+        }
+    }
+
+    /// 整数平方根 (Newtonの方法)
+    static ulong isqrt(ulong n) {
+        if (n == 0) { return 0; }
+        ulong x = n;
+        ulong y = (x + 1) / 2;
+        while (y < x) {
+            x = y;
+            y = (x + n / x) / 2;
+        }
+        return x;
+    }
+
+    /// 円の塗りつぶし
+    static void fill_circle(ulong cx, ulong cy, ulong r, ulong color) {
+        ulong y = 0;
+        while (y < r * 2) {
+            ulong dy = r - y;
+            // 符号なし演算のため、r*r >= dy*dy チェック
+            ulong dy2 = dy * dy;
+            if (r * r >= dy2) {
+                ulong dx = Fb::isqrt(r * r - dy2);
+                Fb::fill_rect(cx - dx, cy - r + y, dx * 2, 1, color);
+            }
+            y = y + 1;
+        }
+    }
+
+    /// アルファブレンド (32bpp, alpha: 0-255)
+    static ulong blend(ulong bg, ulong fg, ulong alpha) {
+        ulong rb = (bg >> 16) & 0xFF;
+        ulong gb = (bg >> 8) & 0xFF;
+        ulong bb = bg & 0xFF;
+        ulong rf = (fg >> 16) & 0xFF;
+        ulong gf = (fg >> 8) & 0xFF;
+        ulong bf = fg & 0xFF;
+
+        ulong inv = 255 - alpha;
+        ulong r = (rf * alpha + rb * inv) / 255;
+        ulong g = (gf * alpha + gb * inv) / 255;
+        ulong b = (bf * alpha + bb * inv) / 255;
+
+        return (r << 16) | (g << 8) | b;
+    }
+}

@@ -1,0 +1,84 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::menubar - macOS風メニューバー
+//
+// 画面最上部に半透明メニューバーを描画。
+// 左にアプリ名、右に時刻表示。
+
+import ../include/types;
+import ../include/config;
+import ../drivers/video/framebuffer;
+import ../drivers/video/font;
+import ../drivers/timer/pit;
+import ../ui/mem;
+
+// ============================================================
+// メニューバー定数
+// ============================================================
+
+/// メニューバー高さ
+export const ulong MENUBAR_HEIGHT = 24;
+
+/// メニューバー背景色 (半透明白)
+const ulong MENUBAR_BG = 0xE8E8EC;
+
+/// メニューバーテキスト色
+const ulong MENUBAR_FG = 0x1D1D1F;
+
+/// セパレータ色
+const ulong MENUBAR_BORDER = 0xC8C8CC;
+
+/// MenuBar — macOS風メニューバー
+export struct MenuBar {}
+
+impl MenuBar {
+    /// メニューバー描画
+    static void draw() {
+        ulong w = Fb::width();
+
+        // 背景
+        Fb::fill_rect(0, 0, w, MENUBAR_HEIGHT, MENUBAR_BG);
+
+        // 下部ボーダー (1px)
+        Fb::hline(0, MENUBAR_HEIGHT, w, MENUBAR_BORDER);
+
+        // 左: アップルロゴ風 + アプリ名
+        Font::draw_string(12, 4, "Cosmo" as void*, MENUBAR_FG, MENUBAR_BG);
+
+        // メニュー項目
+        Font::draw_string(72, 4, "File" as void*, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_string(120, 4, "Edit" as void*, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_string(168, 4, "View" as void*, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_string(216, 4, "Window" as void*, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_string(288, 4, "Help" as void*, MENUBAR_FG, MENUBAR_BG);
+
+        // 右: 時刻表示
+        MenuBar::draw_clock();
+    }
+
+    /// 時刻表示 (PIT ticksから概算)
+    static void draw_clock() {
+        ulong w = Fb::width();
+        ulong ticks = PIT::get_ticks();
+        ulong seconds = ticks / 100;
+        ulong minutes = seconds / 60;
+        ulong hours = minutes / 60;
+
+        ulong hh = hours % 24;
+        ulong mm = minutes % 60;
+
+        // "HH:MM" 形式で右端に表示
+        ulong clock_x = w - 60;
+
+        // 十の位と一の位を計算
+        ulong h1 = hh / 10;
+        ulong h2 = hh % 10;
+        ulong m1 = mm / 10;
+        ulong m2 = mm % 10;
+
+        Font::draw_char(clock_x,      4, 0x30 + h1, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_char(clock_x + 8,  4, 0x30 + h2, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_char(clock_x + 16, 4, 0x3A,      MENUBAR_FG, MENUBAR_BG);  // ':'
+        Font::draw_char(clock_x + 24, 4, 0x30 + m1, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_char(clock_x + 32, 4, 0x30 + m2, MENUBAR_FG, MENUBAR_BG);
+    }
+}

@@ -39,6 +39,13 @@ import ../fs/ninepfs;
 import ../init/init;
 import ../exec/loader;
 import ../init/init_rootfs;
+import ../drivers/video/framebuffer;
+import ../drivers/video/font;
+import ../ui/desktop;
+import ../ui/menubar;
+import ../ui/window;
+import ../ui/wm;
+import ../ui/terminal;
 
 // ============================================================
 // start_kernel — エントリポイント
@@ -193,15 +200,41 @@ void main(ulong mb2_info, ulong mb2_magic) {
     //     serial.println("" as void*);
     // }
 
+    // === 13. GUI 初期化 ===
+    if (boot_info.fb_addr != 0) {
+        pr_info(&serial, "Initializing GUI desktop..." as void*);
+        Fb::init(&boot_info);
+        Font::init();
+        Wm::init();
+        Desktop::init_cursor();
+
+        // ターミナルウィンドウを作成
+        ulong term_win = Wm::create_terminal();
+        Terminal::init(term_win);
+
+        // 初期画面描画
+        Wm::compose();
+
+        // ターミナルにウェルカムメッセージ
+        Terminal::puts("Welcome to Cosmo Linux v0.1.0" as void*);
+        Terminal::putc(10);
+        Terminal::puts("Type 'help' for available commands." as void*);
+        Terminal::putc(10);
+        Terminal::putc(10);
+        Terminal::prompt();
+        Fb::flip();
+
+        pr_info(&serial, "GUI desktop initialized" as void*);
+    } else {
+        pr_info(&serial, "No framebuffer, using text mode" as void*);
+    }
+
     pr_info(&serial, "Entering idle loop with scheduler..." as void*);
 
     // 割り込み有効化
     Cpu::sti();
 
-    // idle loop（PIT割り込み + 即座スケジューリング）
-    // idleは他のrunnableプロセスがあれば即座にyieldする。
-    // Sched::tick()はtime_slice消費後のみスイッチするため遅延が発生する。
-    // Sched::run()を直接呼ぶことで、hlt復帰(10ms)ごとに即座にスイッチ。
+    // idle loop
     while (true) {
         __asm__(`sti; hlt`);
         Sched::run();
