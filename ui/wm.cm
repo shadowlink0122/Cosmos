@@ -40,6 +40,7 @@ impl Wm {
 
     /// 全画面を再描画
     static void compose() {
+
         // 1. デスクトップ背景
         Desktop::draw_background();
 

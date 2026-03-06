@@ -270,19 +270,25 @@ impl Fb {
 
         ulong cy = y;
         while (cy < ey) {
-            ulong row_addr = buf + cy * pitch;
+            ulong row_base = buf + cy * pitch;
             ulong cx = x;
             while (cx < ew) {
-                ulong addr = row_addr + cx * 4;
-                __asm__(`
-                    movq ${r:addr}, %rdi;
-                    movq ${r:color}, %rax;
-                    movl %eax, (%rdi)
-                `);
+                // volatile書き込み: 最適化除去防止
+                ulong dest = row_base + cx * 4;
+                Fb::write_pixel32(dest, color);
                 cx = cx + 1;
             }
             cy = cy + 1;
         }
+    }
+
+    /// 32ビットピクセル書き込み (volatile — 最適化除去防止)
+    static void write_pixel32(ulong addr, ulong val) {
+        __asm__(`
+            movq ${r:addr}, %r8;
+            movq ${r:val}, %r9;
+            movl %r9d, (%r8)
+        `);
     }
 
     /// 水平線
@@ -357,7 +363,7 @@ impl Fb {
     }
 
     /// VRAM に直接矩形塗りつぶし
-    static void fill_rect_direct(ulong x, ulong y, ulong w, ulong h, ulong color) {
+    static void vram_fill_rect(ulong x, ulong y, ulong w, ulong h, ulong color) {
         ulong scr_w = Fb::width();
         ulong scr_h = Fb::height();
         ulong pitch = Fb::pitch();

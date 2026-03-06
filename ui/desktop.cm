@@ -79,10 +79,10 @@ impl Desktop {
         while (row < 12) {
             ulong w = widths[row];
             // 黒アウトライン → VRAM直接
-            Fb::fill_rect_direct(x, y + row, w + 1, 1, 0x000000);
+            Fb::vram_fill_rect(x, y + row, w + 1, 1, 0x000000);
             // 白内部 → VRAM直接
             if (w > 1) {
-                Fb::fill_rect_direct(x + 1, y + row, w - 1, 1, 0xFFFFFF);
+                Fb::vram_fill_rect(x + 1, y + row, w - 1, 1, 0xFFFFFF);
             }
             row = row + 1;
         }
