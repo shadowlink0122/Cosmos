@@ -391,6 +391,7 @@ impl Fb {
     }
 
     /// 2色間のグラデーション色を計算 (t: 0-255)
+    /// unsigned-safe: c2 < c1 でも正しく補間
     static ulong lerp_color(ulong c1, ulong c2, ulong t) {
         ulong r1 = (c1 >> 16) & 0xFF;
         ulong g1 = (c1 >> 8) & 0xFF;
@@ -399,9 +400,27 @@ impl Fb {
         ulong g2 = (c2 >> 8) & 0xFF;
         ulong b2 = c2 & 0xFF;
 
-        ulong r = r1 + ((r2 - r1) * t) / 255;
-        ulong g = g1 + ((g2 - g1) * t) / 255;
-        ulong b = b1 + ((b2 - b1) * t) / 255;
+        // unsigned-safe 補間: 方向で条件分岐
+        ulong r = r1;
+        if (r2 >= r1) {
+            r = r1 + ((r2 - r1) * t) / 255;
+        } else {
+            r = r1 - ((r1 - r2) * t) / 255;
+        }
+
+        ulong g = g1;
+        if (g2 >= g1) {
+            g = g1 + ((g2 - g1) * t) / 255;
+        } else {
+            g = g1 - ((g1 - g2) * t) / 255;
+        }
+
+        ulong b = b1;
+        if (b2 >= b1) {
+            b = b1 + ((b2 - b1) * t) / 255;
+        } else {
+            b = b1 - ((b1 - b2) * t) / 255;
+        }
 
         return (r << 16) | (g << 8) | b;
     }
