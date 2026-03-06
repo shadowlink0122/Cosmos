@@ -13,14 +13,22 @@ export struct Shell {}
 
 impl Shell {
     static void putc(ulong ch) {
-        Vga::putc(ch);
+        // GUIモード時はVGAテキスト出力をスキップ
+        ulong* gui = GUI_MODE_ADDR as ulong*;
+        if (*gui == 0) {
+            Vga::putc(ch);
+        }
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
         ser->putc(ch);
     }
 
     static void write(void* msg) {
-        Vga::puts(msg);
+        // GUIモード時はVGAテキスト出力をスキップ
+        ulong* gui = GUI_MODE_ADDR as ulong*;
+        if (*gui == 0) {
+            Vga::puts(msg);
+        }
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
         ser->puts(msg);

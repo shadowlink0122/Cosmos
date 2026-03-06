@@ -48,3 +48,6 @@ export const ulong ENV_ENTRY_SIZE = 128;
 export const PhysAddr VGA_BUF = 0xB8000;
 export const ulong VGA_COLS = 80;
 export const ulong VGA_ROWS = 25;
+
+/// GUIモードフラグ (1=GUI有効 → VGAテキスト出力を無効化)
+export const PhysAddr GUI_MODE_ADDR = 0x95038;

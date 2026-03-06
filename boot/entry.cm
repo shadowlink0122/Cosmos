@@ -242,6 +242,10 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Wm::init();
     Desktop::init_cursor();
 
+    // GUIモードフラグを設定 (VGAテキスト出力を無効化)
+    ulong* gui_flag = 0x95038 as ulong*;
+    *gui_flag = 1;
+
     // ターミナルウィンドウを作成
     ulong term_win = Wm::create_terminal();
     Terminal::init(term_win);
