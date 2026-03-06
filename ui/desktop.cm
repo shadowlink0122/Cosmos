@@ -12,10 +12,10 @@ import ../drivers/video/font;
 // デスクトップカラー
 // ============================================================
 
-/// macOS Sonoma風 グラデーション色（明るめ）
-const ulong DESKTOP_TOP     = 0x2B4570;  // スチールブルー
-const ulong DESKTOP_MID     = 0x4B5A8A;  // ラベンダーブルー
-const ulong DESKTOP_BOTTOM  = 0x6A4F8A;  // パープル
+/// macOS Sonoma風 グラデーション色（テスト用・明るめ）
+const ulong DESKTOP_TOP     = 0x5577BB;  // 明るいブルー
+const ulong DESKTOP_MID     = 0x7777AA;  // ミッドブルー (未使用)
+const ulong DESKTOP_BOTTOM  = 0x9966AA;  // 明るいパープル
 
 /// カーソル状態アドレス
 const PhysAddr CURSOR_STATE_ADDR = 0xD80800;
