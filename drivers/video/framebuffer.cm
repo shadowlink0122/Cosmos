@@ -319,6 +319,72 @@ impl Fb {
         `);
     }
 
+    /// バックバッファ → VRAM 部分矩形コピー (ダーティレクト)
+    /// カーソル移動時の旧位置復元に使用
+    static void blit_rect(ulong x, ulong y, ulong w, ulong h) {
+        ulong scr_w = Fb::width();
+        ulong scr_h = Fb::height();
+        ulong pitch = Fb::pitch();
+        ulong src_base = Fb::backbuf();
+        ulong dst_base = Fb::addr();
+
+        ulong ey = y + h;
+        if (ey > scr_h) { ey = scr_h; }
+        ulong ew = x + w;
+        if (ew > scr_w) { ew = scr_w; }
+        ulong actual_w = ew - x;
+
+        ulong cy = y;
+        while (cy < ey) {
+            ulong row_off = cy * pitch + x * 4;
+            ulong src = src_base + row_off;
+            ulong dst = dst_base + row_off;
+            // 4バイト単位でコピー
+            ulong px = 0;
+            while (px < actual_w) {
+                ulong s = src + px * 4;
+                ulong d = dst + px * 4;
+                __asm__(`
+                    movq ${r:s}, %rsi;
+                    movl (%rsi), %eax;
+                    movq ${r:d}, %rdi;
+                    movl %eax, (%rdi)
+                `);
+                px = px + 1;
+            }
+            cy = cy + 1;
+        }
+    }
+
+    /// VRAM に直接矩形塗りつぶし
+    static void fill_rect_direct(ulong x, ulong y, ulong w, ulong h, ulong color) {
+        ulong scr_w = Fb::width();
+        ulong scr_h = Fb::height();
+        ulong pitch = Fb::pitch();
+        ulong vram = Fb::addr();
+
+        ulong ey = y + h;
+        if (ey > scr_h) { ey = scr_h; }
+        ulong ew = x + w;
+        if (ew > scr_w) { ew = scr_w; }
+
+        ulong cy = y;
+        while (cy < ey) {
+            ulong row_addr = vram + cy * pitch;
+            ulong cx = x;
+            while (cx < ew) {
+                ulong addr = row_addr + cx * 4;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    movq ${r:color}, %rax;
+                    movl %eax, (%rdi)
+                `);
+                cx = cx + 1;
+            }
+            cy = cy + 1;
+        }
+    }
+
     /// 画面全体をクリア
     static void clear(ulong color) {
         Fb::fill_rect(0, 0, Fb::width(), Fb::height(), color);

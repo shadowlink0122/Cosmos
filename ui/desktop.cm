@@ -67,15 +67,14 @@ impl Desktop {
         *cy = new_y as ulong;
     }
 
-    /// マウスカーソル描画 (macOS風の白矢印)
-    static void draw_cursor() {
+    /// マウスカーソル描画 (VRAM直接書き込み — 高速)
+    static void draw_cursor_direct() {
         ulong* cx = CURSOR_STATE_ADDR as ulong*;
         ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
         ulong x = *cx;
         ulong y = *cy;
 
-        // 12×18 の矢印カーソル
-        // 黒アウトライン + 白塗り
+        // 12×18 の矢印カーソル (VRAM直接描画)
         ulong[12] widths;
         widths[0] = 1;  widths[1] = 2;  widths[2] = 3;
         widths[3] = 4;  widths[4] = 5;  widths[5] = 6;
@@ -85,14 +84,20 @@ impl Desktop {
         ulong row = 0;
         while (row < 12) {
             ulong w = widths[row];
-            // 黒アウトライン
-            Fb::fill_rect(x, y + row, w + 1, 1, 0x000000);
-            // 白内部
+            // 黒アウトライン → VRAM直接
+            Fb::fill_rect_direct(x, y + row, w + 1, 1, 0x000000);
+            // 白内部 → VRAM直接
             if (w > 1) {
-                Fb::fill_rect(x + 1, y + row, w - 1, 1, 0xFFFFFF);
+                Fb::fill_rect_direct(x + 1, y + row, w - 1, 1, 0xFFFFFF);
             }
             row = row + 1;
         }
+    }
+
+    /// 旧カーソル位置のVRAMをバックバッファから復元
+    static void restore_cursor(ulong old_x, ulong old_y) {
+        // カーソルサイズ: 最大12×12
+        Fb::blit_rect(old_x, old_y, 14, 14);
     }
 
     /// カーソルX座標取得
