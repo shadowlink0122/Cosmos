@@ -3,6 +3,7 @@
 //
 // ウィンドウ内にテキスト入出力を提供するターミナル。
 // 最大4スロット（独立した実行空間）をサポート。
+// テキストバッファを保持し、compose()後に再描画可能。
 
 import ../include/types;
 import ../include/config;
@@ -28,7 +29,7 @@ export const ulong MAX_TERM_SLOTS = 4;
 
 /// ターミナル状態ベースアドレス
 const PhysAddr TERM_STATE_BASE = 0xD82000;
-/// 各スロットのサイズ (64バイト)
+/// 各スロットの状態サイズ (64バイト)
 const ulong TERM_SLOT_SIZE = 64;
 // スロットレイアウト:
 //   0x00: window_id (8B)
@@ -38,6 +39,16 @@ const ulong TERM_SLOT_SIZE = 64;
 //   0x20: max_rows (8B)
 //   0x28: active (8B) — 0=未使用, 1=使用中
 
+/// テキストバッファベースアドレス
+/// 各スロット: 80cols * 50rows = 4000バイト + 色情報
+const PhysAddr TERM_BUF_BASE = 0xD84000;
+/// テキストバッファサイズ (各スロット)
+const ulong TERM_BUF_SIZE = 4096;
+/// 最大カラム数 (テキストバッファ幅)
+const ulong TERM_MAX_COLS = 80;
+/// 最大行数 (テキストバッファ高さ)
+const ulong TERM_MAX_ROWS = 50;
+
 /// Terminal — GUIターミナル (マルチスロット)
 export struct Terminal {}
 
@@ -45,6 +56,11 @@ impl Terminal {
     /// スロットのベースアドレスを取得
     static ulong slot_addr(ulong slot) {
         return TERM_STATE_BASE + slot * TERM_SLOT_SIZE;
+    }
+
+    /// テキストバッファアドレスを取得
+    static ulong buf_addr(ulong slot) {
+        return TERM_BUF_BASE + slot * TERM_BUF_SIZE;
     }
 
     /// ターミナル初期化（スロットとウィンドウIDを関連付け）
@@ -67,11 +83,65 @@ impl Terminal {
         // コンテンツ領域からカラム・行数を計算
         ulong content_w = Window::get_w(win_id) - 2 - TERM_PAD * 2;
         ulong content_h = Window::get_h(win_id) - TITLEBAR_HEIGHT - 2 - TERM_PAD * 2;
-        *mc = content_w / FONT_W;
-        *mr = content_h / FONT_H;
+        ulong cols = content_w / FONT_W;
+        ulong rows = content_h / FONT_H;
+        if (cols > TERM_MAX_COLS) { cols = TERM_MAX_COLS; }
+        if (rows > TERM_MAX_ROWS) { rows = TERM_MAX_ROWS; }
+        *mc = cols;
+        *mr = rows;
+
+        // テキストバッファクリア
+        Terminal::clear_buf(slot);
 
         // ターミナル背景を描画
         Terminal::clear(slot);
+    }
+
+    /// テキストバッファクリア
+    static void clear_buf(ulong slot) {
+        if (slot >= MAX_TERM_SLOTS) { return; }
+        ulong buf = Terminal::buf_addr(slot);
+        ulong i = 0;
+        while (i < TERM_BUF_SIZE) {
+            ulong addr = buf + i;
+            __asm__(`
+                movq ${r:addr}, %rdi;
+                movb $$0, (%rdi)
+            `);
+            i = i + 1;
+        }
+    }
+
+    /// テキストバッファに文字を格納
+    static void buf_put(ulong slot, ulong brow, ulong bcol, ulong ch) {
+        if (slot >= MAX_TERM_SLOTS) { return; }
+        ulong buf = Terminal::buf_addr(slot);
+        ulong offset = brow * TERM_MAX_COLS + bcol;
+        if (offset >= TERM_BUF_SIZE) { return; }
+        ulong addr = buf + offset;
+        ulong c = ch;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:c}, %rax;
+            movb %al, (%rdi)
+        `);
+    }
+
+    /// テキストバッファから文字を取得
+    static ulong buf_get(ulong slot, ulong brow, ulong bcol) {
+        if (slot >= MAX_TERM_SLOTS) { return 0; }
+        ulong buf = Terminal::buf_addr(slot);
+        ulong offset = brow * TERM_MAX_COLS + bcol;
+        if (offset >= TERM_BUF_SIZE) { return 0; }
+        ulong addr = buf + offset;
+        ulong ch = 0;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:ch}
+        `);
+        return ch;
     }
 
     /// スロットが使用中か
@@ -82,7 +152,7 @@ impl Terminal {
         return *active;
     }
 
-    /// 空きスロットを検索 (見つからなければMAX_TERM_SLOTSを返す)
+    /// 空きスロットを検索
     static ulong find_free_slot() {
         ulong i = 0;
         while (i < MAX_TERM_SLOTS) {
@@ -131,7 +201,7 @@ impl Terminal {
         Fb::fill_rect(x, y, w, h, TERM_BG);
     }
 
-    /// 1文字出力
+    /// 1文字出力 (バッファに記録 + 画面描画)
     static void putc(ulong slot, ulong ch) {
         if (slot >= MAX_TERM_SLOTS) { return; }
         ulong base = Terminal::slot_addr(slot);
@@ -144,15 +214,18 @@ impl Terminal {
         ulong win_id = *wid;
 
         if (ch == 10) {
-            // 改行
             *col = 0;
             *row = *row + 1;
             if (*row >= *mr) {
                 *row = *mr - 1;
+                Terminal::clear_buf(slot);
                 Terminal::clear(slot);
             }
             return;
         }
+
+        // バッファに記録
+        Terminal::buf_put(slot, *row, *col, ch);
 
         // 文字描画位置
         ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
@@ -168,6 +241,7 @@ impl Terminal {
             *row = *row + 1;
             if (*row >= *mr) {
                 *row = *mr - 1;
+                Terminal::clear_buf(slot);
                 Terminal::clear(slot);
             }
         }
@@ -192,25 +266,64 @@ impl Terminal {
         }
     }
 
-    /// プロンプト表示
+    /// プロンプト表示 (バッファにも記録)
     static void prompt(ulong slot) {
         if (slot >= MAX_TERM_SLOTS) { return; }
+        // 各文字をputc経由で出力（バッファに記録される）
+        Terminal::putc(slot, 0x63);  // 'c'
+        Terminal::putc(slot, 0x6F);  // 'o'
+        Terminal::putc(slot, 0x73);  // 's'
+        Terminal::putc(slot, 0x6D);  // 'm'
+        Terminal::putc(slot, 0x6F);  // 'o'
+        Terminal::putc(slot, 0x20);  // ' '
+        Terminal::putc(slot, 0x24);  // '$'
+        Terminal::putc(slot, 0x20);  // ' '
+    }
+
+    /// バッファからターミナル内容を再描画
+    static void redraw(ulong slot) {
+        if (slot >= MAX_TERM_SLOTS) { return; }
+        if (Terminal::is_active(slot) == 0) { return; }
+
         ulong base = Terminal::slot_addr(slot);
         ulong* wid = base as ulong*;
-        ulong* col = (base + 8) as ulong*;
-        ulong* row = (base + 0x10) as ulong*;
+        ulong* mc  = (base + 0x18) as ulong*;
+        ulong* mr  = (base + 0x20) as ulong*;
 
         ulong win_id = *wid;
+
+        // ターミナル背景を描画
+        Terminal::clear(slot);
+
+        // テキストバッファから文字を再描画
         ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
         ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
 
-        // "cosmo $ "
-        ulong px = base_x + (*col) * FONT_W;
-        ulong py = base_y + (*row) * FONT_H;
-        Font::draw_string(px, py, "cosmo" as void*, TERM_PROMPT, TERM_BG);
-        *col = *col + 5;
-        px = base_x + (*col) * FONT_W;
-        Font::draw_string(px, py, " $ " as void*, TERM_FG, TERM_BG);
-        *col = *col + 3;
+        ulong r = 0;
+        while (r < *mr) {
+            ulong c = 0;
+            while (c < *mc) {
+                ulong ch = Terminal::buf_get(slot, r, c);
+                if (ch != 0) {
+                    ulong px = base_x + c * FONT_W;
+                    ulong py = base_y + r * FONT_H;
+                    // プロンプト文字の色分け (最初の行の"cosmo $ "を緑で表示)
+                    Font::draw_char(px, py, ch, TERM_FG, TERM_BG);
+                }
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+    }
+
+    /// 全アクティブスロットを再描画
+    static void redraw_all() {
+        ulong i = 0;
+        while (i < MAX_TERM_SLOTS) {
+            if (Terminal::is_active(i) != 0) {
+                Terminal::redraw(i);
+            }
+            i = i + 1;
+        }
     }
 }

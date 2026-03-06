@@ -25,6 +25,10 @@ const PhysAddr DRAG_STATE_ADDR = 0xD80A00;
 //   0x10: drag_ox  (8B) — ウィンドウ内オフセットX
 //   0x18: drag_oy  (8B) — ウィンドウ内オフセットY
 
+/// アクティブウィンドウ (最前面に描画)
+const PhysAddr ACTIVE_WIN_ADDR = 0xD80A20;
+// 0xFFFFFFFF = アクティブなし
+
 /// Wm — ウィンドウマネージャ
 export struct Wm {}
 
@@ -52,6 +56,22 @@ impl Wm {
         // ドラッグ状態初期化
         ulong* drag = DRAG_STATE_ADDR as ulong*;
         *drag = 0;
+
+        // アクティブウィンドウ初期化
+        ulong* aw = ACTIVE_WIN_ADDR as ulong*;
+        *aw = 0;
+    }
+
+    /// アクティブウィンドウを設定 (最前面描画)
+    static void set_active(ulong win_idx) {
+        ulong* aw = ACTIVE_WIN_ADDR as ulong*;
+        *aw = win_idx;
+    }
+
+    /// アクティブウィンドウを取得
+    static ulong get_active() {
+        ulong* aw = ACTIVE_WIN_ADDR as ulong*;
+        return *aw;
     }
 
     /// 全画面を再描画
@@ -60,25 +80,34 @@ impl Wm {
         // 1. デスクトップ背景
         Desktop::draw_background();
 
-        // 2. ウィンドウ（Z-order順）
+        // 2. ウィンドウ（アクティブ以外を先に描画）
+        ulong active = Wm::get_active();
         ulong i = 0;
         while (i < MAX_WINDOWS) {
-            if (Window::is_visible(i) != 0) {
+            if (i != active && Window::is_visible(i) != 0) {
                 Window::draw(i);
             }
             i = i + 1;
         }
 
-        // 3. Dock（画面下部）
+        // 3. アクティブウィンドウを最後に描画 (最前面)
+        if (active < MAX_WINDOWS && Window::is_visible(active) != 0) {
+            Window::draw(active);
+        }
+
+        // 4. ターミナル内容を再描画（テキストバッファから）
+        Terminal::redraw_all();
+
+        // 5. Dock（画面下部）
         Dock::draw();
 
-        // 4. メニューバー（常に最前面）
+        // 6. メニューバー（常に最前面）
         MenuBar::draw();
 
-        // 5. バックバッファ → VRAM（カーソルなし）
+        // 7. バックバッファ → VRAM
         Fb::flip();
 
-        // 6. カーソルをVRAMに直接描画（バックバッファには描かない）
+        // 8. カーソルをVRAMに直接描画
         Desktop::draw_cursor_direct();
     }
 
@@ -199,15 +228,25 @@ impl Wm {
                         ulong wx = Window::get_x(i);
                         ulong wy = Window::get_y(i);
                         ulong ww = Window::get_w(i);
-                        if (mx >= wx && mx < wx + ww && my >= wy && my < wy + TITLEBAR_HEIGHT) {
-                            ulong* drag_flag = DRAG_STATE_ADDR as ulong*;
-                            ulong* drag_win_p = (DRAG_STATE_ADDR + 8) as ulong*;
-                            ulong* drag_ox_p = (DRAG_STATE_ADDR + 0x10) as ulong*;
-                            ulong* drag_oy_p = (DRAG_STATE_ADDR + 0x18) as ulong*;
-                            *drag_flag = 1;
-                            *drag_win_p = i;
-                            *drag_ox_p = mx - wx;
-                            *drag_oy_p = my - wy;
+                        ulong wh = Window::get_h(i);
+                        if (mx >= wx && mx < wx + ww && my >= wy && my < wy + wh) {
+                            // ウィンドウ領域内クリック → アクティブ化
+                            if (Wm::get_active() != i) {
+                                Wm::set_active(i);
+                                Wm::compose();
+                            }
+
+                            // タイトルバー内ならドラッグ開始
+                            if (my < wy + TITLEBAR_HEIGHT) {
+                                ulong* drag_flag = DRAG_STATE_ADDR as ulong*;
+                                ulong* drag_win_p = (DRAG_STATE_ADDR + 8) as ulong*;
+                                ulong* drag_ox_p = (DRAG_STATE_ADDR + 0x10) as ulong*;
+                                ulong* drag_oy_p = (DRAG_STATE_ADDR + 0x18) as ulong*;
+                                *drag_flag = 1;
+                                *drag_win_p = i;
+                                *drag_ox_p = mx - wx;
+                                *drag_oy_p = my - wy;
+                            }
                             handled = 1;
                             break;
                         }
@@ -232,6 +271,7 @@ impl Wm {
                         ulong ty = (sh - th) / 2 + slot * 30;
                         ulong win_id = Window::create(tx, ty, tw, th, "Terminal" as void*, 1);
                         if (win_id < MAX_WINDOWS) {
+                            Wm::set_active(win_id);
                             Terminal::init(slot, win_id);
                             Wm::compose();
                             // ウェルカムメッセージ
