@@ -111,6 +111,8 @@ impl Wm {
             ulong mx = Desktop::cursor_x();
             ulong my = Desktop::cursor_y();
 
+            // ウィンドウボタンヒットテスト
+            ulong handled = 0;
             ulong i = 0;
             while (i < MAX_WINDOWS) {
                 if (Window::is_visible(i) != 0) {
@@ -118,18 +120,53 @@ impl Wm {
                     if (btn == 1) {
                         Window::close(i);
                         Wm::compose();
+                        handled = 1;
                         break;
                     } else if (btn == 2) {
                         Window::close(i);
                         Wm::compose();
+                        handled = 1;
                         break;
                     } else if (btn == 3) {
                         Window::toggle_maximize(i);
                         Wm::compose();
+                        handled = 1;
                         break;
                     }
                 }
                 i = i + 1;
+            }
+
+            // Dockアイコンクリック
+            if (handled == 0) {
+                ulong dock_hit = Dock::hit_test(mx, my);
+                if (dock_hit == 1) {
+                    // ターミナル: 新しいTerminalウィンドウ
+                    ulong sw = Fb::width();
+                    ulong sh = Fb::height();
+                    ulong tw = sw * 3 / 5;
+                    ulong th = sh * 3 / 5;
+                    ulong tx = (sw - tw) / 2 + 20;
+                    ulong ty = (sh - th) / 2 + 20;
+                    Window::create(tx, ty, tw, th, "Terminal" as void*, 1);
+                    Wm::compose();
+                } else if (dock_hit == 2) {
+                    // ファイル
+                    Window::create(200, 100, 500, 400, "Files" as void*, 0);
+                    Wm::compose();
+                } else if (dock_hit == 3) {
+                    // 設定
+                    Window::create(250, 120, 450, 350, "Settings" as void*, 0);
+                    Wm::compose();
+                } else if (dock_hit == 4) {
+                    // About
+                    Window::create(300, 150, 400, 300, "About Cosmo" as void*, 0);
+                    Wm::compose();
+                } else if (dock_hit == 5) {
+                    // ゴミ箱
+                    Window::create(280, 130, 420, 320, "Trash" as void*, 0);
+                    Wm::compose();
+                }
             }
         }
     }

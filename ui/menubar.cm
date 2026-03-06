@@ -2,13 +2,14 @@
 // cosmo-linux::ui::menubar - macOS風メニューバー
 //
 // 画面最上部に半透明メニューバーを描画。
-// 左にアプリ名、右に時刻表示。
+// 左にアプリ名、右に時刻表示（CMOS RTC）。
 
 import ../include/types;
 import ../include/config;
 import ../drivers/video/framebuffer;
 import ../drivers/video/font;
 import ../drivers/timer/pit;
+import ../drivers/timer/rtc;
 import ../ui/mem;
 
 // ============================================================
@@ -51,25 +52,21 @@ impl MenuBar {
         Font::draw_string(216, 4, "Window" as void*, MENUBAR_FG, MENUBAR_BG);
         Font::draw_string(288, 4, "Help" as void*, MENUBAR_FG, MENUBAR_BG);
 
-        // 右: 時刻表示
+        // 右: 時刻表示（CMOS RTC）
         MenuBar::draw_clock();
     }
 
-    /// 時刻表示 (PIT ticksから概算)
+    /// 時刻表示 (CMOS RTCから実時刻を取得)
     static void draw_clock() {
         ulong w = Fb::width();
-        ulong ticks = PIT::get_ticks();
-        ulong seconds = ticks / 100;
-        ulong minutes = seconds / 60;
-        ulong hours = minutes / 60;
 
-        ulong hh = hours % 24;
-        ulong mm = minutes % 60;
+        // CMOS RTCから現在時刻を取得
+        ulong hh = Rtc::hours();
+        ulong mm = Rtc::minutes();
 
         // "HH:MM" 形式で右端に表示
         ulong clock_x = w - 60;
 
-        // 十の位と一の位を計算
         ulong h1 = hh / 10;
         ulong h2 = hh % 10;
         ulong m1 = mm / 10;

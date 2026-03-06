@@ -1,0 +1,84 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::timer::rtc - CMOS RTCドライバ
+//
+// CMOS RTC (MC146818) から現在時刻を読み取る。
+// I/Oポート 0x70 (インデックス) / 0x71 (データ)。
+// BCD形式 → バイナリ変換。
+// 参照: linux/drivers/rtc/rtc-cmos.c
+
+import ../../include/types;
+import ../../drivers/serial;
+
+// ============================================================
+// CMOS RTCポート
+// ============================================================
+
+const ulong RTC_INDEX = 0x70;
+const ulong RTC_DATA  = 0x71;
+
+// RTCレジスタ番号
+const ulong RTC_REG_SECONDS = 0x00;
+const ulong RTC_REG_MINUTES = 0x02;
+const ulong RTC_REG_HOURS   = 0x04;
+const ulong RTC_REG_STATUS_B = 0x0B;
+
+/// Rtc — CMOS RTCドライバ
+export struct Rtc {}
+
+impl Rtc {
+    /// CMOSレジスタを読み取り
+    static ulong read_reg(ulong reg) {
+        outb(RTC_INDEX, reg);
+        return inb(RTC_DATA);
+    }
+
+    /// BCD → バイナリ変換
+    static ulong bcd_to_bin(ulong bcd) {
+        return ((bcd >> 4) & 0x0F) * 10 + (bcd & 0x0F);
+    }
+
+    /// 更新中かチェック (UIPフラグ)
+    static ulong is_updating() {
+        outb(RTC_INDEX, 0x0A);
+        return inb(RTC_DATA) & 0x80;
+    }
+
+    /// 現在時刻を取得 (時)
+    static ulong hours() {
+        // UIPフラグが解除されるまで待機
+        while (Rtc::is_updating() != 0) {}
+
+        ulong raw = Rtc::read_reg(RTC_REG_HOURS);
+
+        // Status Register B のbit2でBCD/バイナリモード判定
+        ulong status_b = Rtc::read_reg(RTC_REG_STATUS_B);
+        if ((status_b & 0x04) != 0) {
+            // バイナリモード
+            return raw & 0x3F;
+        }
+        // BCDモード
+        return Rtc::bcd_to_bin(raw & 0x3F);
+    }
+
+    /// 現在時刻を取得 (分)
+    static ulong minutes() {
+        while (Rtc::is_updating() != 0) {}
+        ulong raw = Rtc::read_reg(RTC_REG_MINUTES);
+        ulong status_b = Rtc::read_reg(RTC_REG_STATUS_B);
+        if ((status_b & 0x04) != 0) {
+            return raw;
+        }
+        return Rtc::bcd_to_bin(raw);
+    }
+
+    /// 現在時刻を取得 (秒)
+    static ulong seconds() {
+        while (Rtc::is_updating() != 0) {}
+        ulong raw = Rtc::read_reg(RTC_REG_SECONDS);
+        ulong status_b = Rtc::read_reg(RTC_REG_STATUS_B);
+        if ((status_b & 0x04) != 0) {
+            return raw;
+        }
+        return Rtc::bcd_to_bin(raw);
+    }
+}

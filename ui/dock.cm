@@ -3,6 +3,7 @@
 //
 // 画面下部に半透明のDockバーを描画。
 // アプリアイコン（簡易表示）を配置。
+// クリックでアプリ起動。
 
 import ../include/types;
 import ../include/config;
@@ -27,49 +28,121 @@ const ulong DOCK_RADIUS = 14;
 const ulong ICON_SIZE = 40;
 /// アイコン間隔
 const ulong ICON_GAP = 12;
+/// セパレータ幅
+const ulong SEP_WIDTH = 2;
+/// セパレータ色
+const ulong SEP_COLOR = 0x555558;
 
 /// Dock — macOS風Dock
 export struct Dock {}
 
 impl Dock {
+    /// Dock幅を計算 (アプリ4 + セパレータ + ゴミ箱1)
+    static ulong dock_width() {
+        // 4アプリ + セパレータ + ゴミ箱1
+        ulong num_app = 4;
+        ulong app_w = num_app * ICON_SIZE + (num_app + 1) * ICON_GAP;
+        ulong trash_w = ICON_GAP + SEP_WIDTH + ICON_GAP + ICON_SIZE + ICON_GAP;
+        return app_w + trash_w;
+    }
+
+    /// Dock X座標
+    static ulong dock_x() {
+        return (Fb::width() - Dock::dock_width()) / 2;
+    }
+
+    /// Dock Y座標
+    static ulong dock_y() {
+        return Fb::height() - DOCK_HEIGHT - DOCK_MARGIN;
+    }
+
+    /// アイコンのX座標を取得 (0-4: アプリ, 5: ゴミ箱)
+    static ulong icon_x(ulong idx) {
+        ulong dx = Dock::dock_x();
+        if (idx < 4) {
+            return dx + ICON_GAP + idx * (ICON_SIZE + ICON_GAP);
+        }
+        // ゴミ箱: アプリ4つの後 + セパレータ
+        ulong app_end = dx + ICON_GAP + 4 * (ICON_SIZE + ICON_GAP);
+        return app_end + SEP_WIDTH + ICON_GAP;
+    }
+
+    /// アイコンのY座標
+    static ulong icon_y() {
+        return Dock::dock_y() + (DOCK_HEIGHT - ICON_SIZE) / 2;
+    }
+
     /// Dock描画
     static void draw() {
         ulong sw = Fb::width();
         ulong sh = Fb::height();
-
-        // Dock幅（アイコン数に応じる）
-        ulong num_icons = 4;
-        ulong dock_w = num_icons * ICON_SIZE + (num_icons + 1) * ICON_GAP;
-        ulong dock_x = (sw - dock_w) / 2;
-        ulong dock_y = sh - DOCK_HEIGHT - DOCK_MARGIN;
+        ulong dx = Dock::dock_x();
+        ulong dy = Dock::dock_y();
+        ulong dw = Dock::dock_width();
+        ulong iy = Dock::icon_y();
 
         // Dock背景（角丸矩形）
-        Fb::fill_rounded_rect(dock_x, dock_y, dock_w, DOCK_HEIGHT, DOCK_RADIUS, DOCK_BG);
+        Fb::fill_rounded_rect(dx, dy, dw, DOCK_HEIGHT, DOCK_RADIUS, DOCK_BG);
         // 枠線（上部のみ）
-        Fb::hline(dock_x + DOCK_RADIUS, dock_y, dock_w - DOCK_RADIUS * 2, DOCK_BORDER);
+        Fb::hline(dx + DOCK_RADIUS, dy, dw - DOCK_RADIUS * 2, DOCK_BORDER);
 
         // アイコン描画
-        ulong ix = dock_x + ICON_GAP;
-        ulong iy = dock_y + (DOCK_HEIGHT - ICON_SIZE) / 2;
+        ulong ix = 0;
 
         // 1. ターミナルアイコン（黒四角 + ">_"）
+        ix = Dock::icon_x(0);
         Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x1C1C1E);
         Fb::draw_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x555555);
         Font::draw_string(ix + 6, iy + 12, ">_" as void*, 0x50FA7B, 0x1C1C1E);
-        ix = ix + ICON_SIZE + ICON_GAP;
 
         // 2. ファイルアイコン（青四角 + "F"）
+        ix = Dock::icon_x(1);
         Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x007AFF);
         Font::draw_char(ix + 16, iy + 12, 0x46, 0xFFFFFF, 0x007AFF);  // 'F'
-        ix = ix + ICON_SIZE + ICON_GAP;
 
         // 3. 設定アイコン（グレー四角 + "*"）
+        ix = Dock::icon_x(2);
         Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x636366);
         Font::draw_char(ix + 16, iy + 12, 0x2A, 0xFFFFFF, 0x636366);  // '*'
-        ix = ix + ICON_SIZE + ICON_GAP;
 
         // 4. Aboutアイコン（紫四角 + "?"）
+        ix = Dock::icon_x(3);
         Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x5856D6);
         Font::draw_char(ix + 16, iy + 12, 0x3F, 0xFFFFFF, 0x5856D6);  // '?'
+
+        // セパレータ線
+        ulong sep_x = Dock::icon_x(3) + ICON_SIZE + ICON_GAP;
+        ulong sep_y = dy + 12;
+        ulong sep_h = DOCK_HEIGHT - 24;
+        Fb::fill_rect(sep_x, sep_y, SEP_WIDTH, sep_h, SEP_COLOR);
+
+        // 5. ゴミ箱アイコン（茶色四角 + "T"）
+        ix = Dock::icon_x(4);
+        Fb::fill_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x8E8E93);
+        Fb::draw_rect(ix, iy, ICON_SIZE, ICON_SIZE, 0x636366);
+        Font::draw_char(ix + 12, iy + 4, 0x5F, 0x3A3A3C, 0x8E8E93);  // '_' (蓋)
+        Font::draw_string(ix + 8, iy + 16, "| |" as void*, 0x3A3A3C, 0x8E8E93);
+    }
+
+    /// ヒットテスト: クリック座標でどのアイコンか判定
+    /// 戻り値: 0=なし, 1=ターミナル, 2=ファイル, 3=設定, 4=About, 5=ゴミ箱
+    static ulong hit_test(ulong mx, ulong my) {
+        ulong iy = Dock::icon_y();
+
+        // Y座標チェック
+        if (my < iy) { return 0; }
+        if (my >= iy + ICON_SIZE) { return 0; }
+
+        // 各アイコンをチェック (0-4)
+        ulong i = 0;
+        while (i < 5) {
+            ulong ix = Dock::icon_x(i);
+            if (mx >= ix && mx < ix + ICON_SIZE) {
+                return i + 1;  // 1-5
+            }
+            i = i + 1;
+        }
+
+        return 0;
     }
 }
