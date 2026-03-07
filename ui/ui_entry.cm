@@ -1,0 +1,125 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::ui_entry - UIモジュール翻訳単位エントリ
+//
+// 分割コンパイル用: UIサブシステムの全モジュールをまとめる。
+// core翻訳単位（boot/entry_core.cm）とリンカで結合。
+
+// --- UIモジュール群 ---
+import ./shell;
+import ./cmd;
+import ./vga;
+import ./mem;
+import ./env;
+import ./history;
+import ./desktop;
+import ./menubar;
+import ./window;
+import ./wm;
+import ./terminal;
+import ./dock;
+import ./shell/defs;
+import ./shell/io;
+import ./shell/util;
+import ./shell/prompt;
+import ./shell/tab;
+import ./shell/pipe;
+
+// --- UI内で必要なcore/drivers依存 ---
+import ../include/types;
+import ../include/config;
+import ../include/keycode;
+import ../include/color;
+import ../include/net;
+import ../include/vfs;
+import ../include/result;
+import ../include/errno;
+import ../include/scheduler;
+import ../include/signal;
+import ../drivers/serial;
+import ../drivers/input/keyboard;
+import ../drivers/input/mouse;
+import ../drivers/timer/pit;
+import ../drivers/timer/rtc;
+import ../drivers/video/framebuffer;
+import ../drivers/video/font;
+import ../drivers/virtio/virtio_net;
+import ../drivers/virtio/virtio_9p;
+import ../fs/ramfs;
+import ../fs/procfs;
+import ../fs/ninepfs;
+import ../sched/process;
+import ../sched/scheduler;
+import ../exec/loader;
+import ../mm/pmm;
+import ../mm/mmap;
+import ../net/core/ethernet;
+import ../net/core/ip;
+import ../net/core/arp;
+import ../net/transport/icmp;
+import ../net/app/dns;
+import ../lib/kstring;
+import ../lib/printk;
+import ../init/init;
+import ../pkg/gen;
+
+// ============================================================
+// GUI初期化ラッパー（entry_coreから呼び出し）
+// core → UI の接合ポイント
+// ============================================================
+
+/// GUI初期化: WM, デスクトップ, ターミナルを起動
+export void ui_init_gui() {
+    Wm::init();
+    Desktop::init_cursor();
+}
+
+/// ターミナルウィンドウ作成
+export ulong ui_create_terminal() {
+    return Wm::create_terminal();
+}
+
+/// ターミナル初期化
+export void ui_init_terminal(ulong slot, ulong win_id) {
+    Terminal::init(slot, win_id);
+}
+
+/// 初期画面描画
+export void ui_compose() {
+    Wm::compose();
+}
+
+/// カーソル描画
+export void ui_draw_cursor() {
+    Desktop::draw_cursor_direct();
+}
+
+/// マウスイベント処理
+export void ui_process_mouse() {
+    Wm::process_mouse();
+}
+
+/// GUI画面更新ヘルパー（コールバック用）
+export void gui_flush_helper() {
+    Fb::flip();
+    Desktop::draw_cursor_direct();
+}
+
+/// Terminal::putc ラッパー（コールバック用）
+export void gui_term_putc(ulong slot, ulong ch) {
+    Terminal::putc(slot, ch);
+}
+
+/// Terminal::puts ラッパー（コールバック用）
+export void gui_term_puts(ulong slot, void* str) {
+    Terminal::puts(slot, str);
+}
+
+/// Terminal::clear ラッパー（コールバック用）
+export void gui_term_clear(ulong slot) {
+    Terminal::clear(slot);
+}
+
+/// Terminal::clear_buf ラッパー（コールバック用）
+export void gui_term_clear_buf(ulong slot) {
+    Terminal::clear_buf(slot);
+}

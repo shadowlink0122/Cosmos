@@ -89,6 +89,46 @@ $(ELF): $(ELF64)
 	@echo "✓ ビルド完了: $@"
 
 # ============================================================
+# 分割コンパイル（高速インクリメンタルビルド）
+# core.o + ui.o を並列コンパイルしてリンク
+# 使い方: make fast    (シーケンシャル)
+#         make -j2 fast (並列)
+# ============================================================
+
+CORE_SRC = boot/entry_core.cm
+UI_SRC   = ui/ui_entry.cm
+CORE_OBJ = $(BUILD)/core.o
+UI_OBJ   = $(BUILD)/ui.o
+FAST_ELF64 = $(BUILD)/cosmo-fast64.elf
+FAST_ELF   = $(BUILD)/cosmo-fast.elf
+
+# 分割コンパイル用: core/uiそれぞれの依存ソース
+CORE_SOURCES = $(shell find arch boot include lib mm sched sys fs exec init drivers net -name '*.cm' 2>/dev/null)
+UI_SOURCES   = $(shell find ui pkg -name '*.cm' 2>/dev/null)
+
+.PHONY: fast
+fast: $(FAST_ELF)
+
+$(CORE_OBJ): $(CORE_SOURCES)
+	@mkdir -p $(BUILD)
+	@echo "[CM]   $(CORE_SRC) → core.o"
+	$(CM) compile $(CM_FLAGS) -o $@ $(CORE_SRC)
+
+$(UI_OBJ): $(UI_SOURCES) $(CORE_SOURCES)
+	@mkdir -p $(BUILD)
+	@echo "[CM]   $(UI_SRC) → ui.o"
+	$(CM) compile $(CM_FLAGS) -o $@ $(UI_SRC)
+
+$(FAST_ELF64): $(BOOT_OBJ) $(CORE_OBJ) $(UI_OBJ)
+	@echo "[LD]   → $@ (分割リンク)"
+	$(LD) $(LD_FLAGS) --allow-multiple-definition -o $@ $(BOOT_OBJ) $(CORE_OBJ) $(UI_OBJ)
+
+$(FAST_ELF): $(FAST_ELF64)
+	@echo "[CONV] elf64 → elf32 (QEMU Multiboot互換)"
+	x86_64-elf-objcopy -O elf32-i386 $(FAST_ELF64) $(FAST_ELF)
+	@echo "✓ 分割ビルド完了: $@"
+
+# ============================================================
 # テストビルド
 # ============================================================
 
