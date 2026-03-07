@@ -181,7 +181,7 @@ impl CmdFs {
             memzero(data_page as void*, PAGE_SIZE);
         }
 
-        Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+        Ino ino = RamFs::create(name_addr as void*, S_IFREG | PERM_FILE_DEFAULT, data_page);
         if (ino == 0) {
             Shell::writeln("touch: failed to create file" as void*);
         } else {
@@ -208,7 +208,7 @@ impl CmdFs {
         if (data_page != 0) {
             memzero(data_page as void*, PAGE_SIZE);
         }
-        Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+        Ino ino = RamFs::create(name_addr as void*, S_IFREG | PERM_FILE_DEFAULT, data_page);
         if (ino == 0) {
             Shell::writeln("write: failed to create file" as void*);
             return;

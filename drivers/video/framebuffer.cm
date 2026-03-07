@@ -82,7 +82,7 @@ impl Fb {
     /// PCI コンフィグ空間読み取り (32ビット)
     static ulong pci_read32(ulong bus, ulong dev, ulong func, ulong offset) {
         // PCI config address: 0x80000000 | (bus<<16) | (dev<<11) | (func<<8) | (offset & 0xFC)
-        ulong addr = 0x80000000 | (bus << 16) | (dev << 11) | (func << 8) | (offset & 0xFC);
+        ulong addr = PCI_CONFIG_ENABLE | (bus << 16) | (dev << 11) | (func << 8) | (offset & PCI_REG_MASK);
         ulong pci_addr_port = 0x0CF8;
         ulong pci_data_port = 0x0CFC;
         ulong val = 0;
@@ -157,7 +157,7 @@ impl Fb {
         // 3GiB (0xC0000000) から 2MiB ずつ
         ulong i = 0;
         while (i < 512) {
-            ulong phys = 0xC0000000 + i * 0x200000;
+            ulong phys = FB_MAP_BASE + i * PAGE_SIZE_2MB;
             // PDE: phys | PS(2MiB) | Write | Present = phys | 0x83
             ulong entry = phys | 0x83;
             ulong* pde = (pd3_addr + i * 8) as ulong*;

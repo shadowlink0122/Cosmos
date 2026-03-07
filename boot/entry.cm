@@ -173,7 +173,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Sched::setup(&sched, &idle, &serial);
 
     // === 9. TSS初期化 ===
-    Gdt::setup_tss(0x94000, &serial);
+    Gdt::setup_tss(READ_BUF, &serial);
 
     // === 10. syscall初期化 ===
     Syscall::setup(&serial);
@@ -256,11 +256,11 @@ void main(ulong mb2_info, ulong mb2_magic) {
 
     // GUI出力コールバック関数ポインタを設定
     // shell_io.cmでTerminalを直接importできないため、関数ポインタ経由で接続
-    ulong* gui_putc_ptr = 0x95040 as ulong*;
-    ulong* gui_puts_ptr = 0x95048 as ulong*;
-    ulong* gui_flush_ptr = 0x95050 as ulong*;
-    ulong* gui_clear_ptr = 0x95058 as ulong*;
-    ulong* gui_clearbuf_ptr = 0x95060 as ulong*;
+    ulong* gui_putc_ptr = GUI_PUTC_ADDR as ulong*;
+    ulong* gui_puts_ptr = GUI_PUTS_ADDR as ulong*;
+    ulong* gui_flush_ptr = GUI_FLUSH_ADDR as ulong*;
+    ulong* gui_clear_ptr = GUI_CLEAR_ADDR as ulong*;
+    ulong* gui_clearbuf_ptr = GUI_CLEARBUF_ADDR as ulong*;
     *gui_putc_ptr = gui_term_putc as ulong;
     *gui_puts_ptr = gui_term_puts as ulong;
     *gui_flush_ptr = gui_flush_helper as ulong;

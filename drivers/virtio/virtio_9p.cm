@@ -114,7 +114,7 @@ impl Virtio9p {
         Pci::enable_bus_master(dev.bus, dev.slot, dev.func);
 
         // 3. I/Oポートベースアドレス
-        ulong io_base = dev.bar0 & 0xFFFFFFFC;
+        ulong io_base = dev.bar0 & PCI_IO_BASE_MASK;
         ulong* io_ptr = V9P_STATE_BASE as ulong*;
         *io_ptr = io_base;
 
@@ -229,21 +229,21 @@ impl Virtio9p {
 
         // 使用済みdescriptor回収
         ulong ud = Vq::poll_used(&vq);
-        while (ud != 0xFFFFFFFF) {
+        while (ud != INVALID_U32) {
             Vq::free_desc(&vq, ud);
             ud = Vq::poll_used(&vq);
         }
 
         // TXデスクリプタ (device-readable)
         ulong tx_desc = Vq::alloc_desc(&vq, tx_buf, tx_len, 0);
-        if (tx_desc == 0xFFFFFFFF) {
+        if (tx_desc == INVALID_U32) {
             Virtio9p::save_vq(&vq);
             return 0;
         }
 
         // RXデスクリプタ (device-writable) — チェイン
         ulong rx_desc = Vq::alloc_desc(&vq, rx_buf, rx_max, VRING_DESC_F_WRITE);
-        if (rx_desc == 0xFFFFFFFF) {
+        if (rx_desc == INVALID_U32) {
             Vq::free_desc(&vq, tx_desc);
             Virtio9p::save_vq(&vq);
             return 0;
@@ -270,7 +270,7 @@ impl Virtio9p {
         while (timeout > 0) {
             Virtio9p::load_vq(&vq);
             ulong done = Vq::poll_used(&vq);
-            if (done != 0xFFFFFFFF) {
+            if (done != INVALID_U32) {
                 // 応答受信完了
                 ulong resp_len = Vq::get_used_len(&vq, vq.last_used_idx - 1);
                 Vq::free_desc(&vq, done);

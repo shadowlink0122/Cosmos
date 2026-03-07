@@ -142,7 +142,7 @@ impl Shell {
     /// VGA色設定（GUIモードでは無視）
     static void set_color(ulong fg, ulong bg) {
         ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
-        *color_ptr = ((bg & 0x0F) << 4) | (fg & 0x0F);
+        *color_ptr = ((bg & MASK_4BIT) << 4) | (fg & MASK_4BIT);
     }
 
     /// 10進数出力

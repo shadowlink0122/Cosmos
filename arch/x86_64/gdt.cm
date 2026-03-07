@@ -94,7 +94,7 @@ impl Gdt {
     /// TSS (Task State Segment) を初期化
     static void setup_tss(ulong kernel_stack_top, SerialPort* w) {
         // TSS配置アドレス
-        PhysAddr tss_addr = 0x83000;
+        PhysAddr tss_addr = TSS_BASE_ADDR;
 
         // TSS構造をゼロクリア (104バイト)
         memzero(tss_addr as void*, 104);

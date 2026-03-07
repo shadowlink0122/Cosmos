@@ -405,7 +405,7 @@ impl ShellInput {
         ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
         *row_ptr = 0;
         ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
-        *color_ptr = 0x07;
+        *color_ptr = VGA_DEFAULT_COLOR;
         ulong* l_ptr = CMD_LEN_ADDR as ulong*;
         *l_ptr = 0;
     }

@@ -125,5 +125,126 @@ export const ulong PAGE_SIZE = 4096;
 /// ページシフト
 export const ulong PAGE_SHIFT = 12;
 
+/// ページマスク (アドレスの下位12ビットを除去)
+export const ulong PAGE_MASK = 0xFFFFFFFFFFFFF000;
+
+/// ページオフセットマスク (下位12ビットを抽出)
+export const ulong PAGE_OFFSET_MASK = 0xFFF;
+
 /// NULL
 export const ulong NULL_ADDR = 0;
+
+// ============================================================
+// ビットマスク定数
+// ============================================================
+
+/// 8ビットマスク
+export const ulong MASK_8BIT = 0xFF;
+
+/// 16ビットマスク
+export const ulong MASK_16BIT = 0xFFFF;
+
+/// 32ビットマスク
+export const ulong MASK_32BIT = 0xFFFFFFFF;
+
+/// 4ビットマスク (VGA色等)
+export const ulong MASK_4BIT = 0x0F;
+
+// ============================================================
+// INVALID / センチネル値
+// ============================================================
+
+/// 無効インデックス (32ビット)
+export const ulong INVALID_U32 = 0xFFFFFFFF;
+
+/// 無効インデックス (64ビット)
+export const ulong INVALID_U64 = 0xFFFFFFFFFFFFFFFF;
+
+// ============================================================
+// GDTセグメントセレクタ
+// ============================================================
+
+/// カーネルコードセグメント (GDT entry 1)
+export const ulong KERNEL_CS = 0x08;
+
+/// カーネルデータセグメント (GDT entry 2)
+export const ulong KERNEL_DS = 0x10;
+
+/// ユーザーコードセグメント (GDT entry 3 | RPL3)
+export const ulong USER_CS = 0x1B;
+
+/// ユーザーデータセグメント (GDT entry 4 | RPL3)
+export const ulong USER_DS = 0x23;
+
+/// RFLAGS: 割り込みフラグ (IF)
+export const ulong RFLAGS_IF = 0x200;
+
+// ============================================================
+// VGAハードウェア定数
+// ============================================================
+
+/// VGAカーソルコントロールレジスタポート (CRTC Index)
+export const ulong VGA_CRTC_INDEX = 0x3D4;
+
+/// VGAカーソルデータレジスタポート (CRTC Data)
+export const ulong VGA_CRTC_DATA = 0x3D5;
+
+/// VGAカーソルハイバイトレジスタ
+export const ulong VGA_CURSOR_HIGH = 0x0E;
+
+/// VGAカーソルロウバイトレジスタ
+export const ulong VGA_CURSOR_LOW = 0x0F;
+
+/// VGAデフォルト色属性 (白文字/黒背景)
+export const ulong VGA_DEFAULT_COLOR = 0x07;
+
+/// ASCII数字ベース '0'
+export const ulong ASCII_DIGIT_BASE = 0x30;
+
+// ============================================================
+// ファイルパーミッション定数
+// ============================================================
+
+/// 全パーミッション (rwxrwxrwx = 0o777)
+export const ulong PERM_ALL = 0x1FF;
+
+/// ファイル標準パーミッション (rw-rw-rw- = 0o666)
+export const ulong PERM_FILE_DEFAULT = 0x1B6;
+
+// ============================================================
+// PCI設定空間定数
+// ============================================================
+
+/// PCI CONFIG_ADDRESS有効ビット
+export const ulong PCI_CONFIG_ENABLE = 0x80000000;
+
+/// PCIレジスタオフセットマスク
+export const ulong PCI_REG_MASK = 0xFC;
+
+/// PCI I/Oベースマスク
+export const ulong PCI_IO_BASE_MASK = 0xFFFFFFFC;
+
+// ============================================================
+// メモリアドレス定数
+// ============================================================
+
+/// TSSベースアドレス
+export const PhysAddr TSS_BASE_ADDR = 0x83000;
+
+/// ELFプロセスbrkデフォルト開始
+export const ulong ELF_BRK_DEFAULT = 0x800000;
+
+/// CWDバッファアドレス
+export const PhysAddr CWD_BUF_ADDR = 0x95600;
+
+/// タブ補完用ディレクトリバッファ
+export const PhysAddr TAB_DIR_BUF = 0xA5A000;
+
+/// ICMPエコー識別子
+export const ulong ICMP_ECHO_ID = 0x4321;
+
+/// VBEフレームバッファマップ開始
+export const PhysAddr FB_MAP_BASE = 0xC0000000;
+
+/// 2MiBページサイズ
+export const ulong PAGE_SIZE_2MB = 0x200000;

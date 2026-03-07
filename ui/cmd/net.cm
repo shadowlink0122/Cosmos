@@ -152,7 +152,7 @@ impl CmdNet {
                 icmp_type: ICMP_ECHO_REQUEST,
                 code: 0,
                 checksum: 0,
-                id: 0x4321,
+                id: ICMP_ECHO_ID,
                 seq: seq
             };
             pkt_pos = pkt_pos + Icmp::build(pkt_buf + pkt_pos, &icmp_hdr);
@@ -213,7 +213,7 @@ impl CmdNet {
                                 icmp_type: 0, code: 0, checksum: 0, id: 0, seq: 0
                             };
                             Icmp::parse(rx_buf + eth_len + ip_hdr_len, &rx_icmp);
-                            if (rx_icmp.icmp_type == ICMP_ECHO_REPLY && rx_icmp.id == 0x4321) {
+                            if (rx_icmp.icmp_type == ICMP_ECHO_REPLY && rx_icmp.id == ICMP_ECHO_ID) {
                                 ulong end_tick = PIT::get_ticks();
                                 ulong rtt_ms = (end_tick - start_tick) * 10;
 

@@ -315,9 +315,8 @@ impl Loader {
                 }
 
                 // ページマッピング（既存マッピングがあれば解放してから再マッピング）
-                ulong PAGE_MASK = 0xFFFFFFFFFFFFF000;
                 ulong page_start = p_vaddr & PAGE_MASK;
-                ulong page_end = (p_vaddr + p_memsz + 0xFFF) & PAGE_MASK;
+                ulong page_end = (p_vaddr + p_memsz + PAGE_OFFSET_MASK) & PAGE_MASK;
                 ulong num_pages = (page_end - page_start) / PAGE_SIZE;
 
                 w->puts("[exec]   pages: 0x" as void*);
@@ -406,7 +405,7 @@ impl Loader {
         }
 
         // data_endをページアラインメント
-        data_end = (data_end + 0xFFF) & ~0xFFF;
+        data_end = (data_end + PAGE_OFFSET_MASK) & ~PAGE_OFFSET_MASK;
 
         // ============================================================
         // インタープリターのPT_LOADセグメントをロード
@@ -431,9 +430,8 @@ impl Loader {
                     w->println("" as void*);
 
                     // ページマッピング
-                    ulong PAGE_MASK2 = 0xFFFFFFFFFFFFF000;
-                    ulong ip_start = ip_vaddr & PAGE_MASK2;
-                    ulong ip_end = (ip_vaddr + ip_memsz + 0xFFF) & PAGE_MASK2;
+                    ulong ip_start = ip_vaddr & PAGE_MASK;
+                    ulong ip_end = (ip_vaddr + ip_memsz + PAGE_OFFSET_MASK) & PAGE_MASK;
 
                     ulong ip_page = ip_start;
                     while (ip_page < ip_end) {

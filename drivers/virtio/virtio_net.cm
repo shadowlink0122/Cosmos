@@ -77,7 +77,7 @@ impl VirtioNet {
         Pci::enable_bus_master(dev.bus, dev.slot, dev.func);
 
         // 3. I/Oポートベースアドレスを取得 (BAR0の下位ビットを除去)
-        ulong io_base = dev.bar0 & 0xFFFFFFFC;
+        ulong io_base = dev.bar0 & PCI_IO_BASE_MASK;
 
         // NICステートに保存
         ulong* io_base_ptr = NIC_STATE_BASE as ulong*;
@@ -177,7 +177,7 @@ impl VirtioNet {
         while (i < max_rx) {
             ulong buf_addr = RX_BUF_BASE + i * VQ_BUF_SIZE;
             ulong desc_idx = Vq::alloc_desc(&rx_vq, buf_addr, VQ_BUF_SIZE, VRING_DESC_F_WRITE);
-            if (desc_idx != 0xFFFFFFFF) {
+            if (desc_idx != INVALID_U32) {
                 Vq::submit(&rx_vq, desc_idx);
             }
             i = i + 1;
@@ -224,7 +224,7 @@ impl VirtioNet {
 
         // 使用済みTXバッファを回収
         ulong used_desc = Vq::poll_used(&tx_vq);
-        while (used_desc != 0xFFFFFFFF) {
+        while (used_desc != INVALID_U32) {
             Vq::free_desc(&tx_vq, used_desc);
             used_desc = Vq::poll_used(&tx_vq);
         }
@@ -250,7 +250,7 @@ impl VirtioNet {
 
         // Descriptorを確保
         ulong desc_idx = Vq::alloc_desc(&tx_vq, buf_addr, total, 0);
-        if (desc_idx == 0xFFFFFFFF) {
+        if (desc_idx == INVALID_U32) {
             VirtioNet::save_tx_vq(&tx_vq);
             return 0;
         }
@@ -289,7 +289,7 @@ impl VirtioNet {
         // Used Ringからパケットを取得
         ulong saved_last = rx_vq.last_used_idx;
         ulong desc_idx = Vq::poll_used(&rx_vq);
-        if (desc_idx == 0xFFFFFFFF) {
+        if (desc_idx == INVALID_U32) {
             VirtioNet::save_rx_vq(&rx_vq);
             return 0;
         }
@@ -331,7 +331,7 @@ impl VirtioNet {
         // バッファを再投入 (descriptorをリサイクル)
         Vq::free_desc(&rx_vq, desc_idx);
         ulong new_desc = Vq::alloc_desc(&rx_vq, rx_buf_addr, VQ_BUF_SIZE, VRING_DESC_F_WRITE);
-        if (new_desc != 0xFFFFFFFF) {
+        if (new_desc != INVALID_U32) {
             Vq::submit(&rx_vq, new_desc);
         }
 

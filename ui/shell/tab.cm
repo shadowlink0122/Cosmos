@@ -71,7 +71,7 @@ void tab_complete_9p(ulong path_list, ulong* path_count,
     ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
     if (open_ok == 0) { Virtio9p::clunk(fid); return; }
 
-    ulong dir_buf = 0xA5A000;
+    ulong dir_buf = TAB_DIR_BUF;
     ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
 
     // readdirデータ解析

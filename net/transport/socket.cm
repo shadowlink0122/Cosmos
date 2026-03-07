@@ -96,7 +96,7 @@ impl Socket {
                 }
 
                 *state_ptr = TCP_CLOSED;
-                *conn_ptr = 0xFFFFFFFFFFFFFFFF;
+                *conn_ptr = INVALID_U64;
                 *recv_ptr = SOCK_RECV_BASE + i * SOCK_RECV_SLOT;
 
                 return Result::Ok(i as long);
@@ -338,7 +338,7 @@ impl Socket {
         ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
 
         ulong* conn_ptr = (base + SOCK_TCP_CONN) as ulong*;
-        if (*conn_ptr != 0xFFFFFFFFFFFFFFFF) {
+        if (*conn_ptr != INVALID_U64) {
             Tcp::close_conn(*conn_ptr);
         }
 

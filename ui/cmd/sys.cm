@@ -140,7 +140,7 @@ impl CmdSys {
     /// reboot コマンド: 再起動
     static void reboot() {
         Shell::writeln("Rebooting..." as void*);
-        outb(0x64, 0xFE);
+        outb(0x64, 0xFE);  // PS/2コントローラリセットコマンド
         __asm__(`cli; 1: hlt; jmp 1b`);
     }
 

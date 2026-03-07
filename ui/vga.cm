@@ -44,8 +44,8 @@ impl Vga {
     static void write_at(ulong row, ulong col, ulong ch, ulong color) {
         if (Vga::is_gui_mode() != 0) { return; }
         ulong offset = (row * VGA_COLS + col) * 2;
-        Mem::write_byte(VGA_BUF + offset, ch & 0xFF);
-        Mem::write_byte(VGA_BUF + offset + 1, color & 0xFF);
+        Mem::write_byte(VGA_BUF + offset, ch & MASK_8BIT);
+        Mem::write_byte(VGA_BUF + offset + 1, color & MASK_8BIT);
     }
 
     /// カーソル更新
@@ -54,10 +54,10 @@ impl Vga {
         ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
         ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
         ulong pos = (*row_ptr) * VGA_COLS + (*col_ptr);
-        outb(0x3D4, 0x0E);
-        outb(0x3D5, (pos >> 8) & 0xFF);
-        outb(0x3D4, 0x0F);
-        outb(0x3D5, pos & 0xFF);
+        outb(VGA_CRTC_INDEX, VGA_CURSOR_HIGH);
+        outb(VGA_CRTC_DATA, (pos >> 8) & MASK_8BIT);
+        outb(VGA_CRTC_INDEX, VGA_CURSOR_LOW);
+        outb(VGA_CRTC_DATA, pos & MASK_8BIT);
     }
 
     /// スクロールバック初期化
@@ -206,7 +206,7 @@ impl Vga {
             } else {
                 ulong c = 0;
                 while (c < VGA_COLS) {
-                    Vga::write_at(r, c, 32, 0x07);
+                    Vga::write_at(r, c, 32, VGA_DEFAULT_COLOR);
                     c = c + 1;
                 }
             }

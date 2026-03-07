@@ -72,8 +72,8 @@ impl MenuBar {
         ulong m1 = mm / 10;
         ulong m2 = mm % 10;
 
-        Font::draw_char(clock_x,      4, 0x30 + h1, MENUBAR_FG, MENUBAR_BG);
-        Font::draw_char(clock_x + 8,  4, 0x30 + h2, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_char(clock_x,      4, ASCII_DIGIT_BASE + h1, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_char(clock_x + 8,  4, ASCII_DIGIT_BASE + h2, MENUBAR_FG, MENUBAR_BG);
         Font::draw_char(clock_x + 16, 4, 0x3A,      MENUBAR_FG, MENUBAR_BG);  // ':'
         Font::draw_char(clock_x + 24, 4, 0x30 + m1, MENUBAR_FG, MENUBAR_BG);
         Font::draw_char(clock_x + 32, 4, 0x30 + m2, MENUBAR_FG, MENUBAR_BG);

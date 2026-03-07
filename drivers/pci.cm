@@ -86,7 +86,7 @@ impl Pci {
     /// PCI Configuration Spaceから32ビット値を読み取り
     static ulong read_config(ulong bus, ulong slot, ulong func, ulong offset) {
         // アドレス = 0x80000000 | (bus<<16) | (slot<<11) | (func<<8) | (offset & 0xFC)
-        ulong addr = 0x80000000
+        ulong addr = PCI_CONFIG_ENABLE
         | ((bus & 0xFF) << 16)
         | ((slot & 0x1F) << 11)
         | ((func & 0x07) << 8)
@@ -97,7 +97,7 @@ impl Pci {
 
     /// PCI Configuration Spaceに32ビット値を書き込み
     static void write_config(ulong bus, ulong slot, ulong func, ulong offset, ulong value) {
-        ulong addr = 0x80000000
+        ulong addr = PCI_CONFIG_ENABLE
         | ((bus & 0xFF) << 16)
         | ((slot & 0x1F) << 11)
         | ((func & 0x07) << 8)

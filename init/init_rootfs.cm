@@ -85,7 +85,7 @@ void build_hello_elf(ulong buf) {
     *pmemsz = 188;
     // p_align = 0x1000
     ulong* palign = (ph + 0x30) as ulong*;
-    *palign = 0x1000;
+    *palign = PAGE_SIZE;
 
     // コード (42バイト, offset 120 = 0x78)
     ulong code = buf + 120;
@@ -193,7 +193,7 @@ impl InitRootfs {
         build_hello_elf(data_page);
 
         // RamFSにファイル登録
-        Ino ino = RamFs::create("hello" as void*, S_IFREG | 0x1FF, data_page);
+        Ino ino = RamFs::create("hello" as void*, S_IFREG | PERM_ALL, data_page);
         if (ino == 0) {
             pr_err(w, "init_rootfs: failed to create hello in ramfs" as void*);
             return;

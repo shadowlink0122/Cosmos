@@ -100,7 +100,7 @@ impl Curl {
         // 3. TCP 3-way handshake
         ulong local_port = Curl::next_port();
         ulong conn_id = Curl::tcp_connect(remote_ip, port, local_port);
-        if (conn_id == 0xFFFFFFFF) {
+        if (conn_id == INVALID_U32) {
             Shell::writeln("curl: TCP connection failed" as void*);
             return;
         }
@@ -313,7 +313,7 @@ impl Curl {
             Result::Ok(v) => { cid = v; }
             Result::Err(e) => {}
         }
-        if (cid < 0) { return 0xFFFFFFFF; }
+        if (cid < 0) { return INVALID_U32; }
         ulong conn_id = cid as ulong;
 
         Tcp::bind_conn(conn_id, GUEST_IP, local_port);
@@ -383,7 +383,7 @@ impl Curl {
 
         // タイムアウト
         Tcp::close_conn(conn_id);
-        return 0xFFFFFFFF;
+        return INVALID_U32;
     }
 
     // ====================================================================

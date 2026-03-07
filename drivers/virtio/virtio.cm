@@ -142,7 +142,7 @@ impl Vq {
     /// Descriptorを1つ確保してデータバッファを設定
     /// 返り値: descriptor index (失敗時 0xFFFFFFFF)
     static ulong alloc_desc(Virtqueue* vq, ulong buf_addr, ulong buf_len, ulong flags) {
-        if (vq->num_free == 0) { return 0xFFFFFFFF; }
+        if (vq->num_free == 0) { return INVALID_U32; }
 
         ulong idx = vq->free_head;
         ulong desc_addr = vq->desc_base + idx * 16;
