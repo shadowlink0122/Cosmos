@@ -198,9 +198,9 @@ impl Vga {
                 while (c < VGA_COLS) {
                     ulong live_off = (live_row * VGA_COLS + c) * 2;
                     Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2,
-                                    Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off));
+                        Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off));
                     Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2 + 1,
-                                    Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off + 1));
+                        Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off + 1));
                     c = c + 1;
                 }
             } else {

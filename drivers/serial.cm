@@ -45,7 +45,7 @@ export ulong inb(ulong port) {
 
 /// UART 16550A シリアルポート
 export struct SerialPort {
-    ulong port;    // ベースI/Oポートアドレス (ulong化)
+    ulong port;  // ベースI/Oポートアドレス (ulong化)
 }
 
 // ============================================================
@@ -61,8 +61,8 @@ impl SerialPort {
         outb(port_addr + 1, 0x00);
         // DLAB設定 → ボーレート除数設定
         outb(port_addr + 3, 0x80);
-        outb(port_addr, 0x01);       // 除数低位 (115200bps)
-        outb(port_addr + 1, 0x00);   // 除数高位
+        outb(port_addr, 0x01);      // 除数低位 (115200bps)
+        outb(port_addr + 1, 0x00);  // 除数高位
         // 8N1: 8ビット, パリティなし, 1ストップビット
         outb(port_addr + 3, 0x03);
         // FIFO有効化（14バイトトリガ）

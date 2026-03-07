@@ -51,7 +51,7 @@ impl HttpServer {
     /// body: レスポンスボディ, body_len: ボディ長
     /// content_type: 0=text/plain, 1=text/html, 2=application/json
     static long add_route(ulong method, void* path, ulong path_len,
-                          void* body, ulong body_len, ulong content_type) {
+        void* body, ulong body_len, ulong content_type) {
         ulong i = 0;
         while (i < MAX_ROUTES) {
             ulong base = ROUTE_TABLE_BASE + i * ROUTE_ENTRY_SIZE;

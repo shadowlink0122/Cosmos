@@ -21,11 +21,11 @@ export void test_ethernet() {
 
     // Ethernetフレーム構築用ヘッダ
     EthHeader build_hdr = {
-        dst_hi: 0xFFFFFFFF,     // ブロードキャストMAC上位4B
-        dst_lo: 0xFFFF,         // ブロードキャストMAC下位2B
+        dst_hi: 0xFFFFFFFF,  // ブロードキャストMAC上位4B
+        dst_lo: 0xFFFF,      // ブロードキャストMAC下位2B
         src_hi: 0x52540012,
         src_lo: 0x3456,
-        eth_type: 0x0800,       // IPv4
+        eth_type: 0x0800,  // IPv4
         padding: 0
     };
 
@@ -47,7 +47,7 @@ export void test_ethernet() {
     EthHeader arp_hdr = {
         dst_hi: 0xFFFFFFFF, dst_lo: 0xFFFF,
         src_hi: 0x52540012, src_lo: 0x3456,
-        eth_type: 0x0806,       // ARP
+        eth_type: 0x0806,  // ARP
         padding: 0
     };
     Ethernet::build(frame_buf, &arp_hdr);

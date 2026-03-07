@@ -307,7 +307,7 @@ impl VirtioNet {
         ulong b6 = Mem::read_byte(desc_addr + 6);
         ulong b7 = Mem::read_byte(desc_addr + 7);
         ulong rx_buf_addr = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-                         | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
+        | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
 
         // virtio-netヘッダをスキップ
         ulong payload_addr = rx_buf_addr + VIRTIO_NET_HDR_SIZE;
@@ -361,53 +361,85 @@ impl VirtioNet {
     /// RX Virtqueue状態を固定メモリに保存
     static void save_rx_vq(Virtqueue* vq) {
         ulong base = NIC_STATE_BASE + 0x100;
-        ulong* p0 = base as ulong*;        *p0 = vq->desc_base;
-        ulong* p1 = (base + 8) as ulong*;  *p1 = vq->avail_base;
-        ulong* p2 = (base + 16) as ulong*; *p2 = vq->used_base;
-        ulong* p3 = (base + 24) as ulong*; *p3 = vq->size;
-        ulong* p4 = (base + 32) as ulong*; *p4 = vq->free_head;
-        ulong* p5 = (base + 40) as ulong*; *p5 = vq->num_free;
-        ulong* p6 = (base + 48) as ulong*; *p6 = vq->avail_idx;
-        ulong* p7 = (base + 56) as ulong*; *p7 = vq->last_used_idx;
+        ulong* p0 = base as ulong*;
+        *p0 = vq->desc_base;
+        ulong* p1 = (base + 8) as ulong*;
+        *p1 = vq->avail_base;
+        ulong* p2 = (base + 16) as ulong*;
+        *p2 = vq->used_base;
+        ulong* p3 = (base + 24) as ulong*;
+        *p3 = vq->size;
+        ulong* p4 = (base + 32) as ulong*;
+        *p4 = vq->free_head;
+        ulong* p5 = (base + 40) as ulong*;
+        *p5 = vq->num_free;
+        ulong* p6 = (base + 48) as ulong*;
+        *p6 = vq->avail_idx;
+        ulong* p7 = (base + 56) as ulong*;
+        *p7 = vq->last_used_idx;
     }
 
     /// RX Virtqueue状態を固定メモリから復元
     static void load_rx_vq(Virtqueue* vq) {
         ulong base = NIC_STATE_BASE + 0x100;
-        ulong* p0 = base as ulong*;        vq->desc_base = *p0;
-        ulong* p1 = (base + 8) as ulong*;  vq->avail_base = *p1;
-        ulong* p2 = (base + 16) as ulong*; vq->used_base = *p2;
-        ulong* p3 = (base + 24) as ulong*; vq->size = *p3;
-        ulong* p4 = (base + 32) as ulong*; vq->free_head = *p4;
-        ulong* p5 = (base + 40) as ulong*; vq->num_free = *p5;
-        ulong* p6 = (base + 48) as ulong*; vq->avail_idx = *p6;
-        ulong* p7 = (base + 56) as ulong*; vq->last_used_idx = *p7;
+        ulong* p0 = base as ulong*;
+        vq->desc_base = *p0;
+        ulong* p1 = (base + 8) as ulong*;
+        vq->avail_base = *p1;
+        ulong* p2 = (base + 16) as ulong*;
+        vq->used_base = *p2;
+        ulong* p3 = (base + 24) as ulong*;
+        vq->size = *p3;
+        ulong* p4 = (base + 32) as ulong*;
+        vq->free_head = *p4;
+        ulong* p5 = (base + 40) as ulong*;
+        vq->num_free = *p5;
+        ulong* p6 = (base + 48) as ulong*;
+        vq->avail_idx = *p6;
+        ulong* p7 = (base + 56) as ulong*;
+        vq->last_used_idx = *p7;
     }
 
     /// TX Virtqueue状態を固定メモリに保存
     static void save_tx_vq(Virtqueue* vq) {
         ulong base = NIC_STATE_BASE + 0x200;
-        ulong* p0 = base as ulong*;        *p0 = vq->desc_base;
-        ulong* p1 = (base + 8) as ulong*;  *p1 = vq->avail_base;
-        ulong* p2 = (base + 16) as ulong*; *p2 = vq->used_base;
-        ulong* p3 = (base + 24) as ulong*; *p3 = vq->size;
-        ulong* p4 = (base + 32) as ulong*; *p4 = vq->free_head;
-        ulong* p5 = (base + 40) as ulong*; *p5 = vq->num_free;
-        ulong* p6 = (base + 48) as ulong*; *p6 = vq->avail_idx;
-        ulong* p7 = (base + 56) as ulong*; *p7 = vq->last_used_idx;
+        ulong* p0 = base as ulong*;
+        *p0 = vq->desc_base;
+        ulong* p1 = (base + 8) as ulong*;
+        *p1 = vq->avail_base;
+        ulong* p2 = (base + 16) as ulong*;
+        *p2 = vq->used_base;
+        ulong* p3 = (base + 24) as ulong*;
+        *p3 = vq->size;
+        ulong* p4 = (base + 32) as ulong*;
+        *p4 = vq->free_head;
+        ulong* p5 = (base + 40) as ulong*;
+        *p5 = vq->num_free;
+        ulong* p6 = (base + 48) as ulong*;
+        *p6 = vq->avail_idx;
+        ulong* p7 = (base + 56) as ulong*;
+        *p7 = vq->last_used_idx;
     }
 
     /// TX Virtqueue状態を固定メモリから復元
     static void load_tx_vq(Virtqueue* vq) {
         ulong base = NIC_STATE_BASE + 0x200;
-        ulong* p0 = base as ulong*;        vq->desc_base = *p0;
-        ulong* p1 = (base + 8) as ulong*;  vq->avail_base = *p1;
-        ulong* p2 = (base + 16) as ulong*; vq->used_base = *p2;
-        ulong* p3 = (base + 24) as ulong*; vq->size = *p3;
-        ulong* p4 = (base + 32) as ulong*; vq->free_head = *p4;
-        ulong* p5 = (base + 40) as ulong*; vq->num_free = *p5;
-        ulong* p6 = (base + 48) as ulong*; vq->avail_idx = *p6;
-        ulong* p7 = (base + 56) as ulong*; vq->last_used_idx = *p7;
+        ulong* p0 = base as ulong*;
+        vq->desc_base = *p0;
+        ulong* p1 = (base + 8) as ulong*;
+        vq->avail_base = *p1;
+        ulong* p2 = (base + 16) as ulong*;
+        vq->used_base = *p2;
+        ulong* p3 = (base + 24) as ulong*;
+        vq->size = *p3;
+        ulong* p4 = (base + 32) as ulong*;
+        vq->free_head = *p4;
+        ulong* p5 = (base + 40) as ulong*;
+        vq->num_free = *p5;
+        ulong* p6 = (base + 48) as ulong*;
+        vq->avail_idx = *p6;
+        ulong* p7 = (base + 56) as ulong*;
+        vq->last_used_idx = *p7;
     }
 
     /// MACアドレス表示ヘルパー
@@ -422,7 +454,7 @@ impl VirtioNet {
             else { serial->putc((87 + hi) as utiny); }
             if (lo < 10) { serial->putc((48 + lo) as utiny); }
             else { serial->putc((87 + lo) as utiny); }
-            if (i < 5) { serial->putc(58 as utiny); } // ':'
+            if (i < 5) { serial->putc(58 as utiny); }  // ':'
             i = i + 1;
         }
     }

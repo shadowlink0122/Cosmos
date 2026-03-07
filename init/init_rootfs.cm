@@ -141,35 +141,34 @@ void build_hello_elf(ulong buf) {
 
     // メッセージデータ (26バイト, offset 162)
     // "Hello from Cosmo Linux!\n\n"
-    ulong msg = code + 42;  // offset 162
-    Mem::write_byte(msg + 0, 72);   // 'H'
-    Mem::write_byte(msg + 1, 101);  // 'e'
-    Mem::write_byte(msg + 2, 108);  // 'l'
-    Mem::write_byte(msg + 3, 108);  // 'l'
-    Mem::write_byte(msg + 4, 111);  // 'o'
-    Mem::write_byte(msg + 5, 32);   // ' '
-    Mem::write_byte(msg + 6, 102);  // 'f'
-    Mem::write_byte(msg + 7, 114);  // 'r'
-    Mem::write_byte(msg + 8, 111);  // 'o'
-    Mem::write_byte(msg + 9, 109);  // 'm'
-    Mem::write_byte(msg + 10, 32);  // ' '
-    Mem::write_byte(msg + 11, 67);  // 'C'
-    Mem::write_byte(msg + 12, 111); // 'o'
-    Mem::write_byte(msg + 13, 115); // 's'
-    Mem::write_byte(msg + 14, 109); // 'm'
-    Mem::write_byte(msg + 15, 111); // 'o'
-    Mem::write_byte(msg + 16, 32);  // ' '
-    Mem::write_byte(msg + 17, 76);  // 'L'
-    Mem::write_byte(msg + 18, 105); // 'i'
-    Mem::write_byte(msg + 19, 110); // 'n'
-    Mem::write_byte(msg + 20, 117); // 'u'
-    Mem::write_byte(msg + 21, 120); // 'x'
-    Mem::write_byte(msg + 22, 33);  // '!'
-    Mem::write_byte(msg + 23, 10);  // '\n'
-    Mem::write_byte(msg + 24, 10);  // '\n'
-    Mem::write_byte(msg + 25, 0);   // NUL
+    ulong msg = code + 42;           // offset 162
+    Mem::write_byte(msg + 0, 72);    // 'H'
+    Mem::write_byte(msg + 1, 101);   // 'e'
+    Mem::write_byte(msg + 2, 108);   // 'l'
+    Mem::write_byte(msg + 3, 108);   // 'l'
+    Mem::write_byte(msg + 4, 111);   // 'o'
+    Mem::write_byte(msg + 5, 32);    // ' '
+    Mem::write_byte(msg + 6, 102);   // 'f'
+    Mem::write_byte(msg + 7, 114);   // 'r'
+    Mem::write_byte(msg + 8, 111);   // 'o'
+    Mem::write_byte(msg + 9, 109);   // 'm'
+    Mem::write_byte(msg + 10, 32);   // ' '
+    Mem::write_byte(msg + 11, 67);   // 'C'
+    Mem::write_byte(msg + 12, 111);  // 'o'
+    Mem::write_byte(msg + 13, 115);  // 's'
+    Mem::write_byte(msg + 14, 109);  // 'm'
+    Mem::write_byte(msg + 15, 111);  // 'o'
+    Mem::write_byte(msg + 16, 32);   // ' '
+    Mem::write_byte(msg + 17, 76);   // 'L'
+    Mem::write_byte(msg + 18, 105);  // 'i'
+    Mem::write_byte(msg + 19, 110);  // 'n'
+    Mem::write_byte(msg + 20, 117);  // 'u'
+    Mem::write_byte(msg + 21, 120);  // 'x'
+    Mem::write_byte(msg + 22, 33);   // '!'
+    Mem::write_byte(msg + 23, 10);   // '\n'
+    Mem::write_byte(msg + 24, 10);   // '\n'
+    Mem::write_byte(msg + 25, 0);    // NUL
 }
-
 
 // ============================================================
 // InitRootfs — 初期rootfs構築

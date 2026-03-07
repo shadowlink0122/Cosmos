@@ -303,10 +303,10 @@ impl Fb {
 
     /// 矩形枠 (塗りつぶしなし)
     static void draw_rect(ulong x, ulong y, ulong w, ulong h, ulong color) {
-        Fb::hline(x, y, w, color);           // 上辺
-        Fb::hline(x, y + h - 1, w, color);   // 下辺
-        Fb::vline(x, y, h, color);            // 左辺
-        Fb::vline(x + w - 1, y, h, color);    // 右辺
+        Fb::hline(x, y, w, color);          // 上辺
+        Fb::hline(x, y + h - 1, w, color);  // 下辺
+        Fb::vline(x, y, h, color);          // 左辺
+        Fb::vline(x + w - 1, y, h, color);  // 右辺
     }
 
     /// バックバッファ → VRAM フリップ

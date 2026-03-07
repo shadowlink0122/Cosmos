@@ -164,4 +164,3 @@ export ulong streq(void* a_ptr, void* b_ptr) {
     if (result == 0) { return 1; }
     return 0;
 }
-

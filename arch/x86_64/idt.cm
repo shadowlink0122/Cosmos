@@ -157,11 +157,11 @@ export void exc_page_fault() {
             // スタックをTSS RSP0にリセット（例外フレームをすべて破棄）
             movq ${r:tss_rsp0}, %rsp;
             // iretqフレーム構築: [SS, RSP, RFLAGS, CS, RIP]
-            pushq $$0x10;              // SS = kernel DS
-            pushq ${r:tss_rsp0};      // RSP = kernel stack
-            pushq $$0x200;             // RFLAGS = IF=1
-            pushq $$0x08;              // CS = kernel CS
-            pushq ${r:idle_rip};       // RIP = pf_idle_loop
+            pushq $$0x10;         // SS = kernel DS
+            pushq ${r:tss_rsp0};  // RSP = kernel stack
+            pushq $$0x200;        // RFLAGS = IF=1
+            pushq $$0x08;         // CS = kernel CS
+            pushq ${r:idle_rip};  // RIP = pf_idle_loop
             iretq
         `);
     }

@@ -38,7 +38,7 @@ export const ulong VIRTIO_STATUS_DRIVER_OK    = 4;
 export const ulong VIRTIO_STATUS_FEATURES_OK  = 8;
 
 // virtio-net Feature bits
-export const ulong VIRTIO_NET_F_MAC           = 32;  // bit 5 → 1<<5 = 32
+export const ulong VIRTIO_NET_F_MAC           = 32;     // bit 5 → 1<<5 = 32
 export const ulong VIRTIO_NET_F_STATUS        = 65536;  // bit 16
 
 // ============================================================
@@ -74,14 +74,14 @@ export const ulong VQ_BUF_SIZE  = 2048;
 
 /// Virtqueue管理情報
 export struct Virtqueue {
-    ulong desc_base;       // Descriptor Tableのアドレス
-    ulong avail_base;      // Available Ringのアドレス
-    ulong used_base;       // Used Ringのアドレス
-    ulong size;            // キューサイズ
-    ulong free_head;       // 空きDescriptorリストの先頭
-    ulong num_free;        // 空きDescriptor数
-    ulong avail_idx;       // Available Ring次書き込みインデックス
-    ulong last_used_idx;   // 最後に処理したUsed Ringインデックス
+    ulong desc_base;      // Descriptor Tableのアドレス
+    ulong avail_base;     // Available Ringのアドレス
+    ulong used_base;      // Used Ringのアドレス
+    ulong size;           // キューサイズ
+    ulong free_head;      // 空きDescriptorリストの先頭
+    ulong num_free;       // 空きDescriptor数
+    ulong avail_idx;      // Available Ring次書き込みインデックス
+    ulong last_used_idx;  // 最後に処理したUsed Ringインデックス
 }
 
 // ============================================================

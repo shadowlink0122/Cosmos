@@ -134,8 +134,8 @@ impl SyscallFork {
         // frame_top + 112 = RCX(RIP)
         ulong frame_top = 0;
         __asm__(`
-            movq 0x96000, %rax;   // カーネルRSP base
-            subq $$120, %rax;     // 15 pushes * 8 = 120
+            movq 0x96000, %rax;  // カーネルRSP base
+            subq $$120, %rax;    // 15 pushes * 8 = 120
             movq %rax, ${=r:frame_top}
         `);
 
@@ -296,7 +296,7 @@ impl SyscallFork {
         }
         Mem::write_byte(fname_tmp + fi2, 0);
 
-        // RamFS/9pFSからファイルの先頭128バイトを読む  
+        // RamFS/9pFSからファイルの先頭128バイトを読む
         ulong hdr_read = 0;
         Ino sheb_ino = RamFs::lookup(fname_tmp as void*);
         if (sheb_ino != 0) {
@@ -458,23 +458,23 @@ void fork_child_entry() {
         xorq %rax, %rax;
 
         // 保存済みレジスタ復元
-        movq 0x96210, %rcx;   // RIP
-        movq 0x96218, %r11;   // RFLAGS
-        movq 0x96220, %rdi;   // RDI
-        movq 0x96228, %rsi;   // RSI
-        movq 0x96230, %rdx;   // RDX
-        movq 0x96238, %r10;   // R10
-        movq 0x96240, %r8;    // R8
-        movq 0x96248, %r9;    // R9
-        movq 0x96250, %rbx;   // RBX
-        movq 0x96258, %rbp;   // RBP
-        movq 0x96260, %r12;   // R12
-        movq 0x96268, %r13;   // R13
-        movq 0x96270, %r14;   // R14
-        movq 0x96278, %r15;   // R15
+        movq 0x96210, %rcx;  // RIP
+        movq 0x96218, %r11;  // RFLAGS
+        movq 0x96220, %rdi;  // RDI
+        movq 0x96228, %rsi;  // RSI
+        movq 0x96230, %rdx;  // RDX
+        movq 0x96238, %r10;  // R10
+        movq 0x96240, %r8;   // R8
+        movq 0x96248, %r9;   // R9
+        movq 0x96250, %rbx;  // RBX
+        movq 0x96258, %rbp;  // RBP
+        movq 0x96260, %r12;  // R12
+        movq 0x96268, %r13;  // R13
+        movq 0x96270, %r14;  // R14
+        movq 0x96278, %r15;  // R15
 
         // RSP復元
-        movq 0x96200, %rsp;   // saved_user_rsp
+        movq 0x96200, %rsp;  // saved_user_rsp
 
         sysretq
     `);

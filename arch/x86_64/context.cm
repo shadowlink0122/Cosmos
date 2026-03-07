@@ -35,10 +35,10 @@ void usermode_trampoline() {
 
         // FS_BASE MSRを設定 (iretq直前に必ず最後に実行)
         // DS/ES書き込み後にwrmsrすることで、FS_BASE値が確実に保持される
-        movl $$0xC0000100, %ecx;     // IA32_FS_BASE
-        movq 0x96100, %rax;          // TLS_BASE値読み出し
+        movl $$0xC0000100, %ecx;  // IA32_FS_BASE
+        movq 0x96100, %rax;       // TLS_BASE値読み出し
         movq %rax, %rdx;
-        shrq $$32, %rdx;             // EDX = 上位32bit
+        shrq $$32, %rdx;  // EDX = 上位32bit
         wrmsr;
 
         // iretqでRing3に遷移
@@ -126,14 +126,15 @@ impl Context {
         ulong sp = stack_top;
 
         // iretqフレーム（逆順にpush）
-        sp = sp - 8; ulong* p_ss = sp as ulong*;     *p_ss = 0x1B;        // SS (User DS | RPL=3)
-        sp = sp - 8; ulong* p_rsp = sp as ulong*;    *p_rsp = user_rsp;   // User RSP
-        sp = sp - 8; ulong* p_rfl = sp as ulong*;    *p_rfl = 0x200;      // RFLAGS (IF=1)
-        sp = sp - 8; ulong* p_cs = sp as ulong*;     *p_cs = 0x23;        // CS (User CS | RPL=3)
-        sp = sp - 8; ulong* p_rip = sp as ulong*;    *p_rip = entry_fn;   // User RIP
+        sp = sp - 8; ulong* p_ss = sp as ulong*;     *p_ss = 0x1B;       // SS (User DS | RPL=3)
+        sp = sp - 8; ulong* p_rsp = sp as ulong*;    *p_rsp = user_rsp;  // User RSP
+        sp = sp - 8; ulong* p_rfl = sp as ulong*;    *p_rfl = 0x200;     // RFLAGS (IF=1)
+        sp = sp - 8; ulong* p_cs = sp as ulong*;     *p_cs = 0x23;       // CS (User CS | RPL=3)
+        sp = sp - 8; ulong* p_rip = sp as ulong*;    *p_rip = entry_fn;  // User RIP
 
         // switch_toのretで呼ばれるトランポリンのアドレス
-        sp = sp - 8; ulong* p_tramp = sp as ulong*;
+        sp = sp - 8;
+        ulong* p_tramp = sp as ulong*;
         *p_tramp = usermode_trampoline as ulong;
 
         proc->context.rsp = sp;

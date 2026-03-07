@@ -214,7 +214,7 @@ impl Tcp {
     }
 
     static void handle_syn(ulong conn_id, ulong remote_addr,
-                           ulong remote_port, ulong seq) {
+        ulong remote_port, ulong seq) {
         if (conn_id >= MAX_TCP_CONNS) { return; }
         ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
         ulong* rport_ptr = (base + 16) as ulong*;

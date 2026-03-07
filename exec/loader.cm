@@ -37,7 +37,7 @@ const VirtAddr ELF_LOAD_BASE = 0x400000;
 const VirtAddr PIE_LOAD_BASE = 0x400000;
 
 /// ELFデータ読み込み一時バッファ (DATA_POOLの後に配置)
-const PhysAddr ELF_TMP_BUF = 0x4000000;   // 64MB地点 (DATA_POOL=17-49MBと重ならない)
+const PhysAddr ELF_TMP_BUF = 0x4000000;  // 64MB地点 (DATA_POOL=17-49MBと重ならない)
 // ELFバッファ最大サイズ (64MB — cc1/cmなど大型バイナリ対応)
 const ulong ELF_MAX_SIZE = 0x4000000;
 
@@ -267,8 +267,6 @@ impl Loader {
             pi = pi + 1;
         }
 
-
-
         // PMMを取得
         ulong* pmm_ptr = LOADER_PMM_PTR as ulong*;
         BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
@@ -286,7 +284,6 @@ impl Loader {
         while (i < phnum) {
             ulong ph_addr = ELF_TMP_BUF + phoff + i * phentsize;
             ulong p_type = Elf::ph_type(ph_addr);
-
 
             if (p_type == PT_LOAD) {
                 ulong p_offset = Elf::ph_offset(ph_addr);
@@ -390,8 +387,6 @@ impl Loader {
                     `);
                     j = j + 1;
                 }
-
-
 
                 // data_end を更新
                 ulong seg_end = p_vaddr + p_memsz;
@@ -524,7 +519,7 @@ impl Loader {
         if (tls_phys != 0) {
             memzero(tls_phys as void*, PAGE_SIZE);
             pt.map_page(tls_base_vaddr, tls_phys, 7, pmm);  // PRESENT|WRITE|USER
-            __asm__(`movq %cr3, %rax; movq %rax, %cr3`);  // TLBフラッシュ
+            __asm__(`movq %cr3, %rax; movq %rax, %cr3`);    // TLBフラッシュ
 
             // セルフポインタ: %fs:0 → TLSブロック自身のアドレス
             ulong* tls_self = tls_base_vaddr as ulong*;
@@ -653,53 +648,67 @@ impl Loader {
         ulong env_count = 0;
 
         // PATH
-        sp = sp - 80; sp = sp & ~7;
+        sp = sp - 80;
+        sp = sp & ~7;
         ulong env_path = sp;
         Loader::copy_str(sp, "PATH=/usr/local/bin:/usr/bin:/bin:/sbin" as void*);
         ulong* env_s0 = (env_strs_buf + env_count * 8) as ulong*;
-        *env_s0 = env_path; env_count = env_count + 1;
+        *env_s0 = env_path;
+        env_count = env_count + 1;
 
         // HOME
-        sp = sp - 16; sp = sp & ~7;
+        sp = sp - 16;
+        sp = sp & ~7;
         ulong env_home = sp;
         Loader::copy_str(sp, "HOME=/root" as void*);
         ulong* env_s1 = (env_strs_buf + env_count * 8) as ulong*;
-        *env_s1 = env_home; env_count = env_count + 1;
+        *env_s1 = env_home;
+        env_count = env_count + 1;
 
         // SHELL
-        sp = sp - 24; sp = sp & ~7;
+        sp = sp - 24;
+        sp = sp & ~7;
         ulong env_shell = sp;
         Loader::copy_str(sp, "SHELL=/bin/sh" as void*);
         ulong* env_s2 = (env_strs_buf + env_count * 8) as ulong*;
-        *env_s2 = env_shell; env_count = env_count + 1;
+        *env_s2 = env_shell;
+        env_count = env_count + 1;
 
         // USER
-        sp = sp - 16; sp = sp & ~7;
+        sp = sp - 16;
+        sp = sp & ~7;
         ulong env_user = sp;
         Loader::copy_str(sp, "USER=root" as void*);
         ulong* env_s3 = (env_strs_buf + env_count * 8) as ulong*;
-        *env_s3 = env_user; env_count = env_count + 1;
+        *env_s3 = env_user;
+        env_count = env_count + 1;
 
         // TERM
-        sp = sp - 24; sp = sp & ~7;
+        sp = sp - 24;
+        sp = sp & ~7;
         ulong env_term = sp;
         Loader::copy_str(sp, "TERM=linux" as void*);
         ulong* env_s4 = (env_strs_buf + env_count * 8) as ulong*;
-        *env_s4 = env_term; env_count = env_count + 1;
+        *env_s4 = env_term;
+        env_count = env_count + 1;
 
         // LANG
-        sp = sp - 24; sp = sp & ~7;
+        sp = sp - 24;
+        sp = sp & ~7;
         ulong env_lang = sp;
         Loader::copy_str(sp, "LANG=C.UTF-8" as void*);
         ulong* env_s5 = (env_strs_buf + env_count * 8) as ulong*;
-        *env_s5 = env_lang; env_count = env_count + 1;
+        *env_s5 = env_lang;
+        env_count = env_count + 1;
 
         // PWD
-        sp = sp - 16; sp = sp & ~7;
+        sp = sp - 16;
+        sp = sp & ~7;
         ulong env_pwd = sp;
         Loader::copy_str(sp, "PWD=/" as void*);
         ulong* env_s6 = (env_strs_buf + env_count * 8) as ulong*;
-        *env_s6 = env_pwd; env_count = env_count + 1;
+        *env_s6 = env_pwd;
+        env_count = env_count + 1;
 
         // ============================================================
         // Phase 2: ポインタテーブル（文字列の後、低アドレス方向に配置）
@@ -798,8 +807,6 @@ impl Loader {
 
         // スケジューラに登録
         Sched::add(proc);
-
-
 
         return new_pid;
     }

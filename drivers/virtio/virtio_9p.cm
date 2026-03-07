@@ -63,18 +63,18 @@ export const ulong P9_O_TRUNC  = 0x200;
 // ドライバ状態 (固定メモリ)
 // ============================================================
 
-const ulong V9P_STATE_BASE = 0x1400000;   // ドライバ状態 (ELFバッファ/RamFS後)
+const ulong V9P_STATE_BASE = 0x1400000;  // ドライバ状態 (ELFバッファ/RamFS後)
 // offset 0: io_base
 // offset 8: initialized (1=ready)
 // offset 16: tag_len (マウントタグ長)
 // offset 24-87: mount_tag (最大64バイト)
 
-const ulong V9P_VQ_STATE = 0x1400100;     // virtqueue状態保存
-const ulong V9P_VQ_BASE = 0x1500000;      // virtqueue メモリ
-const ulong V9P_TX_BUF = 0x1600000;       // 送信バッファ
-const ulong V9P_RX_BUF = 0x1610000;       // 受信バッファ
+const ulong V9P_VQ_STATE = 0x1400100;  // virtqueue状態保存
+const ulong V9P_VQ_BASE = 0x1500000;   // virtqueue メモリ
+const ulong V9P_TX_BUF = 0x1600000;    // 送信バッファ
+const ulong V9P_RX_BUF = 0x1610000;    // 受信バッファ
 
-const ulong V9P_MSIZE = 8192;           // 最大メッセージサイズ
+const ulong V9P_MSIZE = 8192;  // 最大メッセージサイズ
 
 // ============================================================
 // Virtio9p ドライバ
@@ -357,8 +357,8 @@ impl Virtio9p {
 
         Virtio9p::write_le32(tx, msg_size);
         Mem::write_byte(tx + 4, P9_TATTACH);
-        Virtio9p::write_le16(tx + 5, 0);     // tag=0
-        Virtio9p::write_le32(tx + 7, 0);     // fid=0 (ルート)
+        Virtio9p::write_le16(tx + 5, 0);            // tag=0
+        Virtio9p::write_le32(tx + 7, 0);            // fid=0 (ルート)
         Virtio9p::write_le32(tx + 11, 0xFFFFFFFF);  // afid=NOFID
         // uname
         Virtio9p::write_le16(tx + 15, uname_len);
@@ -594,7 +594,7 @@ impl Virtio9p {
 
         Virtio9p::write_le32(tx, msg_size);
         Mem::write_byte(tx + 4, P9_TCLUNK);
-        Virtio9p::write_le16(tx + 5, 5);   // tag=5
+        Virtio9p::write_le16(tx + 5, 5);  // tag=5
         Virtio9p::write_le32(tx + 7, fid);
 
         ulong rx = V9P_RX_BUF;
@@ -617,7 +617,7 @@ impl Virtio9p {
 
         Virtio9p::write_le32(tx, msg_size);
         Mem::write_byte(tx + 4, P9_TGETATTR);
-        Virtio9p::write_le16(tx + 5, 6);   // tag=6
+        Virtio9p::write_le16(tx + 5, 6);  // tag=6
         Virtio9p::write_le32(tx + 7, fid);
         // request_mask: P9_GETATTR_BASIC = 0x000007FF (全基本属性)
         Virtio9p::write_le32(tx + 11, 0x7FF);
@@ -866,25 +866,41 @@ impl Virtio9p {
 
     static void save_vq(Virtqueue* vq) {
         ulong base = V9P_VQ_STATE;
-        ulong* p0 = base as ulong*;        *p0 = vq->desc_base;
-        ulong* p1 = (base + 8) as ulong*;  *p1 = vq->avail_base;
-        ulong* p2 = (base + 16) as ulong*; *p2 = vq->used_base;
-        ulong* p3 = (base + 24) as ulong*; *p3 = vq->size;
-        ulong* p4 = (base + 32) as ulong*; *p4 = vq->free_head;
-        ulong* p5 = (base + 40) as ulong*; *p5 = vq->num_free;
-        ulong* p6 = (base + 48) as ulong*; *p6 = vq->avail_idx;
-        ulong* p7 = (base + 56) as ulong*; *p7 = vq->last_used_idx;
+        ulong* p0 = base as ulong*;
+        *p0 = vq->desc_base;
+        ulong* p1 = (base + 8) as ulong*;
+        *p1 = vq->avail_base;
+        ulong* p2 = (base + 16) as ulong*;
+        *p2 = vq->used_base;
+        ulong* p3 = (base + 24) as ulong*;
+        *p3 = vq->size;
+        ulong* p4 = (base + 32) as ulong*;
+        *p4 = vq->free_head;
+        ulong* p5 = (base + 40) as ulong*;
+        *p5 = vq->num_free;
+        ulong* p6 = (base + 48) as ulong*;
+        *p6 = vq->avail_idx;
+        ulong* p7 = (base + 56) as ulong*;
+        *p7 = vq->last_used_idx;
     }
 
     static void load_vq(Virtqueue* vq) {
         ulong base = V9P_VQ_STATE;
-        ulong* p0 = base as ulong*;        vq->desc_base = *p0;
-        ulong* p1 = (base + 8) as ulong*;  vq->avail_base = *p1;
-        ulong* p2 = (base + 16) as ulong*; vq->used_base = *p2;
-        ulong* p3 = (base + 24) as ulong*; vq->size = *p3;
-        ulong* p4 = (base + 32) as ulong*; vq->free_head = *p4;
-        ulong* p5 = (base + 40) as ulong*; vq->num_free = *p5;
-        ulong* p6 = (base + 48) as ulong*; vq->avail_idx = *p6;
-        ulong* p7 = (base + 56) as ulong*; vq->last_used_idx = *p7;
+        ulong* p0 = base as ulong*;
+        vq->desc_base = *p0;
+        ulong* p1 = (base + 8) as ulong*;
+        vq->avail_base = *p1;
+        ulong* p2 = (base + 16) as ulong*;
+        vq->used_base = *p2;
+        ulong* p3 = (base + 24) as ulong*;
+        vq->size = *p3;
+        ulong* p4 = (base + 32) as ulong*;
+        vq->free_head = *p4;
+        ulong* p5 = (base + 40) as ulong*;
+        vq->num_free = *p5;
+        ulong* p6 = (base + 48) as ulong*;
+        vq->avail_idx = *p6;
+        ulong* p7 = (base + 56) as ulong*;
+        vq->last_used_idx = *p7;
     }
 }

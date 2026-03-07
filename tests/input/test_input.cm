@@ -36,7 +36,7 @@ export void test_input() {
 
     // バッファに直接書き込み ('A' = 65)
     Mem::write_byte(0x93000, 65);  // KBD_BUF_ADDR[0] = 'A'
-    *tail_ptr = 1;  // tail=1にすることでデータあり
+    *tail_ptr = 1;                 // tail=1にすることでデータあり
     ch = Kbd::getchar();
     KTest::assert_eq(ch, 65, "KBD read 'A' from buffer" as void*);
 
@@ -44,8 +44,8 @@ export void test_input() {
     KTest::assert_eq(*head_ptr, *tail_ptr, "KBD buffer empty after read" as void*);
 
     // 複数バイト書き込みテスト
-    Mem::write_byte(0x93000, 72);  // 'H'
-    Mem::write_byte(0x93001, 105); // 'i'
+    Mem::write_byte(0x93000, 72);   // 'H'
+    Mem::write_byte(0x93001, 105);  // 'i'
     *head_ptr = 0;
     *tail_ptr = 2;
     ulong c1 = Kbd::getchar();
@@ -104,7 +104,7 @@ export void test_input() {
     KTest::assert_eq(pic2_mask & 0x10, 0, "PIC2 IRQ12 unmasked" as void*);
 
     // --- マウスパケット状態 テスト ---
-    ulong* mouse_phase = 0x93310 as ulong*;  // MOUSE_PHASE_ADDR
+    ulong* mouse_phase = 0x93310 as ulong*;   // MOUSE_PHASE_ADDR
     ulong* mouse_scroll = 0x93318 as ulong*;  // MOUSE_SCROLL_ADDR
     ulong* mouse_devid = 0x93320 as ulong*;   // MOUSE_DEVID_ADDR
     ulong* mouse_pktsz = 0x93328 as ulong*;   // MOUSE_PKTSZ_ADDR

@@ -22,17 +22,17 @@ void wb(ulong a, ulong v) {
 }
 
 // メモリレイアウト（0x1000000 = 16MBから配置: ELF vaddr 0x400000との衝突回避）
-const PhysAddr INO_BASE  = 0x1000000;   // inode配列 (256 * 56 = 14KB)
-const PhysAddr DIR_BASE  = 0x1004000;   // ディレクトリ配列 (64 * 32 = 2KB)
-const PhysAddr NAME_BASE = 0x1005000;   // ファイル名領域 (64 * 32 = 2KB)
-const PhysAddr NEXT_INO  = 0x1006000;   // 次のinode番号
-const PhysAddr DIR_CNT   = 0x1006008;   // ディレクトリエントリ数
+const PhysAddr INO_BASE  = 0x1000000;  // inode配列 (256 * 56 = 14KB)
+const PhysAddr DIR_BASE  = 0x1004000;  // ディレクトリ配列 (64 * 32 = 2KB)
+const PhysAddr NAME_BASE = 0x1005000;  // ファイル名領域 (64 * 32 = 2KB)
+const PhysAddr NEXT_INO  = 0x1006000;  // 次のinode番号
+const PhysAddr DIR_CNT   = 0x1006008;  // ディレクトリエントリ数
 
 // ファイルデータバッファプール (32MB領域)
 // MAX_FILE_SIZE=2MBで最大16ファイル = 32MB
-const PhysAddr DATA_POOL_BASE = 0x1100000;   // 17MB地点
-const PhysAddr DATA_POOL_NEXT = 0x1006010;   // 次の割り当てオフセット
-const ulong    DATA_POOL_SIZE = 0x2000000;    // 32MB
+const PhysAddr DATA_POOL_BASE = 0x1100000;  // 17MB地点
+const PhysAddr DATA_POOL_NEXT = 0x1006010;  // 次の割り当てオフセット
+const ulong    DATA_POOL_SIZE = 0x2000000;  // 32MB
 
 // 内部ヘルパー
 ulong find_ino(Ino ino) {
@@ -69,12 +69,18 @@ Ino alloc_ino(ulong mode, ulong data) {
             ulong* ni = NEXT_INO as ulong*;
             Ino ino = (*ni) as long;
             *ni = *ni + 1;
-            ulong* q0 = (INO_BASE + o) as ulong*;      *q0 = ino as ulong;
-            ulong* q1 = (INO_BASE + o + 8) as ulong*;  *q1 = mode;
-            ulong* q2 = (INO_BASE + o + 16) as ulong*; *q2 = 0;
-            ulong* q3 = (INO_BASE + o + 24) as ulong*; *q3 = 1;
-            ulong* q4 = (INO_BASE + o + 32) as ulong*; *q4 = data;
-            ulong* q5 = (INO_BASE + o + 40) as ulong*; *q5 = FS_RAMFS;
+            ulong* q0 = (INO_BASE + o) as ulong*;
+            *q0 = ino as ulong;
+            ulong* q1 = (INO_BASE + o + 8) as ulong*;
+            *q1 = mode;
+            ulong* q2 = (INO_BASE + o + 16) as ulong*;
+            *q2 = 0;
+            ulong* q3 = (INO_BASE + o + 24) as ulong*;
+            *q3 = 1;
+            ulong* q4 = (INO_BASE + o + 32) as ulong*;
+            *q4 = data;
+            ulong* q5 = (INO_BASE + o + 40) as ulong*;
+            *q5 = FS_RAMFS;
             *u = 1;
             return ino;
         }
@@ -105,19 +111,28 @@ impl RamFs {
         memzero(INO_BASE as void*, MAX_INODES * 56);
         memzero(DIR_BASE as void*, MAX_DIR_ENTRIES * 32);
         memzero(NAME_BASE as void*, MAX_DIR_ENTRIES * MAX_NAME_LEN);
-        ulong* ni = NEXT_INO as ulong*; *ni = 2;
-        ulong* dc = DIR_CNT as ulong*;  *dc = 0;
+        ulong* ni = NEXT_INO as ulong*;
+        *ni = 2;
+        ulong* dc = DIR_CNT as ulong*;
+        *dc = 0;
         // データプール初期化
         ulong* pool_next = DATA_POOL_NEXT as ulong*;
         *pool_next = 0;
         // ルートinode
-        ulong* p0 = INO_BASE as ulong*;             *p0 = 1;
-        ulong* p1 = (INO_BASE + 8) as ulong*;       *p1 = S_IFDIR | 0x1FF;
-        ulong* p2 = (INO_BASE + 16) as ulong*;      *p2 = 0;
-        ulong* p3 = (INO_BASE + 24) as ulong*;      *p3 = 2;
-        ulong* p4 = (INO_BASE + 32) as ulong*;      *p4 = 0;
-        ulong* p5 = (INO_BASE + 40) as ulong*;      *p5 = FS_RAMFS;
-        ulong* p6 = (INO_BASE + 48) as ulong*;      *p6 = 1;
+        ulong* p0 = INO_BASE as ulong*;
+        *p0 = 1;
+        ulong* p1 = (INO_BASE + 8) as ulong*;
+        *p1 = S_IFDIR | 0x1FF;
+        ulong* p2 = (INO_BASE + 16) as ulong*;
+        *p2 = 0;
+        ulong* p3 = (INO_BASE + 24) as ulong*;
+        *p3 = 2;
+        ulong* p4 = (INO_BASE + 32) as ulong*;
+        *p4 = 0;
+        ulong* p5 = (INO_BASE + 40) as ulong*;
+        *p5 = FS_RAMFS;
+        ulong* p6 = (INO_BASE + 48) as ulong*;
+        *p6 = 1;
 
         // よく使うディレクトリを事前作成
         RamFs::mkdir("tmp" as void*);
@@ -172,10 +187,14 @@ impl RamFs {
             k = k + 1;
         }
         wb(ns + MAX_NAME_LEN - 1, 0);
-        ulong* dn = (DIR_BASE + o) as ulong*;      *dn = ns;
-        ulong* di = (DIR_BASE + o + 8) as ulong*;  *di = ino as ulong;
-        ulong* dt = (DIR_BASE + o + 16) as ulong*; *dt = mode & S_IFMT;
-        ulong* du = (DIR_BASE + o + 24) as ulong*; *du = 1;
+        ulong* dn = (DIR_BASE + o) as ulong*;
+        *dn = ns;
+        ulong* di = (DIR_BASE + o + 8) as ulong*;
+        *di = ino as ulong;
+        ulong* dt = (DIR_BASE + o + 16) as ulong*;
+        *dt = mode & S_IFMT;
+        ulong* du = (DIR_BASE + o + 24) as ulong*;
+        *du = 1;
         *dc = cnt + 1;
         return ino;
     }
@@ -353,4 +372,3 @@ impl RamFs {
         return 0 - 2;  // -ENOENT
     }
 }
-

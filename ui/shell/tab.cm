@@ -60,8 +60,8 @@ ulong str_len(ulong addr) {
 
 /// /mnt/host/ 配下の9pfsファイル名補完
 void tab_complete_9p(ulong path_list, ulong* path_count,
-                     ulong word_addr, ulong word_len,
-                     ulong* match_count_ptr, ulong* match_addr_ptr) {
+    ulong word_addr, ulong word_len,
+    ulong* match_count_ptr, ulong* match_addr_ptr) {
     if (Virtio9p::is_ready() == 0) { return; }
 
     ulong fid = 12;
@@ -119,8 +119,8 @@ void tab_complete_9p(ulong path_list, ulong* path_count,
 
 /// 仮想ディレクトリパス候補を追加
 void tab_complete_vpath(ulong path_list, ulong* path_count,
-                        ulong word_addr, ulong word_len,
-                        ulong* match_count_ptr, ulong* match_addr_ptr) {
+    ulong word_addr, ulong word_len,
+    ulong* match_count_ptr, ulong* match_addr_ptr) {
     ulong pcount = *path_count;
 
     // "/mnt/" エントリ
@@ -169,43 +169,80 @@ impl TabComplete {
     /// 返り値: コマンド数
     static ulong fill_cmd_list(ulong buf) {
         ulong n = 0;
-        cmd_entry(buf, n, "help" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "ps" as ulong);       n = n + 1;
-        cmd_entry(buf, n, "free" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "uptime" as ulong);   n = n + 1;
-        cmd_entry(buf, n, "uname" as ulong);    n = n + 1;
-        cmd_entry(buf, n, "date" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "clear" as ulong);    n = n + 1;
-        cmd_entry(buf, n, "reboot" as ulong);   n = n + 1;
-        cmd_entry(buf, n, "ls" as ulong);       n = n + 1;
-        cmd_entry(buf, n, "cat" as ulong);      n = n + 1;
-        cmd_entry(buf, n, "touch" as ulong);    n = n + 1;
-        cmd_entry(buf, n, "write" as ulong);    n = n + 1;
-        cmd_entry(buf, n, "echo" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "rm" as ulong);       n = n + 1;
-        cmd_entry(buf, n, "mkdir" as ulong);    n = n + 1;
-        cmd_entry(buf, n, "cd" as ulong);       n = n + 1;
-        cmd_entry(buf, n, "pwd" as ulong);      n = n + 1;
-        cmd_entry(buf, n, "env" as ulong);      n = n + 1;
-        cmd_entry(buf, n, "export" as ulong);   n = n + 1;
-        cmd_entry(buf, n, "history" as ulong);  n = n + 1;
-        cmd_entry(buf, n, "kill" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "cp" as ulong);       n = n + 1;
-        cmd_entry(buf, n, "mv" as ulong);       n = n + 1;
-        cmd_entry(buf, n, "head" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "tail" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "wc" as ulong);       n = n + 1;
-        cmd_entry(buf, n, "hexdump" as ulong);  n = n + 1;
-        cmd_entry(buf, n, "grep" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "sort" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "vmstat" as ulong);   n = n + 1;
-        cmd_entry(buf, n, "exec" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "test" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "ping" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "curl" as ulong);     n = n + 1;
-        cmd_entry(buf, n, "hostls" as ulong);   n = n + 1;
-        cmd_entry(buf, n, "hostcat" as ulong);  n = n + 1;
-        cmd_entry(buf, n, "apt" as ulong);      n = n + 1;
+        cmd_entry(buf, n, "help" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "ps" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "free" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "uptime" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "uname" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "date" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "clear" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "reboot" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "ls" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "cat" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "touch" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "write" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "echo" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "rm" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "mkdir" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "cd" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "pwd" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "env" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "export" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "history" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "kill" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "cp" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "mv" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "head" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "tail" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "wc" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "hexdump" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "grep" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "sort" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "vmstat" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "exec" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "test" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "ping" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "curl" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "hostls" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "hostcat" as ulong);
+        n = n + 1;
+        cmd_entry(buf, n, "apt" as ulong);
+        n = n + 1;
         return n;
     }
 
@@ -260,7 +297,7 @@ impl TabComplete {
                     ulong mc_tmp = match_count;
                     ulong ma_tmp = match_addr;
                     tab_complete_9p(PATH_LIST_ADDR, &path_count, word_addr, word_len,
-                                   &mc_tmp, &ma_tmp);
+                        &mc_tmp, &ma_tmp);
                     match_count = mc_tmp;
                     match_addr = ma_tmp;
                 }
@@ -269,7 +306,7 @@ impl TabComplete {
                 ulong mc_tmp = match_count;
                 ulong ma_tmp = match_addr;
                 tab_complete_vpath(PATH_LIST_ADDR, &path_count, word_addr, word_len,
-                                  &mc_tmp, &ma_tmp);
+                    &mc_tmp, &ma_tmp);
                 match_count = mc_tmp;
                 match_addr = ma_tmp;
             }

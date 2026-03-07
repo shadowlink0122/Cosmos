@@ -120,7 +120,7 @@ void main(ulong mb2_info, ulong mb2_magic) {
     BuddyAllocator pmm();
     if (boot_info.mmap_count > 0) {
         Pmm::setup(&pmm, boot_info.mmap_addr, boot_info.mmap_entry_size,
-        boot_info.mmap_count, &serial);
+            boot_info.mmap_count, &serial);
     }
 
     ulong cr3_val = 0;

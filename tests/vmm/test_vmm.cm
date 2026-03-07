@@ -19,13 +19,20 @@ export void test_vmm() {
 
     // ページテーブルフラグ定数の検証 — 配列ペア [actual, expected]
     ulong[14] flag_checks;
-    flag_checks[0]  = PTE_PRESENT;   flag_checks[1]  = 1;
-    flag_checks[2]  = PTE_WRITE;     flag_checks[3]  = 2;
-    flag_checks[4]  = PTE_USER;      flag_checks[5]  = 4;
-    flag_checks[6]  = PTE_PWT;       flag_checks[7]  = 8;
-    flag_checks[8]  = PTE_PCD;       flag_checks[9]  = 16;
-    flag_checks[10] = PTE_ACCESSED;  flag_checks[11] = 32;
-    flag_checks[12] = PTE_DIRTY;     flag_checks[13] = 64;
+    flag_checks[0]  = PTE_PRESENT;
+    flag_checks[1]  = 1;
+    flag_checks[2]  = PTE_WRITE;
+    flag_checks[3]  = 2;
+    flag_checks[4]  = PTE_USER;
+    flag_checks[5]  = 4;
+    flag_checks[6]  = PTE_PWT;
+    flag_checks[7]  = 8;
+    flag_checks[8]  = PTE_PCD;
+    flag_checks[9]  = 16;
+    flag_checks[10] = PTE_ACCESSED;
+    flag_checks[11] = 32;
+    flag_checks[12] = PTE_DIRTY;
+    flag_checks[13] = 64;
 
     ulong[7] flag_labels;
     flag_labels[0] = "PTE_PRESENT=1" as ulong;

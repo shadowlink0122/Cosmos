@@ -24,9 +24,9 @@ const ulong DNS_BUF_BASE = 0xA53000;  // DNS送信バッファ
 const ulong DNS_RX_BUF = 0xA54000;    // DNS受信バッファ
 
 // DNSヘッダフラグ
-const ulong DNS_FLAG_RD = 0x0100;     // Recursion Desired
-const ulong DNS_TYPE_A = 1;           // Aレコード (IPv4)
-const ulong DNS_CLASS_IN = 1;         // Internet
+const ulong DNS_FLAG_RD = 0x0100;  // Recursion Desired
+const ulong DNS_TYPE_A = 1;        // Aレコード (IPv4)
+const ulong DNS_CLASS_IN = 1;      // Internet
 
 export struct Dns {}
 
@@ -43,7 +43,7 @@ impl Dns {
 
         ulong our_mac = VirtioNet::mac();
         ulong src_port = 12345;  // 送信元ポート (ephemeral)
-        ulong tx_id = 0xABCD;   // Transaction ID
+        ulong tx_id = 0xABCD;    // Transaction ID
 
         // 1. Ethernetヘッダ (14バイト)
         // dst MAC = gateway MAC

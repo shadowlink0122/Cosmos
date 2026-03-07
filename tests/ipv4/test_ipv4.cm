@@ -21,16 +21,18 @@ export void test_ipv4() {
 
     // IPv4パケットデータ（20バイト）を配列で定義
     ulong[20] ip_data;
-    ip_data[0]  = 0x45; ip_data[1]  = 0;    // Version+IHL, TOS
-    ip_data[2]  = 0;    ip_data[3]  = 20;   // Total Length = 20
-    ip_data[4]  = 0;    ip_data[5]  = 0;    // Identification
-    ip_data[6]  = 0;    ip_data[7]  = 0;    // Flags + Fragment
-    ip_data[8]  = 64;   ip_data[9]  = 6;    // TTL=64, Proto=TCP(6)
-    ip_data[10] = 0;    ip_data[11] = 0;    // Checksum (初期0)
-    ip_data[12] = 127;  ip_data[13] = 0;    // Src: 127.0.0.1
-    ip_data[14] = 0;    ip_data[15] = 1;
-    ip_data[16] = 127;  ip_data[17] = 0;    // Dst: 127.0.0.1
-    ip_data[18] = 0;    ip_data[19] = 1;
+    ip_data[0]  = 0x45; ip_data[1]  = 0;   // Version+IHL, TOS
+    ip_data[2]  = 0;    ip_data[3]  = 20;  // Total Length = 20
+    ip_data[4]  = 0;    ip_data[5]  = 0;   // Identification
+    ip_data[6]  = 0;    ip_data[7]  = 0;   // Flags + Fragment
+    ip_data[8]  = 64;   ip_data[9]  = 6;   // TTL=64, Proto=TCP(6)
+    ip_data[10] = 0;    ip_data[11] = 0;   // Checksum (初期0)
+    ip_data[12] = 127;  ip_data[13] = 0;   // Src: 127.0.0.1
+    ip_data[14] = 0;
+    ip_data[15] = 1;
+    ip_data[16] = 127;  ip_data[17] = 0;  // Dst: 127.0.0.1
+    ip_data[18] = 0;
+    ip_data[19] = 1;
 
     // 配列からメモリに書き込み
     ulong pkt = 0x9E200;
@@ -46,10 +48,14 @@ export void test_ipv4() {
 
     // パース結果を配列で検証: [actual, expected] のペア
     ulong[8] checks;
-    checks[0] = hdr.version;    checks[1] = 4;
-    checks[2] = hdr.ihl;       checks[3] = 5;
-    checks[4] = hdr.ttl;       checks[5] = 64;
-    checks[6] = hdr.protocol;  checks[7] = 6;
+    checks[0] = hdr.version;
+    checks[1] = 4;
+    checks[2] = hdr.ihl;
+    checks[3] = 5;
+    checks[4] = hdr.ttl;
+    checks[5] = 64;
+    checks[6] = hdr.protocol;
+    checks[7] = 6;
 
     ulong[4] labels;
     labels[0] = "IP version=4" as ulong;
@@ -64,7 +70,8 @@ export void test_ipv4() {
     }
 
     // チェックサム検証: フィールド=0で計算 → 正しい値
-    Mem::write_byte(pkt + 10, 0); Mem::write_byte(pkt + 11, 0);
+    Mem::write_byte(pkt + 10, 0);
+    Mem::write_byte(pkt + 11, 0);
     ulong computed = Ip::checksum(pkt, 20);
     ulong ck_ok = 0;
     if (computed > 0) { ck_ok = 1; }

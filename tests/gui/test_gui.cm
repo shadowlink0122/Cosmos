@@ -102,7 +102,7 @@ export void test_gui() {
         movq %rax, ${=r:saved_byte}
     `);
 
-    ulong test_ch = 0x41; // 'A'
+    ulong test_ch = 0x41;  // 'A'
     __asm__(`
         movq ${r:test_addr}, %rdi;
         movq ${r:test_ch}, %rax;
@@ -128,14 +128,22 @@ export void test_gui() {
     ulong pal_base = 0xD81000;
 
     // パレットを既知の値で設定
-    ulong* pal0  = (pal_base + 0 * 8) as ulong*;  *pal0  = 0x000000;
-    ulong* pal1  = (pal_base + 1 * 8) as ulong*;  *pal1  = 0x0000AA;
-    ulong* pal2  = (pal_base + 2 * 8) as ulong*;  *pal2  = 0x00AA00;
-    ulong* pal3  = (pal_base + 3 * 8) as ulong*;  *pal3  = 0x00AAAA;
-    ulong* pal7  = (pal_base + 7 * 8) as ulong*;  *pal7  = 0xAAAAAA;
-    ulong* pal10 = (pal_base + 10 * 8) as ulong*; *pal10 = 0x55FF55;
-    ulong* pal14 = (pal_base + 14 * 8) as ulong*; *pal14 = 0xFFFF55;
-    ulong* pal15 = (pal_base + 15 * 8) as ulong*; *pal15 = 0xFFFFFF;
+    ulong* pal0  = (pal_base + 0 * 8) as ulong*;
+    *pal0  = 0x000000;
+    ulong* pal1  = (pal_base + 1 * 8) as ulong*;
+    *pal1  = 0x0000AA;
+    ulong* pal2  = (pal_base + 2 * 8) as ulong*;
+    *pal2  = 0x00AA00;
+    ulong* pal3  = (pal_base + 3 * 8) as ulong*;
+    *pal3  = 0x00AAAA;
+    ulong* pal7  = (pal_base + 7 * 8) as ulong*;
+    *pal7  = 0xAAAAAA;
+    ulong* pal10 = (pal_base + 10 * 8) as ulong*;
+    *pal10 = 0x55FF55;
+    ulong* pal14 = (pal_base + 14 * 8) as ulong*;
+    *pal14 = 0xFFFF55;
+    ulong* pal15 = (pal_base + 15 * 8) as ulong*;
+    *pal15 = 0xFFFFFF;
 
     KTest::assert_eq(*pal0, 0x000000, "VGA pal[0]=black" as void*);
     KTest::assert_eq(*pal1, 0x0000AA, "VGA pal[1]=blue" as void*);

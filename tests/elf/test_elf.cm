@@ -43,8 +43,8 @@ export void test_elf() {
     }
 
     // e_type = ET_EXEC (2), e_machine = EM_X86_64 (62)
-    Mem::write_byte(hdr + 0x10, 2); Mem::write_byte(hdr + 0x11, 0);  // e_type
-    Mem::write_byte(hdr + 0x12, 62); Mem::write_byte(hdr + 0x13, 0); // e_machine
+    Mem::write_byte(hdr + 0x10, 2); Mem::write_byte(hdr + 0x11, 0);   // e_type
+    Mem::write_byte(hdr + 0x12, 62); Mem::write_byte(hdr + 0x13, 0);  // e_machine
 
     // e_entry = 0x401000
     ulong* entry_ptr = (hdr + 0x18) as ulong*;
@@ -55,10 +55,12 @@ export void test_elf() {
     *phoff_ptr = 64;
 
     // e_phentsize = 56 (0x38)
-    Mem::write_byte(hdr + 0x36, 56); Mem::write_byte(hdr + 0x37, 0);
+    Mem::write_byte(hdr + 0x36, 56);
+    Mem::write_byte(hdr + 0x37, 0);
 
     // e_phnum = 2
-    Mem::write_byte(hdr + 0x38, 2); Mem::write_byte(hdr + 0x39, 0);
+    Mem::write_byte(hdr + 0x38, 2);
+    Mem::write_byte(hdr + 0x39, 0);
 
     // --- マジック検証 ---
     KTest::assert_eq(Elf::check_magic(hdr), 1, "ELF check_magic valid" as void*);
@@ -84,11 +86,13 @@ export void test_elf() {
     KTest::assert_eq(Elf::is_pie(hdr), 0, "ELF is_pie ET_EXEC=0" as void*);
 
     // ET_DYN に変更 → is_pie=1
-    Mem::write_byte(hdr + 0x10, 3); Mem::write_byte(hdr + 0x11, 0);
+    Mem::write_byte(hdr + 0x10, 3);
+    Mem::write_byte(hdr + 0x11, 0);
     KTest::assert_eq(Elf::is_pie(hdr), 1, "ELF is_pie ET_DYN=1" as void*);
     KTest::assert_eq(Elf::validate(hdr), 1, "ELF validate ET_DYN valid" as void*);
 
     // 不正な machine → validate=0
-    Mem::write_byte(hdr + 0x12, 0); Mem::write_byte(hdr + 0x13, 0);
+    Mem::write_byte(hdr + 0x12, 0);
+    Mem::write_byte(hdr + 0x13, 0);
     KTest::assert_eq(Elf::validate(hdr), 0, "ELF validate bad machine=0" as void*);
 }

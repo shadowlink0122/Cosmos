@@ -18,11 +18,11 @@ import ../core/arp;
 import ../transport/socket;
 
 // 受信バッファ (固定メモリ)
-const ulong NET_RX_BUF = 0x1970000;   // High Mem
+const ulong NET_RX_BUF = 0x1970000;  // High Mem
 const ulong NET_RX_BUF_SIZE = 2048;
 
 // パケット送信バッファ (TCP応答構築用)
-const ulong NET_TX_BUF = 0x1971000;   // High Mem
+const ulong NET_TX_BUF = 0x1971000;  // High Mem
 
 // ゲストMAC取得ヘルパー
 const ulong NIC_STATE_BASE_REF = 0x1700000;
@@ -91,8 +91,8 @@ impl NetRx {
                 NetRx::send_tcp_ack(
                     ip_hdr.src_addr, tcp_hdr.src_port,
                     ip_hdr.dst_addr, tcp_hdr.dst_port,
-                    tcp_hdr.ack_num,        // 次の送信SEQ
-                    tcp_hdr.seq_num + 1     // ACK番号 = 相手SEQ+1
+                    tcp_hdr.ack_num,     // 次の送信SEQ
+                    tcp_hdr.seq_num + 1  // ACK番号 = 相手SEQ+1
                 );
                 Socket::set_state_ext(sock_id, TCP_ESTABLISHED);
                 Socket::set_seq(sock_id, tcp_hdr.ack_num, tcp_hdr.seq_num + 1);
@@ -143,10 +143,10 @@ impl NetRx {
 
     /// TCP ACKパケットを送信
     static void send_tcp_ack(ulong dst_ip, ulong dst_port,
-                              ulong src_ip, ulong src_port,
-                              ulong seq, ulong ack) {
+        ulong src_ip, ulong src_port,
+        ulong seq, ulong ack) {
         NetRx::send_tcp_packet(dst_ip, dst_port, src_ip, src_port,
-                                seq, ack, TCP_ACK, 0, 0);
+            seq, ack, TCP_ACK, 0, 0);
     }
 
     /// TCP パケットを構築して送信
@@ -154,9 +154,9 @@ impl NetRx {
     /// payload: ペイロードデータ先頭 (0=なし)
     /// payload_len: ペイロード長
     static void send_tcp_packet(ulong dst_ip, ulong dst_port,
-                                 ulong src_ip, ulong src_port,
-                                 ulong seq, ulong ack,
-                                 ulong flags, ulong payload, ulong payload_len) {
+        ulong src_ip, ulong src_port,
+        ulong seq, ulong ack,
+        ulong flags, ulong payload, ulong payload_len) {
         ulong buf = NET_TX_BUF;
 
         // ゲートウェイMAC取得
@@ -187,7 +187,7 @@ impl NetRx {
         IpHeader ip_hdr = {
             version: 4, ihl: 5, tos: 0,
             total_len: 20 + tcp_total_len,  // IP hdr + TCP hdr + payload
-            id: 0, flags: 2, frag_off: 0,  // Don't Fragment
+            id: 0, flags: 2, frag_off: 0,   // Don't Fragment
             ttl: 64, protocol: IP_PROTO_TCP,
             checksum: 0,
             src_addr: src_ip,
@@ -228,7 +228,7 @@ impl NetRx {
 
     /// TCPチェックサム計算 (疑似ヘッダ + TCPデータ)
     static ulong tcp_checksum(ulong src_ip, ulong dst_ip,
-                               ulong tcp_data, ulong tcp_len) {
+        ulong tcp_data, ulong tcp_len) {
         ulong sum = 0;
 
         // 疑似ヘッダ (12バイト)

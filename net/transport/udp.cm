@@ -14,10 +14,10 @@ import ../../lib/kstring;
 
 /// UDPヘッダ
 export struct UdpHeader {
-    ulong src_port;    // 送信元ポート
-    ulong dst_port;    // 宛先ポート
-    ulong length;      // ヘッダ+データ全体長
-    ulong checksum;    // チェックサム (0でも可)
+    ulong src_port;  // 送信元ポート
+    ulong dst_port;  // 宛先ポート
+    ulong length;    // ヘッダ+データ全体長
+    ulong checksum;  // チェックサム (0でも可)
 }
 
 // ============================================================

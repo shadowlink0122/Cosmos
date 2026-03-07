@@ -23,7 +23,7 @@ export void test_vma() {
 
     // mmap — 匿名マッピング
     ulong addr = Mmap::do_mmap(0, 4096, PROT_READ | PROT_WRITE,
-    MAP_PRIVATE | MAP_ANONYMOUS);
+        MAP_PRIVATE | MAP_ANONYMOUS);
     if (addr != MAP_FAILED) {
         KTest::assert_true(1, "mmap anonymous succeeds" as void*);
     } else {

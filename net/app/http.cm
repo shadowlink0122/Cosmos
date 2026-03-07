@@ -35,13 +35,13 @@ export const ulong HTTP_500_SERVER_ERROR= 500;
 
 /// HTTPリクエスト構造体
 export struct HttpRequest {
-    ulong method;        // HTTP_GET 等
-    ulong path_addr;     // パス文字列アドレス
-    ulong path_len;      // パス長
-    ulong body_addr;     // ボディアドレス
-    ulong body_len;      // ボディ長
-    ulong content_len;   // Content-Length ヘッダ値
-    ulong valid;         // パース成功フラグ
+    ulong method;       // HTTP_GET 等
+    ulong path_addr;    // パス文字列アドレス
+    ulong path_len;     // パス長
+    ulong body_addr;    // ボディアドレス
+    ulong body_len;     // ボディ長
+    ulong content_len;  // Content-Length ヘッダ値
+    ulong valid;        // パース成功フラグ
     ulong padding;
 }
 
@@ -62,9 +62,9 @@ export struct HttpResponse {
 // ============================================================
 
 /// HTTPバッファ領域
-const ulong HTTP_BUF_BASE = 0x1960000;   // High Mem
-const ulong HTTP_PATH_BUF = 0x1960000;   // パス用256バイト
-const ulong HTTP_RESP_BUF = 0x1961000;   // レスポンス用4096バイト
+const ulong HTTP_BUF_BASE = 0x1960000;  // High Mem
+const ulong HTTP_PATH_BUF = 0x1960000;  // パス用256バイト
+const ulong HTTP_RESP_BUF = 0x1961000;  // レスポンス用4096バイト
 
 export struct Http {}
 
@@ -182,8 +182,10 @@ impl Http {
         }
 
         // CRLF
-        Mem::write_byte(buf + pos, 13); pos = pos + 1;
-        Mem::write_byte(buf + pos, 10); pos = pos + 1;
+        Mem::write_byte(buf + pos, 13);
+        pos = pos + 1;
+        Mem::write_byte(buf + pos, 10);
+        pos = pos + 1;
 
         // Content-Type
         if (resp->content_type == 0) {
@@ -193,23 +195,31 @@ impl Http {
         } else if (resp->content_type == 2) {
             pos = Http::write_str(buf, pos, "Content-Type: application/json" as void*, 30);
         }
-        Mem::write_byte(buf + pos, 13); pos = pos + 1;
-        Mem::write_byte(buf + pos, 10); pos = pos + 1;
+        Mem::write_byte(buf + pos, 13);
+        pos = pos + 1;
+        Mem::write_byte(buf + pos, 10);
+        pos = pos + 1;
 
         // Content-Length
         pos = Http::write_str(buf, pos, "Content-Length: " as void*, 16);
         pos = Http::write_ulong(buf, pos, resp->body_len);
-        Mem::write_byte(buf + pos, 13); pos = pos + 1;
-        Mem::write_byte(buf + pos, 10); pos = pos + 1;
+        Mem::write_byte(buf + pos, 13);
+        pos = pos + 1;
+        Mem::write_byte(buf + pos, 10);
+        pos = pos + 1;
 
         // Connection: close
         pos = Http::write_str(buf, pos, "Connection: close" as void*, 17);
-        Mem::write_byte(buf + pos, 13); pos = pos + 1;
-        Mem::write_byte(buf + pos, 10); pos = pos + 1;
+        Mem::write_byte(buf + pos, 13);
+        pos = pos + 1;
+        Mem::write_byte(buf + pos, 10);
+        pos = pos + 1;
 
         // 空行 (ヘッダ終了)
-        Mem::write_byte(buf + pos, 13); pos = pos + 1;
-        Mem::write_byte(buf + pos, 10); pos = pos + 1;
+        Mem::write_byte(buf + pos, 13);
+        pos = pos + 1;
+        Mem::write_byte(buf + pos, 10);
+        pos = pos + 1;
 
         // ボディ
         if (resp->body_len > 0) {

@@ -40,7 +40,7 @@ const ulong SOCK_BACKLOG    = 96;
 const ulong SOCK_FD         = 104;
 
 // 受信バッファ領域
-const ulong SOCK_RECV_BASE = 0x1910000;   // 25MB+64KB地点
+const ulong SOCK_RECV_BASE = 0x1910000;  // 25MB+64KB地点
 const ulong SOCK_RECV_SLOT = 4096;
 
 // ============================================================
@@ -515,17 +515,17 @@ impl Socket {
 
     /// TCP ACKパケットを送信
     static void send_tcp_ack(ulong dst_ip, ulong dst_port,
-                              ulong src_ip, ulong src_port,
-                              ulong seq, ulong ack) {
+        ulong src_ip, ulong src_port,
+        ulong seq, ulong ack) {
         Socket::send_tcp_packet(dst_ip, dst_port, src_ip, src_port,
-                                seq, ack, TCP_ACK, 0, 0);
+            seq, ack, TCP_ACK, 0, 0);
     }
 
     /// TCP パケットを構築して送信
     static void send_tcp_packet(ulong dst_ip, ulong dst_port,
-                                 ulong src_ip, ulong src_port,
-                                 ulong seq, ulong ack,
-                                 ulong flags, ulong payload, ulong payload_len) {
+        ulong src_ip, ulong src_port,
+        ulong seq, ulong ack,
+        ulong flags, ulong payload, ulong payload_len) {
         ulong buf = 0x1971000;  // NET_TX_BUF (High Mem)
 
         // ゲートウェイMAC取得
@@ -596,7 +596,7 @@ impl Socket {
 
     /// TCPチェックサム計算
     static ulong tcp_checksum(ulong src_ip, ulong dst_ip,
-                               ulong tcp_data, ulong tcp_len) {
+        ulong tcp_data, ulong tcp_len) {
         ulong sum = 0;
         // 疑似ヘッダ
         sum = sum + ((src_ip >> 16) & 0xFFFF);

@@ -528,4 +528,3 @@ impl SyscallFs {
         return 0;  // stub: 常に成功
     }
 }
-

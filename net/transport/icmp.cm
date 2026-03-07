@@ -14,11 +14,11 @@ import ../../lib/kstring;
 
 /// ICMPヘッダ
 export struct IcmpHeader {
-    ulong icmp_type;   // メッセージタイプ
-    ulong code;        // コード
-    ulong checksum;    // チェックサム
-    ulong id;          // 識別子 (Echo用)
-    ulong seq;         // シーケンス番号 (Echo用)
+    ulong icmp_type;  // メッセージタイプ
+    ulong code;       // コード
+    ulong checksum;   // チェックサム
+    ulong id;         // 識別子 (Echo用)
+    ulong seq;        // シーケンス番号 (Echo用)
 }
 
 // ============================================================
@@ -72,7 +72,7 @@ impl Icmp {
 
     /// Echo Requestを処理してEcho Replyを生成
     static ulong handle_echo(ulong req_data, ulong req_len,
-                              ulong reply_data) {
+        ulong reply_data) {
         if (req_data == 0) { return 0; }
 
         IcmpHeader req_hdr = {

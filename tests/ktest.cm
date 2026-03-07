@@ -48,7 +48,7 @@ impl KTest {
         SerialPort s(COM1);
         s.putc(27); s.puts("[32m" as void*);  // ESC[32m = 緑
         s.puts("  [PASS] " as void*);
-        s.putc(27); s.puts("[0m" as void*);   // ESC[0m = リセット
+        s.putc(27); s.puts("[0m" as void*);  // ESC[0m = リセット
         s.println(name);
     }
 
@@ -66,7 +66,7 @@ impl KTest {
         SerialPort s(COM1);
         s.putc(27); s.puts("[31m" as void*);  // ESC[31m = 赤
         s.puts("  [FAIL] " as void*);
-        s.putc(27); s.puts("[0m" as void*);   // ESC[0m = リセット
+        s.putc(27); s.puts("[0m" as void*);  // ESC[0m = リセット
         s.println(name);
     }
 

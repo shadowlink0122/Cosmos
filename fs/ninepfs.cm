@@ -22,7 +22,7 @@ const ulong P9FS_DIR_BUF = 0xB92000;   // ディレクトリ読み取りバッ�
 const ulong P9FS_NAME_BUF = 0xB94000;  // ファイル名出力バッファ (4KB)
 
 // FID管理: 0=ルート, 1以降=操作用
-const ulong P9FS_WORK_FID = 1;     // walk用ワークFID
+const ulong P9FS_WORK_FID = 1;  // walk用ワークFID
 
 // マウントポイントプレフィックス
 const ulong P9FS_MOUNT_PREFIX_LEN = 10;  // "/mnt/host/" の長さ
@@ -265,8 +265,8 @@ impl NinePfs {
         dbg.println("" as void*);
 
         // パスを親ディレクトリとファイル名に分離
-        ulong parent_buf = P9FS_BUF;         // 親パスバッファ
-        ulong name_buf = P9FS_BUF + 256;     // ファイル名バッファ
+        ulong parent_buf = P9FS_BUF;      // 親パスバッファ
+        ulong name_buf = P9FS_BUF + 256;  // ファイル名バッファ
         NinePfs::split_path(path, parent_buf, name_buf);
 
         // 親ディレクトリにwalk

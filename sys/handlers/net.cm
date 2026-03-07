@@ -108,7 +108,7 @@ impl SyscallNet {
 
     /// sys_sendto: データ送信
     static long do_sendto(ulong fd, ulong buf, ulong len, ulong flags,
-                          ulong dest_addr, ulong addrlen) {
+        ulong dest_addr, ulong addrlen) {
         if (FdTable::is_valid(fd as long) == 0) { return 0 - EBADF; }
         ulong fs_type = FdTable::get_fs_type(fd as long);
         if (fs_type != FS_SOCKET) { return 0 - ENOTSOCK; }
@@ -119,7 +119,7 @@ impl SyscallNet {
 
     /// sys_recvfrom: データ受信
     static long do_recvfrom(ulong fd, ulong buf, ulong len, ulong flags,
-                            ulong src_addr, ulong addrlen_ptr) {
+        ulong src_addr, ulong addrlen_ptr) {
         if (FdTable::is_valid(fd as long) == 0) { return 0 - EBADF; }
         ulong fs_type = FdTable::get_fs_type(fd as long);
         if (fs_type != FS_SOCKET) { return 0 - ENOTSOCK; }
@@ -130,7 +130,7 @@ impl SyscallNet {
 
     /// sys_setsockopt: ソケットオプション設定
     static long do_setsockopt(ulong fd, ulong level, ulong optname,
-                              ulong optval, ulong optlen) {
+        ulong optval, ulong optlen) {
         if (FdTable::is_valid(fd as long) == 0) { return 0 - EBADF; }
         // 簡易版: 全てのオプションを受け入れる（成功を返す）
         return 0;
@@ -138,7 +138,7 @@ impl SyscallNet {
 
     /// sys_getsockopt: ソケットオプション取得
     static long do_getsockopt(ulong fd, ulong level, ulong optname,
-                              ulong optval, ulong optlen_ptr) {
+        ulong optval, ulong optlen_ptr) {
         if (FdTable::is_valid(fd as long) == 0) { return 0 - EBADF; }
         // 簡易版: 0を返す
         if (optval != 0 && optlen_ptr != 0) {

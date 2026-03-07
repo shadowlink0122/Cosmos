@@ -31,14 +31,14 @@ export void test_signal() {
     if (cur_addr != 0) {
         cur->pending_signal = 0;  // クリア
         KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 0,
-        "no pending SIGUSR1" as void*);
+            "no pending SIGUSR1" as void*);
         // SIGUSR1をセット
         cur->pending_signal = cur->pending_signal | (1 << SIGUSR1);
         KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 1,
-        "SIGUSR1 pending after set" as void*);
+            "SIGUSR1 pending after set" as void*);
         // クリア
         Signal::clear(cur, SIGUSR1);
         KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 0,
-        "SIGUSR1 cleared" as void*);
+            "SIGUSR1 cleared" as void*);
     }
 }

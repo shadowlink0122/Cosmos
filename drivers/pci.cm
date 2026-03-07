@@ -73,7 +73,7 @@ export struct PciDevice {
     ulong device_id;
     ulong bar0;
     ulong irq;
-    ulong found;      // 1=見つかった, 0=見つからない
+    ulong found;  // 1=見つかった, 0=見つからない
 }
 
 // ============================================================
@@ -87,10 +87,10 @@ impl Pci {
     static ulong read_config(ulong bus, ulong slot, ulong func, ulong offset) {
         // アドレス = 0x80000000 | (bus<<16) | (slot<<11) | (func<<8) | (offset & 0xFC)
         ulong addr = 0x80000000
-            | ((bus & 0xFF) << 16)
-            | ((slot & 0x1F) << 11)
-            | ((func & 0x07) << 8)
-            | (offset & 0xFC);
+        | ((bus & 0xFF) << 16)
+        | ((slot & 0x1F) << 11)
+        | ((func & 0x07) << 8)
+        | (offset & 0xFC);
         outl(PCI_CONFIG_ADDR, addr);
         return inl(PCI_CONFIG_DATA);
     }
@@ -98,10 +98,10 @@ impl Pci {
     /// PCI Configuration Spaceに32ビット値を書き込み
     static void write_config(ulong bus, ulong slot, ulong func, ulong offset, ulong value) {
         ulong addr = 0x80000000
-            | ((bus & 0xFF) << 16)
-            | ((slot & 0x1F) << 11)
-            | ((func & 0x07) << 8)
-            | (offset & 0xFC);
+        | ((bus & 0xFF) << 16)
+        | ((slot & 0x1F) << 11)
+        | ((func & 0x07) << 8)
+        | (offset & 0xFC);
         outl(PCI_CONFIG_ADDR, addr);
         outl(PCI_CONFIG_DATA, value);
     }

@@ -41,14 +41,22 @@ export void test_kmalloc() {
 
     // クラスからサイズへの逆変換 — 配列ペア [class, expected_size]
     ulong[16] size_tests;
-    size_tests[0]  = 0;  size_tests[1]  = 16;
-    size_tests[2]  = 1;  size_tests[3]  = 32;
-    size_tests[4]  = 2;  size_tests[5]  = 64;
-    size_tests[6]  = 3;  size_tests[7]  = 128;
-    size_tests[8]  = 4;  size_tests[9]  = 256;
-    size_tests[10] = 5;  size_tests[11] = 512;
-    size_tests[12] = 6;  size_tests[13] = 1024;
-    size_tests[14] = 7;  size_tests[15] = 2048;
+    size_tests[0]  = 0;
+    size_tests[1]  = 16;
+    size_tests[2]  = 1;
+    size_tests[3]  = 32;
+    size_tests[4]  = 2;
+    size_tests[5]  = 64;
+    size_tests[6]  = 3;
+    size_tests[7]  = 128;
+    size_tests[8]  = 4;
+    size_tests[9]  = 256;
+    size_tests[10] = 5;
+    size_tests[11] = 512;
+    size_tests[12] = 6;
+    size_tests[13] = 1024;
+    size_tests[14] = 7;
+    size_tests[15] = 2048;
 
     i = 0;
     while (i < 8) {

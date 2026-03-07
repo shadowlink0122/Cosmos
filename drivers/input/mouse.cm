@@ -148,8 +148,8 @@ impl Mouse {
         mouse_wait_input();
         __asm__(`movb $$0x20, %al; outb %al, $$0x64`);
         ulong ccb = mouse_read_data();  // CCBはコントローラデータ
-        ccb = ccb | 3;     // bit 0 = IRQ1有効, bit 1 = IRQ12有効
-        ccb = ccb & 0xCF;  // bit 4,5 = 両ポートクロック有効 (キーボード+AUX)
+        ccb = ccb | 3;                  // bit 0 = IRQ1有効, bit 1 = IRQ12有効
+        ccb = ccb & 0xCF;               // bit 4,5 = 両ポートクロック有効 (キーボード+AUX)
         // コマンド 0x60 = CCB書き込み
         mouse_wait_input();
         __asm__(`movb $$0x60, %al; outb %al, $$0x64`);
@@ -160,15 +160,15 @@ impl Mouse {
         // IntelliMouseプロトコル有効化 (ホイールモード)
         // マジックシーケンス: サンプルレートを200→100→80に設定
         mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
-        mouse_aux_write(200);  mouse_aux_read();   // 200
-        mouse_aux_write(0xF3); mouse_aux_read();   // Set Sample Rate
-        mouse_aux_write(100);  mouse_aux_read();   // 100
-        mouse_aux_write(0xF3); mouse_aux_read();   // Set Sample Rate
-        mouse_aux_write(80);   mouse_aux_read();   // 80
+        mouse_aux_write(200);  mouse_aux_read();  // 200
+        mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
+        mouse_aux_write(100);  mouse_aux_read();  // 100
+        mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
+        mouse_aux_write(80);   mouse_aux_read();  // 80
 
         // Get Device ID → 3(IntelliMouse)確認
-        mouse_aux_write(0xF2); mouse_aux_read();   // Get Device ID ACK
-        ulong dev_id = mouse_aux_read();  // Device ID (0=標準, 3=IM, 4=IMEX)
+        mouse_aux_write(0xF2); mouse_aux_read();  // Get Device ID ACK
+        ulong dev_id = mouse_aux_read();          // Device ID (0=標準, 3=IM, 4=IMEX)
 
         // Device IDとパケットサイズを保存
         ulong* devid_ptr = MOUSE_DEVID_ADDR as ulong*;
@@ -186,11 +186,11 @@ impl Mouse {
 
         // サンプルレートを100Hz (10ms間隔) に設定
         // IntelliMouseネゴシエーション後に設定することでDevice IDは維持される
-        mouse_aux_write(0xF3); mouse_aux_read();   // Set Sample Rate
-        mouse_aux_write(100);  mouse_aux_read();   // 100Hz = 10ms
+        mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
+        mouse_aux_write(100);  mouse_aux_read();  // 100Hz = 10ms
 
         // データ報告有効化
-        mouse_aux_write(0xF4); mouse_aux_read();   // Enable Data Reporting
+        mouse_aux_write(0xF4); mouse_aux_read();  // Enable Data Reporting
 
         // PIC: IRQ12を有効化 (スレーブPICのIRQ4 = マスクビット4)
         ulong mask = 0;
@@ -284,7 +284,7 @@ void mouse_irq_handler() {
         // データ読み取り
         xorq %rax, %rax;
         inb $$0x60, %al;
-        movq %rax, %rbx;    // %rbx = データバイト
+        movq %rax, %rbx;  // %rbx = データバイト
 
         // 位相取得
         movq $$0x93310, %rdi;
@@ -295,9 +295,9 @@ void mouse_irq_handler() {
         // PS/2仕様: 第1バイトのbit 3は常に1
         // 0の場合はパケット同期がずれている → 破棄してEOIのみ送信
         testq %rcx, %rcx;
-        jnz 30f;             // phase != 0ならスキップ
-        testb $$0x08, %bl;   // bit 3チェック
-        jnz 30f;             // bit 3 = 1なら正常
+        jnz 30f;            // phase != 0ならスキップ
+        testb $$0x08, %bl;  // bit 3チェック
+        jnz 30f;            // bit 3 = 1なら正常
         // 同期エラー: phaseを0に保ったままEOIへジャンプ
         xorq %rcx, %rcx;
         jmp 1f;
@@ -321,7 +321,7 @@ void mouse_irq_handler() {
         movq $$4, %rdx;
         10:;
 
-        cmpq %rdx, %rcx;    // phase == パケットサイズ?
+        cmpq %rdx, %rcx;  // phase == パケットサイズ?
         jl 1f;
 
         // パケット完了 — XY移動を取得してカーソル移動に使用
@@ -329,7 +329,7 @@ void mouse_irq_handler() {
 
         // byte 0 = ボタン状態 → MOUSE_BTN_ADDR
         movzbq (%rdi), %rax;
-        andq $$0x07, %rax;     // bit0-2 = 左/右/中ボタン
+        andq $$0x07, %rax;  // bit0-2 = 左/右/中ボタン
         movq $$0x93340, %rdi;
         movq %rax, (%rdi);
 
@@ -337,7 +337,7 @@ void mouse_irq_handler() {
         movq $$0x93300, %rdi;
         movzbq 1(%rdi), %rax;
         movzbq (%rdi), %rbx;
-        testb $$0x10, %bl;     // byte0 bit4 = X sign
+        testb $$0x10, %bl;  // byte0 bit4 = X sign
         jz 40f;
         orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
         40:;
@@ -348,7 +348,7 @@ void mouse_irq_handler() {
         movq $$0x93300, %rdi;
         movzbq 2(%rdi), %rax;
         movzbq (%rdi), %rbx;
-        testb $$0x20, %bl;     // byte0 bit5 = Y sign
+        testb $$0x20, %bl;  // byte0 bit5 = Y sign
         jz 41f;
         orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
         41:;
@@ -369,7 +369,7 @@ void mouse_irq_handler() {
         jz 2f;
         movsbq %al, %rax;
         movq $$0x93318, %rdi;
-        addq %rax, (%rdi);     // 加算型: 複数パケットを蓄積
+        addq %rax, (%rdi);  // 加算型: 複数パケットを蓄積
         jmp 2f;
 
         20:;
@@ -383,13 +383,13 @@ void mouse_irq_handler() {
         // 注: QEMUはトラックパッドスクロールをボタンプレス→リリースとして
         //     連続パケットで送信するため、プレスのみ検出すればよい
         movq $$0x93300, %rdi;
-        movzbq (%rdi), %rax;   // 1バイト目 = ボタン状態
+        movzbq (%rdi), %rax;  // 1バイト目 = ボタン状態
 
         // ボタン4チェック (bit 4 → スクロール上)
         testb $$0x10, %al;
         jz 21f;
         movq $$0x93318, %rdi;
-        addq $$1, (%rdi);      // 加算型: スクロール上を蓄積
+        addq $$1, (%rdi);  // 加算型: スクロール上を蓄積
         jmp 2f;
         21:;
 
@@ -397,10 +397,10 @@ void mouse_irq_handler() {
         testb $$0x20, %al;
         jz 2f;
         movq $$0x93318, %rdi;
-        subq $$1, (%rdi);      // 加算型: スクロール下を蓄積
+        subq $$1, (%rdi);  // 加算型: スクロール下を蓄積
 
         2:;
-        xorq %rcx, %rcx;    // 位相リセット
+        xorq %rcx, %rcx;  // 位相リセット
 
         1:;
         movq $$0x93310, %rdi;

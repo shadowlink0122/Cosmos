@@ -27,12 +27,12 @@ import ../../ui/mem;
 // ============================================================
 
 // パケットバッファ (送信/受信用)
-const ulong CURL_TX_BUF = 0xA80000;   // 送信パケットバッファ (2KB)
-const ulong CURL_RX_BUF = 0xA81000;   // 受信パケットバッファ (2KB)
-const ulong CURL_HOST_BUF = 0xA82000; // ホスト名バッファ (256B)
-const ulong CURL_PATH_BUF = 0xA82100; // パスバッファ (256B)
-const ulong CURL_RESP_BUF = 0xA83000; // レスポンス蓄積バッファ (16KB)
-const ulong CURL_RESP_MAX = 16384;    // 最大レスポンスサイズ
+const ulong CURL_TX_BUF = 0xA80000;    // 送信パケットバッファ (2KB)
+const ulong CURL_RX_BUF = 0xA81000;    // 受信パケットバッファ (2KB)
+const ulong CURL_HOST_BUF = 0xA82000;  // ホスト名バッファ (256B)
+const ulong CURL_PATH_BUF = 0xA82100;  // パスバッファ (256B)
+const ulong CURL_RESP_BUF = 0xA83000;  // レスポンス蓄積バッファ (16KB)
+const ulong CURL_RESP_MAX = 16384;     // 最大レスポンスサイズ
 
 // TCPクライアントポート（エフェメラル）
 const ulong CURL_LOCAL_PORT_BASE = 0xA82200;
@@ -104,11 +104,11 @@ impl Curl {
 
         // 4. HTTP GETリクエスト送信
         ulong req_len = Curl::build_http_get(CURL_TX_BUF + 14 + 20 + 20,
-                                              path_buf, host_buf);
+            path_buf, host_buf);
 
         // TCP+IP+Ethernetでラップして送信
         ulong sent = Curl::tcp_send(conn_id, remote_ip, port, local_port,
-                                     CURL_TX_BUF + 14 + 20 + 20, req_len);
+            CURL_TX_BUF + 14 + 20 + 20, req_len);
         if (sent == 0) {
             Shell::writeln("curl: failed to send request" as void*);
             return;
@@ -160,7 +160,7 @@ impl Curl {
                                 ulong ci = 0;
                                 while (ci < tcp_payload_len) {
                                     Mem::write_byte(resp_buf + resp_total + ci,
-                                                    Mem::read_byte(payload_start + ci));
+                                        Mem::read_byte(payload_start + ci));
                                     ci = ci + 1;
                                 }
                                 resp_total = resp_total + tcp_payload_len;
@@ -173,8 +173,8 @@ impl Curl {
 
                                 // ACK送信
                                 Curl::tcp_send_ack(conn_id, remote_ip, port, local_port,
-                                                    *send_next_ptr,
-                                                    tcp_hdr.seq_num + tcp_payload_len);
+                                    *send_next_ptr,
+                                    tcp_hdr.seq_num + tcp_payload_len);
                             }
 
                             // FIN受信チェック
@@ -184,8 +184,8 @@ impl Curl {
                                 ulong base2 = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
                                 ulong* sn_ptr = (base2 + 40) as ulong*;
                                 Curl::tcp_send_ack(conn_id, remote_ip, port, local_port,
-                                                    *sn_ptr,
-                                                    tcp_hdr.seq_num + 1);
+                                    *sn_ptr,
+                                    tcp_hdr.seq_num + 1);
                             }
 
                             // タイムアウトリセット（データ受信中）
@@ -337,7 +337,7 @@ impl Curl {
 
         // SYN送信
         Curl::tcp_send_flags(remote_ip, remote_port, local_port,
-                              isn, 0, TCP_SYN);
+            isn, 0, TCP_SYN);
         Tcp::set_state(conn_id, TCP_SYN_SENT);
 
         // SYN+ACK待機 (3秒タイムアウト)
@@ -375,7 +375,7 @@ impl Curl {
 
                             // ACK送信
                             Curl::tcp_send_flags(remote_ip, remote_port, local_port,
-                                                  isn + 1, tcp_hdr.seq_num + 1, TCP_ACK);
+                                isn + 1, tcp_hdr.seq_num + 1, TCP_ACK);
                             Tcp::set_state(conn_id, TCP_ESTABLISHED);
                             return conn_id;
                         }
@@ -394,8 +394,8 @@ impl Curl {
     // TCPフラグパケット送信 (SYN, ACK, FIN等)
     // ====================================================================
     static void tcp_send_flags(ulong remote_ip, ulong remote_port,
-                                ulong local_port, ulong seq, ulong ack,
-                                ulong flags) {
+        ulong local_port, ulong seq, ulong ack,
+        ulong flags) {
         ulong buf = CURL_TX_BUF;
         ulong pos = 0;
 
@@ -441,7 +441,7 @@ impl Curl {
 
         // TCPチェックサム計算（疑似ヘッダ含む）
         ulong tcp_cksum = Curl::tcp_checksum(GUEST_IP, remote_ip,
-                                              buf + tcp_start, tcp_len);
+            buf + tcp_start, tcp_len);
         Mem::write_byte(buf + tcp_start + 16, (tcp_cksum >> 8) & 0xFF);
         Mem::write_byte(buf + tcp_start + 17, tcp_cksum & 0xFF);
 
@@ -465,18 +465,18 @@ impl Curl {
     // TCP ACK送信
     // ====================================================================
     static void tcp_send_ack(ulong conn_id, ulong remote_ip,
-                              ulong remote_port, ulong local_port,
-                              ulong seq, ulong ack) {
+        ulong remote_port, ulong local_port,
+        ulong seq, ulong ack) {
         Curl::tcp_send_flags(remote_ip, remote_port, local_port,
-                              seq, ack, TCP_ACK);
+            seq, ack, TCP_ACK);
     }
 
     // ====================================================================
     // TCPデータ送信 (ESTABLISHED状態)
     // ====================================================================
     static ulong tcp_send(ulong conn_id, ulong remote_ip,
-                           ulong remote_port, ulong local_port,
-                           ulong data, ulong data_len) {
+        ulong remote_port, ulong local_port,
+        ulong data, ulong data_len) {
         ulong buf = CURL_TX_BUF;
         ulong pos = 0;
 
@@ -527,14 +527,14 @@ impl Curl {
         ulong di = 0;
         while (di < data_len) {
             Mem::write_byte(buf + tcp_start + tcp_hdr_len + di,
-                            Mem::read_byte(data + di));
+                Mem::read_byte(data + di));
             di = di + 1;
         }
 
         // TCPチェックサム (ヘッダ + ペイロード)
         ulong tcp_total = tcp_hdr_len + data_len;
         ulong tcp_cksum = Curl::tcp_checksum(GUEST_IP, remote_ip,
-                                              buf + tcp_start, tcp_total);
+            buf + tcp_start, tcp_total);
         Mem::write_byte(buf + tcp_start + 16, (tcp_cksum >> 8) & 0xFF);
         Mem::write_byte(buf + tcp_start + 17, tcp_cksum & 0xFF);
 
@@ -623,7 +623,7 @@ impl Curl {
     // TCPチェックサム計算（疑似ヘッダ込み, RFC 793）
     // ====================================================================
     static ulong tcp_checksum(ulong src_ip, ulong dst_ip,
-                               ulong tcp_data, ulong tcp_len) {
+        ulong tcp_data, ulong tcp_len) {
         ulong sum = 0;
 
         // 疑似ヘッダ

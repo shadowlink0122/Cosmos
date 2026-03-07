@@ -107,7 +107,7 @@ export const ulong GATEWAY_MAC = 0x52550A000202;
 // ============================================================
 
 /// パケットバッファプール基底アドレス
-export const ulong NET_BUF_BASE = 0x1920000;   // 25MB+128KB地点 (High Mem)
+export const ulong NET_BUF_BASE = 0x1920000;  // 25MB+128KB地点 (High Mem)
 
 /// パケットバッファ1つの最大サイズ
 export const ulong NET_BUF_SIZE = 2048;
@@ -117,14 +117,14 @@ export const ulong NET_BUF_COUNT = 32;
 
 /// パケットバッファ
 export struct NetBuf {
-    ulong data;        // バッファデータ先頭
-    ulong len;         // 有効データ長
-    ulong capacity;    // バッファ容量
-    ulong protocol;    // ETH_TYPE_IP 等
-    ulong head;        // ヘッダ先頭オフセット
-    ulong tail;        // テール位置
-    ulong used;        // 使用中フラグ
-    ulong reserved;    // アラインメント用
+    ulong data;      // バッファデータ先頭
+    ulong len;       // 有効データ長
+    ulong capacity;  // バッファ容量
+    ulong protocol;  // ETH_TYPE_IP 等
+    ulong head;      // ヘッダ先頭オフセット
+    ulong tail;      // テール位置
+    ulong used;      // 使用中フラグ
+    ulong reserved;  // アラインメント用
 }
 
 // ============================================================
@@ -133,10 +133,10 @@ export struct NetBuf {
 
 /// ソケットアドレス (sockaddr_in 互換)
 export struct SockAddr {
-    ulong family;    // AF_INET
-    ulong port;      // ポート番号
-    ulong addr;      // IPv4アドレス
-    ulong padding;   // アラインメント
+    ulong family;   // AF_INET
+    ulong port;     // ポート番号
+    ulong addr;     // IPv4アドレス
+    ulong padding;  // アラインメント
 }
 
 // ============================================================

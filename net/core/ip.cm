@@ -14,18 +14,18 @@ import ../../lib/kstring;
 
 /// IPv4ヘッダ
 export struct IpHeader {
-    ulong version;     // バージョン (4)
-    ulong ihl;         // ヘッダ長 (5 = 20バイト)
-    ulong tos;         // Type of Service
-    ulong total_len;   // パケット全体長
-    ulong id;          // 識別子
-    ulong flags;       // フラグ
-    ulong frag_off;    // フラグメントオフセット
-    ulong ttl;         // Time to Live
-    ulong protocol;    // 上位プロトコル (TCP=6, UDP=17, ICMP=1)
-    ulong checksum;    // ヘッダチェックサム
-    ulong src_addr;    // 送信元IPアドレス
-    ulong dst_addr;    // 宛先IPアドレス
+    ulong version;    // バージョン (4)
+    ulong ihl;        // ヘッダ長 (5 = 20バイト)
+    ulong tos;        // Type of Service
+    ulong total_len;  // パケット全体長
+    ulong id;         // 識別子
+    ulong flags;      // フラグ
+    ulong frag_off;   // フラグメントオフセット
+    ulong ttl;        // Time to Live
+    ulong protocol;   // 上位プロトコル (TCP=6, UDP=17, ICMP=1)
+    ulong checksum;   // ヘッダチェックサム
+    ulong src_addr;   // 送信元IPアドレス
+    ulong dst_addr;   // 宛先IPアドレス
 }
 
 // ============================================================

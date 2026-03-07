@@ -48,7 +48,8 @@ impl Console {
         if (level == LOG_DEBUG)  { w->puts("DEBUG" as void*); }
         w->putc(93);  // ']'
         // ANSIリセット
-        w->putc(27); w->puts("[0m" as void*);
+        w->putc(27);
+        w->puts("[0m" as void*);
         w->putc(32);  // ' '
         w->println(msg);
     }

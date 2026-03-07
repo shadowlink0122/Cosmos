@@ -12,7 +12,7 @@ import ../../include/color;
 export struct Prompt {}
 
 impl Prompt {
-    /// カラー付きプロンプトを描画: cosmo:/path$ 
+    /// カラー付きプロンプトを描画: cosmo:/path$
     static void draw() {
         ulong cwd_addr = Cwd::get();
         Shell::set_color(VGA_IDX_LIGHT_GREEN, 0);

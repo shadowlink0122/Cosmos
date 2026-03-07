@@ -22,7 +22,7 @@ export void test_udp() {
     // UDPパケット構築
     UdpHeader build_hdr = {
         src_port: 12345,
-        dst_port: 53,       // DNS
+        dst_port: 53,  // DNS
         length: 16,
         checksum: 0
     };

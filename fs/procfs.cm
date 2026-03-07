@@ -65,7 +65,8 @@ impl ProcFs {
     static ulong version(ulong buf) {
         ulong pos = buf;
         pos = write_str(pos, "Cosmo Linux version 0.1.0 (Cm Compiler v0.14.2)" as void*);
-        procfs_wb(pos, 10); pos = pos + 1;
+        procfs_wb(pos, 10);
+        pos = pos + 1;
         procfs_wb(pos, 0);
         return pos - buf;
     }

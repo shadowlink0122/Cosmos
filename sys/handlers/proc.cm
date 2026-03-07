@@ -152,10 +152,10 @@ impl SyscallProc {
             ulong* cur = old_rlim as ulong*;
             ulong* max = (old_rlim + 8) as ulong*;
             if (resource == RLIMIT_STACK) {
-                *cur = 8388608;          // 8MB スタック
+                *cur = 8388608;  // 8MB スタック
                 *max = 0xFFFFFFFFFFFFFFFF;
             } else if (resource == RLIMIT_NOFILE) {
-                *cur = 16;               // MAX_FD
+                *cur = 16;  // MAX_FD
                 *max = 16;
             } else if (resource == RLIMIT_AS) {
                 *cur = 0xFFFFFFFFFFFFFFFF;

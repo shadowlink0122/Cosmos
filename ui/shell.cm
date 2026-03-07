@@ -128,7 +128,9 @@ impl ShellInput {
         }
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
-        ser->putc(27); ser->putc(91); ser->putc(68);
+        ser->putc(27);
+        ser->putc(91);
+        ser->putc(68);
     }
 
     /// 右矢印キー処理
@@ -147,7 +149,9 @@ impl ShellInput {
         }
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
-        ser->putc(27); ser->putc(91); ser->putc(67);
+        ser->putc(27);
+        ser->putc(91);
+        ser->putc(67);
     }
 
     /// 上矢印キー処理（履歴ナビゲーション）
@@ -184,7 +188,9 @@ impl ShellInput {
             ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
             SerialPort* ser = (*ser_ptr) as SerialPort*;
             ser->putc(13);
-            ser->putc(27); ser->putc(91); ser->putc(75);
+            ser->putc(27);
+            ser->putc(91);
+            ser->putc(75);
             ser->puts("cosmo:" as void*);
             ulong cwd_disp = Cwd::get();
             ser->puts(cwd_disp as void*);
