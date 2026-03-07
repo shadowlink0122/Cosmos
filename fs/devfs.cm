@@ -7,6 +7,7 @@
 import ../include/types;
 import ../include/config;
 import ../include/vfs;
+import ../include/result;
 import ../include/errno;
 import ../drivers/serial;
 import ../lib/kstring;
@@ -33,16 +34,16 @@ export struct DevFs {}
 
 impl DevFs {
     /// デバイスファイルの読み込み
-    /// ino にデバイス番号を格納してFDを作成する想定
-    static long read(ulong dev_id, ulong buf_addr, ulong count) {
+    /// 成功=Ok(読み出しバイト数)、失敗=Err(errno)
+    static Result<ulong, long> read(ulong dev_id, ulong buf_addr, ulong count) {
         if (dev_id == DEV_NULL) {
             // /dev/null: 常にEOF (0バイト)
-            return 0;
+            return Result::Ok(0);
         }
         if (dev_id == DEV_ZERO) {
             // /dev/zero: 0で埋める
             memzero(buf_addr as void*, count);
-            return count as long;
+            return Result::Ok(count);
         }
         if (dev_id == DEV_RANDOM) {
             // /dev/random: 擬似乱数で埋める（PIT tick + LFSRベース）
@@ -63,26 +64,27 @@ impl DevFs {
                 `);
                 i = i + 1;
             }
-            return count as long;
+            return Result::Ok(count);
         }
-        return 0 - ENODEV;
+        return Result::Err(ENODEV);
     }
 
     /// デバイスファイルへの書き込み
-    static long write(ulong dev_id, ulong buf_addr, ulong count) {
+    /// 成功=Ok(書き込みバイト数)、失敗=Err(errno)
+    static Result<ulong, long> write(ulong dev_id, ulong buf_addr, ulong count) {
         if (dev_id == DEV_NULL) {
             // /dev/null: 全て破棄、countを返す
-            return count as long;
+            return Result::Ok(count);
         }
         if (dev_id == DEV_ZERO) {
             // /dev/zero: 書き込み不可
-            return 0 - EACCES;
+            return Result::Err(EACCES);
         }
         if (dev_id == DEV_RANDOM) {
             // /dev/random: 書き込み不可
-            return 0 - EACCES;
+            return Result::Err(EACCES);
         }
-        return 0 - ENODEV;
+        return Result::Err(ENODEV);
     }
 
     /// デバイスファイル名からデバイスIDを取得

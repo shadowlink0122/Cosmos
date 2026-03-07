@@ -127,7 +127,11 @@ impl Syscall {
         ulong fs_type = FdTable::get_fs_type(fd as long);
         if (fs_type == FS_DEVFS) {
             ulong dev_id = FdTable::get_ino(fd as long) as ulong;
-            return DevFs::write(dev_id, buf_addr, count);
+            Result<ulong, long> dr = DevFs::write(dev_id, buf_addr, count);
+            match (dr) {
+                Result::Ok(n) => { return n; }
+                Result::Err(e) => { return 0 - e; }
+            }
         }
         if (fs_type == FS_PIPE) {
             ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
@@ -139,7 +143,11 @@ impl Syscall {
         }
         // RamFS/9pFS→VFS経由
         if (fs_type == FS_RAMFS || fs_type == FS_9PFS) {
-            return Vfs::write(fd as long, buf_addr, count);
+            Result<ulong, long> vr = Vfs::write(fd as long, buf_addr, count);
+            match (vr) {
+                Result::Ok(n) => { return n; }
+                Result::Err(e) => { return 0 - e; }
+            }
         }
         return (0 - EBADF);
     }
@@ -197,7 +205,11 @@ impl Syscall {
         ulong fs_type = FdTable::get_fs_type(fd as long);
         if (fs_type == FS_DEVFS) {
             ulong dev_id = FdTable::get_ino(fd as long) as ulong;
-            return DevFs::read(dev_id, buf_addr, count);
+            Result<ulong, long> dr = DevFs::read(dev_id, buf_addr, count);
+            match (dr) {
+                Result::Ok(n) => { return n; }
+                Result::Err(e) => { return 0 - e; }
+            }
         }
         if (fs_type == FS_PIPE) {
             ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
@@ -218,7 +230,11 @@ impl Syscall {
             return 0;  // タイムアウト → EOF
         }
         // ramfsファイル → VFS経由
-        return Vfs::read(fd as long, buf_addr, count);
+        Result<ulong, long> vr = Vfs::read(fd as long, buf_addr, count);
+        match (vr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_open: ファイルをオープン
@@ -275,7 +291,10 @@ impl Syscall {
             FdTable::free(fd as long);
             return 0;
         }
-        return Vfs::close(fd as long);
+        match (Vfs::close(fd as long)) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_exit: プロセス終了

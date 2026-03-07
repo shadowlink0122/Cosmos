@@ -10,6 +10,7 @@
 import ../include/types;
 import ../include/config;
 import ../include/errno;
+import ../include/result;
 import ../include/phys_addr;
 import ../include/scheduler;
 import ../include/page_alloc;
@@ -133,7 +134,11 @@ impl Loader {
                 pr_err(w, "exec: file too small for ELF" as void*);
                 return 0 - ENOEXEC;
             }
-            long bytes = RamFs::read(ino, ELF_TMP_BUF, 0, fsize);
+            long bytes = 0;
+            match (RamFs::read(ino, ELF_TMP_BUF, 0, fsize)) {
+                Result::Ok(v) => { bytes = v; }
+                Result::Err(e) => { bytes = 0 - e; }
+            }
             if (bytes <= 0) {
                 pr_err(w, "exec: failed to read file" as void*);
                 return 0 - EIO;

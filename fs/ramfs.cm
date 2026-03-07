@@ -6,6 +6,8 @@
 import ../include/types;
 import ../include/config;
 import ../include/vfs;
+import ../include/result;
+import ../include/errno;
 import ../drivers/serial;
 import ../lib/printk;
 import ../lib/kstring;
@@ -200,31 +202,33 @@ impl RamFs {
     }
 
     /// ファイル読み出し
-    static long read(Ino ino, ulong buf, ulong off, ulong cnt) {
+    /// 成功=Ok(読み出しバイト数)、失敗=Err(errno)
+    static Result<ulong, long> read(Ino ino, ulong buf, ulong off, ulong cnt) {
         ulong io = find_ino(ino);
-        if (io == 0xFFFFFFFFFFFFFFFF) { return -1; }
+        if (io == 0xFFFFFFFFFFFFFFFF) { return Result::Err(ENOENT); }
         ulong* sp = (INO_BASE + io + 16) as ulong*;
-        if (off >= *sp) { return 0; }
+        if (off >= *sp) { return Result::Ok(0); }
         ulong av = *sp - off;
         if (cnt > av) { cnt = av; }
         ulong* dp = (INO_BASE + io + 32) as ulong*;
-        if (*dp == 0) { return 0; }
+        if (*dp == 0) { return Result::Ok(0); }
         ulong i = 0;
         while (i < cnt) {
             wb(buf + i, rb(*dp + off + i));
             i = i + 1;
         }
-        return cnt as long;
+        return Result::Ok(cnt);
     }
 
     /// ファイル書き込み
-    static long write(Ino ino, ulong buf, ulong off, ulong cnt) {
+    /// 成功=Ok(書き込みバイト数)、失敗=Err(errno)
+    static Result<ulong, long> write(Ino ino, ulong buf, ulong off, ulong cnt) {
         ulong io = find_ino(ino);
-        if (io == 0xFFFFFFFFFFFFFFFF) { return -1; }
+        if (io == 0xFFFFFFFFFFFFFFFF) { return Result::Err(ENOENT); }
         if (off + cnt > MAX_FILE_SIZE) { cnt = MAX_FILE_SIZE - off; }
-        if (cnt == 0) { return 0; }
+        if (cnt == 0) { return Result::Ok(0); }
         ulong* dp = (INO_BASE + io + 32) as ulong*;
-        if (*dp == 0) { return -1; }
+        if (*dp == 0) { return Result::Err(EIO); }
         ulong i = 0;
         while (i < cnt) {
             wb(*dp + off + i, rb(buf + i));
@@ -233,7 +237,7 @@ impl RamFs {
         ulong* sp = (INO_BASE + io + 16) as ulong*;
         ulong ne = off + cnt;
         if (ne > *sp) { *sp = ne; }
-        return cnt as long;
+        return Result::Ok(cnt);
     }
 
     /// ファイル内容の切り詰め
@@ -295,7 +299,8 @@ impl RamFs {
     }
 
     /// ファイル削除（inode解放 + direntry削除）
-    static long unlink(void* name) {
+    /// 成功=Ok(0)、失敗=Err(errno)
+    static Result<ulong, long> unlink(void* name) {
         ulong* dc = DIR_CNT as ulong*;
         ulong i = 0;
         while (i < *dc) {
@@ -306,7 +311,7 @@ impl RamFs {
                 if (name_eq(*na, name as ulong) != 0) {
                     // ディレクトリは削除不可
                     ulong* dt = (DIR_BASE + o + 16) as ulong*;
-                    if (*dt == S_IFDIR) { return 0 - EISDIR; }
+                    if (*dt == S_IFDIR) { return Result::Err(EISDIR); }
 
                     // inode解放
                     ulong* ip = (DIR_BASE + o + 8) as ulong*;
@@ -319,12 +324,12 @@ impl RamFs {
 
                     // direntry削除
                     *u = 0;
-                    return 0;
+                    return Result::Ok(0);
                 }
             }
             i = i + 1;
         }
-        return 0 - ENOENT;
+        return Result::Err(ENOENT);
     }
 
     /// ディレクトリ作成
@@ -335,7 +340,8 @@ impl RamFs {
     }
 
     /// ファイル名変更 (rename)
-    static long rename(void* oldname, void* newname) {
+    /// 成功=Ok(0)、失敗=Err(errno)
+    static Result<ulong, long> rename(void* oldname, void* newname) {
         // 既存の新名前エントリを削除
         Ino new_exist = RamFs::lookup(newname);
         if (new_exist != 0) {
@@ -364,11 +370,11 @@ impl RamFs {
                         k = k + 1;
                     }
                     wb(ns + MAX_NAME_LEN - 1, 0);
-                    return 0;
+                    return Result::Ok(0);
                 }
             }
             i = i + 1;
         }
-        return 0 - ENOENT;
+        return Result::Err(ENOENT);
     }
 }

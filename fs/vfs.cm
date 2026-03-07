@@ -137,49 +137,55 @@ impl Vfs {
     }
 
     /// FDからデータを読み出し
-    static long read(Fd fd, ulong buf, ulong count) {
-        if (FdTable::is_valid(fd) == 0) { return 0 - EBADF; }
+    /// 成功=Ok(読み出しバイト数)、失敗=Err(errno)
+    static Result<ulong, long> read(Fd fd, ulong buf, ulong count) {
+        if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
 
         ulong fs_type = FdTable::get_fs_type(fd);
 
         // コンソール (stdin) — 未実装: 0を返す
-        if (fs_type == FS_CONSOLE) { return 0; }
+        if (fs_type == FS_CONSOLE) { return Result::Ok(0); }
 
         // 9pfs
         if (fs_type == FS_9PFS) {
             Ino path_addr = FdTable::get_ino(fd);
             ulong offset = FdTable::get_offset(fd);
-            // ファイル全体を一時バッファに読み込み（offセット対応）
             ulong total = NinePfs::read_file(path_addr as ulong, buf, count);
             if (total > 0) {
                 FdTable::set_offset(fd, offset + total);
             }
-            return total as long;
+            return Result::Ok(total);
         }
 
         // ramfs
         if (fs_type == FS_RAMFS) {
             Ino ino = FdTable::get_ino(fd);
             ulong offset = FdTable::get_offset(fd);
-            long bytes = RamFs::read(ino, buf, offset, count);
-            if (bytes > 0) {
-                FdTable::set_offset(fd, offset + (bytes as ulong));
+            Result<ulong, long> rr = RamFs::read(ino, buf, offset, count);
+            match (rr) {
+                Result::Ok(bytes) => {
+                    if (bytes > 0) {
+                        FdTable::set_offset(fd, offset + (bytes as ulong));
+                    }
+                    return Result::Ok(bytes);
+                }
+                Result::Err(e) => { return Result::Err(e); }
             }
-            return bytes;
         }
 
-        return 0 - EBADF;
+        return Result::Err(EBADF);
     }
 
     /// FDにデータを書き込み
-    static long write(Fd fd, ulong buf, ulong count) {
-        if (FdTable::is_valid(fd) == 0) { return 0 - EBADF; }
+    /// 成功=Ok(書き込みバイト数)、失敗=Err(errno)
+    static Result<ulong, long> write(Fd fd, ulong buf, ulong count) {
+        if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
 
         ulong fs_type = FdTable::get_fs_type(fd);
 
         // コンソール (stdout/stderr) — シリアル出力
         if (fs_type == FS_CONSOLE) {
-            return count as long;
+            return Result::Ok(count);
         }
 
         // 9pfs
@@ -190,26 +196,32 @@ impl Vfs {
                 ulong offset = FdTable::get_offset(fd);
                 FdTable::set_offset(fd, offset + written);
             }
-            return written as long;
+            return Result::Ok(written);
         }
 
         // ramfs
         if (fs_type == FS_RAMFS) {
             Ino ino = FdTable::get_ino(fd);
             ulong offset = FdTable::get_offset(fd);
-            long bytes = RamFs::write(ino, buf, offset, count);
-            if (bytes > 0) {
-                FdTable::set_offset(fd, offset + (bytes as ulong));
+            Result<ulong, long> wr = RamFs::write(ino, buf, offset, count);
+            match (wr) {
+                Result::Ok(bytes) => {
+                    if (bytes > 0) {
+                        FdTable::set_offset(fd, offset + (bytes as ulong));
+                    }
+                    return Result::Ok(bytes);
+                }
+                Result::Err(e) => { return Result::Err(e); }
             }
-            return bytes;
         }
 
-        return 0 - EBADF;
+        return Result::Err(EBADF);
     }
 
     /// FDを閉じる
-    static long close(Fd fd) {
-        if (FdTable::is_valid(fd) == 0) { return 0 - EBADF; }
+    /// 成功=Ok(0)、失敗=Err(errno)
+    static Result<ulong, long> close(Fd fd) {
+        if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
 
         ulong fs_type = FdTable::get_fs_type(fd);
 
@@ -223,7 +235,7 @@ impl Vfs {
         }
 
         FdTable::free(fd);
-        return 0;
+        return Result::Ok(0);
     }
 
     /// ディレクトリエントリを読み出し（簡易版）

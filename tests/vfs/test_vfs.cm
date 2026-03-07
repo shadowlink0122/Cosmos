@@ -36,9 +36,14 @@ export void test_vfs() {
     KTest::assert_eq(fd_ok, 1, "VFS open O_CREAT" as void*);
 
     // close
-    long close_ret = Vfs::close(fd);
+    ulong close_ret = 0;
+    Result<ulong, long> cr = Vfs::close(fd);
+    match (cr) {
+        Result::Ok(v) => { close_ret = v; }
+        Result::Err(e) => { close_ret = 99; }
+    }
     ulong close_ok = 0;
-    if (close_ret >= 0) { close_ok = 1; }
+    if (close_ret == 0) { close_ok = 1; }
     KTest::assert_eq(close_ok, 1, "VFS close" as void*);
 
     // reopen で読み込み検証
@@ -65,9 +70,14 @@ export void test_vfs() {
     KTest::assert_eq(is_enoent, 1, "VFS open nonexistent returns error" as void*);
 
     // 無効なFDからの読み → EBADF
-    long err = Vfs::read(99, 0x9D300, 1);
+    ulong err = 999;
+    Result<ulong, long> er = Vfs::read(99, 0x9D300, 1);
+    match (er) {
+        Result::Ok(v) => { err = v; }
+        Result::Err(e) => { err = 999; }
+    }
     ulong is_ebadf = 0;
-    if (err < 0) { is_ebadf = 1; }
+    if (err == 999) { is_ebadf = 1; }
     KTest::assert_eq(is_ebadf, 1, "VFS read invalid fd returns error" as void*);
 
     // NULLパス → EINVAL

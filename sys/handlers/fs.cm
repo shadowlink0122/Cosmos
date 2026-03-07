@@ -323,7 +323,11 @@ impl SyscallFs {
             return 0 - EBADF;
         }
         ulong ino = FdTable::get_ino(fd as long) as ulong;
-        return RamFs::read(ino, buf, offset, count);
+        Result<ulong, long> rr = RamFs::read(ino, buf, offset, count);
+        match (rr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_pwrite64: オフセット指定書き込み
@@ -332,7 +336,11 @@ impl SyscallFs {
             return 0 - EBADF;
         }
         ulong ino = FdTable::get_ino(fd as long) as ulong;
-        return RamFs::write(ino, buf, offset, count);
+        Result<ulong, long> wr = RamFs::write(ino, buf, offset, count);
+        match (wr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_readv: scatter read (iovec配列による読み込み)
@@ -437,7 +445,11 @@ impl SyscallFs {
         __asm__(`movq ${r:search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:ch}`);
         if (ch == 47) { search = pathname + 1; }
         // RamFSでファイルを名前で削除
-        return RamFs::unlink(search as void*);
+        Result<ulong, long> ur = RamFs::unlink(search as void*);
+        match (ur) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_mkdirat: ディレクトリFD相対でディレクトリ作成
@@ -471,7 +483,11 @@ impl SyscallFs {
         __asm__(`movq ${r:new_search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:new_ch}`);
         if (new_ch == 47) { new_search = newpath + 1; }
 
-        return RamFs::rename(old_search as void*, new_search as void*);
+        Result<ulong, long> rr = RamFs::rename(old_search as void*, new_search as void*);
+        match (rr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_pipe2: パイプ作成 (flags付き)
