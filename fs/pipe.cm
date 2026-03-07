@@ -8,6 +8,7 @@ import ../include/types;
 import ../include/config;
 import ../include/vfs;
 import ../include/errno;
+import ../include/result;
 import ../lib/kstring;
 import ./fd_table;
 
@@ -40,8 +41,8 @@ impl Pipe {
         memzero(PIPE_TABLE_ADDR as void*, MAX_PIPES * PIPE_ENTRY_SIZE);
     }
 
-    /// パイプを作成。戻り値: パイプID (0-7)、失敗時 -1
-    static long create() {
+    /// パイプを作成。戻り値: Ok(パイプID) / Err(errno)
+    static Result<ulong, long> create() {
         ulong i = 0;
         while (i < MAX_PIPES) {
             ulong base = PIPE_TABLE_ADDR + i * PIPE_ENTRY_SIZE;
@@ -50,22 +51,22 @@ impl Pipe {
                 // パイプを初期化
                 memzero(base as void*, PIPE_ENTRY_SIZE);
                 *used = 1;
-                return i as long;
+                return Result::Ok(i);
             }
             i = i + 1;
         }
-        return 0 - EMFILE;
+        return Result::Err(EMFILE);
     }
 
-    /// パイプから読み込み
-    static long read(ulong pipe_id, ulong buf_addr, ulong count) {
-        if (pipe_id >= MAX_PIPES) { return 0 - EBADF; }
+    /// パイプから読み込み。Ok(バイト数) / Err(errno)
+    static Result<ulong, long> read(ulong pipe_id, ulong buf_addr, ulong count) {
+        if (pipe_id >= MAX_PIPES) { return Result::Err(EBADF); }
         ulong base = PIPE_TABLE_ADDR + pipe_id * PIPE_ENTRY_SIZE;
         ulong* read_pos  = (base + PIPE_BUF_SIZE) as ulong*;
         ulong* write_pos = (base + PIPE_BUF_SIZE + 8) as ulong*;
         ulong* data_count = (base + PIPE_BUF_SIZE + 16) as ulong*;
 
-        if (*data_count == 0) { return 0; }  // EOF (空パイプ)
+        if (*data_count == 0) { return Result::Ok(0); }  // EOF (空パイプ)
 
         ulong to_read = count;
         if (to_read > *data_count) { to_read = *data_count; }
@@ -91,18 +92,18 @@ impl Pipe {
 
         *read_pos = (*read_pos + to_read) % PIPE_BUF_SIZE;
         *data_count = *data_count - to_read;
-        return to_read as long;
+        return Result::Ok(to_read);
     }
 
-    /// パイプに書き込み
-    static long write(ulong pipe_id, ulong buf_addr, ulong count) {
-        if (pipe_id >= MAX_PIPES) { return 0 - EBADF; }
+    /// パイプに書き込み。Ok(バイト数) / Err(errno)
+    static Result<ulong, long> write(ulong pipe_id, ulong buf_addr, ulong count) {
+        if (pipe_id >= MAX_PIPES) { return Result::Err(EBADF); }
         ulong base = PIPE_TABLE_ADDR + pipe_id * PIPE_ENTRY_SIZE;
         ulong* write_pos = (base + PIPE_BUF_SIZE + 8) as ulong*;
         ulong* data_count = (base + PIPE_BUF_SIZE + 16) as ulong*;
 
         ulong space = PIPE_BUF_SIZE - *data_count;
-        if (space == 0) { return 0 - EAGAIN; }
+        if (space == 0) { return Result::Err(EAGAIN); }
 
         ulong to_write = count;
         if (to_write > space) { to_write = space; }
@@ -128,7 +129,7 @@ impl Pipe {
 
         *write_pos = (*write_pos + to_write) % PIPE_BUF_SIZE;
         *data_count = *data_count + to_write;
-        return to_write as long;
+        return Result::Ok(to_write);
     }
 
     /// パイプを解放

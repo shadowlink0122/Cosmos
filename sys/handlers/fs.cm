@@ -478,8 +478,12 @@ impl SyscallFs {
     static long pipe2(ulong pipefd_addr, ulong flags) {
         if (pipefd_addr == 0) { return 0 - EFAULT; }
         // Pipe::create で読み書きのFDペアを作成
-        long pipe_id = Pipe::create();
-        if (pipe_id < 0) { return pipe_id; }
+        long pipe_id = 0;
+        Result<ulong, long> cr = Pipe::create();
+        match (cr) {
+            Result::Ok(id) => { pipe_id = id as long; }
+            Result::Err(e) => { return 0 - e; }
+        }
 
         // 読み取り側FD
         long read_fd = 0;

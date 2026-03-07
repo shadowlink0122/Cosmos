@@ -5,6 +5,7 @@
 
 import ../../include/types;
 import ../../include/config;
+import ../../include/result;
 import ../../drivers/serial;
 import ../../lib/printk;
 import ../../lib/kstring;
@@ -20,7 +21,12 @@ export void test_pipe() {
     TestIO::set_color(7, 0);
 
     // パイプ作成
-    long pipe_id = Pipe::create();
+    long pipe_id = 0;
+    Result<ulong, long> cr = Pipe::create();
+    match (cr) {
+        Result::Ok(id) => { pipe_id = id as long; }
+        Result::Err(e) => { pipe_id = 0 - e; }
+    }
     if (pipe_id >= 0) {
         KTest::assert_true(1, "pipe create succeeds" as void*);
     } else {
@@ -29,17 +35,30 @@ export void test_pipe() {
 
     // 空パイプから読み込み → 0
     ulong buf = 0x9D100;
-    long n = Pipe::read(pipe_id as ulong, buf, 32);
+    long n = 0;
+    Result<ulong, long> rr = Pipe::read(pipe_id as ulong, buf, 32);
+    match (rr) {
+        Result::Ok(v) => { n = v as long; }
+        Result::Err(e) => { n = 0 - e; }
+    }
     KTest::assert_eq(n as ulong, 0, "empty pipe read returns 0" as void*);
 
     // 書き込み
     ulong msg_addr = "Hello" as ulong;
-    n = Pipe::write(pipe_id as ulong, msg_addr, 5);
+    Result<ulong, long> wr = Pipe::write(pipe_id as ulong, msg_addr, 5);
+    match (wr) {
+        Result::Ok(v) => { n = v as long; }
+        Result::Err(e) => { n = 0 - e; }
+    }
     KTest::assert_eq(n as ulong, 5, "pipe write 5 bytes" as void*);
 
     // 読み込み
     memzero(buf as void*, 32);
-    n = Pipe::read(pipe_id as ulong, buf, 32);
+    Result<ulong, long> rr2 = Pipe::read(pipe_id as ulong, buf, 32);
+    match (rr2) {
+        Result::Ok(v) => { n = v as long; }
+        Result::Err(e) => { n = 0 - e; }
+    }
     KTest::assert_eq(n as ulong, 5, "pipe read returns 5 bytes" as void*);
 
     // 読み込みデータ検証 (先頭バイト = 'H' = 72)

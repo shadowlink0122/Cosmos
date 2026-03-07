@@ -131,7 +131,11 @@ impl Syscall {
         }
         if (fs_type == FS_PIPE) {
             ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
-            return Pipe::write(pipe_id, buf_addr, count);
+            Result<ulong, long> pr = Pipe::write(pipe_id, buf_addr, count);
+            match (pr) {
+                Result::Ok(n) => { return n as long; }
+                Result::Err(e) => { return 0 - e; }
+            }
         }
         // RamFS/9pFS→VFS経由
         if (fs_type == FS_RAMFS || fs_type == FS_9PFS) {
@@ -200,8 +204,13 @@ impl Syscall {
             // ブロッキングread: パイプ空ならSched::run()で子プロセスに実行権を渡してリトライ
             ulong retry = 0;
             while (retry < 500) {
-                long result = Pipe::read(pipe_id, buf_addr, count);
-                if (result != 0) { return result; }
+                Result<ulong, long> pr = Pipe::read(pipe_id, buf_addr, count);
+                match (pr) {
+                    Result::Ok(n) => {
+                        if (n != 0) { return n as long; }
+                    }
+                    Result::Err(e) => { return 0 - e; }
+                }
                 // パイプ空→コンテキストスイッチして他プロセス(子)を実行
                 Sched::run();
                 retry = retry + 1;
@@ -435,8 +444,12 @@ impl Syscall {
     /// pipefd[0] = 読み取り端, pipefd[1] = 書き込み端
     static long do_pipe(ulong pipefd_addr) {
         if (pipefd_addr == 0) { return 0 - EFAULT; }
-        long pipe_id = Pipe::create();
-        if (pipe_id < 0) { return 0 - EMFILE; }
+        long pipe_id = 0;
+        Result<ulong, long> cr = Pipe::create();
+        match (cr) {
+            Result::Ok(id) => { pipe_id = id as long; }
+            Result::Err(e) => { return 0 - e; }
+        }
         // 読み取り端FD
         Fd read_fd = 0;
         Result<Fd, long> rr = FdTable::alloc(pipe_id, O_RDONLY, FS_PIPE);
