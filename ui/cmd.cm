@@ -1516,7 +1516,12 @@ impl Cmd {
             return;
         }
         if (streq(CMD_BUF_ADDR as void*, "clear" as void*) != 0) {
-            Vga::clear_screen();
+            ulong* gui = GUI_MODE_ADDR as ulong*;
+            if (*gui != 0) {
+                Shell::gui_clear();
+            } else {
+                Vga::clear_screen();
+            }
             return;
         }
         if (streq(CMD_BUF_ADDR as void*, "reboot" as void*) != 0) {

@@ -261,203 +261,203 @@ impl Kbd {
 
 /// PS/2 キーボード IRQ1 ハンドラ (naked ASM)
 void kbd_irq_handler() {
-        __asm__(`
-            pushq %rax;
-            pushq %rbx;
-            pushq %rcx;
-            pushq %rdx;
-            pushq %rdi;
-            pushq %rsi;
+    __asm__(`
+        pushq %rax;
+        pushq %rbx;
+        pushq %rcx;
+        pushq %rdx;
+        pushq %rdi;
+        pushq %rsi;
 
-            // スキャンコード読み取り
-            xorq %rax, %rax;
-            inb $$0x60, %al;
-            movq %rax, %rsi;
+        // スキャンコード読み取り
+        xorq %rax, %rax;
+        inb $$0x60, %al;
+        movq %rax, %rsi;
 
-            // E0プレフィクス: フラグをセットして待機
-            cmpb $$0xE0, %sil;
-            jne 10f;
-            movq $$0x93210, %rdi;
-            movq $$1, (%rdi);
-            jmp 9f;
-            10:;
-            cmpb $$0xE1, %sil;
-            je 9f;
+        // E0プレフィクス: フラグをセットして待機
+        cmpb $$0xE0, %sil;
+        jne 10f;
+        movq $$0x93210, %rdi;
+        movq $$1, (%rdi);
+        jmp 9f;
+        10:;
+        cmpb $$0xE1, %sil;
+        je 9f;
 
-            // E0フラグ確認
-            movq $$0x93210, %rdi;
-            movq (%rdi), %rcx;
-            movq $$0, (%rdi);  // フラグクリア
+        // E0フラグ確認
+        movq $$0x93210, %rdi;
+        movq (%rdi), %rcx;
+        movq $$0, (%rdi);  // フラグクリア
 
-            // E0拡張キーの処理
-            testq %rcx, %rcx;
-            jz 11f;
-            // E0シーケンス: make/break判定
-            testb $$0x80, %sil;
-            jnz 9f;  // ブレークコードは無視
-            // 上矢印 (0x48) → 0x80
-            cmpb $$0x48, %sil;
-            jne 12f;
-            movq $$0x80, %rcx;
-            jmp 42f;
-            12:;
-            // 下矢印 (0x50) → 0x81
-            cmpb $$0x50, %sil;
-            jne 14f;
-            movq $$0x81, %rcx;
-            jmp 42f;
-            14:;
-            // 左矢印 (0x4B) → 0x82
-            cmpb $$0x4B, %sil;
-            jne 15f;
-            movq $$0x82, %rcx;
-            jmp 42f;
-            15:;
-            // 右矢印 (0x4D) → 0x83
-            cmpb $$0x4D, %sil;
-            jne 9f;
-            movq $$0x83, %rcx;
-            // バッファに格納
-            42:;
-            movq $$0x93048, %rdi;
-            movq (%rdi), %rax;
-            movq %rax, %rdx;
-            addq $$1, %rdx;
-            andq $$63, %rdx;
-            movq $$0x93040, %rbx;
-            cmpq (%rbx), %rdx;
-            je 9f;
-            movq $$0x93000, %rbx;
-            movb %cl, (%rbx,%rax,1);
-            movq %rdx, (%rdi);
-            jmp 9f;
-            11:;
+        // E0拡張キーの処理
+        testq %rcx, %rcx;
+        jz 11f;
+        // E0シーケンス: make/break判定
+        testb $$0x80, %sil;
+        jnz 9f;  // ブレークコードは無視
+        // 上矢印 (0x48) → 0x80
+        cmpb $$0x48, %sil;
+        jne 12f;
+        movq $$0x80, %rcx;
+        jmp 42f;
+        12:;
+        // 下矢印 (0x50) → 0x81
+        cmpb $$0x50, %sil;
+        jne 14f;
+        movq $$0x81, %rcx;
+        jmp 42f;
+        14:;
+        // 左矢印 (0x4B) → 0x82
+        cmpb $$0x4B, %sil;
+        jne 15f;
+        movq $$0x82, %rcx;
+        jmp 42f;
+        15:;
+        // 右矢印 (0x4D) → 0x83
+        cmpb $$0x4D, %sil;
+        jne 9f;
+        movq $$0x83, %rcx;
+        // バッファに格納
+        42:;
+        movq $$0x93048, %rdi;
+        movq (%rdi), %rax;
+        movq %rax, %rdx;
+        addq $$1, %rdx;
+        andq $$63, %rdx;
+        movq $$0x93040, %rbx;
+        cmpq (%rbx), %rdx;
+        je 9f;
+        movq $$0x93000, %rbx;
+        movb %cl, (%rbx,%rax,1);
+        movq %rdx, (%rdi);
+        jmp 9f;
+        11:;
 
-            // ブレークコード判定（bit 7 set = keyup）
-            testb $$0x80, %sil;
-            jnz 5f;
+        // ブレークコード判定（bit 7 set = keyup）
+        testb $$0x80, %sil;
+        jnz 5f;
 
-            // === make code（キー押下）===
+        // === make code（キー押下）===
 
-            // LShift (0x2A) チェック
-            cmpb $$0x2A, %sil;
-            jne 1f;
-            movq $$0x93200, %rdi;
-            movq $$1, (%rdi);
-            jmp 9f;
-            1:;
+        // LShift (0x2A) チェック
+        cmpb $$0x2A, %sil;
+        jne 1f;
+        movq $$0x93200, %rdi;
+        movq $$1, (%rdi);
+        jmp 9f;
+        1:;
 
-            // RShift (0x36) チェック
-            cmpb $$0x36, %sil;
-            jne 2f;
-            movq $$0x93200, %rdi;
-            movq $$1, (%rdi);
-            jmp 9f;
-            2:;
+        // RShift (0x36) チェック
+        cmpb $$0x36, %sil;
+        jne 2f;
+        movq $$0x93200, %rdi;
+        movq $$1, (%rdi);
+        jmp 9f;
+        2:;
 
-            // LCtrl (0x1D) チェック
-            cmpb $$0x1D, %sil;
-            jne 3f;
-            movq $$0x93208, %rdi;
-            movq $$1, (%rdi);
-            jmp 9f;
-            3:;
+        // LCtrl (0x1D) チェック
+        cmpb $$0x1D, %sil;
+        jne 3f;
+        movq $$0x93208, %rdi;
+        movq $$1, (%rdi);
+        jmp 9f;
+        3:;
 
-            // CapsLock (0x3A), Alt (0x38), その他非文字キーは無視
-            cmpb $$0x3A, %sil;
-            je 9f;
-            cmpb $$0x38, %sil;
-            je 9f;
+        // CapsLock (0x3A), Alt (0x38), その他非文字キーは無視
+        cmpb $$0x3A, %sil;
+        je 9f;
+        cmpb $$0x38, %sil;
+        je 9f;
 
-            // Shift状態を確認
-            movq $$0x93200, %rdi;
-            movq (%rdi), %rdx;
+        // Shift状態を確認
+        movq $$0x93200, %rdi;
+        movq (%rdi), %rdx;
 
-            // ASCII変換: Shift状態に応じてテーブルを選択
-            movq %rsi, %rax;
-            andq $$0x7F, %rax;
-            testq %rdx, %rdx;
-            jnz 4f;
-            // 通常テーブル
-            movq $$0x93100, %rbx;
-            jmp 41f;
-            4:;
-            // Shiftテーブル
-            movq $$0x93180, %rbx;
-            41:;
+        // ASCII変換: Shift状態に応じてテーブルを選択
+        movq %rsi, %rax;
+        andq $$0x7F, %rax;
+        testq %rdx, %rdx;
+        jnz 4f;
+        // 通常テーブル
+        movq $$0x93100, %rbx;
+        jmp 41f;
+        4:;
+        // Shiftテーブル
+        movq $$0x93180, %rbx;
+        41:;
 
-            movzbq (%rbx,%rax,1), %rcx;
-            testq %rcx, %rcx;
-            jz 9f;
+        movzbq (%rbx,%rax,1), %rcx;
+        testq %rcx, %rcx;
+        jz 9f;
 
-            // Ctrl修飾: a-z → コントロールコード (1-26)
-            movq $$0x93208, %rdi;
-            movq (%rdi), %rbx;
-            testq %rbx, %rbx;
-            jz 43f;
-            // Ctrl押下時: ASCII 97-122 (a-z) → 1-26
-            cmpq $$97, %rcx;
-            jb 43f;
-            cmpq $$122, %rcx;
-            ja 43f;
-            subq $$96, %rcx;
-            43:;
+        // Ctrl修飾: a-z → コントロールコード (1-26)
+        movq $$0x93208, %rdi;
+        movq (%rdi), %rbx;
+        testq %rbx, %rbx;
+        jz 43f;
+        // Ctrl押下時: ASCII 97-122 (a-z) → 1-26
+        cmpq $$97, %rcx;
+        jb 43f;
+        cmpq $$122, %rcx;
+        ja 43f;
+        subq $$96, %rcx;
+        43:;
 
-            // バッファに格納
-            movq $$0x93048, %rdi;
-            movq (%rdi), %rax;
-            movq %rax, %rdx;
-            addq $$1, %rdx;
-            andq $$63, %rdx;
-            movq $$0x93040, %rbx;
-            cmpq (%rbx), %rdx;
-            je 9f;
-            movq $$0x93000, %rbx;
-            movb %cl, (%rbx,%rax,1);
-            movq %rdx, (%rdi);
-            jmp 9f;
+        // バッファに格納
+        movq $$0x93048, %rdi;
+        movq (%rdi), %rax;
+        movq %rax, %rdx;
+        addq $$1, %rdx;
+        andq $$63, %rdx;
+        movq $$0x93040, %rbx;
+        cmpq (%rbx), %rdx;
+        je 9f;
+        movq $$0x93000, %rbx;
+        movb %cl, (%rbx,%rax,1);
+        movq %rdx, (%rdi);
+        jmp 9f;
 
-            5:;
-            // === break code（キーリリース）===
-            movq %rsi, %rax;
-            andb $$0x7F, %al;
+        5:;
+        // === break code（キーリリース）===
+        movq %rsi, %rax;
+        andb $$0x7F, %al;
 
-            // LShift release
-            cmpb $$0x2A, %al;
-            jne 6f;
-            movq $$0x93200, %rdi;
-            movq $$0, (%rdi);
-            jmp 9f;
-            6:;
+        // LShift release
+        cmpb $$0x2A, %al;
+        jne 6f;
+        movq $$0x93200, %rdi;
+        movq $$0, (%rdi);
+        jmp 9f;
+        6:;
 
-            // RShift release
-            cmpb $$0x36, %al;
-            jne 7f;
-            movq $$0x93200, %rdi;
-            movq $$0, (%rdi);
-            jmp 9f;
-            7:;
+        // RShift release
+        cmpb $$0x36, %al;
+        jne 7f;
+        movq $$0x93200, %rdi;
+        movq $$0, (%rdi);
+        jmp 9f;
+        7:;
 
-            // LCtrl release
-            cmpb $$0x1D, %al;
-            jne 9f;
-            movq $$0x93208, %rdi;
-            movq $$0, (%rdi);
+        // LCtrl release
+        cmpb $$0x1D, %al;
+        jne 9f;
+        movq $$0x93208, %rdi;
+        movq $$0, (%rdi);
 
-            9:;
-            // PIC EOI
-            movb $$0x20, %al;
-            outb %al, $$0x20;
+        9:;
+        // PIC EOI
+        movb $$0x20, %al;
+        outb %al, $$0x20;
 
-            popq %rsi;
-            popq %rdi;
-            popq %rdx;
-            popq %rcx;
-            popq %rbx;
-            popq %rax;
-            iretq
-        `);
-    }
+        popq %rsi;
+        popq %rdi;
+        popq %rdx;
+        popq %rcx;
+        popq %rbx;
+        popq %rax;
+        iretq
+    `);
+}
 
 // ============================================================
 // キーボード初期化

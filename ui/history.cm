@@ -58,7 +58,7 @@ impl History {
         // バックスペースで消去
         ulong k = 0;
         while (k < old_len) {
-            Vga::putc(8);
+            Shell::putc(8);
             k = k + 1;
         }
         // 履歴コピー

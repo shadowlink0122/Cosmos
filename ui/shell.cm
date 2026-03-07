@@ -195,23 +195,27 @@ export void shell_main() {
                         lines = lines - 1;
                     }
                 }
+                // GUIモード: 画面更新
+                if (Shell::is_gui() != 0) {
+                    Shell::gui_flush();
+                }
                 // hlt: キーボードIRQ1またはPIT IRQ0で即wakeup
-                // CPU使用率を最小化しつつ入力応答は維持
                 __asm__(`sti; hlt`);
                 // スケジューラtick（他プロセス実行用）
                 Sched::tick();
             } else if (ch == 10) {
-                // スクロールバック中ならライブモードに復帰
-                ulong* sb_active = 0xC08018 as ulong*;  // SCROLLBACK_ACTIVE_ADDR
-                if (*sb_active != 0) {
-                    ulong* sb_pos = 0xC08010 as ulong*;  // SCROLLBACK_POS_ADDR
-                    *sb_pos = 0;
-                    *sb_active = 0;
-                    // ライブ画面を復元
-                    ulong si = 0;
-                    while (si < 25 * 80 * 2) {
-                        Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
-                        si = si + 1;
+                // スクロールバック中ならライブモードに復帰 (テキストモードのみ)
+                if (Shell::is_gui() == 0) {
+                    ulong* sb_active = 0xC08018 as ulong*;
+                    if (*sb_active != 0) {
+                        ulong* sb_pos = 0xC08010 as ulong*;
+                        *sb_pos = 0;
+                        *sb_active = 0;
+                        ulong si = 0;
+                        while (si < 25 * 80 * 2) {
+                            Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
+                            si = si + 1;
+                        }
                     }
                 }
                 // Enter: コマンド実行
@@ -284,24 +288,24 @@ export void shell_main() {
                     *cur_ptr = cursor - 1;
 
                     // VGA: カーソルを1つ左に移動
-                    Vga::putc(8);
+                    Shell::putc(8);
 
                     // カーソル位置から末尾まで再描画
                     ulong ri = cursor - 1;
                     ulong new_len = len - 1;
                     while (ri < new_len) {
                         ulong rc = Mem::read_byte(CMD_BUF_ADDR + ri);
-                        Vga::putc(rc);
+                        Shell::putc(rc);
                         ri = ri + 1;
                     }
                     // 末尾のゴミを消す
-                    Vga::putc(32);
+                    Shell::putc(32);
 
                     // カーソルを正しい位置に戻す
                     ulong back = new_len - (cursor - 1) + 1;
                     ulong bi = 0;
                     while (bi < back) {
-                        Vga::putc(8);
+                        Shell::putc(8);
                         bi = bi + 1;
                     }
 
@@ -329,12 +333,14 @@ export void shell_main() {
                 ulong cursor = *cur_ptr;
                 if (cursor > 0) {
                     *cur_ptr = cursor - 1;
-                    // VGA: カーソル左移動
-                    ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
-                    ulong col = *col_ptr;
-                    if (col > 0) {
-                        *col_ptr = col - 1;
-                        Vga::update_cursor();
+                    // カーソル左移動
+                    if (Shell::is_gui() == 0) {
+                        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+                        ulong col = *col_ptr;
+                        if (col > 0) {
+                            *col_ptr = col - 1;
+                            Vga::update_cursor();
+                        }
                     }
                     // シリアル: ESC[D
                     ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
@@ -349,12 +355,14 @@ export void shell_main() {
                 ulong cursor = *cur_ptr;
                 if (cursor < len) {
                     *cur_ptr = cursor + 1;
-                    // VGA: カーソル右移動
-                    ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
-                    ulong col = *col_ptr;
-                    if (col < VGA_COLS - 1) {
-                        *col_ptr = col + 1;
-                        Vga::update_cursor();
+                    // カーソル右移動
+                    if (Shell::is_gui() == 0) {
+                        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+                        ulong col = *col_ptr;
+                        if (col < VGA_COLS - 1) {
+                            *col_ptr = col + 1;
+                            Vga::update_cursor();
+                        }
                     }
                     // シリアル: ESC[C
                     ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
@@ -388,17 +396,17 @@ export void shell_main() {
                         // VGA: バックスペース + スペース上書き + バックスペース (文字消去)
                         ulong k = 0;
                         while (k < old_len) {
-                            Vga::putc(8);    // カーソル左
+                            Shell::putc(8);    // カーソル左
                             k = k + 1;
                         }
                         k = 0;
                         while (k < old_len) {
-                            Vga::putc(32);   // スペースで上書き
+                            Shell::putc(32);   // スペースで上書き
                             k = k + 1;
                         }
                         k = 0;
                         while (k < old_len) {
-                            Vga::putc(8);    // カーソルを元に戻す
+                            Shell::putc(8);    // カーソルを元に戻す
                             k = k + 1;
                         }
 
@@ -428,7 +436,11 @@ export void shell_main() {
                 input_done = 1;
             } else if (ch == 12) {
                 // Ctrl+L: 画面クリア
-                Vga::clear_screen();
+                if (Shell::is_gui() != 0) {
+                    Shell::gui_clear();
+                } else {
+                    Vga::clear_screen();
+                }
                 *len_ptr = 0;
                 *cur_ptr = 0;
                 input_done = 1;
@@ -748,14 +760,14 @@ export void shell_main() {
                         ulong ri = cursor;
                         ulong new_len = len + 1;
                         while (ri < new_len) {
-                            Vga::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+                            Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
                             ri = ri + 1;
                         }
                         // カーソルを正しい位置に戻す
                         ulong back = new_len - (cursor + 1);
                         ulong bi = 0;
                         while (bi < back) {
-                            Vga::putc(8);
+                            Shell::putc(8);
                             bi = bi + 1;
                         }
 

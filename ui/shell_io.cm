@@ -1,54 +1,155 @@
 //! platform: baremetal-x86
 // cosmo-linux::ui::shell_io - シェル出力ユーティリティ
 //
-// VGA + シリアル同時出力。Shell struct/impl。
+// VGA + シリアル同時出力。GUIモード時はGUI出力コールバック経由でTerminalに出力。
+// 循環参照を避けるため、Terminal/Fb直接importなし。
+// 代わりにコールバック関数ポインタを使用。
 
 import ./shell_const;
 import ./mem;
 import ./vga;
 import ../drivers/serial;
 
-/// Shell — シェル出力ユーティリティ（VGA + シリアル同時出力）
+// ============================================================
+// GUI出力コールバックアドレス
+// ============================================================
+
+/// GUI putc コールバック関数ポインタ (void(*)(ulong slot, ulong ch))
+const PhysAddr GUI_PUTC_ADDR = 0x95040;
+/// GUI puts コールバック関数ポインタ (void(*)(ulong slot, void* str))
+const PhysAddr GUI_PUTS_ADDR = 0x95048;
+/// GUI flush コールバック関数ポインタ (void(*)())
+const PhysAddr GUI_FLUSH_ADDR = 0x95050;
+/// GUI clear コールバック関数ポインタ (void(*)(ulong slot))
+const PhysAddr GUI_CLEAR_ADDR = 0x95058;
+/// GUI clear_buf コールバック関数ポインタ
+const PhysAddr GUI_CLEARBUF_ADDR = 0x95060;
+
+/// Shell — シェル出力ユーティリティ
 export struct Shell {}
 
 impl Shell {
-    static void putc(ulong ch) {
-        // GUIモード時はVGAテキスト出力をスキップ
+    /// GUIモード判定
+    static ulong is_gui() {
         ulong* gui = GUI_MODE_ADDR as ulong*;
-        if (*gui == 0) {
+        return *gui;
+    }
+
+    /// GUI putcコールバック呼び出し
+    static void gui_putc(ulong ch) {
+        ulong* fp = GUI_PUTC_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            ulong slot = 0;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:ch}, %rsi;
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// GUI putsコールバック呼び出し
+    static void gui_puts(void* msg) {
+        ulong* fp = GUI_PUTS_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            ulong slot = 0;
+            ulong str = msg as ulong;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:str}, %rsi;
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// 画面更新（GUIモード時、バックバッファをVRAMに転送）
+    static void gui_flush() {
+        ulong* fp = GUI_FLUSH_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            __asm__(`
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// GUI画面クリア
+    static void gui_clear() {
+        ulong* fp = GUI_CLEAR_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            ulong slot = 0;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+        ulong* fp2 = GUI_CLEARBUF_ADDR as ulong*;
+        ulong func2 = *fp2;
+        if (func2 != 0) {
+            ulong slot = 0;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:func2}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// 1文字出力
+    static void putc(ulong ch) {
+        if (Shell::is_gui() != 0) {
+            Shell::gui_putc(ch);
+        } else {
             Vga::putc(ch);
         }
+        // シリアル出力
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
         ser->putc(ch);
     }
 
+    /// 文字列出力
     static void write(void* msg) {
-        // GUIモード時はVGAテキスト出力をスキップ
-        ulong* gui = GUI_MODE_ADDR as ulong*;
-        if (*gui == 0) {
+        if (Shell::is_gui() != 0) {
+            Shell::gui_puts(msg);
+        } else {
             Vga::puts(msg);
         }
+        // シリアル出力
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
         ser->puts(msg);
     }
 
+    /// 文字列出力 + 改行
     static void writeln(void* msg) {
         Shell::write(msg);
         Shell::putc(10);
     }
 
+    /// VGA色設定（GUIモードでは無視）
     static void set_color(ulong fg, ulong bg) {
         ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
         *color_ptr = ((bg & 0x0F) << 4) | (fg & 0x0F);
     }
 
+    /// 10進数出力
     static void print_dec(ulong value) {
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
         if (value == 0) {
-            Vga::putc(48);
+            if (Shell::is_gui() != 0) {
+                Shell::gui_putc(48);
+            } else {
+                Vga::putc(48);
+            }
             ser->putc(48);
             return;
         }
@@ -93,7 +194,11 @@ impl Shell {
             if (i == 7) { d = buf7; }
             if (i == 8) { d = buf8; }
             if (i == 9) { d = buf9; }
-            Vga::putc(d + 48);
+            if (Shell::is_gui() != 0) {
+                Shell::gui_putc(d + 48);
+            } else {
+                Vga::putc(d + 48);
+            }
             ser->putc(d + 48);
         }
     }

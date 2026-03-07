@@ -48,6 +48,32 @@ import ../ui/wm;
 import ../ui/terminal;
 import ../ui/dock;
 
+/// GUI画面更新ヘルパー (コールバック用)
+void gui_flush_helper() {
+    Fb::flip();
+    Desktop::draw_cursor_direct();
+}
+
+/// Terminal::putc ラッパー (コールバック用)
+void gui_term_putc(ulong slot, ulong ch) {
+    Terminal::putc(slot, ch);
+}
+
+/// Terminal::puts ラッパー (コールバック用)
+void gui_term_puts(ulong slot, void* str) {
+    Terminal::puts(slot, str);
+}
+
+/// Terminal::clear ラッパー (コールバック用)
+void gui_term_clear(ulong slot) {
+    Terminal::clear(slot);
+}
+
+/// Terminal::clear_buf ラッパー (コールバック用)
+void gui_term_clear_buf(ulong slot) {
+    Terminal::clear_buf(slot);
+}
+
 // ============================================================
 // start_kernel — エントリポイント
 // ============================================================
@@ -228,6 +254,19 @@ void main(ulong mb2_info, ulong mb2_magic) {
     Wm::init();
     Desktop::init_cursor();
 
+    // GUI出力コールバック関数ポインタを設定
+    // shell_io.cmでTerminalを直接importできないため、関数ポインタ経由で接続
+    ulong* gui_putc_ptr = 0x95040 as ulong*;
+    ulong* gui_puts_ptr = 0x95048 as ulong*;
+    ulong* gui_flush_ptr = 0x95050 as ulong*;
+    ulong* gui_clear_ptr = 0x95058 as ulong*;
+    ulong* gui_clearbuf_ptr = 0x95060 as ulong*;
+    *gui_putc_ptr = gui_term_putc as ulong;
+    *gui_puts_ptr = gui_term_puts as ulong;
+    *gui_flush_ptr = gui_flush_helper as ulong;
+    *gui_clear_ptr = gui_term_clear as ulong;
+    *gui_clearbuf_ptr = gui_term_clear_buf as ulong;
+
     // GUIモードフラグを設定 (VGAテキスト出力を無効化)
     ulong* gui_flag = 0x95038 as ulong*;
     *gui_flag = 1;
@@ -239,13 +278,8 @@ void main(ulong mb2_info, ulong mb2_magic) {
     // 初期画面描画
     Wm::compose();
 
-    // ターミナルにウェルカムメッセージ
-    Terminal::puts(0, "Welcome to Cosmo Linux v0.1.0" as void*);
-    Terminal::putc(0, 10);
-    Terminal::puts(0, "Type 'help' for available commands." as void*);
-    Terminal::putc(0, 10);
-    Terminal::putc(0, 10);
-    Terminal::prompt(0);
+    // ターミナルにウェルカムメッセージ (entry.cmが直接描画)
+    // shell_main のバナーはGUIモードではスキップされる
     Fb::flip();
     Desktop::draw_cursor_direct();
 
