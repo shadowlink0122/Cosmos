@@ -6,6 +6,7 @@
 import ../../include/types;
 import ../../include/config;
 import ../../include/vfs;
+import ../../include/result;
 import ../../drivers/serial;
 import ../../lib/printk;
 import ../../fs/fd_table;
@@ -27,7 +28,12 @@ export void test_fd_table() {
     KTest::assert_eq(FdTable::is_valid(15), 0, "fd 15 invalid" as void*);
 
     // alloc/free サイクル
-    Fd fd = FdTable::alloc(42, O_RDWR, FS_DEVFS);
+    Fd fd = 0;
+    Result<Fd, long> alloc_r = FdTable::alloc(42, O_RDWR, FS_DEVFS);
+    match (alloc_r) {
+        Result::Ok(v) => { fd = v; }
+        Result::Err(e) => { fd = 0 - e; }
+    }
     if (fd >= 3) {
         KTest::assert_true(1, "alloc returns fd >= 3" as void*);
     } else {
@@ -37,7 +43,12 @@ export void test_fd_table() {
     KTest::assert_eq(FdTable::get_fs_type(fd), FS_DEVFS, "fs_type = FS_DEVFS" as void*);
 
     // dup2
-    Fd dup_fd = FdTable::dup2(fd, 10);
+    Fd dup_fd = 0;
+    Result<Fd, long> dup_r = FdTable::dup2(fd, 10);
+    match (dup_r) {
+        Result::Ok(v) => { dup_fd = v; }
+        Result::Err(e) => { dup_fd = 0 - e; }
+    }
     KTest::assert_eq(dup_fd as ulong, 10, "dup2 returns newfd" as void*);
     KTest::assert_eq(FdTable::is_valid(10), 1, "dup2 target valid" as void*);
     KTest::assert_eq(FdTable::get_fs_type(10), FS_DEVFS, "dup2 target fs_type" as void*);

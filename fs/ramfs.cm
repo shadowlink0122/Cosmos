@@ -306,7 +306,7 @@ impl RamFs {
                 if (name_eq(*na, name as ulong) != 0) {
                     // ディレクトリは削除不可
                     ulong* dt = (DIR_BASE + o + 16) as ulong*;
-                    if (*dt == S_IFDIR) { return 0 - 21; }  // -EISDIR
+                    if (*dt == S_IFDIR) { return 0 - EISDIR; }
 
                     // inode解放
                     ulong* ip = (DIR_BASE + o + 8) as ulong*;
@@ -324,7 +324,7 @@ impl RamFs {
             }
             i = i + 1;
         }
-        return 0 - 2;  // -ENOENT
+        return 0 - ENOENT;
     }
 
     /// ディレクトリ作成
@@ -369,6 +369,6 @@ impl RamFs {
             }
             i = i + 1;
         }
-        return 0 - 2;  // -ENOENT
+        return 0 - ENOENT;
     }
 }

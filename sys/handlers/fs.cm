@@ -9,6 +9,7 @@
 import ../../include/types;
 import ../../include/config;
 import ../../include/errno;
+import ../../include/result;
 import ../../include/vfs;
 import ../../drivers/serial;
 import ../../lib/printk;
@@ -198,7 +199,11 @@ impl SyscallFs {
             ulong na1 = pathname + 1;
             __asm__(`movq ${r:na1}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sb}`);
             if (sb == 0) {
-                return FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+                Result<Fd, long> r = FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+                match (r) {
+                    Result::Ok(fd) => { return fd; }
+                    Result::Err(e) => { return 0 - e; }
+                }
             }
         }
 
@@ -365,7 +370,11 @@ impl SyscallFs {
         }
         if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
             // arg以上の最小FDにdup
-            return FdTable::dup2(fd as long, arg as long);
+            Result<Fd, long> r = FdTable::dup2(fd as long, arg as long);
+            match (r) {
+                Result::Ok(v) => { return v; }
+                Result::Err(e) => { return 0 - e; }
+            }
         }
         return 0 - EINVAL;
     }
@@ -376,7 +385,11 @@ impl SyscallFs {
             return 0 - EBADF;
         }
         // 最小の空きFDにコピー
-        return FdTable::dup_lowest(oldfd as long);
+        Result<Fd, long> r = FdTable::dup_lowest(oldfd as long);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_dup3: FD複製 (dup2 + flags)
@@ -387,7 +400,11 @@ impl SyscallFs {
         if (oldfd == newfd) {
             return 0 - EINVAL;
         }
-        return FdTable::dup2(oldfd as long, newfd as long);
+        Result<Fd, long> r = FdTable::dup2(oldfd as long, newfd as long);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_stat: パス名からファイル情報取得 (newfstatat互換)
@@ -461,14 +478,22 @@ impl SyscallFs {
         if (pipe_id < 0) { return pipe_id; }
 
         // 読み取り側FD
-        long read_fd = FdTable::alloc(pipe_id, 0, FS_PIPE);
-        if (read_fd < 0) { return read_fd; }
+        long read_fd = 0;
+        Result<Fd, long> rr = FdTable::alloc(pipe_id, 0, FS_PIPE);
+        match (rr) {
+            Result::Ok(fd) => { read_fd = fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
 
         // 書き込み側FD
-        long write_fd = FdTable::alloc(pipe_id, 1, FS_PIPE);
-        if (write_fd < 0) {
-            FdTable::free(read_fd);
-            return write_fd;
+        long write_fd = 0;
+        Result<Fd, long> wr = FdTable::alloc(pipe_id, 1, FS_PIPE);
+        match (wr) {
+            Result::Ok(fd) => { write_fd = fd; }
+            Result::Err(e) => {
+                FdTable::free(read_fd);
+                return 0 - e;
+            }
         }
 
         // ユーザー空間にFDペアを書き込み (int[2] = 4バイト×2)

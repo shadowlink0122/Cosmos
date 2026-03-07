@@ -10,6 +10,7 @@
 import ../include/types;
 import ../include/config;
 import ../include/page_alloc;
+import ../include/errno;
 import ../include/scheduler;
 import ../mm/vmm;
 import ../mm/pmm;
@@ -94,7 +95,7 @@ impl Mmap {
             if (vma->used == 0) { return i as long; }
             i = i + 1;
         }
-        return 0 - 1;
+        return 0 - ENOMEM;
     }
 
     /// 仮想アドレスが属するVMAを検索
@@ -197,11 +198,11 @@ impl Mmap {
 
     /// munmap: メモリマッピング解除
     static long do_munmap(ulong addr, ulong length) {
-        if (length == 0) { return 0 - 22; }  // -EINVAL
+        if (length == 0) { return 0 - EINVAL; }
 
         Vma* vma = Mmap::find_vma(addr);
         ulong vma_addr = vma as ulong;
-        if (vma_addr == 0) { return 0 - 22; }
+        if (vma_addr == 0) { return 0 - EINVAL; }
 
         // PMMを取得してページ解放
         ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;

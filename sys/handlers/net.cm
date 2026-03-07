@@ -8,6 +8,7 @@
 
 import ../../include/types;
 import ../../include/errno;
+import ../../include/result;
 import ../../include/net;
 import ../../net/transport/socket;
 import ../../fs/fd_table;
@@ -36,12 +37,14 @@ impl SyscallNet {
         long sock_id = Socket::create(domain, sock_type, protocol);
         if (sock_id < 0) { return 0 - EMFILE; }
         // ソケットIDをFDテーブルに登録
-        Fd fd = FdTable::alloc(sock_id as ulong, 0, FS_SOCKET);
-        if (fd < 0) {
-            Socket::close(sock_id as ulong);
-            return 0 - EMFILE;
+        Result<Fd, long> r = FdTable::alloc(sock_id as ulong, 0, FS_SOCKET);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => {
+                Socket::close(sock_id as ulong);
+                return 0 - e;
+            }
         }
-        return fd;
     }
 
     /// sys_connect: ソケット接続
@@ -98,12 +101,14 @@ impl SyscallNet {
         long new_sock = Socket::create(AF_INET, SOCK_STREAM, 0);
         if (new_sock < 0) { return 0 - EMFILE; }
 
-        Fd new_fd = FdTable::alloc(new_sock as ulong, 0, FS_SOCKET);
-        if (new_fd < 0) {
-            Socket::close(new_sock as ulong);
-            return 0 - EMFILE;
+        Result<Fd, long> r = FdTable::alloc(new_sock as ulong, 0, FS_SOCKET);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => {
+                Socket::close(new_sock as ulong);
+                return 0 - e;
+            }
         }
-        return new_fd;
     }
 
     /// sys_sendto: データ送信

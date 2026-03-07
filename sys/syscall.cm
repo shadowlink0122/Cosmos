@@ -9,7 +9,9 @@
 
 import ../include/types;
 import ../include/config;
+import ../include/phys_addr;
 import ../include/errno;
+import ../include/result;
 import ../include/signal;
 import ../drivers/serial;
 import ../lib/printk;
@@ -227,14 +229,22 @@ impl Syscall {
             }
         }
         if (is_root != 0) {
-            return FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+            Result<Fd, long> r = FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+            match (r) {
+                Result::Ok(fd) => { return fd; }
+                Result::Err(e) => { return 0 - e; }
+            }
         }
         // /dev/ プレフィックスチェック
         if (startswith(name_addr as void*, "/dev/" as void*) != 0) {
             ulong dev_name = name_addr + 5;
             ulong dev_id = DevFs::lookup(dev_name as void*);
             if (dev_id != 0) {
-                return FdTable::alloc(dev_id as long, flags, FS_DEVFS);
+                Result<Fd, long> r = FdTable::alloc(dev_id as long, flags, FS_DEVFS);
+                match (r) {
+                    Result::Ok(fd) => { return fd; }
+                    Result::Err(e) => { return 0 - e; }
+                }
             }
             return 0 - ENOENT;
         }
@@ -424,17 +434,25 @@ impl Syscall {
         long pipe_id = Pipe::create();
         if (pipe_id < 0) { return 0 - EMFILE; }
         // 読み取り端FD
-        Fd read_fd = FdTable::alloc(pipe_id, O_RDONLY, FS_PIPE);
-        if (read_fd < 0) {
-            Pipe::destroy(pipe_id as ulong);
-            return 0 - EMFILE;
+        Fd read_fd = 0;
+        Result<Fd, long> rr = FdTable::alloc(pipe_id, O_RDONLY, FS_PIPE);
+        match (rr) {
+            Result::Ok(fd) => { read_fd = fd; }
+            Result::Err(e) => {
+                Pipe::destroy(pipe_id as ulong);
+                return 0 - e;
+            }
         }
         // 書き込み端FD
-        Fd write_fd = FdTable::alloc(pipe_id, O_WRONLY, FS_PIPE);
-        if (write_fd < 0) {
-            FdTable::free(read_fd);
-            Pipe::destroy(pipe_id as ulong);
-            return 0 - EMFILE;
+        Fd write_fd = 0;
+        Result<Fd, long> wr = FdTable::alloc(pipe_id, O_WRONLY, FS_PIPE);
+        match (wr) {
+            Result::Ok(fd) => { write_fd = fd; }
+            Result::Err(e) => {
+                FdTable::free(read_fd);
+                Pipe::destroy(pipe_id as ulong);
+                return 0 - e;
+            }
         }
         // pipefd配列に書き込み
         ulong* fd0 = pipefd_addr as ulong*;
@@ -446,7 +464,11 @@ impl Syscall {
 
     /// sys_dup2: FDコピー
     static long do_dup2(ulong oldfd, ulong newfd) {
-        return FdTable::dup2(oldfd as long, newfd as long);
+        Result<Fd, long> r = FdTable::dup2(oldfd as long, newfd as long);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     // ================================================================
@@ -469,7 +491,7 @@ impl Syscall {
             Cpu::wrmsr(0xC0000100, addr);  // IA32_FS_BASE
 
             // TLS_BASEストアも更新（トランポリンのiretq直前wrmsrで使用）
-            ulong* tls_store = 0x96100 as ulong*;
+            ulong* tls_store = TLS_STORE_ADDR as ulong*;
             *tls_store = addr;
 
             // 設定確認
@@ -864,9 +886,11 @@ export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
     // --- epoll ---
     if (nr == SYS_EPOLL_CREATE || nr == SYS_EPOLL_CREATE1) {
         // epollインスタンス作成 → FDを返す (実際には使わないのでダミーFD)
-        Fd fd = FdTable::alloc(0, 0, FS_EPOLL);
-        if (fd < 0) { return 0 - EMFILE; }
-        return fd;
+        Result<Fd, long> r = FdTable::alloc(0, 0, FS_EPOLL);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
     if (nr == SYS_EPOLL_CTL) {
         // epoll_ctl: 常に成功
@@ -887,7 +911,11 @@ export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
     // eventfd2 (SYS_EVENTFD2 = 290)
     if (nr == 290) {
         // stub: ダミーFDを返す
-        return FdTable::alloc(0, 0, FS_DEVFS);
+        Result<Fd, long> r = FdTable::alloc(0, 0, FS_DEVFS);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     // --- ユーザー/グループ ---

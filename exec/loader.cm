@@ -9,6 +9,8 @@
 
 import ../include/types;
 import ../include/config;
+import ../include/errno;
+import ../include/phys_addr;
 import ../include/scheduler;
 import ../include/page_alloc;
 import ../include/vfs;
@@ -49,8 +51,7 @@ const ulong INTERP_MAX_SIZE = 0x400000;
 /// ユーザー空間の上位アドレスに配置
 const VirtAddr INTERP_LOAD_BASE = 0x7F000000;
 
-/// ローダー用PMMポインタアドレス
-const PhysAddr LOADER_PMM_PTR = 0x95010;
+/// ローダー用PMMポインタ: phys_addr.cmのPMM_GLOBAL_PTR_ADDRを使用
 
 // ============================================================
 // Auxiliary Vector (auxv) 定数
@@ -112,7 +113,7 @@ impl Loader {
         }
         if (fname_len == 0) {
             pr_err(w, "exec: empty command" as void*);
-            return 0 - 1;
+            return 0 - EINVAL;
         }
 
         // ファイル名をNULL終端の一時バッファにコピー（検索用）
@@ -130,12 +131,12 @@ impl Loader {
             fsize = RamFs::file_size(ino);
             if (fsize < 64) {
                 pr_err(w, "exec: file too small for ELF" as void*);
-                return 0 - 1;
+                return 0 - ENOEXEC;
             }
             long bytes = RamFs::read(ino, ELF_TMP_BUF, 0, fsize);
             if (bytes <= 0) {
                 pr_err(w, "exec: failed to read file" as void*);
-                return 0 - 1;
+                return 0 - EIO;
             }
         } else {
             // 9pフォールバック
@@ -144,7 +145,7 @@ impl Loader {
             ulong bytes_9p = NinePfs::read_file(fname_buf, ELF_TMP_BUF, ELF_MAX_SIZE);
             if (bytes_9p == 0) {
                 pr_err(w, "exec: file not found (ramfs/9p)" as void*);
-                return 0 - 1;
+                return 0 - ENOENT;
             }
             fsize = bytes_9p;
             loaded_from_9p = 1;
@@ -157,7 +158,7 @@ impl Loader {
         w->println("[exec] Validating ELF header..." as void*);
         if (Elf::validate(ELF_TMP_BUF) == 0) {
             pr_err(w, "exec: invalid ELF64 binary" as void*);
-            return 0 - 1;
+            return 0 - ENOEXEC;
         }
         w->println("[exec] ELF header valid" as void*);
 
@@ -268,7 +269,7 @@ impl Loader {
         }
 
         // PMMを取得
-        ulong* pmm_ptr = LOADER_PMM_PTR as ulong*;
+        ulong* pmm_ptr = PMM_GLOBAL_PTR_ADDR as ulong*;
         BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
 
         // CR3取得
@@ -342,7 +343,7 @@ impl Loader {
                         w->puts("[exec] ERROR: out of pages at " as void*);
                         print_dec(w, mapped);
                         w->println("" as void*);
-                        return 0 - 1;
+                        return 0 - ENOMEM;
                     }
                     memzero(phys_page as void*, PAGE_SIZE);
                     // ユーザープロセス用: PRESENT | WRITE | USER = 7
@@ -476,7 +477,7 @@ impl Loader {
         PhysAddr proc_mem = pmm->alloc_pages(0);
         if (proc_mem == 0) {
             pr_err(w, "exec: failed to allocate process memory" as void*);
-            return 0 - 1;
+            return 0 - ENOMEM;
         }
         memzero(proc_mem as void*, PAGE_SIZE);
         Process* proc = proc_mem as Process*;
@@ -532,7 +533,7 @@ impl Loader {
             // TLS_BASE値を固定アドレスに保存
             // usermode_trampolineのiretq直前でwrmsr(FS_BASE)に使用
             // コンテキストスイッチでMSR値が失われるため、毎回読み出して設定する
-            ulong* tls_store = 0x96100 as ulong*;
+            ulong* tls_store = TLS_STORE_ADDR as ulong*;
             *tls_store = tls_base_vaddr;
 
             // デバッグ: TLS_BASEストアの値を確認
@@ -799,7 +800,7 @@ impl Loader {
         proc->user_stack = sp;
 
         // syscall用カーネルRSPを設定（Ring3→Ring0のRSP切り替え用）
-        ulong* syscall_krsp = 0x96000 as ulong*;
+        ulong* syscall_krsp = SYSCALL_KRSP_ADDR as ulong*;
         *syscall_krsp = proc->kernel_stack;
 
         // コンテキスト初期化（iretqでRing3+ユーザーRSPに直接遷移）

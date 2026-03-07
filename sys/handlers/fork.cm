@@ -10,6 +10,7 @@
 
 import ../../include/types;
 import ../../include/config;
+import ../../include/phys_addr;
 import ../../include/scheduler;
 import ../../include/page_alloc;
 import ../../include/vfs;
@@ -28,9 +29,7 @@ import ../../fs/ninepfs;
 import ../../ui/mem;
 
 // ============================================================
-// PMMポインタアドレス (loader.cmと共有)
-// ============================================================
-const PhysAddr FORK_PMM_PTR = 0x95010;
+// PMMポインタはphys_addr.cmのPMM_GLOBAL_PTR_ADDRを使用
 
 /// SyscallFork — fork/clone/execve 関連syscall
 export struct SyscallFork {}
@@ -51,7 +50,7 @@ impl SyscallFork {
         dbg.println("[fork] do_fork called" as void*);
 
         // PMMを取得
-        ulong* pmm_ptr = FORK_PMM_PTR as ulong*;
+        ulong* pmm_ptr = PMM_GLOBAL_PTR_ADDR as ulong*;
         BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
         if (pmm as ulong == 0) {
             dbg.println("[fork] ERROR: PMM not available" as void*);
@@ -123,86 +122,86 @@ impl SyscallFork {
         // スケジューラに登録
         Sched::add(child);
 
-        // 親のsyscall復帰フレームを異子モード復帰用に保存 (0x96200-0x96278)
-        // カーネルRSP (0x96000の値) からpush 15個分のオフセットで復帰レジスタを取得
-        // push順序: RCX(RIP),R11(RFLAGS),RDI,RSI,RDX,R10,R8,R9,RBX,RBP,R12,R13,R14,R15,RAX
-        // stack_base = kernel_rsp (= *0x96000), frame_top = stack_base - 120
-        // frame_top + 0   = RAX(nr)
-        // frame_top + 8   = R15
-        // frame_top + 16  = R14
-        // ...
-        // frame_top + 112 = RCX(RIP)
-        ulong frame_top = 0;
-        __asm__(`
-            movq 0x96000, %rax;  // カーネルRSP base
-            subq $$120, %rax;    // 15 pushes * 8 = 120
-            movq %rax, ${=r:frame_top}
-        `);
-
-        // ユーザーRSP保存 (0x96008 → 0x96200)
-        ulong* saved_user_rsp = 0x96200 as ulong*;
-        ulong* user_rsp_src = 0x96008 as ulong*;
+        // 親のsyscall復帰フレームを異子モード復帰用に保存
+        // ユーザーRSP保存
+        ulong* saved_user_rsp = FORK_SAVE_RSP as ulong*;
+        ulong* user_rsp_src = USER_RSP_ADDR as ulong*;
         *saved_user_rsp = *user_rsp_src;
         // clone new_stack指定時はそちらを使用
         if (new_stack != 0) {
             *saved_user_rsp = new_stack;
         }
-        // RCX(RIP) = frame_top + 112
-        ulong* ft_rcx = (frame_top + 112) as ulong*;
-        ulong* sv_rcx = 0x96210 as ulong*;
-        *sv_rcx = *ft_rcx;
-        // R11(RFLAGS) = frame_top + 104
-        ulong* ft_r11 = (frame_top + 104) as ulong*;
-        ulong* sv_r11 = 0x96218 as ulong*;
-        *sv_r11 = *ft_r11;
-        // RDI = frame_top + 96
-        ulong* ft_rdi = (frame_top + 96) as ulong*;
-        ulong* sv_rdi = 0x96220 as ulong*;
-        *sv_rdi = *ft_rdi;
-        // RSI = frame_top + 88
-        ulong* ft_rsi = (frame_top + 88) as ulong*;
-        ulong* sv_rsi = 0x96228 as ulong*;
-        *sv_rsi = *ft_rsi;
-        // RDX = frame_top + 80
-        ulong* ft_rdx = (frame_top + 80) as ulong*;
-        ulong* sv_rdx = 0x96230 as ulong*;
-        *sv_rdx = *ft_rdx;
-        // R10 = frame_top + 72
-        ulong* ft_r10 = (frame_top + 72) as ulong*;
-        ulong* sv_r10 = 0x96238 as ulong*;
-        *sv_r10 = *ft_r10;
-        // R8 = frame_top + 64
-        ulong* ft_r8 = (frame_top + 64) as ulong*;
-        ulong* sv_r8 = 0x96240 as ulong*;
-        *sv_r8 = *ft_r8;
-        // R9 = frame_top + 56
-        ulong* ft_r9 = (frame_top + 56) as ulong*;
-        ulong* sv_r9 = 0x96248 as ulong*;
-        *sv_r9 = *ft_r9;
-        // RBX = frame_top + 48
-        ulong* ft_rbx = (frame_top + 48) as ulong*;
-        ulong* sv_rbx = 0x96250 as ulong*;
-        *sv_rbx = *ft_rbx;
-        // RBP = frame_top + 40
-        ulong* ft_rbp = (frame_top + 40) as ulong*;
-        ulong* sv_rbp = 0x96258 as ulong*;
-        *sv_rbp = *ft_rbp;
-        // R12 = frame_top + 32
-        ulong* ft_r12 = (frame_top + 32) as ulong*;
-        ulong* sv_r12 = 0x96260 as ulong*;
-        *sv_r12 = *ft_r12;
-        // R13 = frame_top + 24
-        ulong* ft_r13 = (frame_top + 24) as ulong*;
-        ulong* sv_r13 = 0x96268 as ulong*;
-        *sv_r13 = *ft_r13;
-        // R14 = frame_top + 16
-        ulong* ft_r14 = (frame_top + 16) as ulong*;
-        ulong* sv_r14 = 0x96270 as ulong*;
-        *sv_r14 = *ft_r14;
-        // R15 = frame_top + 8
-        ulong* ft_r15 = (frame_top + 8) as ulong*;
-        ulong* sv_r15 = 0x96278 as ulong*;
-        *sv_r15 = *ft_r15;
+        // 全レジスタを保存（syscallエントリで破壊されたもの）
+        // RCX, R11はsyscallで自動変更されるが、コンテキスト復元用に保存
+        ulong saved_rcx = 0;
+        __asm__(`movq %rcx, ${=r:saved_rcx}`);
+        ulong* sv_rcx = FORK_SAVE_RCX as ulong*;
+        *sv_rcx = saved_rcx;
+
+        ulong saved_r11 = 0;
+        __asm__(`movq %r11, ${=r:saved_r11}`);
+        ulong* sv_r11 = FORK_SAVE_R11 as ulong*;
+        *sv_r11 = saved_r11;
+
+        ulong saved_rdi = 0;
+        __asm__(`movq %rdi, ${=r:saved_rdi}`);
+        ulong* sv_rdi = FORK_SAVE_RDI as ulong*;
+        *sv_rdi = saved_rdi;
+
+        ulong saved_rsi = 0;
+        __asm__(`movq %rsi, ${=r:saved_rsi}`);
+        ulong* sv_rsi = FORK_SAVE_RSI as ulong*;
+        *sv_rsi = saved_rsi;
+
+        ulong saved_rdx = 0;
+        __asm__(`movq %rdx, ${=r:saved_rdx}`);
+        ulong* sv_rdx = FORK_SAVE_RDX as ulong*;
+        *sv_rdx = saved_rdx;
+
+        ulong saved_r10 = 0;
+        __asm__(`movq %r10, ${=r:saved_r10}`);
+        ulong* sv_r10 = FORK_SAVE_R10 as ulong*;
+        *sv_r10 = saved_r10;
+
+        ulong saved_r8 = 0;
+        __asm__(`movq %r8, ${=r:saved_r8}`);
+        ulong* sv_r8 = FORK_SAVE_R8 as ulong*;
+        *sv_r8 = saved_r8;
+
+        ulong saved_r9 = 0;
+        __asm__(`movq %r9, ${=r:saved_r9}`);
+        ulong* sv_r9 = FORK_SAVE_R9 as ulong*;
+        *sv_r9 = saved_r9;
+
+        ulong saved_rbx = 0;
+        __asm__(`movq %rbx, ${=r:saved_rbx}`);
+        ulong* sv_rbx = FORK_SAVE_RBX as ulong*;
+        *sv_rbx = saved_rbx;
+
+        ulong saved_rbp = 0;
+        __asm__(`movq %rbp, ${=r:saved_rbp}`);
+        ulong* sv_rbp = FORK_SAVE_RBP as ulong*;
+        *sv_rbp = saved_rbp;
+
+        ulong saved_r12 = 0;
+        __asm__(`movq %r12, ${=r:saved_r12}`);
+        ulong* sv_r12 = FORK_SAVE_R12 as ulong*;
+        *sv_r12 = saved_r12;
+
+        ulong saved_r13 = 0;
+        __asm__(`movq %r13, ${=r:saved_r13}`);
+        ulong* sv_r13 = FORK_SAVE_R13 as ulong*;
+        *sv_r13 = saved_r13;
+
+        ulong saved_r14 = 0;
+        __asm__(`movq %r14, ${=r:saved_r14}`);
+        ulong* sv_r14 = FORK_SAVE_R14 as ulong*;
+        *sv_r14 = saved_r14;
+
+        ulong saved_r15 = 0;
+        __asm__(`movq %r15, ${=r:saved_r15}`);
+        ulong* sv_r15 = FORK_SAVE_R15 as ulong*;
+        *sv_r15 = saved_r15;
 
         dbg.puts("[fork] success: parent=" as void*);
         print_dec(&dbg, parent->pid as ulong);

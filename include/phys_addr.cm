@@ -1,0 +1,146 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::phys_addr - カーネルメモリマップ定数
+//
+// 固定物理アドレスを一元管理する。
+// 各サブシステムが共有するアドレスをここに定義し、
+// モジュール固有のアドレスは各モジュールに残す。
+//
+// 参照: docs/memory_map.md
+
+import ./types;
+
+// ============================================================
+// TSS/GDT関連 (0x80000-0x83FFF)
+// ============================================================
+
+/// TSS RSP0ポインタ（カーネルスタックポインタ）
+export const PhysAddr TSS_RSP0_ADDR = 0x83004;
+
+// ============================================================
+// タイマー (0x90000-0x90FFF)
+// ============================================================
+
+/// PITティックカウンタ
+export const PhysAddr PIT_TICK_ADDR = 0x90000;
+
+/// スケジューラ要求フラグ
+export const PhysAddr PIT_NEED_SCHED_ADDR = 0x90008;
+
+// ============================================================
+// スケジューラ/プロセス (0x91000-0x91FFF)
+// ============================================================
+
+/// スケジューラポインタ
+export const PhysAddr SCHED_PTR_ADDR = 0x91000;
+
+/// 現在のプロセスアドレス
+export const PhysAddr CURRENT_PROC_ADDR = 0x91008;
+
+/// ページテーブル（VMM）ポインタ
+export const PhysAddr VMM_PTR_ADDR = 0x91020;
+
+/// 次のPIDカウンタ
+export const PhysAddr NEXT_PID_ADDR = 0x91040;
+
+// ============================================================
+// PMM (0x93000-0x93FFF)
+// ============================================================
+
+/// PMMポインタ（バディアロケータ）
+export const PhysAddr PMM_PTR_ADDR = 0x93008;
+
+// ============================================================
+// カーネルグローバル (0x95000-0x95FFF)
+// ============================================================
+
+/// PMMグローバルポインタ（ELFローダー/mmap向け）
+export const PhysAddr PMM_GLOBAL_PTR_ADDR = 0x95010;
+
+/// GUI/テキストモードフラグ
+export const PhysAddr GUI_MODE_ADDR = 0x95038;
+
+/// GUIコールバック: putc
+export const PhysAddr GUI_PUTC_ADDR = 0x95040;
+
+/// GUIコールバック: puts
+export const PhysAddr GUI_PUTS_ADDR = 0x95048;
+
+/// GUIコールバック: flush
+export const PhysAddr GUI_FLUSH_ADDR = 0x95050;
+
+/// GUIコールバック: clear
+export const PhysAddr GUI_CLEAR_ADDR = 0x95058;
+
+/// GUIコールバック: clearbuf
+export const PhysAddr GUI_CLEARBUF_ADDR = 0x95060;
+
+/// GUIダーティフラグ
+export const PhysAddr GUI_DIRTY_ADDR = 0x95068;
+
+// ============================================================
+// Syscall/ユーザーモード (0x96000-0x962FF)
+// ============================================================
+
+/// Syscall用カーネルRSP
+export const PhysAddr SYSCALL_KRSP_ADDR = 0x96000;
+
+/// ユーザーRSP保存
+export const PhysAddr USER_RSP_ADDR = 0x96008;
+
+/// TLSベースアドレス保存
+export const PhysAddr TLS_STORE_ADDR = 0x96100;
+
+/// fork用レジスタ保存領域ベース
+export const PhysAddr FORK_SAVE_BASE = 0x96200;
+
+/// fork用保存: ユーザーRSP
+export const PhysAddr FORK_SAVE_RSP = 0x96200;
+
+/// fork用保存: RCX
+export const PhysAddr FORK_SAVE_RCX = 0x96210;
+
+/// fork用保存: R11
+export const PhysAddr FORK_SAVE_R11 = 0x96218;
+
+/// fork用保存: RDI
+export const PhysAddr FORK_SAVE_RDI = 0x96220;
+
+/// fork用保存: RSI
+export const PhysAddr FORK_SAVE_RSI = 0x96228;
+
+/// fork用保存: RDX
+export const PhysAddr FORK_SAVE_RDX = 0x96230;
+
+/// fork用保存: R10
+export const PhysAddr FORK_SAVE_R10 = 0x96238;
+
+/// fork用保存: R8
+export const PhysAddr FORK_SAVE_R8 = 0x96240;
+
+/// fork用保存: R9
+export const PhysAddr FORK_SAVE_R9 = 0x96248;
+
+/// fork用保存: RBX
+export const PhysAddr FORK_SAVE_RBX = 0x96250;
+
+/// fork用保存: RBP
+export const PhysAddr FORK_SAVE_RBP = 0x96258;
+
+/// fork用保存: R12
+export const PhysAddr FORK_SAVE_R12 = 0x96260;
+
+/// fork用保存: R13
+export const PhysAddr FORK_SAVE_R13 = 0x96268;
+
+/// fork用保存: R14
+export const PhysAddr FORK_SAVE_R14 = 0x96270;
+
+/// fork用保存: R15
+export const PhysAddr FORK_SAVE_R15 = 0x96278;
+
+// ============================================================
+// ブート関連 (0x9B000)
+// ============================================================
+
+/// ブート時のティックスナップショット
+export const PhysAddr BOOT_TICK_ADDR = 0x9B000;

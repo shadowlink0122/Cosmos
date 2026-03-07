@@ -10,6 +10,7 @@ import ../include/types;
 import ../include/config;
 import ../include/vfs;
 import ../include/errno;
+import ../include/result;
 import ./fd_table;
 import ./ramfs;
 import ./ninepfs;
@@ -61,13 +62,14 @@ impl Vfs {
             }
 
             // FD割り当て (inoフィールドにパスバッファアドレスを格納)
-            Fd fd = FdTable::alloc(path_buf as long, flags, FS_9PFS);
-            if (fd < 0) {
-                Vfs::free_9p_slot(slot);
-                return fd;
+            Result<Fd, long> alloc_r = FdTable::alloc(path_buf as long, flags, FS_9PFS);
+            match (alloc_r) {
+                Result::Ok(fd) => { return fd; }
+                Result::Err(e) => {
+                    Vfs::free_9p_slot(slot);
+                    return 0 - e;
+                }
             }
-
-            return fd;
         }
 
         // ramfsで検索
@@ -113,8 +115,12 @@ impl Vfs {
         }
 
         // FD割り当て
-        Fd fd = FdTable::alloc(ino, flags, FS_RAMFS);
-        if (fd < 0) { return fd; }
+        Result<Fd, long> alloc_r = FdTable::alloc(ino, flags, FS_RAMFS);
+        Fd fd = 0;
+        match (alloc_r) {
+            Result::Ok(v) => { fd = v; }
+            Result::Err(e) => { return 0 - e; }
+        }
 
         // O_TRUNC: ファイル切り詰め
         if ((flags & O_TRUNC) != 0) {

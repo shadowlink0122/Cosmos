@@ -203,7 +203,7 @@ impl Socket {
         }
 
         // タイムアウト
-        return 0 - 110;  // ETIMEDOUT
+        return 0 - ETIMEDOUT;
     }
 
     /// データ送信
@@ -290,7 +290,7 @@ impl Socket {
             if (*state_ptr == TCP_CLOSE_WAIT || *state_ptr == TCP_CLOSED) {
                 return 0;
             }
-            return 0 - 11;  // EAGAIN
+            return 0 - EAGAIN;
         }
 
         ulong copy_len = available;

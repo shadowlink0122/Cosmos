@@ -54,7 +54,7 @@ impl Pipe {
             }
             i = i + 1;
         }
-        return 0 - 1;
+        return 0 - EMFILE;
     }
 
     /// パイプから読み込み

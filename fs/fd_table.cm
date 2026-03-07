@@ -9,6 +9,7 @@ import ../include/types;
 import ../include/config;
 import ../include/vfs;
 import ../include/errno;
+import ../include/result;
 
 // ============================================================
 // FDテーブル メモリレイアウト
@@ -70,8 +71,8 @@ impl FdTable {
         *p2_use = 1;
     }
 
-    /// 空きFDを割り当てて初期化。成功=fd番号、失敗=-EMFILE
-    static Fd alloc(Ino ino, ulong flags, ulong fs_type) {
+    /// 空きFDを割り当てて初期化。成功=Ok(fd)、失敗=Err(errno)
+    static Result<Fd, long> alloc(Ino ino, ulong flags, ulong fs_type) {
         ulong i = 3;  // 0,1,2は予約済み
         while (i < MAX_FD) {
             ulong o = FD_TABLE_BASE + i * FD_ENTRY_SIZE;
@@ -86,11 +87,11 @@ impl FdTable {
                 ulong* p_fs  = (o + 24) as ulong*;
                 *p_fs  = fs_type;
                 *used_flag = 1;
-                return i as long;
+                return Result::Ok(i as long);
             }
             i = i + 1;
         }
-        return 0 - EMFILE;
+        return Result::Err(EMFILE);
     }
 
     /// FDを解放
@@ -168,15 +169,15 @@ impl FdTable {
     }
 
     /// dup2: oldfd の内容を newfd にコピー
-    static Fd dup2(Fd oldfd, Fd newfd) {
-        if (oldfd < 0 || newfd < 0) { return 0 - 9; }  // -EBADF
+    static Result<Fd, long> dup2(Fd oldfd, Fd newfd) {
+        if (oldfd < 0 || newfd < 0) { return Result::Err(EBADF); }
         ulong old_u = oldfd as ulong;
         ulong new_u = newfd as ulong;
-        if (old_u >= MAX_FD || new_u >= MAX_FD) { return 0 - 9; }
+        if (old_u >= MAX_FD || new_u >= MAX_FD) { return Result::Err(EBADF); }
 
         ulong o_old = FD_TABLE_BASE + old_u * FD_ENTRY_SIZE;
         ulong* old_used = (o_old + 32) as ulong*;
-        if (*old_used == 0) { return 0 - 9; }  // oldfdが無効
+        if (*old_used == 0) { return Result::Err(EBADF); }
 
         // newfdが使用中なら閉じる
         ulong o_new = FD_TABLE_BASE + new_u * FD_ENTRY_SIZE;
@@ -188,17 +189,17 @@ impl FdTable {
             *dst = *src;
             i = i + 1;
         }
-        return newfd;
+        return Result::Ok(newfd);
     }
 
     /// dup_lowest: oldfdの内容を最小の空きFDにコピー
-    static Fd dup_lowest(Fd oldfd) {
-        if (oldfd < 0) { return 0 - 9; }
+    static Result<Fd, long> dup_lowest(Fd oldfd) {
+        if (oldfd < 0) { return Result::Err(EBADF); }
         ulong old_u = oldfd as ulong;
-        if (old_u >= MAX_FD) { return 0 - 9; }
+        if (old_u >= MAX_FD) { return Result::Err(EBADF); }
         ulong o_old = FD_TABLE_BASE + old_u * FD_ENTRY_SIZE;
         ulong* old_used = (o_old + 32) as ulong*;
-        if (*old_used == 0) { return 0 - 9; }
+        if (*old_used == 0) { return Result::Err(EBADF); }
 
         // 最小の空きFDを検索 (3以上)
         ulong i = 3;
@@ -214,10 +215,10 @@ impl FdTable {
                     *dst = *src;
                     j = j + 1;
                 }
-                return i as long;
+                return Result::Ok(i as long);
             }
             i = i + 1;
         }
-        return 0 - EMFILE;
+        return Result::Err(EMFILE);
     }
 }

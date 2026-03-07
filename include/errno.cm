@@ -36,3 +36,4 @@ export const long EOVERFLOW = 75;   // オーバーフロー
 export const long ENOTSOCK  = 88;   // ソケットでない
 export const long EOPNOTSUPP = 95;  // 操作未サポート
 export const long ENOTCONN  = 107;  // 未接続
+export const long ETIMEDOUT = 110;  // タイムアウト

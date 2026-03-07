@@ -7,6 +7,7 @@
 
 import ../../include/types;
 import ../../include/config;
+import ../../include/phys_addr;
 import ../../include/scheduler;
 import ../../drivers/serial;
 import ../../lib/printk;
@@ -27,7 +28,7 @@ export void exc_default() {
     SerialPort serial(COM1);
     serial.println("!!! UNHANDLED EXCEPTION !!!" as void*);
     // TSS RSP0からフレーム情報を表示
-    ulong* tss_rsp0_ptr = 0x83004 as ulong*;
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
     ulong tss_rsp0 = *tss_rsp0_ptr;
     ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
     ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
@@ -97,7 +98,7 @@ export void exc_page_fault() {
     serial.println("" as void*);
 
     // TSS RSP0ベースで割り込みフレームを読み取り
-    ulong* tss_rsp0_ptr = 0x83004 as ulong*;
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
     ulong tss_rsp0 = *tss_rsp0_ptr;
 
     ulong* err_ptr = (tss_rsp0 - 48) as ulong*;
