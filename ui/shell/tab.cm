@@ -102,8 +102,8 @@ void tab_complete_9p(ulong path_list, ulong* path_count,
 
         // . と .. をスキップ
         ulong skip = 0;
-        if (nlen == 1 && Mem::read_byte(dir_buf + dpos) == 46) { skip = 1; }
-        if (nlen == 2 && Mem::read_byte(dir_buf + dpos) == 46 && Mem::read_byte(dir_buf + dpos + 1) == 46) { skip = 1; }
+        if (nlen == 1 && Mem::read_byte(dir_buf + dpos) == Ascii::Period as ulong) { skip = 1; }
+        if (nlen == 2 && Mem::read_byte(dir_buf + dpos) == Ascii::Period as ulong && Mem::read_byte(dir_buf + dpos + 1) == Ascii::Period as ulong) { skip = 1; }
 
         if (skip == 0) {
             if (prefix_match(entry_addr, word_addr, word_len) != 0) {
@@ -255,7 +255,7 @@ impl TabComplete {
         ulong word_start = 0;
         ulong ws = 0;
         while (ws < len) {
-            if (Mem::read_byte(CMD_BUF_ADDR + ws) == 32) {
+            if (Mem::read_byte(CMD_BUF_ADDR + ws) == Key::Space as ulong) {
                 word_start = ws + 1;
             }
             ws = ws + 1;
@@ -288,7 +288,7 @@ impl TabComplete {
         // 2. パス補完: ワードが / で始まる場合
         ulong path_count = 0;
         ulong first_ch = Mem::read_byte(word_addr);
-        if (first_ch == CHAR_SLASH) {
+        if (first_ch == Ascii::Slash as ulong) {
             ulong is_host = 0;
             if (word_len >= 10) {
                 ulong pmnt = "/mnt/host/" as ulong;

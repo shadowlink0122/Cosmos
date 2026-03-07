@@ -13,6 +13,7 @@
 import ../include/types;
 import ../include/config;
 import ../include/writer;
+import ../include/keycode;
 
 // ============================================================
 // I/O ポート操作（ulong引数 — Cmの小型引数ABIバグ回避）
@@ -115,7 +116,7 @@ impl SerialPort for Writer {
             `);
             if (byte_val == 0) { break; }
             // LFの前にCRを挿入
-            if (byte_val == 10) { self.putc(13 as utiny); }
+            if (byte_val == Key::Enter as ulong) { self.putc(Key::CR as ulong); }
             self.putc(byte_val as utiny);
             i += 1;
         }
@@ -124,22 +125,22 @@ impl SerialPort for Writer {
     /// 文字列 + 改行出力
     void println(void* data) {
         self.puts(data);
-        self.putc(13 as utiny);  // CR
-        self.putc(10 as utiny);  // LF
+        self.putc(Key::CR as ulong);  // CR
+        self.putc(Key::Enter as ulong);  // LF
     }
 
     /// 64ビット値の16進数出力
     void print_hex(ulong value) {
-        self.putc(48 as utiny);   // '0'
-        self.putc(120 as utiny);  // 'x'
+        self.putc(Ascii::Digit0 as ulong);   // '0'
+        self.putc('x' as ulong);  // 'x'
         ulong i = 0;
         while (i < 16) {
             ulong shift = (15 - i) * 4;
             ulong nibble = (value >> shift) & 0x0F;
             if (nibble < 10) {
-                self.putc((48 + nibble) as utiny);
+                self.putc((Ascii::Digit0 as ulong + nibble) as utiny);
             } else {
-                self.putc((65 + nibble - 10) as utiny);
+                self.putc((Ascii::UpperA as ulong + nibble - 10) as utiny);
             }
             i += 1;
         }
@@ -188,21 +189,21 @@ impl DebugPort for Writer {
 
     void println(void* data) {
         self.puts(data);
-        self.putc(13 as utiny);
-        self.putc(10 as utiny);
+        self.putc(Key::CR as ulong);
+        self.putc(Key::Enter as ulong);
     }
 
     void print_hex(ulong value) {
-        self.putc(48 as utiny);
-        self.putc(120 as utiny);
+        self.putc(Ascii::Digit0 as ulong);
+        self.putc('x' as ulong);
         ulong i = 0;
         while (i < 16) {
             ulong shift = (15 - i) * 4;
             ulong nibble = (value >> shift) & 0x0F;
             if (nibble < 10) {
-                self.putc((48 + nibble) as utiny);
+                self.putc((Ascii::Digit0 as ulong + nibble) as utiny);
             } else {
-                self.putc((65 + nibble - 10) as utiny);
+                self.putc((Ascii::UpperA as ulong + nibble - 10) as utiny);
             }
             i += 1;
         }

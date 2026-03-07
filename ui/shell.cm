@@ -76,7 +76,7 @@ impl ShellInput {
         *cur_ptr = cursor - 1;
 
         // VGA: カーソルを1つ左に移動
-        Shell::putc(8);
+        Shell::putc(Key::Backspace as ulong);
 
         // カーソル位置から末尾まで再描画
         ulong ri = cursor - 1;
@@ -86,29 +86,29 @@ impl ShellInput {
             ri = ri + 1;
         }
         // 末尾のゴミを消す
-        Shell::putc(32);
+        Shell::putc(Key::Space as ulong);
 
         // カーソルを正しい位置に戻す
         ulong back = new_len - (cursor - 1) + 1;
         ulong bi = 0;
         while (bi < back) {
-            Shell::putc(8);
+            Shell::putc(Key::Backspace as ulong);
             bi = bi + 1;
         }
 
         // シリアルにも反映
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
-        ser->putc(8);
+        ser->putc(Key::Backspace as ulong);
         ri = cursor - 1;
         while (ri < new_len) {
             ser->putc(Mem::read_byte(CMD_BUF_ADDR + ri));
             ri = ri + 1;
         }
-        ser->putc(32);
+        ser->putc(Key::Space as ulong);
         bi = 0;
         while (bi < back) {
-            ser->putc(8);
+            ser->putc(Key::Backspace as ulong);
             bi = bi + 1;
         }
     }
@@ -128,9 +128,9 @@ impl ShellInput {
         }
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
-        ser->putc(27);
-        ser->putc(91);
-        ser->putc(68);
+        ser->putc(Key::Escape as ulong);
+        ser->putc(Ascii::BracketL as ulong);
+        ser->putc('D' as ulong);
     }
 
     /// 右矢印キー処理
@@ -149,9 +149,9 @@ impl ShellInput {
         }
         ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
         SerialPort* ser = (*ser_ptr) as SerialPort*;
-        ser->putc(27);
-        ser->putc(91);
-        ser->putc(67);
+        ser->putc(Key::Escape as ulong);
+        ser->putc(Ascii::BracketL as ulong);
+        ser->putc('C' as ulong);
     }
 
     /// 上矢印キー処理（履歴ナビゲーション）
@@ -180,17 +180,17 @@ impl ShellInput {
             ulong k = 0;
             while (k < old_len) { Shell::putc(8); k = k + 1; }
             k = 0;
-            while (k < old_len) { Shell::putc(32); k = k + 1; }
+            while (k < old_len) { Shell::putc(Key::Space as ulong); k = k + 1; }
             k = 0;
             while (k < old_len) { Shell::putc(8); k = k + 1; }
 
             // シリアル: 行消去
             ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
             SerialPort* ser = (*ser_ptr) as SerialPort*;
-            ser->putc(13);
-            ser->putc(27);
-            ser->putc(91);
-            ser->putc(75);
+            ser->putc(Key::CR as ulong);
+            ser->putc(Key::Escape as ulong);
+            ser->putc(Ascii::BracketL as ulong);
+            ser->putc(Ascii::UpperK as ulong);
             ser->puts("cosmo:" as void*);
             ulong cwd_disp = Cwd::get();
             ser->puts(cwd_disp as void*);
@@ -247,7 +247,7 @@ impl ShellInput {
                 ri = ri + 1;
             }
             bi = 0;
-            while (bi < back) { ser->putc(8); bi = bi + 1; }
+            while (bi < back) { ser->putc(Key::Backspace as ulong); bi = bi + 1; }
         }
     }
 
@@ -351,24 +351,24 @@ impl ShellInput {
             ulong input_done = 0;
             while (input_done == 0) {
                 ulong ch = Kbd::getchar();
-                if (ch == CHAR_NULL) {
+                if (ch == Key::Null as ulong) {
                     ShellInput::handle_scroll();
                     __asm__(`sti; hlt`);
                     Sched::tick();
-                } else if (ch == KEY_ENTER) {
+                } else if (ch == Key::Enter as ulong) {
                     ShellInput::handle_enter(len_ptr, cur_ptr);
                     input_done = 1;
-                } else if (ch == KEY_BACKSPACE) {
+                } else if (ch == Key::Backspace as ulong) {
                     ShellInput::handle_backspace(len_ptr, cur_ptr);
-                } else if (ch == KEY_LEFT) {
+                } else if (ch == Key::Left as ulong) {
                     ShellInput::handle_left(cur_ptr);
-                } else if (ch == KEY_RIGHT) {
+                } else if (ch == Key::Right as ulong) {
                     ShellInput::handle_right(len_ptr, cur_ptr);
-                } else if (ch == KEY_UP) {
+                } else if (ch == Key::Up as ulong) {
                     ShellInput::handle_up(cur_ptr, len_ptr, &hist_pos);
-                } else if (ch == KEY_DOWN) {
+                } else if (ch == Key::Down as ulong) {
                     ShellInput::handle_down(cur_ptr, len_ptr, &hist_pos);
-                } else if (ch == KEY_CTRL_C) {
+                } else if (ch == Key::CtrlC as ulong) {
                     Shell::set_color(VGA_IDX_LIGHT_BLUE, 0);
                     Shell::write("^C" as void*);
                     Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
@@ -376,7 +376,7 @@ impl ShellInput {
                     *len_ptr = 0;
                     *cur_ptr = 0;
                     input_done = 1;
-                } else if (ch == KEY_CTRL_L) {
+                } else if (ch == Key::CtrlL as ulong) {
                     if (Shell::is_gui() != 0) {
                         Shell::gui_clear();
                     } else {
@@ -385,7 +385,7 @@ impl ShellInput {
                     *len_ptr = 0;
                     *cur_ptr = 0;
                     input_done = 1;
-                } else if (ch == KEY_TAB) {
+                } else if (ch == Key::Tab as ulong) {
                     TabComplete::complete(len_ptr, cur_ptr);
                 } else {
                     ShellInput::handle_char_input(ch, len_ptr, cur_ptr);

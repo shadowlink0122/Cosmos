@@ -1,0 +1,707 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd::fs - ファイル操作コマンド
+//
+// CmdFs struct/impl — ls, cat, touch, write, cp, mv, rm, mkdir,
+//                     wc, hexdump, head, tail, sort, grep。
+
+import ../../include/types;
+import ../../include/keycode;
+import ../../include/config;
+import ../../include/vfs;
+import ../../include/color;
+import ../shell/defs;
+import ../mem;
+import ../shell/io;
+import ../../drivers/serial;
+import ../../fs/ramfs;
+import ../../fs/procfs;
+import ../../fs/ninepfs;
+import ../../mm/pmm;
+import ../../lib/kstring;
+import ./args;
+import ./host;
+
+/// CmdFs — ファイル操作コマンド群
+export struct CmdFs {}
+
+impl CmdFs {
+
+    /// ls コマンド: ファイル一覧表示
+    static void ls(ulong path_addr) {
+        if (path_addr != 0) {
+            // /mnt/host パスの場合は9pfsに委譲
+            if (NinePfs::is_9p_path(path_addr) != 0) {
+                ulong rel = NinePfs::strip_prefix(path_addr);
+                ulong rch = Mem::read_byte(rel);
+                if (rch == 0) {
+                    CmdHost::hostls(0);
+                } else {
+                    CmdHost::hostls(rel);
+                }
+                return;
+            }
+
+            // /mnt, /mnt/, /mnt/host (末尾/なし) の場合: host ディレクトリを表示
+            ulong is_mnt = 0;
+            if (streq(path_addr as void*, "/mnt" as void*) != 0) { is_mnt = 1; }
+            if (streq(path_addr as void*, "/mnt/" as void*) != 0) { is_mnt = 1; }
+            if (is_mnt != 0) {
+                Shell::writeln("" as void*);
+                Shell::write("  " as void*);
+                Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
+                Shell::write("host/" as void*);
+                Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+                Shell::writeln("" as void*);
+                Shell::writeln("" as void*);
+                return;
+            }
+
+            // / の場合: ルート仮想ディレクトリ
+            if (streq(path_addr as void*, "/" as void*) != 0) {
+                Shell::writeln("" as void*);
+                Shell::write("  " as void*);
+                Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
+                Shell::write("mnt/" as void*);
+                Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+                Shell::writeln("" as void*);
+                Shell::writeln("" as void*);
+                return;
+            }
+        }
+
+        ulong count = RamFs::dir_count();
+        Shell::writeln("" as void*);
+        if (count == 0) {
+            Shell::writeln("  (no files)" as void*);
+        } else {
+            ulong i = 0;
+            while (i < count) {
+                ulong name_addr2 = RamFs::dir_name(i);
+                if (name_addr2 != 0) {
+                    ulong dtype = RamFs::dir_type(i);
+                    Ino ino = RamFs::dir_ino(i);
+                    Shell::write("  " as void*);
+
+                    // ディレクトリは色変更
+                    if (dtype == S_IFDIR) {
+                        Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
+                        Shell::write(name_addr2 as void*);
+                        Shell::write("/" as void*);
+                        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+                    } else {
+                        // ファイルサイズ表示
+                        Shell::write(name_addr2 as void*);
+                        ulong fsize = RamFs::file_size(ino);
+                        Shell::write("  (" as void*);
+                        Shell::print_dec(fsize);
+                        Shell::write(" bytes)" as void*);
+                    }
+                    Shell::newline();
+                }
+                i = i + 1;
+            }
+        }
+        Shell::writeln("" as void*);
+    }
+
+    /// cat コマンド: ファイル内容表示
+    static void cat(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: cat <filename>" as void*);
+            return;
+        }
+
+        // /mnt/host パスの処理 → 9pfs経由で読み取り
+        if (NinePfs::is_9p_path(name_addr) != 0) {
+            ulong rel = NinePfs::strip_prefix(name_addr);
+            ulong rch = Mem::read_byte(rel);
+            if (rch == 0) {
+                Shell::writeln("cat: is a directory" as void*);
+                return;
+            }
+            CmdHost::hostcat(rel);
+            return;
+        }
+
+        // /proc/ パスの処理
+        if (startswith(name_addr as void*, "/proc/" as void*) != 0) {
+            ulong proc_name = name_addr + 6;  // "/proc/" の後
+            ulong read_buf = 0x94100;
+            ulong bytes = ProcFs::read_file(proc_name as void*, read_buf);
+            if (bytes > 0) {
+                Shell::writeln(read_buf as void*);
+            } else {
+                Shell::write("cat: unknown proc file: " as void*);
+                Shell::writeln(proc_name as void*);
+            }
+            return;
+        }
+
+        Ino ino = RamFs::lookup(name_addr as void*);
+        if (ino == 0) {
+            Shell::write("cat: file not found: " as void*);
+            Shell::writeln(name_addr as void*);
+            return;
+        }
+
+        ulong fsize = RamFs::file_size(ino);
+        if (fsize == 0) {
+            Shell::writeln("(empty file)" as void*);
+            return;
+        }
+
+        // 読み出しバッファ: CMD_BUFの後半を使用 (0x94100)
+        ulong read_buf = 0x94100;
+        long bytes_read = RamFs::read(ino, read_buf, 0, fsize);
+        if (bytes_read > 0) {
+            // ヌル終端して出力
+            Mem::write_byte(read_buf + (bytes_read as ulong), 0);
+            Shell::writeln(read_buf as void*);
+        }
+    }
+
+    /// touch コマンド: 空ファイル作成
+    static void touch(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: touch <filename>" as void*);
+            return;
+        }
+
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+        ulong data_page = pmm->alloc_pages(0);
+        if (data_page != 0) {
+            memzero(data_page as void*, PAGE_SIZE);
+        }
+
+        Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+        if (ino == 0) {
+            Shell::writeln("touch: failed to create file" as void*);
+        } else {
+            Shell::write("Created: " as void*);
+            Shell::writeln(name_addr as void*);
+        }
+    }
+
+    /// write コマンド: ファイルにテキスト書き込み
+    static void write_file(ulong name_addr, ulong text_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: write <filename> <text>" as void*);
+            return;
+        }
+        if (text_addr == 0) {
+            Shell::writeln("Usage: write <filename> <text>" as void*);
+            return;
+        }
+
+        // ファイルがなければ作成
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+        ulong data_page = pmm->alloc_pages(0);
+        if (data_page != 0) {
+            memzero(data_page as void*, PAGE_SIZE);
+        }
+        Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1B6, data_page);
+        if (ino == 0) {
+            Shell::writeln("write: failed to create file" as void*);
+            return;
+        }
+
+        // テキストの長さを計算
+        ulong text_len = 0;
+        while (true) {
+            ulong ch = Mem::read_byte(text_addr + text_len);
+            if (ch == 0) { break; }
+            text_len = text_len + 1;
+        }
+
+        // 書き込み（先頭から上書き）
+        RamFs::truncate(ino);
+        long written = RamFs::write(ino, text_addr, 0, text_len);
+        if (written > 0) {
+            Shell::write("Wrote " as void*);
+            Shell::print_dec(written as ulong);
+            Shell::write(" bytes to " as void*);
+            Shell::writeln(name_addr as void*);
+        } else {
+            Shell::writeln("write: failed" as void*);
+        }
+    }
+
+    /// rm コマンド: ファイル削除
+    static void rm(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: rm <filename>" as void*);
+            return;
+        }
+        long result = RamFs::unlink(name_addr as void*);
+        if (result == 0) {
+            Shell::write("Removed: " as void*);
+            Shell::writeln(name_addr as void*);
+        } else if (result == (0 - 21)) {
+            Shell::writeln("rm: cannot remove directory" as void*);
+        } else {
+            Shell::write("rm: file not found: " as void*);
+            Shell::writeln(name_addr as void*);
+        }
+    }
+
+    /// mkdir コマンド: ディレクトリ作成
+    static void mkdir(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: mkdir <dirname>" as void*);
+            return;
+        }
+        Ino ino = RamFs::mkdir(name_addr as void*);
+        if (ino != 0) {
+            Shell::write("Created directory: " as void*);
+            Shell::writeln(name_addr as void*);
+        } else {
+            Shell::writeln("mkdir: failed to create directory" as void*);
+        }
+    }
+
+    /// wc コマンド: バイト/行数カウント
+    static void wc(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: wc <filename>" as void*);
+            return;
+        }
+        Ino ino = RamFs::lookup(name_addr as void*);
+        if (ino == 0) {
+            Shell::write("wc: file not found: " as void*);
+            Shell::writeln(name_addr as void*);
+            return;
+        }
+        ulong fsize = RamFs::file_size(ino);
+        // 行数カウント: ファイルを読み出して\nを数える
+        ulong lines = 0;
+        ulong read_buf = 0x94100;
+        if (fsize > 0) {
+            long bytes = RamFs::read(ino, read_buf, 0, fsize);
+            if (bytes > 0) {
+                ulong j = 0;
+                while (j < (bytes as ulong)) {
+                    ulong ch = Mem::read_byte(read_buf + j);
+                    if (ch == Key::Enter as ulong) { lines = lines + 1; }
+                    j = j + 1;
+                }
+                // 末尾が\nでない場合も１行と数える
+                if (bytes > 0) {
+                    ulong last = Mem::read_byte(read_buf + (bytes as ulong) - 1);
+                    if (last != Key::Enter as ulong) { lines = lines + 1; }
+                }
+            }
+        }
+        Shell::write("  " as void*);
+        Shell::print_dec(lines);
+        Shell::write(" lines, " as void*);
+        Shell::print_dec(fsize);
+        Shell::write(" bytes  " as void*);
+        Shell::writeln(name_addr as void*);
+    }
+
+    /// hexdump コマンド: 16進ダンプ
+    static void hexdump(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: hexdump <filename>" as void*);
+            return;
+        }
+        Ino ino = RamFs::lookup(name_addr as void*);
+        if (ino == 0) {
+            Shell::write("hexdump: file not found: " as void*);
+            Shell::writeln(name_addr as void*);
+            return;
+        }
+        ulong fsize = RamFs::file_size(ino);
+        if (fsize == 0) {
+            Shell::writeln("(empty file)" as void*);
+            return;
+        }
+        // 最大256バイトまで表示
+        ulong show_size = fsize;
+        if (show_size > 256) { show_size = 256; }
+        ulong read_buf = 0x94100;
+        long bytes = RamFs::read(ino, read_buf, 0, show_size);
+        if (bytes <= 0) { return; }
+        ulong row = 0;
+        while (row < (bytes as ulong)) {
+            // オフセット表示 (8桁hex)
+            Shell::print_hex(row);
+            Shell::write("  " as void*);
+            // 16バイトずつ表示
+            ulong col = 0;
+            while (col < 16) {
+                if (row + col < (bytes as ulong)) {
+                    ulong b = Mem::read_byte(read_buf + row + col);
+                    Shell::print_hex_byte(b);
+                    Shell::putc(Key::Space as ulong);  // スペース
+                } else {
+                    Shell::write("   " as void*);
+                }
+                col = col + 1;
+            }
+            Shell::write(" |" as void*);
+            // ASCII表示
+            col = 0;
+            while (col < 16) {
+                if (row + col < (bytes as ulong)) {
+                    ulong b = Mem::read_byte(read_buf + row + col);
+                    if (b >= 32) {
+                        if (b < 127) {
+                            Shell::putc(b);
+                        } else {
+                            Shell::putc(Ascii::Period as ulong);  // '.'
+                        }
+                    } else {
+                        Shell::putc(Ascii::Period as ulong);  // '.'
+                    }
+                }
+                col = col + 1;
+            }
+            Shell::writeln("|" as void*);
+            row = row + 16;
+        }
+        if (fsize > 256) {
+            Shell::writeln("... (truncated)" as void*);
+        }
+    }
+
+    /// head コマンド: 先頭10行表示
+    static void head(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: head <filename>" as void*);
+            return;
+        }
+        Ino ino = RamFs::lookup(name_addr as void*);
+        if (ino == 0) {
+            Shell::write("head: file not found: " as void*);
+            Shell::writeln(name_addr as void*);
+            return;
+        }
+        ulong fsize = RamFs::file_size(ino);
+        if (fsize == 0) {
+            Shell::writeln("(empty file)" as void*);
+            return;
+        }
+        ulong read_buf = 0x94100;
+        long bytes = RamFs::read(ino, read_buf, 0, fsize);
+        if (bytes > 0) {
+            ulong lines = 0;
+            ulong j = 0;
+            while (j < (bytes as ulong)) {
+                ulong ch = Mem::read_byte(read_buf + j);
+                Shell::putc(ch);
+                if (ch == Key::Enter as ulong) {
+                    lines = lines + 1;
+                    if (lines >= 10) { break; }
+                }
+                j = j + 1;
+            }
+            // 末尾改行がなければ追加
+            if (lines < 10) {
+                ulong last = Mem::read_byte(read_buf + (bytes as ulong) - 1);
+                if (last != Key::Enter as ulong) { Shell::newline(); }
+            }
+        }
+    }
+
+    /// tail コマンド: 末尾10行表示
+    static void tail(ulong name_addr) {
+        if (name_addr == 0) {
+            Shell::writeln("Usage: tail <filename>" as void*);
+            return;
+        }
+        Ino ino = RamFs::lookup(name_addr as void*);
+        if (ino == 0) {
+            Shell::write("tail: file not found: " as void*);
+            Shell::writeln(name_addr as void*);
+            return;
+        }
+        ulong fsize = RamFs::file_size(ino);
+        if (fsize == 0) {
+            Shell::writeln("(empty file)" as void*);
+            return;
+        }
+        ulong read_buf = 0x94100;
+        long bytes = RamFs::read(ino, read_buf, 0, fsize);
+        if (bytes <= 0) { return; }
+        // 改行を後ろからカウントして開始位置を決定
+        ulong total_lines = 0;
+        ulong j = 0;
+        while (j < (bytes as ulong)) {
+            if (Mem::read_byte(read_buf + j) == Key::Enter as ulong) { total_lines = total_lines + 1; }
+            j = j + 1;
+        }
+        ulong skip_lines = 0;
+        if (total_lines > 10) { skip_lines = total_lines - 10; }
+        // skip_lines分スキップして出力
+        ulong cur_line = 0;
+        j = 0;
+        while (j < (bytes as ulong)) {
+            if (cur_line >= skip_lines) {
+                Shell::putc(Mem::read_byte(read_buf + j));
+            }
+            if (Mem::read_byte(read_buf + j) == Key::Enter as ulong) { cur_line = cur_line + 1; }
+            j = j + 1;
+        }
+        // 末尾改行がなければ追加
+        ulong last = Mem::read_byte(read_buf + (bytes as ulong) - 1);
+        if (last != Key::Enter as ulong) { Shell::newline(); }
+    }
+
+    /// cp コマンド: ファイルコピー
+    static void cp(ulong src_addr, ulong dst_addr) {
+        if (src_addr == 0) {
+            Shell::writeln("Usage: cp <src> <dst>" as void*);
+            return;
+        }
+        if (dst_addr == 0) {
+            Shell::writeln("Usage: cp <src> <dst>" as void*);
+            return;
+        }
+        // srcのファイル名をNUL終端（スペースで区切り）
+        ulong end = dst_addr - 1;
+        ulong done_s = 0;
+        while (done_s == 0) {
+            if (end <= src_addr) { done_s = 1; }
+            else {
+                ulong c = Mem::read_byte(end - 1);
+                if (c != Key::Space as ulong) { done_s = 1; }
+                else { end = end - 1; }
+            }
+        }
+        Mem::write_byte(end, 0);
+
+        // ソース検索
+        Ino src_ino = RamFs::lookup(src_addr as void*);
+        if (src_ino == 0) {
+            Shell::write("cp: source not found: " as void*);
+            Shell::writeln(src_addr as void*);
+            return;
+        }
+        ulong fsize = RamFs::file_size(src_ino);
+
+        // デスティネーション作成
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+        ulong data_page = pmm->alloc_pages(0);
+        if (data_page != 0) {
+            memzero(data_page as void*, PAGE_SIZE);
+        }
+        Ino dst_ino = RamFs::create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
+        if (dst_ino == 0) {
+            Shell::writeln("cp: failed to create destination" as void*);
+            return;
+        }
+
+        // データコピー
+        if (fsize > 0) {
+            ulong read_buf = 0x94100;
+            long bytes = RamFs::read(src_ino, read_buf, 0, fsize);
+            if (bytes > 0) {
+                RamFs::write(dst_ino, read_buf, 0, bytes as ulong);
+            }
+        }
+        Shell::write("Copied: " as void*);
+        Shell::write(src_addr as void*);
+        Shell::write(" -> " as void*);
+        Shell::writeln(dst_addr as void*);
+    }
+
+    /// mv コマンド: ファイル移動/リネーム（cp + rm）
+    static void mv(ulong src_addr, ulong dst_addr) {
+        if (src_addr == 0) {
+            Shell::writeln("Usage: mv <src> <dst>" as void*);
+            return;
+        }
+        if (dst_addr == 0) {
+            Shell::writeln("Usage: mv <src> <dst>" as void*);
+            return;
+        }
+        // srcのファイル名をNUL終端
+        ulong end = dst_addr - 1;
+        ulong done_s = 0;
+        while (done_s == 0) {
+            if (end <= src_addr) { done_s = 1; }
+            else {
+                ulong c = Mem::read_byte(end - 1);
+                if (c != Key::Space as ulong) { done_s = 1; }
+                else { end = end - 1; }
+            }
+        }
+        Mem::write_byte(end, 0);
+
+        // cpと同じ処理
+        Ino src_ino = RamFs::lookup(src_addr as void*);
+        if (src_ino == 0) {
+            Shell::write("mv: source not found: " as void*);
+            Shell::writeln(src_addr as void*);
+            return;
+        }
+        ulong fsize = RamFs::file_size(src_ino);
+
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+        ulong data_page = pmm->alloc_pages(0);
+        if (data_page != 0) {
+            memzero(data_page as void*, PAGE_SIZE);
+        }
+        Ino dst_ino = RamFs::create(dst_addr as void*, S_IFREG | 0x1B6, data_page);
+        if (dst_ino == 0) {
+            Shell::writeln("mv: failed to create destination" as void*);
+            return;
+        }
+        if (fsize > 0) {
+            ulong read_buf = 0x94100;
+            long bytes = RamFs::read(src_ino, read_buf, 0, fsize);
+            if (bytes > 0) {
+                RamFs::write(dst_ino, read_buf, 0, bytes as ulong);
+            }
+        }
+        // ソース削除
+        RamFs::unlink(src_addr as void*);
+        Shell::write("Moved: " as void*);
+        Shell::write(src_addr as void*);
+        Shell::write(" -> " as void*);
+        Shell::writeln(dst_addr as void*);
+    }
+
+    /// grep コマンド: パターン検索
+    static void grep(ulong pat_addr, ulong file_addr) {
+        if (pat_addr == 0 || file_addr == 0) {
+            Shell::writeln("Usage: grep <pattern> <file>" as void*);
+            return;
+        }
+        // パターン長
+        ulong pat_len = 0;
+        while (Mem::read_byte(pat_addr + pat_len) != 0) { pat_len = pat_len + 1; }
+        if (pat_len == 0) { return; }
+        // ファイル読み出し
+        Ino ino = RamFs::lookup(file_addr as void*);
+        if (ino == 0) { Shell::write("grep: not found: " as void*); Shell::writeln(file_addr as void*); return; }
+        ulong fsize = RamFs::file_size(ino);
+        if (fsize == 0) { return; }
+        ulong buf = 0x94100;
+        long bytes = RamFs::read(ino, buf, 0, fsize);
+        if (bytes <= 0) { return; }
+        // 行ごと検索
+        ulong ls = 0;
+        ulong p = 0;
+        while (p <= (bytes as ulong)) {
+            ulong ch = 0;
+            if (p < (bytes as ulong)) { ch = Mem::read_byte(buf + p); }
+            if (ch == Key::Enter as ulong || p == (bytes as ulong)) {
+                ulong ll = p - ls;
+                if (ll >= pat_len) {
+                    ulong s = 0;
+                    while (s <= ll - pat_len) {
+                        ulong m = 1;
+                        ulong k = 0;
+                        while (k < pat_len) {
+                            if (Mem::read_byte(buf + ls + s + k) != Mem::read_byte(pat_addr + k)) { m = 0; break; }
+                            k = k + 1;
+                        }
+                        if (m != 0) {
+                            ulong q = ls;
+                            while (q < p) { Shell::putc(Mem::read_byte(buf + q)); q = q + 1; }
+                            Shell::newline();
+                            break;
+                        }
+                        s = s + 1;
+                    }
+                }
+                ls = p + 1;
+            }
+            p = p + 1;
+        }
+    }
+
+    /// sort コマンド: 行ソート
+    static void sort(ulong file_addr) {
+        if (file_addr == 0) { Shell::writeln("Usage: sort <file>" as void*); return; }
+        Ino ino = RamFs::lookup(file_addr as void*);
+        if (ino == 0) { Shell::write("sort: not found: " as void*); Shell::writeln(file_addr as void*); return; }
+        ulong fsize = RamFs::file_size(ino);
+        if (fsize == 0) { return; }
+        ulong buf = 0x94100;
+        long bytes = RamFs::read(ino, buf, 0, fsize);
+        if (bytes <= 0) { return; }
+        // 行開始アドレスを収集 (max 64行)
+        ulong line_starts = 0x96000;
+        ulong line_count = 0;
+        Mem::write_qword(line_starts, buf);
+        line_count = 1;
+        ulong i = 0;
+        while (i < (bytes as ulong)) {
+            if (Mem::read_byte(buf + i) == Key::Enter as ulong && i + 1 < (bytes as ulong) && line_count < 64) {
+                Mem::write_byte(buf + i, 0);
+                Mem::write_qword(line_starts + line_count * 8, buf + i + 1);
+                line_count = line_count + 1;
+            }
+            i = i + 1;
+        }
+        // 最後の改行をNULに
+        if (bytes > 0 && Mem::read_byte(buf + (bytes as ulong) - 1) == Key::Enter as ulong) {
+            Mem::write_byte(buf + (bytes as ulong) - 1, 0);
+        }
+        // バブルソート
+        ulong n = line_count;
+        ulong a = 0;
+        while (a < n) {
+            ulong b = 0;
+            while (b < n - 1 - a) {
+                ulong s1 = Mem::read_qword(line_starts + b * 8);
+                ulong s2 = Mem::read_qword(line_starts + (b + 1) * 8);
+                if (Mem::strcmp(s1 as void*, s2 as void*) > 0) {
+                    Mem::write_qword(line_starts + b * 8, s2);
+                    Mem::write_qword(line_starts + (b + 1) * 8, s1);
+                }
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        // 出力
+        i = 0;
+        while (i < line_count) {
+            ulong addr = Mem::read_qword(line_starts + i * 8);
+            Shell::writeln(addr as void*);
+            i = i + 1;
+        }
+    }
+
+    /// writeコマンドの引数パース＆実行
+    static void dispatch_write() {
+        ulong arg1 = CmdArgs::arg(CMD_BUF_ADDR);
+        ulong arg2 = CmdArgs::arg2(CMD_BUF_ADDR);
+        if (arg2 != 0) {
+            // ファイル名部分をNUL終端（スペースまで遡る）
+            ulong end = arg2 - 1;
+            ulong done = 0;
+            while (done == 0) {
+                if (end <= arg1) { done = 1; }
+                else {
+                    ulong c = Mem::read_byte(end - 1);
+                    if (c != Key::Space as ulong) { done = 1; }
+                    else { end = end - 1; }
+                }
+            }
+            Mem::write_byte(end, 0);
+        }
+        CmdFs::write_file(arg1, arg2);
+    }
+
+    /// cp/mvコマンドの引数パース分離
+    static void dispatch_cp() {
+        ulong arg1 = CmdArgs::arg(CMD_BUF_ADDR);
+        ulong arg2 = CmdArgs::arg2(CMD_BUF_ADDR);
+        CmdFs::cp(arg1, arg2);
+    }
+
+    static void dispatch_mv() {
+        ulong arg1 = CmdArgs::arg(CMD_BUF_ADDR);
+        ulong arg2 = CmdArgs::arg2(CMD_BUF_ADDR);
+        CmdFs::mv(arg1, arg2);
+    }
+
+}

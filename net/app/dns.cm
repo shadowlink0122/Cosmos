@@ -7,6 +7,7 @@
 
 import ../../include/types;
 import ../../include/net;
+import ../../include/keycode;
 import ../../lib/kstring;
 import ../../drivers/serial;
 import ../../drivers/pci;
@@ -271,7 +272,7 @@ impl Dns {
 
         while (true) {
             ulong ch = Mem::read_byte(hostname + i);
-            if (ch == 0 || ch == 32) {
+            if (ch == Key::Null as ulong || ch == Key::Space as ulong) {
                 // 最後のラベルの長さを書き込み
                 ulong label_len = pos - label_start - 1;
                 Mem::write_byte(buf + label_start, label_len);
@@ -280,7 +281,7 @@ impl Dns {
                 pos = pos + 1;
                 break;
             }
-            if (ch == 46) {  // '.'
+            if (ch == Ascii::Period as ulong) {
                 // ラベルの長さを書き込み
                 ulong label_len = pos - label_start - 1;
                 Mem::write_byte(buf + label_start, label_len);

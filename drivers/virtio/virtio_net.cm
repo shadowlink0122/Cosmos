@@ -6,6 +6,7 @@
 
 import ../../include/types;
 import ../../include/net;
+import ../../include/keycode;
 import ../serial;
 import ../pci;
 import ./virtio;
@@ -450,11 +451,11 @@ impl VirtioNet {
             ulong byte_val = (mac >> shift) & 0xFF;
             ulong hi = (byte_val >> 4) & 0x0F;
             ulong lo = byte_val & 0x0F;
-            if (hi < 10) { serial->putc((48 + hi) as utiny); }
-            else { serial->putc((87 + hi) as utiny); }
-            if (lo < 10) { serial->putc((48 + lo) as utiny); }
-            else { serial->putc((87 + lo) as utiny); }
-            if (i < 5) { serial->putc(58 as utiny); }  // ':'
+            if (hi < 10) { serial->putc((Ascii::Digit0 as ulong + hi) as utiny); }
+            else { serial->putc((Ascii::LowerA as ulong - 10 + hi) as utiny); }
+            if (lo < 10) { serial->putc((Ascii::Digit0 as ulong + lo) as utiny); }
+            else { serial->putc((Ascii::LowerA as ulong - 10 + lo) as utiny); }
+            if (i < 5) { serial->putc(Ascii::Colon as ulong); }  // ':'
             i = i + 1;
         }
     }

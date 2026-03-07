@@ -136,7 +136,7 @@ impl Shell {
 
     /// 改行出力
     static void newline() {
-        Shell::putc(10);
+        Shell::putc(Key::Enter as ulong);
     }
 
     /// VGA色設定（GUIモードでは無視）
@@ -151,11 +151,11 @@ impl Shell {
         SerialPort* ser = (*ser_ptr) as SerialPort*;
         if (value == 0) {
             if (Shell::is_gui() != 0) {
-                Shell::gui_putc(48);
+                Shell::gui_putc(Ascii::Digit0 as ulong);
             } else {
-                Vga::putc(48);
+                Vga::putc(Ascii::Digit0 as ulong);
             }
-            ser->putc(48);
+            ser->putc(Ascii::Digit0 as ulong);
             return;
         }
         ulong buf0 = 0;
@@ -200,11 +200,11 @@ impl Shell {
             if (i == 8) { d = buf8; }
             if (i == 9) { d = buf9; }
             if (Shell::is_gui() != 0) {
-                Shell::gui_putc(d + 48);
+                Shell::gui_putc(d + Ascii::Digit0 as ulong);
             } else {
-                Vga::putc(d + 48);
+                Vga::putc(d + Ascii::Digit0 as ulong);
             }
-            ser->putc(d + 48);
+            ser->putc(d + Ascii::Digit0 as ulong);
         }
     }
 
@@ -212,8 +212,8 @@ impl Shell {
     static void print_hex_byte(ulong val) {
         ulong hi = (val >> 4) & 0xF;
         ulong lo = val & 0xF;
-        if (hi < 10) { Shell::putc(48 + hi); } else { Shell::putc(87 + hi); }
-        if (lo < 10) { Shell::putc(48 + lo); } else { Shell::putc(87 + lo); }
+        if (hi < 10) { Shell::putc(Ascii::Digit0 as ulong + hi); } else { Shell::putc(Ascii::LowerA as ulong - 10 + hi); }
+        if (lo < 10) { Shell::putc(Ascii::Digit0 as ulong + lo); } else { Shell::putc(Ascii::LowerA as ulong - 10 + lo); }
     }
 
     /// 16進表示 (8桁)
@@ -222,7 +222,7 @@ impl Shell {
         while (i < 8) {
             ulong shift = (7 - i) * 4;
             ulong nibble = (val >> shift) & 0xF;
-            if (nibble < 10) { Shell::putc(48 + nibble); } else { Shell::putc(87 + nibble); }
+            if (nibble < 10) { Shell::putc(Ascii::Digit0 as ulong + nibble); } else { Shell::putc(Ascii::LowerA as ulong - 10 + nibble); }
             i = i + 1;
         }
     }

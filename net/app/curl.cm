@@ -17,8 +17,10 @@ import ../transport/tcp;
 import ../core/arp;
 import ./dns;
 import ./http;
+import ../../include/keycode;
 import ../../lib/kstring;
 import ../../ui/shell/io;
+import ../../ui/shell/util;
 import ../../ui/shell/defs;
 import ../../ui/mem;
 
@@ -58,8 +60,7 @@ impl Curl {
         }
 
         // HTTPS検出 (TLS未実装)
-        ulong is_https = Curl::starts_with_str(url_addr, "https://" as ulong, 8);
-        if (is_https != 0) {
+        if (startswith(url_addr as void*, "https://" as void*) != 0) {
             Shell::writeln("curl: HTTPS is not supported (TLS not implemented)" as void*);
             Shell::writeln("  Use http:// instead" as void*);
             return;
@@ -206,14 +207,14 @@ impl Curl {
                 ulong bi = body_start;
                 while (bi < resp_total) {
                     ulong ch = Mem::read_byte(resp_buf + bi);
-                    if (ch >= 32 && ch < 127) {
+                    if (ch >= Key::Space as ulong && ch < Key::Delete as ulong) {
                         Shell::putc(ch);
-                    } else if (ch == 10) {
+                    } else if (ch == Key::Enter as ulong) {
                         Shell::newline();
-                    } else if (ch == 13) {
+                    } else if (ch == Key::CR as ulong) {
                         // CR: 無視
-                    } else if (ch == 9) {
-                        Shell::putc(32);  // Tab → space
+                    } else if (ch == Key::Tab as ulong) {
+                        Shell::putc(Key::Space as ulong);  // Tab → space
                     }
                     bi = bi + 1;
                 }
@@ -222,9 +223,9 @@ impl Curl {
                 ulong bi = 0;
                 while (bi < resp_total) {
                     ulong ch = Mem::read_byte(resp_buf + bi);
-                    if (ch >= 32 && ch < 127) {
+                    if (ch >= Key::Space as ulong && ch < Key::Delete as ulong) {
                         Shell::putc(ch);
-                    } else if (ch == 10) {
+                    } else if (ch == Key::Enter as ulong) {
                         Shell::newline();
                     }
                     bi = bi + 1;
@@ -245,27 +246,15 @@ impl Curl {
     static ulong parse_url(ulong url, ulong host_out, ulong path_out, ulong* port_out) {
         // "http://" プレフィックスをスキップ
         ulong pos = 0;
-        ulong h = "http://" as ulong;
-        ulong url_match = 1;
-        ulong hi = 0;
-        while (hi < 7) {
-            ulong uc = Mem::read_byte(url + hi);
-            ulong hc = Mem::read_byte(h + hi);
-            if (uc != hc) { url_match = 0; break; }
-            hi = hi + 1;
-        }
-        if (url_match != 0) {
+        if (startswith(url as void*, "http://" as void*) != 0) {
             pos = 7;
-        } else {
-            // "http://"なしでもホスト名として処理
-            pos = 0;
         }
 
         // ホスト名の抽出 (':'か'/'か終端まで)
         ulong host_len = 0;
         while (host_len < 200) {
             ulong ch = Mem::read_byte(url + pos + host_len);
-            if (ch == 0 || ch == 47 || ch == 58) { break; }  // NUL, '/', ':'
+            if (ch == Key::Null as ulong || ch == Ascii::Slash as ulong || ch == Ascii::Colon as ulong) { break; }
             Mem::write_byte(host_out + host_len, ch);
             host_len = host_len + 1;
         }
@@ -277,13 +266,13 @@ impl Curl {
 
         // ポート番号チェック
         ulong ch = Mem::read_byte(url + pos);
-        if (ch == 58) {  // ':'
+        if (ch == Ascii::Colon as ulong) {
             pos = pos + 1;
             ulong port_val = 0;
             while (true) {
                 ch = Mem::read_byte(url + pos);
-                if (ch < 48 || ch > 57) { break; }  // 非数字
-                port_val = port_val * 10 + (ch - 48);
+                if (ch < Ascii::Digit0 as ulong || ch > Ascii::Digit9 as ulong) { break; }
+                port_val = port_val * 10 + (ch - Ascii::Digit0 as ulong);
                 pos = pos + 1;
             }
             if (port_val > 0) {
@@ -293,7 +282,7 @@ impl Curl {
 
         // パスの抽出
         ch = Mem::read_byte(url + pos);
-        if (ch == 47) {  // '/'
+        if (ch == Ascii::Slash as ulong) {
             ulong path_len = 0;
             while (path_len < 200) {
                 ch = Mem::read_byte(url + pos + path_len);
@@ -304,8 +293,8 @@ impl Curl {
             Mem::write_byte(path_out + path_len, 0);
         } else {
             // パスなし → "/"
-            Mem::write_byte(path_out, 47);
-            Mem::write_byte(path_out + 1, 0);
+            Mem::write_byte(path_out, Ascii::Slash as ulong);
+            Mem::write_byte(path_out + 1, Key::Null as ulong);
         }
 
         return 1;
@@ -608,10 +597,10 @@ impl Curl {
     static ulong find_body(ulong data, ulong len) {
         ulong i = 0;
         while (i + 3 < len) {
-            if (Mem::read_byte(data + i) == 13 &&
-                Mem::read_byte(data + i + 1) == 10 &&
-                Mem::read_byte(data + i + 2) == 13 &&
-                Mem::read_byte(data + i + 3) == 10) {
+            if (Mem::read_byte(data + i) == Key::CR as ulong &&
+                Mem::read_byte(data + i + 1) == Key::Enter as ulong &&
+                Mem::read_byte(data + i + 2) == Key::CR as ulong &&
+                Mem::read_byte(data + i + 3) == Key::Enter as ulong) {
                 return i + 4;
             }
             i = i + 1;
@@ -685,25 +674,11 @@ impl Curl {
     // ====================================================================
     static void print_ip(ulong ip) {
         Shell::print_dec((ip >> 24) & 0xFF);
-        Shell::putc(46);
+        Shell::putc(Ascii::Period as ulong);
         Shell::print_dec((ip >> 16) & 0xFF);
-        Shell::putc(46);
+        Shell::putc(Ascii::Period as ulong);
         Shell::print_dec((ip >> 8) & 0xFF);
-        Shell::putc(46);
+        Shell::putc(Ascii::Period as ulong);
         Shell::print_dec(ip & 0xFF);
-    }
-
-    // ====================================================================
-    // ヘルパー: 文字列前方一致判定
-    // ====================================================================
-    static ulong starts_with_str(ulong str, ulong prefix, ulong prefix_len) {
-        ulong i = 0;
-        while (i < prefix_len) {
-            ulong sc = Mem::read_byte(str + i);
-            ulong pc = Mem::read_byte(prefix + i);
-            if (sc != pc) { return 0; }
-            i = i + 1;
-        }
-        return 1;
     }
 }

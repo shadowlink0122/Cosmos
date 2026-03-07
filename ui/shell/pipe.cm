@@ -32,7 +32,7 @@ impl Pipe {
         ulong t = pipe_pos;
         while (t > 0) {
             ulong tc = Mem::read_byte(buf_addr + t - 1);
-            if (tc != 32) { break; }
+            if (tc != Key::Space as ulong) { break; }
             Mem::write_byte(buf_addr + t - 1, 0);
             t = t - 1;
         }
@@ -42,7 +42,7 @@ impl Pipe {
         // cmd2: 先頭スペース除去
         ulong cmd2_start = pipe_pos + 1;
         while (cmd2_start < len) {
-            if (Mem::read_byte(buf_addr + cmd2_start) != 32) { break; }
+            if (Mem::read_byte(buf_addr + cmd2_start) != Key::Space as ulong) { break; }
             cmd2_start = cmd2_start + 1;
         }
         // cmd2をバッファ先頭にコピー

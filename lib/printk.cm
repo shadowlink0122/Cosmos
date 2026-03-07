@@ -7,6 +7,7 @@
 
 import ../include/types;
 import ../include/writer;
+import ../include/keycode;
 
 // ログレベル定数
 export const ulong LOG_EMERG   = 0;
@@ -26,18 +27,18 @@ impl Console {
     static void printk(SerialPort* w, ulong level, void* msg) {
         // ANSIカラー開始
         if (level == LOG_EMERG || level == LOG_ALERT || level == LOG_CRIT || level == LOG_ERR) {
-            w->putc(27); w->puts("[31m" as void*);  // 赤
+            w->putc(Key::Escape as ulong); w->puts("[31m" as void*);  // 赤
         }
         if (level == LOG_WARN) {
-            w->putc(27); w->puts("[33m" as void*);  // 黄
+            w->putc(Key::Escape as ulong); w->puts("[33m" as void*);  // 黄
         }
         if (level == LOG_INFO || level == LOG_NOTICE) {
-            w->putc(27); w->puts("[36m" as void*);  // シアン
+            w->putc(Key::Escape as ulong); w->puts("[36m" as void*);  // シアン
         }
         if (level == LOG_DEBUG) {
-            w->putc(27); w->puts("[90m" as void*);  // 灰
+            w->putc(Key::Escape as ulong); w->puts("[90m" as void*);  // 灰
         }
-        w->putc(91);  // '['
+        w->putc(Ascii::BracketL as ulong);  // '['
         if (level == LOG_EMERG)  { w->puts("EMERG" as void*); }
         if (level == LOG_ALERT)  { w->puts("ALERT" as void*); }
         if (level == LOG_CRIT)   { w->puts("CRIT" as void*); }
@@ -46,11 +47,11 @@ impl Console {
         if (level == LOG_NOTICE) { w->puts("NOTE" as void*); }
         if (level == LOG_INFO)   { w->puts("INFO" as void*); }
         if (level == LOG_DEBUG)  { w->puts("DEBUG" as void*); }
-        w->putc(93);  // ']'
+        w->putc(Ascii::BracketR as ulong);  // ']'
         // ANSIリセット
-        w->putc(27);
+        w->putc(Key::Escape as ulong);
         w->puts("[0m" as void*);
-        w->putc(32);  // ' '
+        w->putc(Key::Space as ulong);  // ' '
         w->println(msg);
     }
 
@@ -77,7 +78,7 @@ impl Console {
     /// 10進数出力ヘルパー
     static void print_dec(SerialPort* w, ulong value) {
         if (value == 0) {
-            w->putc(48);
+            w->putc(Ascii::Digit0 as ulong);
             return;
         }
         ulong buf0 = 0;
@@ -121,7 +122,7 @@ impl Console {
             if (i == 7) { d = buf7; }
             if (i == 8) { d = buf8; }
             if (i == 9) { d = buf9; }
-            w->putc(d + 48);
+            w->putc(d + Ascii::Digit0 as ulong);
         }
     }
 }

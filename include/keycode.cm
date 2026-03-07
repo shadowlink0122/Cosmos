@@ -95,28 +95,3 @@ export enum Ascii {
     Question  = '?',
     Underscore = '_'
 }
-
-// ============================================================
-// 後方互換: 既存コードで使用されるconst定数
-// ============================================================
-
-// 制御キー (Key enum → ulong)
-export const ulong KEY_CTRL_C    = 3;
-export const ulong KEY_BACKSPACE = 8;
-export const ulong KEY_TAB       = 9;
-export const ulong KEY_ENTER     = 10;
-export const ulong KEY_CTRL_L    = 12;
-export const ulong KEY_CR        = 13;
-export const ulong KEY_ESCAPE    = 27;
-export const ulong KEY_SPACE     = 32;
-export const ulong KEY_DELETE    = 127;
-export const ulong KEY_UP        = 0x80;
-export const ulong KEY_DOWN      = 0x81;
-export const ulong KEY_LEFT      = 0x82;
-export const ulong KEY_RIGHT     = 0x83;
-
-// ASCII文字定数 (Ascii enum → ulong)
-export const ulong CHAR_PIPE     = 124;
-export const ulong CHAR_SLASH    = 47;
-export const ulong CHAR_DOT      = 46;
-export const ulong CHAR_NULL     = 0;

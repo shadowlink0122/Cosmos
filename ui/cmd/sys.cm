@@ -1,0 +1,157 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd::sys - システム情報コマンド
+//
+// CmdSys struct/impl — uname, date, uptime, free, vmstat, reboot, clear。
+
+import ../../include/types;
+import ../../include/keycode;
+import ../../include/config;
+import ../../include/color;
+import ../shell/defs;
+import ../mem;
+import ../vga;
+import ../shell/io;
+import ../../drivers/serial;
+import ../../drivers/timer/pit;
+import ../../mm/pmm;
+import ../../mm/mmap;
+import ../../lib/kstring;
+
+/// CmdSys — システム情報コマンド群
+export struct CmdSys {}
+
+impl CmdSys {
+
+    /// uname コマンド: システム情報表示
+    static void uname(ulong flags_addr) {
+        // uname -a の場合: 全情報表示
+        if (flags_addr != 0) {
+            if (startswith(flags_addr as void*, "-a" as void*) != 0) {
+                Shell::writeln("Cosmo Linux 0.1.0 cosmo x86_64 Cm/LLVM" as void*);
+                return;
+            }
+        }
+        Shell::writeln("Cosmo Linux" as void*);
+    }
+
+    /// date コマンド: 時刻表示（PIT ticksからの簡易計算）
+    static void date() {
+        ulong ticks = PIT::get_ticks();
+        ulong total_secs = ticks / 100;
+        ulong hours = total_secs / 3600;
+        ulong mins = (total_secs % 3600) / 60;
+        ulong secs = total_secs % 60;
+        Shell::write("Up " as void*);
+        Shell::print_dec(hours);
+        Shell::write(":" as void*);
+        if (mins < 10) { Shell::write("0" as void*); }
+        Shell::print_dec(mins);
+        Shell::write(":" as void*);
+        if (secs < 10) { Shell::write("0" as void*); }
+        Shell::print_dec(secs);
+        Shell::write(" (" as void*);
+        Shell::print_dec(ticks);
+        Shell::writeln(" ticks)" as void*);
+    }
+
+    /// uptime コマンド: 稼働時間表示
+    static void uptime() {
+        ulong ticks = PIT::get_ticks();
+        ulong seconds = ticks / 100;
+        ulong minutes = seconds / 60;
+        ulong secs = seconds % 60;
+        Shell::writeln("" as void*);
+        Shell::write("  Uptime: " as void*);
+        Shell::print_dec(minutes);
+        Shell::write("m " as void*);
+        Shell::print_dec(secs);
+        Shell::writeln("s" as void*);
+        Shell::write("  Ticks:  " as void*);
+        Shell::print_dec(ticks);
+        Shell::writeln("" as void*);
+        Shell::writeln("" as void*);
+    }
+
+    /// free コマンド: メモリ使用量表示
+    static void free_mem() {
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+        ulong total = pmm->total_pages;
+        ulong free_p = pmm->free_pages;
+        ulong used = total - free_p;
+        Shell::writeln("" as void*);
+        Shell::write("  Total:  " as void*);
+        Shell::print_dec(total * 4);
+        Shell::writeln(" KiB" as void*);
+        Shell::write("  Used:   " as void*);
+        Shell::print_dec(used * 4);
+        Shell::writeln(" KiB" as void*);
+        Shell::write("  Free:   " as void*);
+        Shell::print_dec(free_p * 4);
+        Shell::writeln(" KiB" as void*);
+        Shell::writeln("" as void*);
+    }
+
+    /// vmstat コマンド: 仮想メモリ統計表示
+    static void vmstat() {
+        Shell::writeln("" as void*);
+        Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
+        Shell::writeln("=== Virtual Memory Statistics ==="  as void*);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+
+        // VMA一覧
+        ulong vma_count = Mmap::count();
+        Shell::write("  VMA entries: " as void*);
+        Shell::print_dec(vma_count);
+        Shell::writeln("" as void*);
+
+        if (vma_count > 0) {
+            Shell::writeln("  START            END              FLAGS" as void*);
+            ulong i = 0;
+            while (i < 32) {
+                Vma* vma = Mmap::get_vma(i);
+                if (vma->used != 0) {
+                    Shell::write("  " as void*);
+                    Shell::print_hex(vma->start);
+                    Shell::write("  " as void*);
+                    Shell::print_hex(vma->end);
+                    Shell::write("  " as void*);
+                    Shell::print_hex(vma->flags);
+                    Shell::newline();
+                }
+                i = i + 1;
+            }
+        }
+
+        // メモリ統計
+        ulong* pmm_addr_ptr = SHELL_PMM_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_addr_ptr) as BuddyAllocator*;
+        ulong total = pmm->total_pages;
+        ulong free_p = pmm->free_pages;
+        ulong used = total - free_p;
+        Shell::write("  Physical: " as void*);
+        Shell::print_dec(used * 4);
+        Shell::write("KiB used / " as void*);
+        Shell::print_dec(total * 4);
+        Shell::writeln("KiB total" as void*);
+        Shell::writeln("" as void*);
+    }
+
+    /// reboot コマンド: 再起動
+    static void reboot() {
+        Shell::writeln("Rebooting..." as void*);
+        outb(0x64, 0xFE);
+        __asm__(`cli; 1: hlt; jmp 1b`);
+    }
+
+    /// clear コマンド: 画面クリア
+    static void clear() {
+        ulong* gui = GUI_MODE_ADDR as ulong*;
+        if (*gui != 0) {
+            Shell::gui_clear();
+        } else {
+            Vga::clear_screen();
+        }
+    }
+
+}
