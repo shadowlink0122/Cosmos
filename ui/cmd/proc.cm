@@ -100,7 +100,12 @@ impl CmdProc {
             Shell::writeln("kill: cannot kill idle process" as void*);
             return;
         }
-        long result = Signal::send(pid_val as long, sig);
+        long result = 0;
+        Result<long, long> sr = Signal::send(pid_val as long, sig);
+        match (sr) {
+            Result::Ok(v) => { result = v; }
+            Result::Err(e) => { result = 0 - e; }
+        }
         if (result == 0) {
             Shell::write("Signal " as void*);
             Shell::print_dec(sig);

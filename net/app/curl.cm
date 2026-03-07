@@ -8,6 +8,8 @@
 
 import ../../include/types;
 import ../../include/net;
+import ../../include/errno;
+import ../../include/result;
 import ../../drivers/virtio/virtio_net;
 import ../../drivers/serial;
 import ../../drivers/timer/pit;
@@ -305,7 +307,12 @@ impl Curl {
     // ====================================================================
     static ulong tcp_connect(ulong remote_ip, ulong remote_port, ulong local_port) {
         // コネクション作成
-        long cid = Tcp::create();
+        long cid = -1;
+        Result<long, long> tcr = Tcp::create();
+        match (tcr) {
+            Result::Ok(v) => { cid = v; }
+            Result::Err(e) => {}
+        }
         if (cid < 0) { return 0xFFFFFFFF; }
         ulong conn_id = cid as ulong;
 

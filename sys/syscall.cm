@@ -331,7 +331,11 @@ impl Syscall {
 
     /// sys_kill: シグナル送信
     static long kill(ulong pid, ulong sig) {
-        return Signal::send(pid as long, sig);
+        Result<long, long> sr = Signal::send(pid as long, sig);
+        match (sr) {
+            Result::Ok(v) => { return v; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_wait4: 子プロセス終了待ち (wstatus書き込み対応)
@@ -342,13 +346,18 @@ impl Syscall {
         Process* cur = Sched::current();
         ulong cur_addr = cur as ulong;
         if (cur_addr == 0) { return 0 - ECHILD; }
-        long result = ProcessTable::do_wait(cur, wait_pid, options);
+        long result = 0;
+        Result<long, long> wr = ProcessTable::do_wait(cur, wait_pid, options);
+        match (wr) {
+            Result::Ok(v) => { result = v; }
+            Result::Err(e) => { return 0 - e; }
+        }
 
         // 成功時: wstatusを書き込み
         // Linux規約: WIFEXITED(s) = ((s) & 0x7f) == 0
         //             WEXITSTATUS(s) = ((s) >> 8) & 0xff
         // exit_code << 8 で正常終了を表現
-        if (result >= 0 && wstatus_addr != 0) {
+        if (wstatus_addr != 0) {
             ulong exit_status = (result as ulong) << 8;
             ulong* wstatus = wstatus_addr as ulong*;
             *wstatus = exit_status;
@@ -362,10 +371,7 @@ impl Syscall {
         // 成功時は子プロセスのPIDを返すべきだが、
         // 現状do_waitはexit_codeを返すので、簡易的に1を返す
         // TODO: do_waitを修正して子PIDを返すようにする
-        if (result >= 0) {
-            return 1;  // 子PIDの代替値
-        }
-        return result;
+        return 1;  // 子PIDの代替値
     }
 
     /// sys_uname: システム情報取得 (Linux utsname構造体に書き込み)

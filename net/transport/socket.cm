@@ -133,7 +133,12 @@ impl Socket {
         *state_ptr = TCP_LISTEN;
         *bl_ptr = backlog;
 
-        long conn_id = Tcp::create();
+        long conn_id = -1;
+        Result<long, long> tcr = Tcp::create();
+        match (tcr) {
+            Result::Ok(v) => { conn_id = v; }
+            Result::Err(e) => {}
+        }
         if (conn_id >= 0) {
             ulong* conn_ptr = (base + SOCK_TCP_CONN) as ulong*;
             *conn_ptr = conn_id as ulong;
@@ -161,7 +166,12 @@ impl Socket {
 
         if (addr == LOOPBACK_ADDR) {
             *state_ptr = TCP_ESTABLISHED;
-            long conn_id = Tcp::create();
+            long conn_id = -1;
+            Result<long, long> tcr2 = Tcp::create();
+            match (tcr2) {
+                Result::Ok(v) => { conn_id = v; }
+                Result::Err(e) => {}
+            }
             if (conn_id >= 0) {
                 ulong* conn_ptr = (base + SOCK_TCP_CONN) as ulong*;
                 *conn_ptr = conn_id as ulong;

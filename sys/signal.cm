@@ -17,29 +17,29 @@ export struct Signal {}
 
 impl Signal {
     /// プロセスにシグナルを送信
-    static long send(Pid target_pid, ulong sig) {
-        if (sig == 0 || sig >= NSIG) { return 0 - EINVAL; }
+    static Result<long, long> send(Pid target_pid, ulong sig) {
+        if (sig == 0 || sig >= NSIG) { return Result::Err(EINVAL); }
         Process* proc = 0 as Process*;
         Option<ulong> proc_opt = ProcessTable::find_by_pid(target_pid);
         match (proc_opt) {
             Option::Some(v) => { proc = v as Process*; }
-            Option::None => { return 0 - ESRCH; }
+            Option::None => { return Result::Err(ESRCH); }
         }
         // SIGKILL / SIGSTOP は無視不可
         if (sig == SIGKILL) {
             // 即座にプロセスを終了
             ProcessTable::do_exit(proc, 0 - 9);  // シグナル番号を負値で記録
-            return 0;
+            return Result::Ok(0);
         }
         if (sig == SIGSTOP) {
             proc->state = TASK_STOPPED;
-            return 0;
+            return Result::Ok(0);
         }
         if (sig == SIGCONT) {
             if (proc->state == TASK_STOPPED) {
                 proc->state = TASK_READY;
             }
-            return 0;
+            return Result::Ok(0);
         }
         // 通常シグナル: pending_signalにビットセット
         proc->pending_signal = proc->pending_signal | (1 << sig);
@@ -47,7 +47,7 @@ impl Signal {
         if (sig == SIGTERM) {
             ProcessTable::do_exit(proc, 0 - 15);
         }
-        return 0;
+        return Result::Ok(0);
     }
 
     /// 保留中シグナルをチェック

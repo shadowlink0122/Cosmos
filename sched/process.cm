@@ -155,9 +155,9 @@ impl ProcessTable {
 
     /// 子プロセスの終了を待つ (wait4相当)
     /// 戻り値: 子プロセスのexit_code。子がなければ -ECHILD。
-    static long do_wait(Process* parent, Pid wait_pid, ulong options) {
+    static Result<long, long> do_wait(Process* parent, Pid wait_pid, ulong options) {
         ulong* sched_ptr = SCHED_PTR_ADDR as ulong*;
-        if (*sched_ptr == 0) { return 0 - ECHILD; }
+        if (*sched_ptr == 0) { return Result::Err(ECHILD); }
         RoundRobinScheduler* sched = (*sched_ptr) as RoundRobinScheduler*;
 
         // ブロッキング: ZOMBIEの子を探し、見つからなければSched::run()でyield
@@ -179,7 +179,7 @@ impl ProcessTable {
                                 long code = child->exit_code;
                                 // ZOMBIEプロセスを回収（スロットを無効化）
                                 child->state = TASK_STOPPED;
-                                return code;
+                                return Result::Ok(code);
                             }
                         }
                     }
@@ -192,7 +192,7 @@ impl ProcessTable {
             }
             retry = retry + 1;
         }
-        return 0 - ECHILD;
+        return Result::Err(ECHILD);
     }
 }
 

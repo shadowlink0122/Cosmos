@@ -6,6 +6,8 @@
 
 import ../../include/types;
 import ../../include/net;
+import ../../include/errno;
+import ../../include/result;
 import ../../lib/kstring;
 
 // ============================================================
@@ -159,7 +161,7 @@ impl Tcp {
     }
 
     /// コネクションを作成
-    static long create() {
+    static Result<long, long> create() {
         ulong i = 0;
         while (i < MAX_TCP_CONNS) {
             ulong base = TCP_CONN_BASE + i * TCP_CONN_SIZE;
@@ -168,11 +170,11 @@ impl Tcp {
                 *used_ptr = 1;
                 ulong* state_ptr = base as ulong*;
                 *state_ptr = TCP_CLOSED;
-                return i as long;
+                return Result::Ok(i as long);
             }
             i = i + 1;
         }
-        return -1;
+        return Result::Err(ENOMEM);
     }
 
     static ulong get_state(ulong conn_id) {
@@ -245,15 +247,7 @@ impl Tcp {
         match (state as TcpState) {
             TcpState::Established => { Tcp::set_state(conn_id, TCP_CLOSE_WAIT); }
             TcpState::FinWait2    => { Tcp::set_state(conn_id, TCP_TIME_WAIT); }
-            TcpState::Closed      => {}
-            TcpState::Listen      => {}
-            TcpState::SynSent     => {}
-            TcpState::SynRcvd     => {}
-            TcpState::FinWait1    => {}
-            TcpState::CloseWait   => {}
-            TcpState::Closing     => {}
-            TcpState::LastAck     => {}
-            TcpState::TimeWait    => {}
+            _                     => {}
         }
     }
 }
