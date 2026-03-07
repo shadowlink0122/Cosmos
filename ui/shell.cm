@@ -195,9 +195,13 @@ export void shell_main() {
                         lines = lines - 1;
                     }
                 }
-                // GUIモード: 画面更新
+                // GUIモード: 変更があった場合のみ画面更新
                 if (Shell::is_gui() != 0) {
-                    Shell::gui_flush();
+                    ulong* dirty = 0x95068 as ulong*;
+                    if (*dirty != 0) {
+                        *dirty = 0;
+                        Shell::gui_flush();
+                    }
                 }
                 // hlt: キーボードIRQ1またはPIT IRQ0で即wakeup
                 __asm__(`sti; hlt`);
