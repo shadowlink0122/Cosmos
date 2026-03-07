@@ -131,6 +131,11 @@ impl Shell {
     /// 文字列出力 + 改行
     static void writeln(void* msg) {
         Shell::write(msg);
+        Shell::newline();
+    }
+
+    /// 改行出力
+    static void newline() {
         Shell::putc(10);
     }
 

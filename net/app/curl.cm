@@ -92,7 +92,7 @@ impl Curl {
 
         Shell::write("Resolved: " as void*);
         Curl::print_ip(remote_ip);
-        Shell::putc(10);
+        Shell::newline();
 
         // 3. TCP 3-way handshake
         ulong local_port = Curl::next_port();
@@ -209,7 +209,7 @@ impl Curl {
                     if (ch >= 32 && ch < 127) {
                         Shell::putc(ch);
                     } else if (ch == 10) {
-                        Shell::putc(10);
+                        Shell::newline();
                     } else if (ch == 13) {
                         // CR: 無視
                     } else if (ch == 9) {
@@ -225,12 +225,12 @@ impl Curl {
                     if (ch >= 32 && ch < 127) {
                         Shell::putc(ch);
                     } else if (ch == 10) {
-                        Shell::putc(10);
+                        Shell::newline();
                     }
                     bi = bi + 1;
                 }
             }
-            Shell::putc(10);
+            Shell::newline();
         } else {
             Shell::writeln("curl: no response received" as void*);
         }

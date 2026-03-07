@@ -174,7 +174,7 @@ impl Gen {
         }
         Virtio9p::clunk(fid);
 
-        Shell::putc(10);
+        Shell::newline();
         Shell::set_color(10, 0);
         Shell::write("==> " as void*);
         Shell::write(name_addr as void*);
@@ -347,7 +347,7 @@ impl Gen {
                     Shell::write("  [installed]" as void*);
                     Shell::set_color(7, 0);
                 }
-                Shell::putc(10);
+                Shell::newline();
                 found = found + 1;
             }
             pos = pos + nlen;

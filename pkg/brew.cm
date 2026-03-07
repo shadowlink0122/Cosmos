@@ -278,7 +278,7 @@ impl Brew {
 
         // 結果チェック
         if (body_written == 0) {
-            Shell::putc(10);
+            Shell::newline();
             Shell::writeln("brew: download failed (empty response)" as void*);
             return;
         }
@@ -286,7 +286,7 @@ impl Brew {
         // RamFSにファイル作成
         Ino ino = RamFs::create(name_addr as void*, S_IFREG | 0x1FF, data_base);
         if (ino == 0) {
-            Shell::putc(10);
+            Shell::newline();
             Shell::writeln("brew: failed to create file" as void*);
             return;
         }
@@ -313,7 +313,7 @@ impl Brew {
             fi = fi + 1;
         }
 
-        Shell::putc(10);
+        Shell::newline();
         Shell::set_color(10, 0);
         Shell::write("==> " as void*);
         Shell::write(name_addr as void*);

@@ -247,7 +247,7 @@ impl Cmd {
                         Shell::print_dec(fsize);
                         Shell::write(" bytes)" as void*);
                     }
-                    Shell::putc(10);
+                    Shell::newline();
                 }
                 i = i + 1;
             }
@@ -384,7 +384,7 @@ impl Cmd {
         if (text_addr != 0) {
             Shell::writeln(text_addr as void*);
         } else {
-            Shell::putc(10);
+            Shell::newline();
         }
     }
 
@@ -717,7 +717,7 @@ impl Cmd {
         }
         // 末尾改行がなければ追加
         ulong last = Mem::read_byte(read_buf + (bytes as ulong) - 1);
-        if (last != 10) { Shell::putc(10); }
+        if (last != 10) { Shell::newline(); }
     }
 
     /// kill コマンド: プロセスにシグナル送信
@@ -767,7 +767,7 @@ impl Cmd {
             Shell::print_dec(sig);
             Shell::write(" sent to PID " as void*);
             Shell::print_dec(pid_val);
-            Shell::putc(10);
+            Shell::newline();
         } else {
             Shell::writeln("kill: no such process" as void*);
         }
@@ -798,7 +798,7 @@ impl Cmd {
                     Shell::print_hex(vma->end);
                     Shell::write("  " as void*);
                     Shell::print_hex(vma->flags);
-                    Shell::putc(10);
+                    Shell::newline();
                 }
                 i = i + 1;
             }
@@ -1135,7 +1135,7 @@ impl Cmd {
             // 末尾改行がなければ追加
             if (lines < 10) {
                 ulong last = Mem::read_byte(read_buf + (bytes as ulong) - 1);
-                if (last != 10) { Shell::putc(10); }
+                if (last != 10) { Shell::newline(); }
             }
         }
     }
@@ -1274,7 +1274,7 @@ impl Cmd {
                         if (m != 0) {
                             ulong q = ls;
                             while (q < p) { Shell::putc(Mem::read_byte(buf + q)); q = q + 1; }
-                            Shell::putc(10);
+                            Shell::newline();
                             break;
                         }
                         s = s + 1;

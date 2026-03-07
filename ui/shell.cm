@@ -1,16 +1,17 @@
 //! platform: baremetal-x86
 // cosmo-linux::ui::shell - カーネルシェル（メインループ）
 //
-// 各UIコンポーネントをインポートし、REPL（Read-Eval-Print Loop）を実行。
-// struct/impl は個別ファイルに分割済み:
-//   shell_const.cm — 共通定数
-//   mem.cm         — Mem (メモリ読み書き)
-//   vga.cm         — Vga (VGAテキストモード)
-//   shell_io.cm    — Shell (VGA+シリアル出力)
-//   shell_util.cm  — streq/startswith
-//   env.cm         — Env (環境変数)
-//   history.cm     — History (コマンド履歴)
-//   cmd.cm         — Cmd (コマンド群+ディスパッチ)
+// REPL（Read-Eval-Print Loop）を実行。
+// 各機能は個別ファイルに分割済み:
+//   shell_const.cm  — 共通定数
+//   shell_io.cm     — Shell (VGA+シリアル出力)
+//   shell_prompt.cm — プロンプト描画
+//   shell_tab.cm    — Tab補完（コマンド名/ファイル名/9pfsパス）
+//   shell_pipe.cm   — パイプ処理
+//   shell_util.cm   — streq/startswith
+//   env.cm          — Env (環境変数)
+//   history.cm      — History (コマンド履歴)
+//   cmd.cm          — Cmd (コマンド群+ディスパッチ)
 
 import ../include/types;
 import ../include/config;
@@ -22,6 +23,9 @@ import ./shell_util;
 import ./env;
 import ./history;
 import ./cmd;
+import ./shell_prompt;
+import ./shell_tab;
+import ./shell_pipe;
 import ../drivers/serial;
 import ../drivers/input/keyboard;
 import ../init/init;
@@ -33,66 +37,265 @@ import ../include/keycode;
 import ../include/color;
 
 // ============================================================
-// Tab補完用コマンドリスト
+// キー入力ハンドラ（個別処理）
 // ============================================================
 
-/// コマンド名をバッファにコピー (16バイト固定)
-void cmd_entry(ulong buf, ulong idx, ulong name) {
-    ulong dst = buf + idx * 16;
-    ulong i = 0;
-    while (i < 15) {
-        ulong c = Mem::read_byte(name + i);
-        Mem::write_byte(dst + i, c);
-        if (c == 0) { break; }
-        i = i + 1;
+/// スクロールバック中ならライブモードに復帰
+void restore_scrollback() {
+    ulong* sb_active = 0xC08018 as ulong*;
+    if (*sb_active != 0) {
+        ulong* sb_pos = 0xC08010 as ulong*;
+        *sb_pos = 0;
+        *sb_active = 0;
+        ulong si = 0;
+        while (si < 25 * 80 * 2) {
+            Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
+            si = si + 1;
+        }
     }
-    Mem::write_byte(dst + i, 0);
 }
 
-/// ビルトインコマンド名リストを生成
-/// buf: 出力先バッファ (各エントリ16バイト)
-/// 返り値: コマンド数
-ulong shell_fill_cmd_list(ulong buf) {
-    ulong n = 0;
-    cmd_entry(buf, n, "help" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "ps" as ulong);       n = n + 1;
-    cmd_entry(buf, n, "free" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "uptime" as ulong);   n = n + 1;
-    cmd_entry(buf, n, "uname" as ulong);    n = n + 1;
-    cmd_entry(buf, n, "date" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "clear" as ulong);    n = n + 1;
-    cmd_entry(buf, n, "reboot" as ulong);   n = n + 1;
-    cmd_entry(buf, n, "ls" as ulong);       n = n + 1;
-    cmd_entry(buf, n, "cat" as ulong);      n = n + 1;
-    cmd_entry(buf, n, "touch" as ulong);    n = n + 1;
-    cmd_entry(buf, n, "write" as ulong);    n = n + 1;
-    cmd_entry(buf, n, "echo" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "rm" as ulong);       n = n + 1;
-    cmd_entry(buf, n, "mkdir" as ulong);    n = n + 1;
-    cmd_entry(buf, n, "cd" as ulong);       n = n + 1;
-    cmd_entry(buf, n, "pwd" as ulong);      n = n + 1;
-    cmd_entry(buf, n, "env" as ulong);      n = n + 1;
-    cmd_entry(buf, n, "export" as ulong);   n = n + 1;
-    cmd_entry(buf, n, "history" as ulong);  n = n + 1;
-    cmd_entry(buf, n, "kill" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "cp" as ulong);       n = n + 1;
-    cmd_entry(buf, n, "mv" as ulong);       n = n + 1;
-    cmd_entry(buf, n, "head" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "tail" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "wc" as ulong);       n = n + 1;
-    cmd_entry(buf, n, "hexdump" as ulong);  n = n + 1;
-    cmd_entry(buf, n, "grep" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "sort" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "vmstat" as ulong);   n = n + 1;
-    cmd_entry(buf, n, "exec" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "test" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "ping" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "curl" as ulong);     n = n + 1;
-    cmd_entry(buf, n, "hostls" as ulong);   n = n + 1;
-    cmd_entry(buf, n, "hostcat" as ulong);  n = n + 1;
-    cmd_entry(buf, n, "apt" as ulong);      n = n + 1;
-    cmd_entry(buf, n, "brew" as ulong);     n = n + 1;
-    return n;
+/// Backspaceキー処理
+void handle_backspace(ulong* len_ptr, ulong* cur_ptr) {
+    ulong len = *len_ptr;
+    ulong cursor = *cur_ptr;
+    if (cursor == 0) { return; }
+
+    // カーソル以降を1つ左にシフト
+    ulong si = cursor - 1;
+    while (si < len - 1) {
+        Mem::write_byte(CMD_BUF_ADDR + si, Mem::read_byte(CMD_BUF_ADDR + si + 1));
+        si = si + 1;
+    }
+    *len_ptr = len - 1;
+    *cur_ptr = cursor - 1;
+
+    // VGA: カーソルを1つ左に移動
+    Shell::putc(8);
+
+    // カーソル位置から末尾まで再描画
+    ulong ri = cursor - 1;
+    ulong new_len = len - 1;
+    while (ri < new_len) {
+        Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+        ri = ri + 1;
+    }
+    // 末尾のゴミを消す
+    Shell::putc(32);
+
+    // カーソルを正しい位置に戻す
+    ulong back = new_len - (cursor - 1) + 1;
+    ulong bi = 0;
+    while (bi < back) {
+        Shell::putc(8);
+        bi = bi + 1;
+    }
+
+    // シリアルにも反映
+    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+    SerialPort* ser = (*ser_ptr) as SerialPort*;
+    ser->putc(8);
+    ri = cursor - 1;
+    while (ri < new_len) {
+        ser->putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+        ri = ri + 1;
+    }
+    ser->putc(32);
+    bi = 0;
+    while (bi < back) {
+        ser->putc(8);
+        bi = bi + 1;
+    }
+}
+
+/// 左矢印キー処理
+void handle_left(ulong* cur_ptr) {
+    ulong cursor = *cur_ptr;
+    if (cursor == 0) { return; }
+    *cur_ptr = cursor - 1;
+    if (Shell::is_gui() == 0) {
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong col = *col_ptr;
+        if (col > 0) {
+            *col_ptr = col - 1;
+            Vga::update_cursor();
+        }
+    }
+    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+    SerialPort* ser = (*ser_ptr) as SerialPort*;
+    ser->putc(27); ser->putc(91); ser->putc(68);
+}
+
+/// 右矢印キー処理
+void handle_right(ulong* len_ptr, ulong* cur_ptr) {
+    ulong len = *len_ptr;
+    ulong cursor = *cur_ptr;
+    if (cursor >= len) { return; }
+    *cur_ptr = cursor + 1;
+    if (Shell::is_gui() == 0) {
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong col = *col_ptr;
+        if (col < VGA_COLS - 1) {
+            *col_ptr = col + 1;
+            Vga::update_cursor();
+        }
+    }
+    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+    SerialPort* ser = (*ser_ptr) as SerialPort*;
+    ser->putc(27); ser->putc(91); ser->putc(67);
+}
+
+/// 上矢印キー処理（履歴ナビゲーション）
+void handle_up(ulong* cur_ptr, ulong* len_ptr, ulong* hist_pos) {
+    ulong addr = History::get(*hist_pos);
+    if (addr != 0) {
+        History::restore(addr);
+        *cur_ptr = *len_ptr;
+        *hist_pos = *hist_pos + 1;
+    }
+}
+
+/// 下矢印キー処理（履歴ナビゲーション）
+void handle_down(ulong* cur_ptr, ulong* len_ptr, ulong* hist_pos) {
+    if (*hist_pos == 0) { return; }
+    *hist_pos = *hist_pos - 1;
+    if (*hist_pos > 0) {
+        ulong addr = History::get(*hist_pos - 1);
+        if (addr != 0) {
+            History::restore(addr);
+            *cur_ptr = *len_ptr;
+        }
+    } else {
+        // 最下端: 未入力状態に復元
+        ulong old_len = *len_ptr;
+        ulong k = 0;
+        while (k < old_len) { Shell::putc(8); k = k + 1; }
+        k = 0;
+        while (k < old_len) { Shell::putc(32); k = k + 1; }
+        k = 0;
+        while (k < old_len) { Shell::putc(8); k = k + 1; }
+
+        // シリアル: 行消去
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->putc(13);
+        ser->putc(27); ser->putc(91); ser->putc(75);
+        ser->puts("cosmo:" as void*);
+        ulong cwd_disp = Cwd::get();
+        ser->puts(cwd_disp as void*);
+        ser->puts("$ " as void*);
+
+        *len_ptr = 0;
+        *cur_ptr = 0;
+    }
+}
+
+/// 通常文字入力処理
+void handle_char_input(ulong ch, ulong* len_ptr, ulong* cur_ptr) {
+    // スクロールバック中ならライブモードに復帰
+    restore_scrollback();
+
+    ulong len = *len_ptr;
+    ulong cursor = *cur_ptr;
+    if (len >= CMD_BUF_SIZE - 1) { return; }
+
+    if (cursor == len) {
+        // 末尾に追加（高速パス）
+        Mem::write_byte(CMD_BUF_ADDR + len, ch & 0xFF);
+        *len_ptr = len + 1;
+        *cur_ptr = cursor + 1;
+        Shell::putc(ch);
+    } else {
+        // カーソル位置に挿入: 右にシフト
+        ulong si = len;
+        while (si > cursor) {
+            Mem::write_byte(CMD_BUF_ADDR + si, Mem::read_byte(CMD_BUF_ADDR + si - 1));
+            si = si - 1;
+        }
+        Mem::write_byte(CMD_BUF_ADDR + cursor, ch & 0xFF);
+        *len_ptr = len + 1;
+        *cur_ptr = cursor + 1;
+
+        // カーソル位置以降を再描画
+        ulong ri = cursor;
+        ulong new_len = len + 1;
+        while (ri < new_len) {
+            Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+            ri = ri + 1;
+        }
+        ulong back = new_len - (cursor + 1);
+        ulong bi = 0;
+        while (bi < back) { Shell::putc(8); bi = bi + 1; }
+
+        // シリアルにも反映
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ri = cursor;
+        while (ri < new_len) {
+            ser->putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+            ri = ri + 1;
+        }
+        bi = 0;
+        while (bi < back) { ser->putc(8); bi = bi + 1; }
+    }
+}
+
+/// Enterキー処理 → コマンド実行
+void handle_enter(ulong* len_ptr, ulong* cur_ptr) {
+    // スクロールバック中ならライブモードに復帰
+    if (Shell::is_gui() == 0) {
+        restore_scrollback();
+    }
+    Shell::newline();
+    ulong len = *len_ptr;
+    Mem::write_byte(CMD_BUF_ADDR + len, 0);
+    if (len > 0) {
+        History::add(CMD_BUF_ADDR, len);
+        // パイプチェック
+        ulong pipe_pos = find_pipe(CMD_BUF_ADDR, len);
+        if (pipe_pos < len) {
+            exec_pipe(CMD_BUF_ADDR, pipe_pos, len, len_ptr);
+        } else {
+            Cmd::dispatch();
+        }
+    }
+    *len_ptr = 0;
+    *cur_ptr = 0;
+}
+
+// ============================================================
+// マウスホイールスクロール処理
+// ============================================================
+
+/// マウスホイール/トラックパッドスクロール処理
+void handle_scroll() {
+    // macOSナチュラルスクロール: 方向反転
+    long scroll_ev = Mouse::get_scroll();
+    if (scroll_ev > 0) {
+        // ナチュラルスクロール: 正値 → 下方向(最新に戻る)
+        long lines = scroll_ev;
+        if (lines > 5) { lines = 5; }
+        while (lines > 0) {
+            Vga::scroll_down();
+            lines = lines - 1;
+        }
+    } else if (scroll_ev < 0) {
+        // ナチュラルスクロール: 負値 → 上方向(過去を表示)
+        long lines = 0 - scroll_ev;
+        if (lines > 5) { lines = 5; }
+        while (lines > 0) {
+            Vga::scroll_up();
+            lines = lines - 1;
+        }
+    }
+    // GUIモード: 変更があった場合のみ画面更新
+    if (Shell::is_gui() != 0) {
+        ulong* dirty = 0x95068 as ulong*;
+        if (*dirty != 0) {
+            *dirty = 0;
+            Shell::gui_flush();
+        }
+    }
 }
 
 // ============================================================
@@ -100,42 +303,34 @@ ulong shell_fill_cmd_list(ulong buf) {
 // ============================================================
 
 export void shell_main() {
-    // スクロールバックバッファ初期化
+    // 初期化
     Vga::scrollback_init();
-    // 注: Mouse::setup() は entry.cm で呼び出し済み
 
-    // VGA画面クリア＆ウェルカムバナー
+    // ウェルカムバナー
     Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
     Vga::clear_screen();
-
     Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
     Shell::writeln("========================================" as void*);
     Shell::writeln("  Cosmo Linux v0.1.0" as void*);
     Shell::writeln("  Written in Cm - A Linux reimagined" as void*);
     Shell::writeln("========================================" as void*);
-
     Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
     Shell::writeln("" as void*);
     Shell::writeln("Welcome to Cosmo Linux!" as void*);
     Shell::writeln("Type 'help' for available commands." as void*);
     Shell::writeln("" as void*);
 
-    // コマンドバッファ長初期化
+    // バッファ初期化
     ulong* len_ptr = CMD_LEN_ADDR as ulong*;
     *len_ptr = 0;
-
-    // カーソル位置初期化
     ulong* cur_ptr = CMD_CUR_ADDR as ulong*;
     *cur_ptr = 0;
 
-    // 履歴初期化
+    // サブシステム初期化
     History::setup();
-
-    // 環境変数初期化
     Env::setup();
 
-    // デフォルトパッケージの自動インストール（9pfs利用可能時のみ）
-    // 注: パッケージが存在しない場合はスキップ
+    // 9pfs利用可能時のパッケージチェック
     if (Virtio9p::is_ready() != 0) {
         Shell::set_color(VGA_IDX_YELLOW, 0);
         Shell::writeln("Checking host packages..." as void*);
@@ -146,27 +341,10 @@ export void shell_main() {
     // 履歴ナビゲーション位置
     ulong hist_pos = 0;
 
-    // パイプ出力バッファ (0x99000, 最大4KB)
-    ulong PIPE_BUF = 0x99000;
-    ulong PIPE_BUF_SIZE = 4096;
-
     // REPLループ
     while (true) {
-        // プロンプト表示（CWDを反映）
-        Shell::set_color(VGA_IDX_LIGHT_GREEN, 0);
-        Shell::write("cosmo" as void*);
-        Shell::set_color(VGA_IDX_YELLOW, 0);
-        Shell::write(":" as void*);
-        Shell::set_color(VGA_IDX_LIGHT_RED, 0);
-        ulong cwd_addr = Cwd::get();
-        Shell::write(cwd_addr as void*);
-        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
-        Shell::write("$ " as void*);
-
-        // 履歴ポジションリセット
+        draw_prompt();
         hist_pos = 0;
-
-        // カーソル位置リセット
         *cur_ptr = 0;
 
         // キー入力ループ
@@ -174,274 +352,31 @@ export void shell_main() {
         while (input_done == 0) {
             ulong ch = Kbd::getchar();
             if (ch == CHAR_NULL) {
-                // マウスホイール/トラックパッドスクロールチェック
-                // macOSナチュラルスクロール: 方向反転
-                //   2本指上スワイプ(正値) → 下スクロール(最新に戻る)
-                //   2本指下スワイプ(負値) → 上スクロール(過去を表示)
-                // 速度: 蓄積値の絶対値に応じて複数行スクロール
-                long scroll_ev = Mouse::get_scroll();
-                if (scroll_ev > 0) {
-                    // ナチュラルスクロール: 正値 → 下方向(最新に戻る)
-                    long lines = scroll_ev;
-                    if (lines > 5) { lines = 5; }  // 最大5行
-                    while (lines > 0) {
-                        Vga::scroll_down();
-                        lines = lines - 1;
-                    }
-                } else if (scroll_ev < 0) {
-                    // ナチュラルスクロール: 負値 → 上方向(過去を表示)
-                    long lines = 0 - scroll_ev;  // 絶対値
-                    if (lines > 5) { lines = 5; }  // 最大5行
-                    while (lines > 0) {
-                        Vga::scroll_up();
-                        lines = lines - 1;
-                    }
-                }
-                // GUIモード: 変更があった場合のみ画面更新
-                if (Shell::is_gui() != 0) {
-                    ulong* dirty = 0x95068 as ulong*;
-                    if (*dirty != 0) {
-                        *dirty = 0;
-                        Shell::gui_flush();
-                    }
-                }
-                // hlt: キーボードIRQ1またはPIT IRQ0で即wakeup
+                handle_scroll();
                 __asm__(`sti; hlt`);
-                // スケジューラtick（他プロセス実行用）
                 Sched::tick();
             } else if (ch == KEY_ENTER) {
-                // スクロールバック中ならライブモードに復帰 (テキストモードのみ)
-                if (Shell::is_gui() == 0) {
-                    ulong* sb_active = 0xC08018 as ulong*;
-                    if (*sb_active != 0) {
-                        ulong* sb_pos = 0xC08010 as ulong*;
-                        *sb_pos = 0;
-                        *sb_active = 0;
-                        ulong si = 0;
-                        while (si < 25 * 80 * 2) {
-                            Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
-                            si = si + 1;
-                        }
-                    }
-                }
-                // Enter: コマンド実行
-                Shell::putc(10);
-                ulong len = *len_ptr;
-                Mem::write_byte(CMD_BUF_ADDR + len, 0);
-                if (len > 0) {
-                    // 履歴に追加
-                    History::add(CMD_BUF_ADDR, len);
-                    // パイプチェック: '|' を探す
-                    ulong pipe_pos = 0;
-                    ulong has_pipe = 0;
-                    ulong pi = 0;
-                    while (pi < len) {
-                        if (Mem::read_byte(CMD_BUF_ADDR + pi) == 124) {  // '|'
-                            pipe_pos = pi;
-                            has_pipe = 1;
-                            break;
-                        }
-                        pi = pi + 1;
-                    }
-                    if (has_pipe != 0) {
-                        // パイプ処理: cmd1 | cmd2
-                        Mem::write_byte(CMD_BUF_ADDR + pipe_pos, 0);
-                        // cmd1の末尾スペース除去
-                        ulong t = pipe_pos;
-                        while (t > 0) {
-                            ulong tc = Mem::read_byte(CMD_BUF_ADDR + t - 1);
-                            if (tc != 32) { break; }
-                            Mem::write_byte(CMD_BUF_ADDR + t - 1, 0);
-                            t = t - 1;
-                        }
-                        Cmd::dispatch();
-                        // cmd2の先頭スペース除去
-                        ulong cmd2_start = pipe_pos + 1;
-                        while (cmd2_start < len) {
-                            if (Mem::read_byte(CMD_BUF_ADDR + cmd2_start) != 32) { break; }
-                            cmd2_start = cmd2_start + 1;
-                        }
-                        ulong cmd2_len = len - cmd2_start;
-                        ulong ci = 0;
-                        while (ci < cmd2_len) {
-                            Mem::write_byte(CMD_BUF_ADDR + ci, Mem::read_byte(CMD_BUF_ADDR + cmd2_start + ci));
-                            ci = ci + 1;
-                        }
-                        Mem::write_byte(CMD_BUF_ADDR + cmd2_len, 0);
-                        *len_ptr = cmd2_len;
-                        if (cmd2_len > 0) {
-                            Cmd::dispatch();
-                        }
-                    } else {
-                        Cmd::dispatch();
-                    }
-                }
-                *len_ptr = 0;
-                *cur_ptr = 0;
+                handle_enter(len_ptr, cur_ptr);
                 input_done = 1;
             } else if (ch == KEY_BACKSPACE) {
-                // Backspace: カーソル位置の左の文字を削除
-                ulong len = *len_ptr;
-                ulong cursor = *cur_ptr;
-                if (cursor > 0) {
-                    // カーソル以降を1つ左にシフト
-                    ulong si = cursor - 1;
-                    while (si < len - 1) {
-                        Mem::write_byte(CMD_BUF_ADDR + si, Mem::read_byte(CMD_BUF_ADDR + si + 1));
-                        si = si + 1;
-                    }
-                    *len_ptr = len - 1;
-                    *cur_ptr = cursor - 1;
-
-                    // VGA: カーソルを1つ左に移動
-                    Shell::putc(8);
-
-                    // カーソル位置から末尾まで再描画
-                    ulong ri = cursor - 1;
-                    ulong new_len = len - 1;
-                    while (ri < new_len) {
-                        ulong rc = Mem::read_byte(CMD_BUF_ADDR + ri);
-                        Shell::putc(rc);
-                        ri = ri + 1;
-                    }
-                    // 末尾のゴミを消す
-                    Shell::putc(32);
-
-                    // カーソルを正しい位置に戻す
-                    ulong back = new_len - (cursor - 1) + 1;
-                    ulong bi = 0;
-                    while (bi < back) {
-                        Shell::putc(8);
-                        bi = bi + 1;
-                    }
-
-                    // シリアルにも反映（ANSI: 左移動 + 行末まで消去 + 再描画）
-                    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
-                    SerialPort* ser = (*ser_ptr) as SerialPort*;
-                    // カーソル左に1つ
-                    ser->putc(8);
-                    // カーソル位置から再出力
-                    ri = cursor - 1;
-                    while (ri < new_len) {
-                        ser->putc(Mem::read_byte(CMD_BUF_ADDR + ri));
-                        ri = ri + 1;
-                    }
-                    ser->putc(32);  // ゴミ消去
-                    // カーソル復帰
-                    bi = 0;
-                    while (bi < back) {
-                        ser->putc(8);
-                        bi = bi + 1;
-                    }
-                }
+                handle_backspace(len_ptr, cur_ptr);
             } else if (ch == KEY_LEFT) {
-                // 左矢印キー: カーソルを左に移動
-                ulong cursor = *cur_ptr;
-                if (cursor > 0) {
-                    *cur_ptr = cursor - 1;
-                    // カーソル左移動
-                    if (Shell::is_gui() == 0) {
-                        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
-                        ulong col = *col_ptr;
-                        if (col > 0) {
-                            *col_ptr = col - 1;
-                            Vga::update_cursor();
-                        }
-                    }
-                    // シリアル: ESC[D
-                    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
-                    SerialPort* ser = (*ser_ptr) as SerialPort*;
-                    ser->putc(27);
-                    ser->putc(91);
-                    ser->putc(68);
-                }
+                handle_left(cur_ptr);
             } else if (ch == KEY_RIGHT) {
-                // 右矢印キー: カーソルを右に移動
-                ulong len = *len_ptr;
-                ulong cursor = *cur_ptr;
-                if (cursor < len) {
-                    *cur_ptr = cursor + 1;
-                    // カーソル右移動
-                    if (Shell::is_gui() == 0) {
-                        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
-                        ulong col = *col_ptr;
-                        if (col < VGA_COLS - 1) {
-                            *col_ptr = col + 1;
-                            Vga::update_cursor();
-                        }
-                    }
-                    // シリアル: ESC[C
-                    ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
-                    SerialPort* ser = (*ser_ptr) as SerialPort*;
-                    ser->putc(27);
-                    ser->putc(91);
-                    ser->putc(67);
-                }
+                handle_right(len_ptr, cur_ptr);
             } else if (ch == KEY_UP) {
-                // 上矢印キー
-                ulong addr = History::get(hist_pos);
-                if (addr != 0) {
-                    History::restore(addr);
-                    *cur_ptr = *len_ptr;
-                    hist_pos = hist_pos + 1;
-                }
+                handle_up(cur_ptr, len_ptr, &hist_pos);
             } else if (ch == KEY_DOWN) {
-                // 下矢印キー
-                if (hist_pos > 0) {
-                    hist_pos = hist_pos - 1;
-                    if (hist_pos > 0) {
-                        ulong addr = History::get(hist_pos - 1);
-                        if (addr != 0) {
-                            History::restore(addr);
-                            *cur_ptr = *len_ptr;
-                        }
-                    } else {
-                        // 最下端: 未入力状態に復元
-                        ulong old_len = *len_ptr;
-
-                        // VGA: バックスペース + スペース上書き + バックスペース (文字消去)
-                        ulong k = 0;
-                        while (k < old_len) {
-                            Shell::putc(8);    // カーソル左
-                            k = k + 1;
-                        }
-                        k = 0;
-                        while (k < old_len) {
-                            Shell::putc(32);   // スペースで上書き
-                            k = k + 1;
-                        }
-                        k = 0;
-                        while (k < old_len) {
-                            Shell::putc(8);    // カーソルを元に戻す
-                            k = k + 1;
-                        }
-
-                        // シリアル: \r + ESC[K (行消去) でプロンプト後を消去
-                        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
-                        SerialPort* ser = (*ser_ptr) as SerialPort*;
-                        ser->putc(13);    // \r (行頭)
-                        ser->putc(27); ser->putc(91); ser->putc(75);  // ESC[K (行末消去)
-                        // プロンプト再描画
-                        ser->puts("cosmo:" as void*);
-                        ulong cwd_disp = Cwd::get();
-                        ser->puts(cwd_disp as void*);
-                        ser->puts("$ " as void*);
-
-                        *len_ptr = 0;
-                        *cur_ptr = 0;
-                    }
-                }
+                handle_down(cur_ptr, len_ptr, &hist_pos);
             } else if (ch == KEY_CTRL_C) {
-                // Ctrl+C: 入力キャンセル
                 Shell::set_color(VGA_IDX_LIGHT_BLUE, 0);
                 Shell::write("^C" as void*);
                 Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
-                Shell::putc(10);
+                Shell::newline();
                 *len_ptr = 0;
                 *cur_ptr = 0;
                 input_done = 1;
             } else if (ch == KEY_CTRL_L) {
-                // Ctrl+L: 画面クリア
                 if (Shell::is_gui() != 0) {
                     Shell::gui_clear();
                 } else {
@@ -451,347 +386,9 @@ export void shell_main() {
                 *cur_ptr = 0;
                 input_done = 1;
             } else if (ch == KEY_TAB) {
-                // Tab補完
-                ulong len = *len_ptr;
-                if (len > 0) {
-                    // 最後のワードの開始位置を見つける
-                    ulong word_start = 0;
-                    ulong ws = 0;
-                    while (ws < len) {
-                        if (Mem::read_byte(CMD_BUF_ADDR + ws) == 32) {
-                            word_start = ws + 1;
-                        }
-                        ws = ws + 1;
-                    }
-                    ulong word_len = len - word_start;
-                    ulong is_first_word = 0;
-                    if (word_start == 0) { is_first_word = 1; }
-
-                    if (word_len > 0) {
-                        ulong word_addr = CMD_BUF_ADDR + word_start;
-                        ulong match_count = 0;
-                        ulong match_addr = 0;
-
-                        // コマンド名補完 (先頭ワードの場合)
-                        ulong CMD_LIST = 0x9A000;
-                        ulong cmd_count = 0;
-                        if (is_first_word != 0) {
-                            cmd_count = shell_fill_cmd_list(CMD_LIST);
-                            ulong ci = 0;
-                            while (ci < cmd_count) {
-                                ulong cname = CMD_LIST + ci * 16;
-                                ulong m = 1;
-                                ulong cii = 0;
-                                while (cii < word_len) {
-                                    if (Mem::read_byte(cname + cii) != Mem::read_byte(word_addr + cii)) { m = 0; break; }
-                                    cii = cii + 1;
-                                }
-                                if (m != 0) {
-                                    match_count = match_count + 1;
-                                    match_addr = cname;
-                                }
-                                ci = ci + 1;
-                            }
-                        }
-
-                        // パス補完: ワードが / で始まる場合
-                        // 仮想パスエントリを0x9B000に配置
-                        ulong PATH_LIST = 0xA5B000;
-                        ulong path_count = 0;
-                        ulong first_ch = Mem::read_byte(word_addr);
-                        if (first_ch == CHAR_SLASH) {  // '/'
-                            // /mnt/host/ で始まるパス → 9pfsファイル名補完
-                            ulong is_host = 0;
-                            if (word_len >= 10) {
-                                // "/mnt/host/" を確認
-                                ulong p_tmp = 0xA5B800;
-                                // "/mnt/host/" の10文字を比較
-                                ulong pm = 1;
-                                ulong pmnt = "/mnt/host/" as ulong;
-                                ulong pci = 0;
-                                while (pci < 10) {
-                                    if (Mem::read_byte(word_addr + pci) != Mem::read_byte(pmnt + pci)) { pm = 0; break; }
-                                    pci = pci + 1;
-                                }
-                                if (pm != 0) {
-                                    is_host = 1;
-                                    // /mnt/host/ 以降のファイル名部分を取得
-                                    ulong file_part_addr = word_addr + 10;
-                                    ulong file_part_len = word_len - 10;
-                                    // 9pfsでルートディレクトリをreaddir
-                                    if (Virtio9p::is_ready() != 0) {
-                                        ulong fid = 12;
-                                        ulong walk_ok = Virtio9p::walk(0, fid, "" as ulong);
-                                        if (walk_ok != 0) {
-                                            ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
-                                            if (open_ok != 0) {
-                                                ulong dir_buf = 0xA5A000;
-                                                ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
-                                                // readdirデータ解析
-                                                ulong dpos = 0;
-                                                while (dpos < dir_len) {
-                                                    dpos = dpos + 13;  // qid
-                                                    dpos = dpos + 8;   // offset
-                                                    ulong dtype = Mem::read_byte(dir_buf + dpos);
-                                                    dpos = dpos + 1;
-                                                    ulong nlen = Virtio9p::read_le16(dir_buf + dpos);
-                                                    dpos = dpos + 2;
-                                                    // 名前を一時バッファにコピー
-                                                    ulong entry_addr = PATH_LIST + path_count * 128;
-                                                    // フルパスを構築: /mnt/host/name
-                                                    ulong pfx = "/mnt/host/" as ulong;
-                                                    ulong pi = 0;
-                                                    while (pi < 10) {
-                                                        Mem::write_byte(entry_addr + pi, Mem::read_byte(pfx + pi));
-                                                        pi = pi + 1;
-                                                    }
-                                                    ulong ni = 0;
-                                                    while (ni < nlen && ni < 110) {
-                                                        Mem::write_byte(entry_addr + 10 + ni, Mem::read_byte(dir_buf + dpos + ni));
-                                                        ni = ni + 1;
-                                                    }
-                                                    Mem::write_byte(entry_addr + 10 + ni, 0);
-                                                    // . と .. をスキップ
-                                                    ulong skip = 0;
-                                                    if (nlen == 1 && Mem::read_byte(dir_buf + dpos) == 46) { skip = 1; }
-                                                    if (nlen == 2 && Mem::read_byte(dir_buf + dpos) == 46 && Mem::read_byte(dir_buf + dpos + 1) == 46) { skip = 1; }
-                                                    if (skip == 0) {
-                                                        // ワード全体と先頭一致チェック
-                                                        ulong m = 1;
-                                                        ulong mc = 0;
-                                                        while (mc < word_len) {
-                                                            if (Mem::read_byte(entry_addr + mc) != Mem::read_byte(word_addr + mc)) { m = 0; break; }
-                                                            mc = mc + 1;
-                                                        }
-                                                        if (m != 0) {
-                                                            match_count = match_count + 1;
-                                                            match_addr = entry_addr;
-                                                            path_count = path_count + 1;
-                                                        }
-                                                    }
-                                                    dpos = dpos + nlen;
-                                                }
-                                            }
-                                            Virtio9p::clunk(fid);
-                                        }
-                                    }
-                                }
-                            }
-                            // 仮想ディレクトリパス補完 (/mnt, /mnt/host)
-                            if (is_host == 0) {
-                                // "/mnt/" をチェック
-                                ulong vp1 = PATH_LIST + path_count * 128;
-                                // "/mnt/" エントリ
-                                ulong mnt_str = "/mnt/" as ulong;
-                                ulong vi = 0;
-                                while (vi < 5) {
-                                    Mem::write_byte(vp1 + vi, Mem::read_byte(mnt_str + vi));
-                                    vi = vi + 1;
-                                }
-                                Mem::write_byte(vp1 + 5, 0);
-                                ulong m1 = 1;
-                                ulong mc1 = 0;
-                                while (mc1 < word_len) {
-                                    if (Mem::read_byte(vp1 + mc1) != Mem::read_byte(word_addr + mc1)) { m1 = 0; break; }
-                                    mc1 = mc1 + 1;
-                                }
-                                if (m1 != 0 && word_len < 5) {
-                                    match_count = match_count + 1;
-                                    match_addr = vp1;
-                                    path_count = path_count + 1;
-                                }
-
-                                // "/mnt/host/" エントリ
-                                ulong vp2 = PATH_LIST + path_count * 128;
-                                ulong mnthost_str = "/mnt/host/" as ulong;
-                                vi = 0;
-                                while (vi < 10) {
-                                    Mem::write_byte(vp2 + vi, Mem::read_byte(mnthost_str + vi));
-                                    vi = vi + 1;
-                                }
-                                Mem::write_byte(vp2 + 10, 0);
-                                ulong m2 = 1;
-                                ulong mc2 = 0;
-                                while (mc2 < word_len) {
-                                    if (Mem::read_byte(vp2 + mc2) != Mem::read_byte(word_addr + mc2)) { m2 = 0; break; }
-                                    mc2 = mc2 + 1;
-                                }
-                                if (m2 != 0 && word_len < 10) {
-                                    match_count = match_count + 1;
-                                    match_addr = vp2;
-                                    path_count = path_count + 1;
-                                }
-                            }
-                        }
-
-                        // ファイル名補完 (ramfs)
-                        ulong dc = RamFs::dir_count();
-                        ulong di = 0;
-                        while (di < dc) {
-                            ulong name = RamFs::dir_name(di);
-                            if (name != 0) {
-                                ulong m = 1;
-                                ulong cii = 0;
-                                while (cii < word_len) {
-                                    if (Mem::read_byte(name + cii) != Mem::read_byte(word_addr + cii)) { m = 0; break; }
-                                    cii = cii + 1;
-                                }
-                                if (m != 0) {
-                                    match_count = match_count + 1;
-                                    match_addr = name;
-                                }
-                            }
-                            di = di + 1;
-                        }
-
-                        if (match_count == 1) {
-                            // 一意マッチ: 補完実行
-                            ulong name_len = 0;
-                            while (Mem::read_byte(match_addr + name_len) != 0) { name_len = name_len + 1; }
-                            ulong fill = word_len;
-                            while (fill < name_len) {
-                                ulong fch = Mem::read_byte(match_addr + fill);
-                                if (len < CMD_BUF_SIZE - 1) {
-                                    Mem::write_byte(CMD_BUF_ADDR + len, fch);
-                                    len = len + 1;
-                                    Shell::putc(fch);
-                                }
-                                fill = fill + 1;
-                            }
-                            *len_ptr = len;
-                            *cur_ptr = len;
-                        } else if (match_count > 1) {
-                            // 複数マッチ: 候補を表示
-                            Shell::putc(10);
-
-                            // コマンド名候補
-                            if (is_first_word != 0) {
-                                ulong ci = 0;
-                                while (ci < cmd_count) {
-                                    ulong cname = CMD_LIST + ci * 16;
-                                    ulong m = 1;
-                                    ulong cii = 0;
-                                    while (cii < word_len) {
-                                        if (Mem::read_byte(cname + cii) != Mem::read_byte(word_addr + cii)) { m = 0; break; }
-                                        cii = cii + 1;
-                                    }
-                                    if (m != 0) {
-                                        Shell::write(cname as void*);
-                                        Shell::write("  " as void*);
-                                    }
-                                    ci = ci + 1;
-                                }
-                            }
-
-                            // パス候補
-                            ulong pi = 0;
-                            while (pi < path_count) {
-                                ulong pentry = PATH_LIST + pi * 128;
-                                Shell::write(pentry as void*);
-                                Shell::write("  " as void*);
-                                pi = pi + 1;
-                            }
-
-                            // ファイル名候補
-                            di = 0;
-                            while (di < dc) {
-                                ulong name = RamFs::dir_name(di);
-                                if (name != 0) {
-                                    ulong m = 1;
-                                    ulong cii = 0;
-                                    while (cii < word_len) {
-                                        if (Mem::read_byte(name + cii) != Mem::read_byte(word_addr + cii)) { m = 0; break; }
-                                        cii = cii + 1;
-                                    }
-                                    if (m != 0) {
-                                        Shell::write(name as void*);
-                                        Shell::write("  " as void*);
-                                    }
-                                }
-                                di = di + 1;
-                            }
-                            Shell::putc(10);
-                            // プロンプト再表示
-                            Shell::set_color(VGA_IDX_LIGHT_GREEN, 0);
-                            Shell::write("cosmo" as void*);
-                            Shell::set_color(VGA_IDX_YELLOW, 0);
-                            Shell::write(":" as void*);
-                            Shell::set_color(VGA_IDX_LIGHT_RED, 0);
-                            Shell::write(cwd_addr as void*);
-                            Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
-                            Shell::write("$ " as void*);
-                            ulong ri = 0;
-                            while (ri < len) {
-                                Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
-                                ri = ri + 1;
-                            }
-                        }
-                    }
-                }
+                tab_complete(len_ptr, cur_ptr);
             } else {
-                // スクロールバック中ならライブモードに復帰
-                ulong* sb_active2 = 0xC08018 as ulong*;
-                if (*sb_active2 != 0) {
-                    ulong* sb_pos2 = 0xC08010 as ulong*;
-                    *sb_pos2 = 0;
-                    *sb_active2 = 0;
-                    ulong si = 0;
-                    while (si < 25 * 80 * 2) {
-                        Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
-                        si = si + 1;
-                    }
-                }
-                // 表示可能文字: カーソル位置に挿入
-                ulong len = *len_ptr;
-                ulong cursor = *cur_ptr;
-                if (len < CMD_BUF_SIZE - 1) {
-                    if (cursor == len) {
-                        // 末尾に追加（高速パス）
-                        Mem::write_byte(CMD_BUF_ADDR + len, ch & 0xFF);
-                        *len_ptr = len + 1;
-                        *cur_ptr = cursor + 1;
-                        Shell::putc(ch);
-                    } else {
-                        // カーソル位置に挿入: 右にシフト
-                        ulong si = len;
-                        while (si > cursor) {
-                            Mem::write_byte(CMD_BUF_ADDR + si, Mem::read_byte(CMD_BUF_ADDR + si - 1));
-                            si = si - 1;
-                        }
-                        Mem::write_byte(CMD_BUF_ADDR + cursor, ch & 0xFF);
-                        *len_ptr = len + 1;
-                        *cur_ptr = cursor + 1;
-
-                        // カーソル位置以降を再描画（VGA）
-                        ulong ri = cursor;
-                        ulong new_len = len + 1;
-                        while (ri < new_len) {
-                            Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
-                            ri = ri + 1;
-                        }
-                        // カーソルを正しい位置に戻す
-                        ulong back = new_len - (cursor + 1);
-                        ulong bi = 0;
-                        while (bi < back) {
-                            Shell::putc(8);
-                            bi = bi + 1;
-                        }
-
-                        // シリアルにも反映
-                        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
-                        SerialPort* ser = (*ser_ptr) as SerialPort*;
-                        ri = cursor;
-                        while (ri < new_len) {
-                            ser->putc(Mem::read_byte(CMD_BUF_ADDR + ri));
-                            ri = ri + 1;
-                        }
-                        bi = 0;
-                        while (bi < back) {
-                            ser->putc(8);
-                            bi = bi + 1;
-                        }
-                    }
-                }
+                handle_char_input(ch, len_ptr, cur_ptr);
             }
         }
     }
