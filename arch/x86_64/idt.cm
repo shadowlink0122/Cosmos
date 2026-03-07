@@ -39,12 +39,56 @@ export void exc_default() {
     serial.print_hex(*cs_ptr);
     serial.println("" as void*);
 
-    // ユーザーモード例外ならSIGSEGV kill
+    // ユーザーモード例外ならプロセスkill→復帰
     ulong cs_val = *cs_ptr;
     if ((cs_val & 3) != 0) {
-        serial.println("[EXC] User process killed" as void*);
-        __asm__(`sti; 1: hlt; jmp 1b`);
+        serial.println("[EXC] User process killed (unhandled exception)" as void*);
+        Shell::set_color(12, 0);
+        Shell::writeln("Fatal exception (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            Pid dying_pid = cur->pid;
+            ProcessTable::do_exit(cur, 134);
+            Sched::remove(dying_pid);
+        }
+        ulong idle_rip = pf_idle_loop as ulong;
+        __asm__(`
+            movq ${r:tss_rsp0}, %rsp;
+            pushq $$0x10;
+            pushq ${r:tss_rsp0};
+            pushq $$0x200;
+            pushq $$0x08;
+            pushq ${r:idle_rip};
+            iretq
+        `);
         return;
+    }
+
+    // カーネルモード — PID>1ならkillして復帰試行
+    if (Sched::current() as ulong != 0 && Sched::current()->pid > 1) {
+        serial.println("[EXC] Kernel exception in user task - recovering" as void*);
+        Shell::set_color(12, 0);
+        Shell::writeln("Fatal exception (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        Process* cur = Sched::current();
+        Pid dying_pid = cur->pid;
+        ProcessTable::do_exit(cur, 134);
+        Sched::remove(dying_pid);
+
+        ulong idle_rip = pf_idle_loop as ulong;
+        __asm__(`
+            movq ${r:tss_rsp0}, %rsp;
+            pushq $$0x10;
+            pushq ${r:tss_rsp0};
+            pushq $$0x200;
+            pushq $$0x08;
+            pushq ${r:idle_rip};
+            iretq
+        `);
     }
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
@@ -52,23 +96,86 @@ export void exc_default() {
 export void exc_divide_error() {
     SerialPort serial(COM1);
     serial.println("!!! DIVIDE ERROR (#DE) !!!" as void*);
+
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
+    // #DEはエラーコードなし: RIP at RSP0-40ではなくRSP0-32 (5 qwords: SS,RSP,RFLAGS,CS,RIP)
+    ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
+    ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(*rip_ptr);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(*cs_ptr);
+    serial.println("" as void*);
+
+    ulong cs_val = *cs_ptr;
+    if ((cs_val & 3) != 0) {
+        serial.println("[#DE] User process killed (SIGFPE)" as void*);
+        Shell::set_color(12, 0);
+        Shell::writeln("Floating point exception (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            Pid dying_pid = cur->pid;
+            ProcessTable::do_exit(cur, 136);
+            Sched::remove(dying_pid);
+        }
+        ulong idle_rip = pf_idle_loop as ulong;
+        __asm__(`
+            movq ${r:tss_rsp0}, %rsp;
+            pushq $$0x10;
+            pushq ${r:tss_rsp0};
+            pushq $$0x200;
+            pushq $$0x08;
+            pushq ${r:idle_rip};
+            iretq
+        `);
+        return;
+    }
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
 export void exc_double_fault() {
     SerialPort serial(COM1);
     serial.println("!!! DOUBLE FAULT (#DF) !!!" as void*);
+    // #DFはリカバリ不可能、システム停止
     __asm__(`cli; 1: hlt; jmp 1b`);
 }
 
 export void exc_general_protection() {
     SerialPort serial(COM1);
     serial.println("!!! GENERAL PROTECTION (#GP) !!!" as void*);
+
+    // TSS RSP0からフレーム情報を読み取り
+    // #GPはエラーコード付き: [error_code, RIP, CS, RFLAGS, RSP, SS]
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
+    ulong* err_ptr = (tss_rsp0 - 48) as ulong*;
+    ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
+    ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
+    ulong* rflags_ptr = (tss_rsp0 - 24) as ulong*;
+    ulong* ursp_ptr = (tss_rsp0 - 16) as ulong*;
+
+    // ログ出力
+    serial.puts("  error_code = " as void*);
+    serial.print_hex(*err_ptr);
+    serial.println("" as void*);
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(*rip_ptr);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(*cs_ptr);
+    serial.println("" as void*);
+    serial.puts("  RFLAGS = " as void*);
+    serial.print_hex(*rflags_ptr);
+    serial.puts("  RSP = " as void*);
+    serial.print_hex(*ursp_ptr);
+    serial.println("" as void*);
+
+    // スタックダンプ (現在のRSP)
     ulong rsp_val = 0;
     __asm__(`movq %rsp, %rax; movq %rax, ${=r:rsp_val}`);
-    serial.puts("  RSP = " as void*);
-    serial.print_hex(rsp_val);
-    serial.println("" as void*);
     ulong i = 0;
     while (i < 8) {
         ulong* sp = (rsp_val + i * 8) as ulong*;
@@ -79,7 +186,59 @@ export void exc_general_protection() {
         serial.println("" as void*);
         i = i + 1;
     }
-    __asm__(`cli; 1: hlt; jmp 1b`);
+
+    // ユーザーモード#GP → プロセスkill→復帰
+    ulong cs_val = *cs_ptr;
+    if ((cs_val & 3) != 0) {
+        serial.println("[#GP] User process killed (SIGSEGV)" as void*);
+        Shell::set_color(12, 0);
+        Shell::writeln("General protection fault (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            Pid dying_pid = cur->pid;
+            ProcessTable::do_exit(cur, 139);
+            Sched::remove(dying_pid);
+        }
+        ulong idle_rip = pf_idle_loop as ulong;
+        __asm__(`
+            movq ${r:tss_rsp0}, %rsp;
+            pushq $$0x10;
+            pushq ${r:tss_rsp0};
+            pushq $$0x200;
+            pushq $$0x08;
+            pushq ${r:idle_rip};
+            iretq
+        `);
+        return;
+    }
+
+    // カーネルモード#GP — PID>1ならkillして復帰試行
+    serial.println("[#GP] Kernel GP - attempting recovery" as void*);
+    Shell::set_color(12, 0);
+    Shell::writeln("General protection fault (core dumped)" as void*);
+    Shell::set_color(7, 0);
+
+    Process* cur = Sched::current();
+    ulong cur_addr = cur as ulong;
+    if (cur_addr != 0 && cur->pid > 1) {
+        Pid dying_pid = cur->pid;
+        ProcessTable::do_exit(cur, 139);
+        Sched::remove(dying_pid);
+    }
+
+    ulong idle_rip = pf_idle_loop as ulong;
+    __asm__(`
+        movq ${r:tss_rsp0}, %rsp;
+        pushq $$0x10;
+        pushq ${r:tss_rsp0};
+        pushq $$0x200;
+        pushq $$0x08;
+        pushq ${r:idle_rip};
+        iretq
+    `);
 }
 
 /// PF後のアイドルループ
