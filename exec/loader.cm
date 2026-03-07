@@ -98,8 +98,8 @@ impl Loader {
     /// 先頭ワードをファイル名として検索し、全体をargvとして構築
     /// 戻り値: 新プロセスのPID（失敗時 -1）
     static Result<long, long> exec(void* cmdline, SerialPort* w) {
-        // 前プロセスのユーザー空間ページを全解放（メモリリーク防止）
-        Mmap::cleanup_all();
+        // 注意: Mmap::cleanup_all() はELFヘッダ検証成功後に実行する
+        // ファイル未発見時にメモリ状態を破壊しないため
 
         ulong fsize = 0;
         ulong loaded_from_9p = 0;
@@ -166,6 +166,10 @@ impl Loader {
             return Result::Err(ENOEXEC);
         }
         w->println("[exec] ELF header valid" as void*);
+
+        // ELF検証成功後に前プロセスのユーザー空間ページを解放
+        // ここまでの早期returnではメモリ状態を破壊しない
+        Mmap::cleanup_all();
 
         // エントリポイント取得
         ulong entry = Elf::get_entry(ELF_TMP_BUF);

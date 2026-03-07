@@ -67,30 +67,30 @@ export void exc_default() {
         return;
     }
 
-    // カーネルモード — PID>1ならkillして復帰試行
-    if (Sched::current() as ulong != 0 && Sched::current()->pid > 1) {
-        serial.println("[EXC] Kernel exception in user task - recovering" as void*);
-        Shell::set_color(12, 0);
-        Shell::writeln("Fatal exception (core dumped)" as void*);
-        Shell::set_color(7, 0);
+    // カーネルモード — プロセスkillして復帰試行
+    serial.println("[EXC] Kernel exception - attempting recovery" as void*);
+    Shell::set_color(12, 0);
+    Shell::writeln("Fatal exception (core dumped)" as void*);
+    Shell::set_color(7, 0);
 
+    if (Sched::current() as ulong != 0 && Sched::current()->pid > 1) {
         Process* cur = Sched::current();
         Pid dying_pid = cur->pid;
         ProcessTable::do_exit(cur, 134);
         Sched::remove(dying_pid);
-
-        ulong idle_rip = pf_idle_loop as ulong;
-        __asm__(`
-            movq ${r:tss_rsp0}, %rsp;
-            pushq $$0x10;
-            pushq ${r:tss_rsp0};
-            pushq $$0x200;
-            pushq $$0x08;
-            pushq ${r:idle_rip};
-            iretq
-        `);
     }
-    __asm__(`cli; 1: hlt; jmp 1b`);
+
+    // 常にidle loopに復帰（halt停止を防止）
+    ulong idle_rip = pf_idle_loop as ulong;
+    __asm__(`
+        movq ${r:tss_rsp0}, %rsp;
+        pushq $$0x10;
+        pushq ${r:tss_rsp0};
+        pushq $$0x200;
+        pushq $$0x08;
+        pushq ${r:idle_rip};
+        iretq
+    `);
 }
 
 export void exc_divide_error() {
@@ -215,7 +215,8 @@ export void exc_general_protection() {
         return;
     }
 
-    // カーネルモード#GP — PID>1ならkillして復帰試行
+    // カーネルモード#GP — プロセスkillして復帰試行
+    // PID=1(シェル)含む全プロセスで復帰を試行し、halt停止を防止
     serial.println("[#GP] Kernel GP - attempting recovery" as void*);
     Shell::set_color(12, 0);
     Shell::writeln("General protection fault (core dumped)" as void*);
@@ -229,6 +230,7 @@ export void exc_general_protection() {
         Sched::remove(dying_pid);
     }
 
+    // 常にidle loopに復帰（タイマー割り込みでスケジューラが再開）
     ulong idle_rip = pf_idle_loop as ulong;
     __asm__(`
         movq ${r:tss_rsp0}, %rsp;
