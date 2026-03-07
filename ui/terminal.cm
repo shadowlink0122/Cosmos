@@ -64,24 +64,33 @@ impl Terminal {
     // VGA パレット管理
     // ============================================================
 
-    /// VGAパレットを初期化 (16色→RGBマッピング)
+    /// VGAパレットを初期化 (16色→RGBマッピング, switch/caseで分岐)
     static void init_palette() {
-        ulong* p0  = (VGA_PALETTE_ADDR + 0 * 8) as ulong*;   *p0  = 0x000000;  // 0: 黒
-        ulong* p1  = (VGA_PALETTE_ADDR + 1 * 8) as ulong*;   *p1  = 0x0000AA;  // 1: 青
-        ulong* p2  = (VGA_PALETTE_ADDR + 2 * 8) as ulong*;   *p2  = 0x00AA00;  // 2: 緑
-        ulong* p3  = (VGA_PALETTE_ADDR + 3 * 8) as ulong*;   *p3  = 0x00AAAA;  // 3: シアン
-        ulong* p4  = (VGA_PALETTE_ADDR + 4 * 8) as ulong*;   *p4  = 0xAA0000;  // 4: 赤
-        ulong* p5  = (VGA_PALETTE_ADDR + 5 * 8) as ulong*;   *p5  = 0xAA00AA;  // 5: マゼンタ
-        ulong* p6  = (VGA_PALETTE_ADDR + 6 * 8) as ulong*;   *p6  = 0xAA5500;  // 6: 茶
-        ulong* p7  = (VGA_PALETTE_ADDR + 7 * 8) as ulong*;   *p7  = 0xAAAAAA;  // 7: 明灰
-        ulong* p8  = (VGA_PALETTE_ADDR + 8 * 8) as ulong*;   *p8  = 0x555555;  // 8: 暗灰
-        ulong* p9  = (VGA_PALETTE_ADDR + 9 * 8) as ulong*;   *p9  = 0x5555FF;  // 9: 明青
-        ulong* p10 = (VGA_PALETTE_ADDR + 10 * 8) as ulong*;  *p10 = 0x55FF55;  // 10: 明緑
-        ulong* p11 = (VGA_PALETTE_ADDR + 11 * 8) as ulong*;  *p11 = 0x55FFFF;  // 11: 明シアン
-        ulong* p12 = (VGA_PALETTE_ADDR + 12 * 8) as ulong*;  *p12 = 0xFF5555;  // 12: 明赤
-        ulong* p13 = (VGA_PALETTE_ADDR + 13 * 8) as ulong*;  *p13 = 0xFF55FF;  // 13: 明マゼンタ
-        ulong* p14 = (VGA_PALETTE_ADDR + 14 * 8) as ulong*;  *p14 = 0xFFFF55;  // 14: 黄
-        ulong* p15 = (VGA_PALETTE_ADDR + 15 * 8) as ulong*;  *p15 = 0xFFFFFF;  // 15: 白
+        ulong i = 0;
+        while (i < 16) {
+            ulong rgb = 0;
+            switch(i) {
+                case(0)  { rgb = 0x000000; } // 黒
+                case(1)  { rgb = 0x0000AA; } // 青
+                case(2)  { rgb = 0x00AA00; } // 緑
+                case(3)  { rgb = 0x00AAAA; } // シアン
+                case(4)  { rgb = 0xAA0000; } // 赤
+                case(5)  { rgb = 0xAA00AA; } // マゼンタ
+                case(6)  { rgb = 0xAA5500; } // 茶
+                case(7)  { rgb = 0xAAAAAA; } // 明灰
+                case(8)  { rgb = 0x555555; } // 暗灰
+                case(9)  { rgb = 0x5555FF; } // 明青
+                case(10) { rgb = 0x55FF55; } // 明緑
+                case(11) { rgb = 0x55FFFF; } // 明シアン
+                case(12) { rgb = 0xFF5555; } // 明赤
+                case(13) { rgb = 0xFF55FF; } // 明マゼンタ
+                case(14) { rgb = 0xFFFF55; } // 黄
+                case(15) { rgb = 0xFFFFFF; } // 白
+            }
+            ulong* p = (VGA_PALETTE_ADDR + i * 8) as ulong*;
+            *p = rgb;
+            i = i + 1;
+        }
     }
 
     /// VGA色インデックス→RGB変換
@@ -397,44 +406,48 @@ impl Terminal {
         // dirtyフラグを設定
         Terminal::set_dirty();
 
-        if (ch == 10) {
-            // 改行: カーソルを次行先頭へ
-            *col = 0;
-            *row = *row + 1;
-            if (*row >= *mr) {
-                Terminal::scroll_up_one(slot);
-                *row = *mr - 1;
-                Terminal::redraw(slot);
-            }
-        } else if (ch == 8) {
-            // バックスペース: カーソル左移動 + 文字消去
-            if (*col > 0) {
-                *col = *col - 1;
-                Terminal::buf_put(slot, *row, *col, 0);
-                ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
-                ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
-                ulong px = base_x + (*col) * FONT_W;
-                ulong py = base_y + (*row) * FONT_H;
-                Font::draw_char(px, py, 32, TERM_BG, TERM_BG);
-            }
-        } else {
-            // 通常文字: バッファ記録 + 色付き描画
-            Terminal::buf_put(slot, *row, *col, ch);
-            ulong fg_rgb = Terminal::current_fg();
-            ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
-            ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
-            ulong px = base_x + (*col) * FONT_W;
-            ulong py = base_y + (*row) * FONT_H;
-            Font::draw_char(px, py, ch, fg_rgb, TERM_BG);
-
-            *col = *col + 1;
-            if (*col >= *mc) {
+        switch(ch) {
+            case(10) {
+                // 改行: カーソルを次行先頭へ
                 *col = 0;
                 *row = *row + 1;
                 if (*row >= *mr) {
                     Terminal::scroll_up_one(slot);
                     *row = *mr - 1;
                     Terminal::redraw(slot);
+                }
+            }
+            case(8) {
+                // バックスペース: カーソル左移動 + 文字消去
+                if (*col > 0) {
+                    *col = *col - 1;
+                    Terminal::buf_put(slot, *row, *col, 0);
+                    ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
+                    ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
+                    ulong px = base_x + (*col) * FONT_W;
+                    ulong py = base_y + (*row) * FONT_H;
+                    Font::draw_char(px, py, 32, TERM_BG, TERM_BG);
+                }
+            }
+            else {
+                // 通常文字: バッファ記録 + 色付き描画
+                Terminal::buf_put(slot, *row, *col, ch);
+                ulong fg_rgb = Terminal::current_fg();
+                ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
+                ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
+                ulong px = base_x + (*col) * FONT_W;
+                ulong py = base_y + (*row) * FONT_H;
+                Font::draw_char(px, py, ch, fg_rgb, TERM_BG);
+
+                *col = *col + 1;
+                if (*col >= *mc) {
+                    *col = 0;
+                    *row = *row + 1;
+                    if (*row >= *mr) {
+                        Terminal::scroll_up_one(slot);
+                        *row = *mr - 1;
+                        Terminal::redraw(slot);
+                    }
                 }
             }
         }
