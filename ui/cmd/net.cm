@@ -114,7 +114,7 @@ impl CmdNet {
         ulong success = 0;
         while (seq <= 5) {
             // パケットバッファ (固定メモリ)
-            ulong pkt_buf = 0xA50000;
+            ulong pkt_buf = NET_PKT_BUF;
             ulong pkt_pos = 0;
 
             // 1. Ethernetヘッダ構築 (14バイト)
@@ -179,7 +179,7 @@ impl CmdNet {
             ulong replied = 0;
 
             while (PIT::get_ticks() < timeout) {
-                ulong rx_buf = 0xA51000;
+                ulong rx_buf = NET_RX_TMP_BUF;
                 ulong rx_len = VirtioNet::recv(rx_buf, 1500);
                 if (rx_len > 0) {
                     // Ethernetヘッダ解析

@@ -256,7 +256,7 @@ impl Http {
             return pos + 1;
         }
 
-        ulong tmp = 0x9FF00;
+        ulong tmp = HTTP_TMP_BUF;
         ulong digits = 0;
         ulong v = val;
         while (v > 0) {

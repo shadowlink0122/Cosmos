@@ -128,7 +128,7 @@ impl CmdFs {
         // /proc/ パスの処理
         if (startswith(name_addr as void*, "/proc/" as void*) != 0) {
             ulong proc_name = name_addr + 6;  // "/proc/" の後
-            ulong read_buf = 0x94100;
+            ulong read_buf = READ_BUF;
             ulong bytes = ProcFs::read_file(proc_name as void*, read_buf);
             if (bytes > 0) {
                 Shell::writeln(read_buf as void*);
@@ -152,8 +152,8 @@ impl CmdFs {
             return;
         }
 
-        // 読み出しバッファ: CMD_BUFの後半を使用 (0x94100)
-        ulong read_buf = 0x94100;
+        // 読み出しバッファ: CMD_BUFの後半を使用
+        ulong read_buf = READ_BUF;
         long bytes_read = 0;
         Result<long, long> rr = RamFs::read(ino, read_buf, 0, fsize);
         match (rr) {
@@ -293,7 +293,7 @@ impl CmdFs {
         ulong fsize = RamFs::file_size(ino);
         // 行数カウント: ファイルを読み出して\nを数える
         ulong lines = 0;
-        ulong read_buf = 0x94100;
+        ulong read_buf = READ_BUF;
         if (fsize > 0) {
             long bytes = 0;
             Result<long, long> rr2 = RamFs::read(ino, read_buf, 0, fsize);
@@ -343,7 +343,7 @@ impl CmdFs {
         // 最大256バイトまで表示
         ulong show_size = fsize;
         if (show_size > 256) { show_size = 256; }
-        ulong read_buf = 0x94100;
+        ulong read_buf = READ_BUF;
         long bytes = 0;
         Result<long, long> rr3 = RamFs::read(ino, read_buf, 0, show_size);
         match (rr3) {
@@ -411,7 +411,7 @@ impl CmdFs {
             Shell::writeln("(empty file)" as void*);
             return;
         }
-        ulong read_buf = 0x94100;
+        ulong read_buf = READ_BUF;
         long bytes = 0;
         Result<long, long> rr4 = RamFs::read(ino, read_buf, 0, fsize);
         match (rr4) {
@@ -455,7 +455,7 @@ impl CmdFs {
             Shell::writeln("(empty file)" as void*);
             return;
         }
-        ulong read_buf = 0x94100;
+        ulong read_buf = READ_BUF;
         long bytes = 0;
         Result<long, long> rr5 = RamFs::read(ino, read_buf, 0, fsize);
         match (rr5) {
@@ -534,7 +534,7 @@ impl CmdFs {
 
         // データコピー
         if (fsize > 0) {
-            ulong read_buf = 0x94100;
+            ulong read_buf = READ_BUF;
             long bytes = 0;
             Result<long, long> rr6 = RamFs::read(src_ino, read_buf, 0, fsize);
             match (rr6) {
@@ -599,7 +599,7 @@ impl CmdFs {
             return;
         }
         if (fsize > 0) {
-            ulong read_buf = 0x94100;
+            ulong read_buf = READ_BUF;
             long bytes = 0;
             Result<long, long> rr7 = RamFs::read(src_ino, read_buf, 0, fsize);
             match (rr7) {
@@ -641,7 +641,7 @@ impl CmdFs {
         if (ino == 0) { Shell::write("grep: not found: " as void*); Shell::writeln(file_addr as void*); return; }
         ulong fsize = RamFs::file_size(ino);
         if (fsize == 0) { return; }
-        ulong buf = 0x94100;
+        ulong buf = READ_BUF;
         long bytes = 0;
         Result<long, long> rr8 = RamFs::read(ino, buf, 0, fsize);
         match (rr8) {
@@ -688,7 +688,7 @@ impl CmdFs {
         if (ino == 0) { Shell::write("sort: not found: " as void*); Shell::writeln(file_addr as void*); return; }
         ulong fsize = RamFs::file_size(ino);
         if (fsize == 0) { return; }
-        ulong buf = 0x94100;
+        ulong buf = READ_BUF;
         long bytes = 0;
         Result<long, long> rr9 = RamFs::read(ino, buf, 0, fsize);
         match (rr9) {
@@ -697,7 +697,7 @@ impl CmdFs {
         }
         if (bytes <= 0) { return; }
         // 行開始アドレスを収集 (max 64行)
-        ulong line_starts = 0x96000;
+        ulong line_starts = LINE_INDEX_BUF;
         ulong line_count = 0;
         Mem::write_qword(line_starts, buf);
         line_count = 1;

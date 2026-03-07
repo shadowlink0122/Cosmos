@@ -176,7 +176,7 @@ impl Arp {
         Arp::update(sender_ip, sender_mac);
 
         // ARP Reply構築
-        ulong reply_buf = 0xA52000;
+        ulong reply_buf = ARP_REPLY_BUF;
         ulong our_mac = VirtioNet::mac();
         ulong rpos = 0;
 

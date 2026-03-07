@@ -170,7 +170,7 @@ impl Wm {
         }
 
         // ボタン状態管理
-        ulong* prev_btn = 0xD80900 as ulong*;
+        ulong* prev_btn = MOUSE_PREV_BTN_ADDR as ulong*;
         ulong was_pressed = *prev_btn & 1;
         ulong is_pressed = buttons & 1;
         *prev_btn = buttons;

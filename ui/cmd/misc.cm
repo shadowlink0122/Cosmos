@@ -87,7 +87,7 @@ impl CmdMisc {
             return;
         }
         // "/" + name に合成
-        ulong tmp_buf = 0x94200;
+        ulong tmp_buf = TMP_BUF;
         Mem::write_byte(tmp_buf, Ascii::Slash as ulong);  // '/'
         ulong j = 0;
         while (true) {

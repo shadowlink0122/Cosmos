@@ -30,7 +30,7 @@ impl CmdProc {
         Shell::writeln("  PID  STATE    NAME" as void*);
         Shell::writeln("  ---  -------  --------" as void*);
 
-        ulong* sched_ptr_addr = 0x91000 as ulong*;
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
         RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
 
         ulong i = 0;

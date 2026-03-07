@@ -46,7 +46,7 @@ void build_hello_elf(ulong buf) {
     Mem::write_byte(buf + 0x14, 1);
     // e_entry = 0x400078 (コード開始 = ELFヘッダ 64 + PHDR56 = 120)
     ulong* entry_ptr = (buf + 0x18) as ulong*;
-    *entry_ptr = 0x400078;
+    *entry_ptr = ELF_BASE_VADDR + ELF_ENTRY_OFFSET;
     // e_phoff = 64 (ELFヘッダ直後)
     ulong* phoff_ptr = (buf + 0x20) as ulong*;
     *phoff_ptr = 64;
@@ -73,10 +73,10 @@ void build_hello_elf(ulong buf) {
     *poff = 0;
     // p_vaddr = 0x400000
     ulong* pvaddr = (ph + 0x10) as ulong*;
-    *pvaddr = 0x400000;
+    *pvaddr = ELF_BASE_VADDR;
     // p_paddr = 0x400000
     ulong* ppaddr = (ph + 0x18) as ulong*;
-    *ppaddr = 0x400000;
+    *ppaddr = ELF_BASE_VADDR;
     // p_filesz = 188 (全データサイズ)
     ulong* pfilesz = (ph + 0x20) as ulong*;
     *pfilesz = 188;

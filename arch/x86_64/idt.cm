@@ -281,7 +281,7 @@ export void exc_page_fault() {
         serial.println("" as void*);
         // ユーザースタックダンプ (call chain)
         ulong ursp = *ursp_ptr;
-        if (ursp > 0x400000) {
+        if (ursp > ELF_BASE_VADDR) {
             ulong i = 0;
             while (i < 8) {
                 ulong* ustack = (ursp + i * 8) as ulong*;

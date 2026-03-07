@@ -47,14 +47,14 @@ impl ShellInput {
 
     /// スクロールバック中ならライブモードに復帰
     static void restore_scrollback() {
-        ulong* sb_active = 0xC08018 as ulong*;
+        ulong* sb_active = SCROLLBACK_ACTIVE_ADDR as ulong*;
         if (*sb_active != 0) {
-            ulong* sb_pos = 0xC08010 as ulong*;
+            ulong* sb_pos = SCROLLBACK_POS_ADDR as ulong*;
             *sb_pos = 0;
             *sb_active = 0;
             ulong si = 0;
             while (si < 25 * 80 * 2) {
-                Mem::write_byte(0xB8000 + si, Mem::read_byte(0xC08100 + si));
+                Mem::write_byte(VGA_BUF + si, Mem::read_byte(SCROLLBACK_LIVE_ADDR + si));
                 si = si + 1;
             }
         }
@@ -293,7 +293,7 @@ impl ShellInput {
             }
         }
         if (Shell::is_gui() != 0) {
-            ulong* dirty = 0x95068 as ulong*;
+            ulong* dirty = GUI_DIRTY_ADDR as ulong*;
             if (*dirty != 0) {
                 *dirty = 0;
                 Shell::gui_flush();

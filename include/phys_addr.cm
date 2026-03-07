@@ -144,3 +144,13 @@ export const PhysAddr FORK_SAVE_R15 = 0x96278;
 
 /// ブート時のティックスナップショット
 export const PhysAddr BOOT_TICK_ADDR = 0x9B000;
+
+// ============================================================
+// ELF関連定数
+// ============================================================
+
+/// ELFデフォルトベースアドレス (Linux x86_64 標準)
+export const PhysAddr ELF_BASE_VADDR = 0x400000;
+
+/// ELFエントリポイントオフセット (ELFヘッダ64 + PHDR56 = 120 = 0x78)
+export const ulong ELF_ENTRY_OFFSET = 0x78;

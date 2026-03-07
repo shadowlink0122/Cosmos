@@ -78,3 +78,47 @@ export const ulong DEFAULT_TERM_H = 384;
 /// デフォルトターミナルウィンドウ位置（中央配置）
 export const ulong DEFAULT_TERM_X = 256;
 export const ulong DEFAULT_TERM_Y = 70;
+
+// ============================================================
+// 共通バッファアドレス
+// ============================================================
+
+/// FSコマンド用読み込みバッファ (CMD_BUFの後半)
+export const PhysAddr READ_BUF = 0x94100;
+
+/// 一時バッファ (misc用)
+export const PhysAddr TMP_BUF = 0x94200;
+
+/// 行インデックスバッファ (headコマンド用)
+export const PhysAddr LINE_INDEX_BUF = 0x96000;
+
+/// マウスボタン前回状態アドレス
+export const PhysAddr MOUSE_PREV_BTN_ADDR = 0xD80900;
+
+// ============================================================
+// ネットワーク/ホストバッファアドレス
+// ============================================================
+
+/// ネットワークパケット送信バッファ
+export const PhysAddr NET_PKT_BUF = 0xA50000;
+
+/// ネットワークパケット受信バッファ
+export const PhysAddr NET_RX_TMP_BUF = 0xA51000;
+
+/// ARP応答バッファ
+export const PhysAddr ARP_REPLY_BUF = 0xA52000;
+
+/// 9pディレクトリ一覧バッファ
+export const PhysAddr HOST_DIR_BUF = 0xA55000;
+
+/// 9pファイル名一時バッファ
+export const PhysAddr HOST_NAME_BUF = 0xA56000;
+
+/// 9pファイル読み込みバッファ
+export const PhysAddr HOST_FILE_BUF = 0xA57000;
+
+/// 9p文字変換バッファ
+export const PhysAddr HOST_CHAR_BUF = 0xA58000;
+
+/// HTTP一時バッファ
+export const PhysAddr HTTP_TMP_BUF = 0x9FF00;

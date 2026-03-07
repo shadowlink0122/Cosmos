@@ -292,7 +292,7 @@ impl Mmap {
 
         // 1. ELFセグメント領域の解放 (0x400000 - 0x800000)
         //    最大バイナリのセグメント範囲をカバー(git=0x7F5000等)
-        ulong va = 0x400000;
+        ulong va = ELF_BASE_VADDR;
         while (va < 0x800000) {
             PhysAddr phys = pt.translate(va);
             if (phys != 0) {
