@@ -43,6 +43,7 @@ import ../fs/ninepfs;
 import ../net/app/curl;
 import ../pkg/gen;
 import ../pkg/brew;
+import ../include/color;
 
 /// Cmd — シェルコマンド群
 export struct Cmd {}
@@ -50,9 +51,9 @@ export struct Cmd {}
 impl Cmd {
 
     static void help() {
-        Shell::set_color(11, 0);
+        Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
         Shell::writeln("=== Cosmo Linux Shell ===" as void*);
-        Shell::set_color(7, 0);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
         Shell::writeln("  help ps free uptime uname date clear reboot" as void*);
         Shell::writeln("  ls cat touch write cp mv rm mkdir" as void*);
         Shell::writeln("  head tail wc hexdump grep sort" as void*);
@@ -198,9 +199,9 @@ impl Cmd {
             if (is_mnt != 0) {
                 Shell::writeln("" as void*);
                 Shell::write("  " as void*);
-                Shell::set_color(11, 0);
+                Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
                 Shell::write("host/" as void*);
-                Shell::set_color(7, 0);
+                Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
                 Shell::writeln("" as void*);
                 Shell::writeln("" as void*);
                 return;
@@ -210,9 +211,9 @@ impl Cmd {
             if (streq(path_addr as void*, "/" as void*) != 0) {
                 Shell::writeln("" as void*);
                 Shell::write("  " as void*);
-                Shell::set_color(11, 0);
+                Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
                 Shell::write("mnt/" as void*);
-                Shell::set_color(7, 0);
+                Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
                 Shell::writeln("" as void*);
                 Shell::writeln("" as void*);
                 return;
@@ -234,10 +235,10 @@ impl Cmd {
 
                     // ディレクトリは色変更
                     if (dtype == S_IFDIR) {
-                        Shell::set_color(11, 0);  // 黄色
+                        Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);  // 黄色
                         Shell::write(name_addr2 as void*);
                         Shell::write("/" as void*);
-                        Shell::set_color(7, 0);
+                        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
                     } else {
                         // ファイルサイズ表示
                         Shell::write(name_addr2 as void*);
@@ -775,9 +776,9 @@ impl Cmd {
     /// vmstat コマンド: 仮想メモリ統計表示
     static void vmstat() {
         Shell::writeln("" as void*);
-        Shell::set_color(11, 0);
+        Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
         Shell::writeln("=== Virtual Memory Statistics ==="  as void*);
-        Shell::set_color(7, 0);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
 
         // VMA一覧
         ulong vma_count = Mmap::count();
@@ -1706,9 +1707,9 @@ impl Cmd {
         // cm コマンド（Cmコンパイラ情報）
         if (streq(CMD_BUF_ADDR as void*, "cm" as void*) != 0 ||
             streq(CMD_BUF_ADDR as void*, "cm version" as void*) != 0) {
-            Shell::set_color(14, 0);
+            Shell::set_color(VGA_IDX_YELLOW, 0);
             Shell::writeln("Cm Compiler v0.14.2" as void*);
-            Shell::set_color(7, 0);
+            Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
             Shell::writeln("  Sea Minor - A systems programming language" as void*);
             Shell::writeln("  Target: x86_64-cosmo-linux" as void*);
             Shell::writeln("  Homepage: https://github.com/Exaloop/Cm" as void*);

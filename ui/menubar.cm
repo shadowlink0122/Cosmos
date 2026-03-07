@@ -8,6 +8,7 @@ import ../include/types;
 import ../include/config;
 import ../drivers/video/framebuffer;
 import ../drivers/video/font;
+import ../include/color;
 import ../drivers/timer/pit;
 import ../drivers/timer/rtc;
 import ../ui/mem;
@@ -20,13 +21,12 @@ import ../ui/mem;
 export const ulong MENUBAR_HEIGHT = 24;
 
 /// メニューバー背景色 (半透明白)
-const ulong MENUBAR_BG = 0xE8E8EC;
-
-/// メニューバーテキスト色
-const ulong MENUBAR_FG = 0x1D1D1F;
-
-/// セパレータ色
-const ulong MENUBAR_BORDER = 0xC8C8CC;
+/// メニューバー背景色 (color.cmから参照)
+const Rgb MENUBAR_BG = MENUBAR_BG_COLOR;
+/// メニューバー文字色
+const Rgb MENUBAR_FG = MENUBAR_FG_COLOR;
+/// メニューバー下境界線
+const Rgb MENUBAR_BORDER = MENUBAR_BORDER_COLOR;
 
 /// MenuBar — macOS風メニューバー
 export struct MenuBar {}

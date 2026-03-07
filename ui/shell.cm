@@ -29,6 +29,8 @@ import ../fs/ramfs;
 import ../sched/scheduler;
 import ../drivers/timer/pit;
 import ../drivers/input/mouse;
+import ../include/keycode;
+import ../include/color;
 
 // ============================================================
 // Tab補完用コマンドリスト
@@ -103,16 +105,16 @@ export void shell_main() {
     // 注: Mouse::setup() は entry.cm で呼び出し済み
 
     // VGA画面クリア＆ウェルカムバナー
-    Shell::set_color(7, 0);
+    Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
     Vga::clear_screen();
 
-    Shell::set_color(11, 0);
+    Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
     Shell::writeln("========================================" as void*);
     Shell::writeln("  Cosmo Linux v0.1.0" as void*);
     Shell::writeln("  Written in Cm - A Linux reimagined" as void*);
     Shell::writeln("========================================" as void*);
 
-    Shell::set_color(7, 0);
+    Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
     Shell::writeln("" as void*);
     Shell::writeln("Welcome to Cosmo Linux!" as void*);
     Shell::writeln("Type 'help' for available commands." as void*);
@@ -135,9 +137,9 @@ export void shell_main() {
     // デフォルトパッケージの自動インストール（9pfs利用可能時のみ）
     // 注: パッケージが存在しない場合はスキップ
     if (Virtio9p::is_ready() != 0) {
-        Shell::set_color(14, 0);
+        Shell::set_color(VGA_IDX_YELLOW, 0);
         Shell::writeln("Checking host packages..." as void*);
-        Shell::set_color(7, 0);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
     }
     Shell::writeln("" as void*);
 
@@ -151,14 +153,14 @@ export void shell_main() {
     // REPLループ
     while (true) {
         // プロンプト表示（CWDを反映）
-        Shell::set_color(10, 0);
+        Shell::set_color(VGA_IDX_LIGHT_GREEN, 0);
         Shell::write("cosmo" as void*);
-        Shell::set_color(14, 0);
+        Shell::set_color(VGA_IDX_YELLOW, 0);
         Shell::write(":" as void*);
-        Shell::set_color(12, 0);
+        Shell::set_color(VGA_IDX_LIGHT_RED, 0);
         ulong cwd_addr = Cwd::get();
         Shell::write(cwd_addr as void*);
-        Shell::set_color(7, 0);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
         Shell::write("$ " as void*);
 
         // 履歴ポジションリセット
@@ -171,7 +173,7 @@ export void shell_main() {
         ulong input_done = 0;
         while (input_done == 0) {
             ulong ch = Kbd::getchar();
-            if (ch == 0) {
+            if (ch == CHAR_NULL) {
                 // マウスホイール/トラックパッドスクロールチェック
                 // macOSナチュラルスクロール: 方向反転
                 //   2本指上スワイプ(正値) → 下スクロール(最新に戻る)
@@ -207,7 +209,7 @@ export void shell_main() {
                 __asm__(`sti; hlt`);
                 // スケジューラtick（他プロセス実行用）
                 Sched::tick();
-            } else if (ch == 10) {
+            } else if (ch == KEY_ENTER) {
                 // スクロールバック中ならライブモードに復帰 (テキストモードのみ)
                 if (Shell::is_gui() == 0) {
                     ulong* sb_active = 0xC08018 as ulong*;
@@ -277,7 +279,7 @@ export void shell_main() {
                 *len_ptr = 0;
                 *cur_ptr = 0;
                 input_done = 1;
-            } else if (ch == 8) {
+            } else if (ch == KEY_BACKSPACE) {
                 // Backspace: カーソル位置の左の文字を削除
                 ulong len = *len_ptr;
                 ulong cursor = *cur_ptr;
@@ -332,7 +334,7 @@ export void shell_main() {
                         bi = bi + 1;
                     }
                 }
-            } else if (ch == 0x82) {
+            } else if (ch == KEY_LEFT) {
                 // 左矢印キー: カーソルを左に移動
                 ulong cursor = *cur_ptr;
                 if (cursor > 0) {
@@ -353,7 +355,7 @@ export void shell_main() {
                     ser->putc(91);
                     ser->putc(68);
                 }
-            } else if (ch == 0x83) {
+            } else if (ch == KEY_RIGHT) {
                 // 右矢印キー: カーソルを右に移動
                 ulong len = *len_ptr;
                 ulong cursor = *cur_ptr;
@@ -375,7 +377,7 @@ export void shell_main() {
                     ser->putc(91);
                     ser->putc(67);
                 }
-            } else if (ch == 0x80) {
+            } else if (ch == KEY_UP) {
                 // 上矢印キー
                 ulong addr = History::get(hist_pos);
                 if (addr != 0) {
@@ -383,7 +385,7 @@ export void shell_main() {
                     *cur_ptr = *len_ptr;
                     hist_pos = hist_pos + 1;
                 }
-            } else if (ch == 0x81) {
+            } else if (ch == KEY_DOWN) {
                 // 下矢印キー
                 if (hist_pos > 0) {
                     hist_pos = hist_pos - 1;
@@ -429,16 +431,16 @@ export void shell_main() {
                         *cur_ptr = 0;
                     }
                 }
-            } else if (ch == 3) {
+            } else if (ch == KEY_CTRL_C) {
                 // Ctrl+C: 入力キャンセル
-                Shell::set_color(9, 0);
+                Shell::set_color(VGA_IDX_LIGHT_BLUE, 0);
                 Shell::write("^C" as void*);
-                Shell::set_color(7, 0);
+                Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
                 Shell::putc(10);
                 *len_ptr = 0;
                 *cur_ptr = 0;
                 input_done = 1;
-            } else if (ch == 12) {
+            } else if (ch == KEY_CTRL_L) {
                 // Ctrl+L: 画面クリア
                 if (Shell::is_gui() != 0) {
                     Shell::gui_clear();
@@ -448,7 +450,7 @@ export void shell_main() {
                 *len_ptr = 0;
                 *cur_ptr = 0;
                 input_done = 1;
-            } else if (ch == 9) {
+            } else if (ch == KEY_TAB) {
                 // Tab補完
                 ulong len = *len_ptr;
                 if (len > 0) {
@@ -497,7 +499,7 @@ export void shell_main() {
                         ulong PATH_LIST = 0xA5B000;
                         ulong path_count = 0;
                         ulong first_ch = Mem::read_byte(word_addr);
-                        if (first_ch == 47) {  // '/'
+                        if (first_ch == CHAR_SLASH) {  // '/'
                             // /mnt/host/ で始まるパス → 9pfsファイル名補完
                             ulong is_host = 0;
                             if (word_len >= 10) {
@@ -710,13 +712,13 @@ export void shell_main() {
                             }
                             Shell::putc(10);
                             // プロンプト再表示
-                            Shell::set_color(10, 0);
+                            Shell::set_color(VGA_IDX_LIGHT_GREEN, 0);
                             Shell::write("cosmo" as void*);
-                            Shell::set_color(14, 0);
+                            Shell::set_color(VGA_IDX_YELLOW, 0);
                             Shell::write(":" as void*);
-                            Shell::set_color(12, 0);
+                            Shell::set_color(VGA_IDX_LIGHT_RED, 0);
                             Shell::write(cwd_addr as void*);
-                            Shell::set_color(7, 0);
+                            Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
                             Shell::write("$ " as void*);
                             ulong ri = 0;
                             while (ri < len) {

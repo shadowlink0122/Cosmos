@@ -7,15 +7,7 @@ import ../include/types;
 import ../include/config;
 import ../drivers/video/framebuffer;
 import ../drivers/video/font;
-
-// ============================================================
-// デスクトップカラー
-// ============================================================
-
-/// macOS Sonoma風 グラデーション色（テスト用・明るめ）
-const ulong DESKTOP_TOP     = 0x5577BB;  // 明るいブルー
-const ulong DESKTOP_MID     = 0x7777AA;  // ミッドブルー (未使用)
-const ulong DESKTOP_BOTTOM  = 0x9966AA;  // 明るいパープル
+import ../include/color;
 
 /// カーソル状態アドレス
 const PhysAddr CURSOR_STATE_ADDR = 0xD80800;
@@ -33,7 +25,7 @@ impl Desktop {
     static void draw_background() {
         ulong w = Fb::width();
         ulong h = Fb::height();
-        Fb::gradient_v(0, 0, w, h, DESKTOP_TOP, DESKTOP_BOTTOM);
+        Fb::gradient_v(0, 0, w, h, DESKTOP_TOP, DESKTOP_BOTTOM);  // color.cmの定数
     }
 
     /// マウスカーソル初期化
@@ -88,7 +80,7 @@ impl Desktop {
             if (x + draw_w > sw) { draw_w = sw - x; }
 
             // 黒アウトライン → VRAM直接
-            Fb::vram_fill_rect(x, y + row, draw_w, 1, 0x000000);
+            Fb::vram_fill_rect(x, y + row, draw_w, 1, CURSOR_OUTLINE);
             // 白内部 → VRAM直接
             if (w > 1) {
                 ulong inner_w = w - 1;
@@ -100,7 +92,7 @@ impl Desktop {
                     }
                 }
                 if (inner_w > 0) {
-                    Fb::vram_fill_rect(x + 1, y + row, inner_w, 1, 0xFFFFFF);
+                    Fb::vram_fill_rect(x + 1, y + row, inner_w, 1, CURSOR_FILL);
                 }
             }
             row = row + 1;

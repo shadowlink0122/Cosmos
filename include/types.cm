@@ -23,6 +23,9 @@ export typedef VirtAddr = ulong;
 /// メモリサイズ型（バイト数、64ビット）
 export typedef Size = ulong;
 
+/// RGB色値型（24ビット色, 0xRRGGBB形式）
+export typedef Rgb = ulong;
+
 /// 符号付きサイズ型（エラー戻り値兼用）
 export typedef SSize = long;
 

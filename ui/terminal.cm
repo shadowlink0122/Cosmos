@@ -10,15 +10,16 @@ import ../include/config;
 import ../drivers/video/framebuffer;
 import ../drivers/video/font;
 import ../ui/window;
+import ../include/color;
 
 // ============================================================
 // ターミナル定数
 // ============================================================
 
-/// ターミナル背景色 (純黒)
-const ulong TERM_BG = 0x000000;
-/// ターミナルテキスト色 (デフォルト: 明灰)
-const ulong TERM_FG = 0xCCCCCC;
+/// ターミナル背景色
+const Rgb TERM_BG = TERM_BG_COLOR;
+/// ターミナルテキスト色
+const Rgb TERM_FG = TERM_FG_COLOR;
 /// ターミナルパディング
 const ulong TERM_PAD = 4;
 
@@ -70,22 +71,22 @@ impl Terminal {
         while (i < 16) {
             ulong rgb = 0;
             switch(i) {
-                case(0)  { rgb = 0x000000; } // 黒
-                case(1)  { rgb = 0x0000AA; } // 青
-                case(2)  { rgb = 0x00AA00; } // 緑
-                case(3)  { rgb = 0x00AAAA; } // シアン
-                case(4)  { rgb = 0xAA0000; } // 赤
-                case(5)  { rgb = 0xAA00AA; } // マゼンタ
-                case(6)  { rgb = 0xAA5500; } // 茶
-                case(7)  { rgb = 0xAAAAAA; } // 明灰
-                case(8)  { rgb = 0x555555; } // 暗灰
-                case(9)  { rgb = 0x5555FF; } // 明青
-                case(10) { rgb = 0x55FF55; } // 明緑
-                case(11) { rgb = 0x55FFFF; } // 明シアン
-                case(12) { rgb = 0xFF5555; } // 明赤
-                case(13) { rgb = 0xFF55FF; } // 明マゼンタ
-                case(14) { rgb = 0xFFFF55; } // 黄
-                case(15) { rgb = 0xFFFFFF; } // 白
+                case(0)  { rgb = VGA_BLACK; }
+                case(1)  { rgb = VGA_BLUE; }
+                case(2)  { rgb = VGA_GREEN; }
+                case(3)  { rgb = VGA_CYAN; }
+                case(4)  { rgb = VGA_RED; }
+                case(5)  { rgb = VGA_MAGENTA; }
+                case(6)  { rgb = VGA_BROWN; }
+                case(7)  { rgb = VGA_LIGHT_GRAY; }
+                case(8)  { rgb = VGA_DARK_GRAY; }
+                case(9)  { rgb = VGA_LIGHT_BLUE; }
+                case(10) { rgb = VGA_LIGHT_GREEN; }
+                case(11) { rgb = VGA_LIGHT_CYAN; }
+                case(12) { rgb = VGA_LIGHT_RED; }
+                case(13) { rgb = VGA_LIGHT_MAGENTA; }
+                case(14) { rgb = VGA_YELLOW; }
+                case(15) { rgb = VGA_WHITE; }
             }
             ulong* p = (VGA_PALETTE_ADDR + i * 8) as ulong*;
             *p = rgb;

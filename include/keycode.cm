@@ -1,0 +1,54 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::keycode - キーコード定数
+//
+// シェル・キーボードドライバで使用するASCIIキーコード定数。
+// マジックナンバー(10, 8, 32等)を名前付き定数に置換。
+
+// ============================================================
+// ASCII制御文字
+// ============================================================
+
+/// Ctrl+C (割り込み)
+export const ulong KEY_CTRL_C    = 3;
+/// バックスペース
+export const ulong KEY_BACKSPACE = 8;
+/// タブ
+export const ulong KEY_TAB       = 9;
+/// 改行 (Enter/LF)
+export const ulong KEY_ENTER     = 10;
+/// Ctrl+L (画面クリア)
+export const ulong KEY_CTRL_L    = 12;
+/// キャリッジリターン
+export const ulong KEY_CR        = 13;
+/// Escape
+export const ulong KEY_ESCAPE    = 27;
+/// スペース
+export const ulong KEY_SPACE     = 32;
+/// Delete
+export const ulong KEY_DELETE    = 127;
+
+// ============================================================
+// 特殊キー (E0プレフィクス変換済み)
+// ============================================================
+
+/// 上矢印
+export const ulong KEY_UP        = 0x80;
+/// 下矢印
+export const ulong KEY_DOWN      = 0x81;
+/// 左矢印
+export const ulong KEY_LEFT      = 0x82;
+/// 右矢印
+export const ulong KEY_RIGHT     = 0x83;
+
+// ============================================================
+// ASCII文字定数（可読性向上用）
+// ============================================================
+
+/// パイプ '|'
+export const ulong CHAR_PIPE     = 124;
+/// スラッシュ '/'
+export const ulong CHAR_SLASH    = 47;
+/// ドット '.'
+export const ulong CHAR_DOT      = 46;
+/// ヌル終端
+export const ulong CHAR_NULL     = 0;

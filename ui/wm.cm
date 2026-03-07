@@ -197,7 +197,7 @@ impl Wm {
             while (i < MAX_WINDOWS) {
                 if (Window::is_visible(i) != 0) {
                     ulong btn = Window::hit_button(i, mx, my);
-                    if (btn == 1) {
+                    if (btn == WIN_BTN_CLOSE) {
                         // 閉じる: ターミナルスロットも解放
                         ulong ts = Terminal::find_by_window(i);
                         if (ts < MAX_TERM_SLOTS) {
@@ -207,7 +207,7 @@ impl Wm {
                         Wm::compose();
                         handled = 1;
                         break;
-                    } else if (btn == 2) {
+                    } else if (btn == WIN_BTN_MINIMIZE) {
                         ulong ts = Terminal::find_by_window(i);
                         if (ts < MAX_TERM_SLOTS) {
                             Terminal::release(ts);
@@ -216,7 +216,7 @@ impl Wm {
                         Wm::compose();
                         handled = 1;
                         break;
-                    } else if (btn == 3) {
+                    } else if (btn == WIN_BTN_MAXIMIZE) {
                         Window::toggle_maximize(i);
                         Wm::compose();
                         handled = 1;
@@ -258,7 +258,7 @@ impl Wm {
             // Dockアイコンクリック
             if (handled == 0) {
                 ulong dock_hit = Dock::hit_test(mx, my);
-                if (dock_hit == 1) {
+                if (dock_hit == DOCK_HIT_TERMINAL) {
                     // ターミナル: 空きスロットを検索
                     ulong slot = Terminal::find_free_slot();
                     if (slot < MAX_TERM_SLOTS) {
@@ -269,7 +269,7 @@ impl Wm {
                         // 各ウィンドウを少しずらして配置
                         ulong tx = (sw - tw) / 2 + slot * 30;
                         ulong ty = (sh - th) / 2 + slot * 30;
-                        ulong win_id = Window::create(tx, ty, tw, th, "Terminal" as void*, 1);
+                        ulong win_id = Window::create(tx, ty, tw, th, "Terminal" as void*, CONTENT_TERMINAL);
                         if (win_id < MAX_WINDOWS) {
                             Wm::set_active(win_id);
                             Terminal::init(slot, win_id);
@@ -282,17 +282,17 @@ impl Wm {
                             Desktop::draw_cursor_direct();
                         }
                     }
-                } else if (dock_hit == 2) {
-                    Window::create(200, 100, 500, 400, "Files" as void*, 0);
+                } else if (dock_hit == DOCK_HIT_FILES) {
+                    Window::create(200, 100, 500, 400, "Files" as void*, CONTENT_EMPTY);
                     Wm::compose();
-                } else if (dock_hit == 3) {
-                    Window::create(250, 120, 450, 350, "Settings" as void*, 0);
+                } else if (dock_hit == DOCK_HIT_SETTINGS) {
+                    Window::create(250, 120, 450, 350, "Settings" as void*, CONTENT_EMPTY);
                     Wm::compose();
-                } else if (dock_hit == 4) {
-                    Window::create(300, 150, 400, 300, "About Cosmo" as void*, 0);
+                } else if (dock_hit == DOCK_HIT_ABOUT) {
+                    Window::create(300, 150, 400, 300, "About Cosmo" as void*, CONTENT_EMPTY);
                     Wm::compose();
-                } else if (dock_hit == 5) {
-                    Window::create(280, 130, 420, 320, "Trash" as void*, 0);
+                } else if (dock_hit == DOCK_HIT_TRASH) {
+                    Window::create(280, 130, 420, 320, "Trash" as void*, CONTENT_EMPTY);
                     Wm::compose();
                 }
             }

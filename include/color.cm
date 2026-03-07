@@ -1,0 +1,146 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::color - UI色定数
+//
+// UI全体で使用するRGB色定数を一元管理。
+// マジックナンバー除去 + 型安全性向上。
+
+import ./types;
+
+// ============================================================
+// 基本色
+// ============================================================
+
+export const Rgb COLOR_BLACK       = 0x000000;
+export const Rgb COLOR_WHITE       = 0xFFFFFF;
+
+// ============================================================
+// デスクトップ
+// ============================================================
+
+/// macOS Sonoma風グラデーション（上部）
+export const Rgb DESKTOP_TOP       = 0x5577BB;
+/// macOS Sonoma風グラデーション（下部）
+export const Rgb DESKTOP_BOTTOM    = 0x9966AA;
+
+// ============================================================
+// ウィンドウ
+// ============================================================
+
+/// タイトルバー背景
+export const Rgb TITLEBAR_BG_COLOR = 0xE8E8E8;
+/// タイトルバー文字色
+export const Rgb TITLEBAR_FG_COLOR = 0x4D4D4D;
+/// ウィンドウ枠線
+export const Rgb WINDOW_BORDER_COLOR = 0xBBBBBB;
+/// ウィンドウ背景
+export const Rgb WINDOW_BG_COLOR   = 0xFFFFFF;
+/// ウィンドウ影
+export const Rgb WINDOW_SHADOW_COLOR = 0x404040;
+
+/// 信号機ボタン: 閉じる（赤）
+export const Rgb BTN_CLOSE_COLOR   = 0xFF5F57;
+/// 信号機ボタン: 最小化（黄）
+export const Rgb BTN_MIN_COLOR     = 0xFEBC2E;
+/// 信号機ボタン: 最大化（緑）
+export const Rgb BTN_MAX_COLOR     = 0x28C840;
+
+// ============================================================
+// メニューバー
+// ============================================================
+
+/// メニューバー背景
+export const Rgb MENUBAR_BG_COLOR  = 0xE8E8EC;
+/// メニューバー文字色
+export const Rgb MENUBAR_FG_COLOR  = 0x1D1D1F;
+/// メニューバー枠線
+export const Rgb MENUBAR_BORDER_COLOR = 0xC8C8CC;
+
+// ============================================================
+// Dock
+// ============================================================
+
+/// Dock背景
+export const Rgb DOCK_BG_COLOR     = 0x2A2A2E;
+/// Dock枠線
+export const Rgb DOCK_BORDER_COLOR = 0x505058;
+/// Dockセパレータ
+export const Rgb DOCK_SEP_COLOR    = 0x555558;
+
+/// ターミナルアイコン背景
+export const Rgb ICON_TERMINAL_BG  = 0x1C1C1E;
+/// ターミナルアイコン枠線
+export const Rgb ICON_TERMINAL_BORDER = 0x555555;
+/// ターミナルアイコン文字色
+export const Rgb ICON_TERMINAL_FG  = 0x50FA7B;
+/// ファイルアイコン背景
+export const Rgb ICON_FILES_BG     = 0x007AFF;
+/// 設定アイコン背景
+export const Rgb ICON_SETTINGS_BG  = 0x636366;
+/// Aboutアイコン背景
+export const Rgb ICON_ABOUT_BG     = 0x5856D6;
+/// ゴミ箱アイコン背景
+export const Rgb ICON_TRASH_BG     = 0x8E8E93;
+/// ゴミ箱アイコン枠線
+export const Rgb ICON_TRASH_BORDER = 0x636366;
+/// ゴミ箱アイコン文字色
+export const Rgb ICON_TRASH_FG     = 0x3A3A3C;
+
+// ============================================================
+// ターミナル
+// ============================================================
+
+/// ターミナル背景色
+export const Rgb TERM_BG_COLOR     = 0x000000;
+/// ターミナルテキスト色（デフォルト: 明灰）
+export const Rgb TERM_FG_COLOR     = 0xCCCCCC;
+
+// ============================================================
+// VGAパレット (16色)
+// ============================================================
+
+export const Rgb VGA_BLACK         = 0x000000;
+export const Rgb VGA_BLUE          = 0x0000AA;
+export const Rgb VGA_GREEN         = 0x00AA00;
+export const Rgb VGA_CYAN          = 0x00AAAA;
+export const Rgb VGA_RED           = 0xAA0000;
+export const Rgb VGA_MAGENTA       = 0xAA00AA;
+export const Rgb VGA_BROWN         = 0xAA5500;
+export const Rgb VGA_LIGHT_GRAY    = 0xAAAAAA;
+export const Rgb VGA_DARK_GRAY     = 0x555555;
+export const Rgb VGA_LIGHT_BLUE    = 0x5555FF;
+export const Rgb VGA_LIGHT_GREEN   = 0x55FF55;
+export const Rgb VGA_LIGHT_CYAN    = 0x55FFFF;
+export const Rgb VGA_LIGHT_RED     = 0xFF5555;
+export const Rgb VGA_LIGHT_MAGENTA = 0xFF55FF;
+export const Rgb VGA_YELLOW        = 0xFFFF55;
+export const Rgb VGA_WHITE         = 0xFFFFFF;
+
+// ============================================================
+// VGA テキストモード色インデックス
+// ============================================================
+
+export const ulong VGA_IDX_BLACK         = 0;
+export const ulong VGA_IDX_BLUE          = 1;
+export const ulong VGA_IDX_GREEN         = 2;
+export const ulong VGA_IDX_CYAN          = 3;
+export const ulong VGA_IDX_RED           = 4;
+export const ulong VGA_IDX_MAGENTA       = 5;
+export const ulong VGA_IDX_BROWN         = 6;
+export const ulong VGA_IDX_LIGHT_GRAY    = 7;
+export const ulong VGA_IDX_DARK_GRAY     = 8;
+export const ulong VGA_IDX_LIGHT_BLUE    = 9;
+export const ulong VGA_IDX_LIGHT_GREEN   = 10;
+export const ulong VGA_IDX_LIGHT_CYAN    = 11;
+export const ulong VGA_IDX_LIGHT_RED     = 12;
+export const ulong VGA_IDX_LIGHT_MAGENTA = 13;
+export const ulong VGA_IDX_YELLOW        = 14;
+export const ulong VGA_IDX_WHITE         = 15;
+
+// ============================================================
+// カーソル色
+// ============================================================
+
+/// マウスカーソルアウトライン
+export const Rgb CURSOR_OUTLINE    = 0x000000;
+/// マウスカーソル内部
+export const Rgb CURSOR_FILL       = 0xFFFFFF;
