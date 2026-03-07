@@ -278,7 +278,7 @@ void kbd_irq_handler() {
         // E0プレフィクス: フラグをセットして待機
         cmpb $$0xE0, %sil;
         jne 10f;
-        movq $$0x93210, %rdi;
+        movq ${KBD_E0_ADDR}, %rdi;
         movq $$1, (%rdi);
         jmp 9f;
         10:;
@@ -286,7 +286,7 @@ void kbd_irq_handler() {
         je 9f;
 
         // E0フラグ確認
-        movq $$0x93210, %rdi;
+        movq ${KBD_E0_ADDR}, %rdi;
         movq (%rdi), %rcx;
         movq $$0, (%rdi);  // フラグクリア
 
@@ -320,15 +320,15 @@ void kbd_irq_handler() {
         movq $$0x83, %rcx;
         // バッファに格納
         42:;
-        movq $$0x93048, %rdi;
+        movq ${KBD_TAIL_ADDR}, %rdi;
         movq (%rdi), %rax;
         movq %rax, %rdx;
         addq $$1, %rdx;
         andq $$63, %rdx;
-        movq $$0x93040, %rbx;
+        movq ${KBD_HEAD_ADDR}, %rbx;
         cmpq (%rbx), %rdx;
         je 9f;
-        movq $$0x93000, %rbx;
+        movq ${KBD_BUF_ADDR}, %rbx;
         movb %cl, (%rbx,%rax,1);
         movq %rdx, (%rdi);
         jmp 9f;
@@ -343,7 +343,7 @@ void kbd_irq_handler() {
         // LShift (0x2A) チェック
         cmpb $$0x2A, %sil;
         jne 1f;
-        movq $$0x93200, %rdi;
+        movq ${KBD_SHIFT_ADDR}, %rdi;
         movq $$1, (%rdi);
         jmp 9f;
         1:;
@@ -351,7 +351,7 @@ void kbd_irq_handler() {
         // RShift (0x36) チェック
         cmpb $$0x36, %sil;
         jne 2f;
-        movq $$0x93200, %rdi;
+        movq ${KBD_SHIFT_ADDR}, %rdi;
         movq $$1, (%rdi);
         jmp 9f;
         2:;
@@ -359,7 +359,7 @@ void kbd_irq_handler() {
         // LCtrl (0x1D) チェック
         cmpb $$0x1D, %sil;
         jne 3f;
-        movq $$0x93208, %rdi;
+        movq ${KBD_CTRL_ADDR}, %rdi;
         movq $$1, (%rdi);
         jmp 9f;
         3:;
@@ -371,7 +371,7 @@ void kbd_irq_handler() {
         je 9f;
 
         // Shift状態を確認
-        movq $$0x93200, %rdi;
+        movq ${KBD_SHIFT_ADDR}, %rdi;
         movq (%rdi), %rdx;
 
         // ASCII変換: Shift状態に応じてテーブルを選択
@@ -380,11 +380,11 @@ void kbd_irq_handler() {
         testq %rdx, %rdx;
         jnz 4f;
         // 通常テーブル
-        movq $$0x93100, %rbx;
+        movq ${SCANCODE_TABLE_ADDR}, %rbx;
         jmp 41f;
         4:;
         // Shiftテーブル
-        movq $$0x93180, %rbx;
+        movq ${SCANCODE_SHIFT_ADDR}, %rbx;
         41:;
 
         movzbq (%rbx,%rax,1), %rcx;
@@ -392,7 +392,7 @@ void kbd_irq_handler() {
         jz 9f;
 
         // Ctrl修飾: a-z → コントロールコード (1-26)
-        movq $$0x93208, %rdi;
+        movq ${KBD_CTRL_ADDR}, %rdi;
         movq (%rdi), %rbx;
         testq %rbx, %rbx;
         jz 43f;
@@ -405,15 +405,15 @@ void kbd_irq_handler() {
         43:;
 
         // バッファに格納
-        movq $$0x93048, %rdi;
+        movq ${KBD_TAIL_ADDR}, %rdi;
         movq (%rdi), %rax;
         movq %rax, %rdx;
         addq $$1, %rdx;
         andq $$63, %rdx;
-        movq $$0x93040, %rbx;
+        movq ${KBD_HEAD_ADDR}, %rbx;
         cmpq (%rbx), %rdx;
         je 9f;
-        movq $$0x93000, %rbx;
+        movq ${KBD_BUF_ADDR}, %rbx;
         movb %cl, (%rbx,%rax,1);
         movq %rdx, (%rdi);
         jmp 9f;
@@ -426,7 +426,7 @@ void kbd_irq_handler() {
         // LShift release
         cmpb $$0x2A, %al;
         jne 6f;
-        movq $$0x93200, %rdi;
+        movq ${KBD_SHIFT_ADDR}, %rdi;
         movq $$0, (%rdi);
         jmp 9f;
         6:;
@@ -434,7 +434,7 @@ void kbd_irq_handler() {
         // RShift release
         cmpb $$0x36, %al;
         jne 7f;
-        movq $$0x93200, %rdi;
+        movq ${KBD_SHIFT_ADDR}, %rdi;
         movq $$0, (%rdi);
         jmp 9f;
         7:;
@@ -442,7 +442,7 @@ void kbd_irq_handler() {
         // LCtrl release
         cmpb $$0x1D, %al;
         jne 9f;
-        movq $$0x93208, %rdi;
+        movq ${KBD_CTRL_ADDR}, %rdi;
         movq $$0, (%rdi);
 
         9:;

@@ -287,7 +287,7 @@ void mouse_irq_handler() {
         movq %rax, %rbx;  // %rbx = データバイト
 
         // 位相取得
-        movq $$0x93310, %rdi;
+        movq ${MOUSE_PHASE_ADDR}, %rdi;
         movq (%rdi), %rcx;  // %rcx = phase
 
         // === パケット同期バリデーション ===
@@ -304,7 +304,7 @@ void mouse_irq_handler() {
         30:;
 
         // パケットバッファに格納
-        movq $$0x93300, %rdi;
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
         addq %rcx, %rdi;
         movb %bl, (%rdi);
 
@@ -312,7 +312,7 @@ void mouse_irq_handler() {
         incq %rcx;
 
         // パケットサイズ取得 (MOUSE_PKTSZ_ADDR)
-        movq $$0x93328, %rdi;
+        movq ${MOUSE_PKTSZ_ADDR}, %rdi;
         movq (%rdi), %rdx;  // %rdx = パケットサイズ (3 or 4)
 
         // パケットサイズが0の場合は4をデフォルトとする
@@ -325,50 +325,50 @@ void mouse_irq_handler() {
         jl 1f;
 
         // パケット完了 — XY移動を取得してカーソル移動に使用
-        movq $$0x93300, %rdi;
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
 
         // byte 0 = ボタン状態 → MOUSE_BTN_ADDR
         movzbq (%rdi), %rax;
         andq $$0x07, %rax;  // bit0-2 = 左/右/中ボタン
-        movq $$0x93340, %rdi;
+        movq ${MOUSE_BTN_ADDR}, %rdi;
         movq %rax, (%rdi);
 
         // byte 1 = X移動 (符号付き) → MOUSE_DX_ADDR
-        movq $$0x93300, %rdi;
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
         movzbq 1(%rdi), %rax;
         movzbq (%rdi), %rbx;
         testb $$0x10, %bl;  // byte0 bit4 = X sign
         jz 40f;
         orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
         40:;
-        movq $$0x93330, %rdi;
+        movq ${MOUSE_DX_ADDR}, %rdi;
         addq %rax, (%rdi);
 
         // byte 2 = Y移動 (符号付き) → MOUSE_DY_ADDR
-        movq $$0x93300, %rdi;
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
         movzbq 2(%rdi), %rax;
         movzbq (%rdi), %rbx;
         testb $$0x20, %bl;  // byte0 bit5 = Y sign
         jz 41f;
         orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
         41:;
-        movq $$0x93338, %rdi;
+        movq ${MOUSE_DY_ADDR}, %rdi;
         addq %rax, (%rdi);
 
         // イベントフラグ設定
-        movq $$0x93348, %rdi;
+        movq ${MOUSE_EVENT_ADDR}, %rdi;
         movq $$1, (%rdi);
 
         cmpq $$4, %rdx;
         jne 20f;
 
         // === 4バイトモード (IntelliMouse): ホイールバイト解析 ===
-        movq $$0x93300, %rdi;
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
         movzbq 3(%rdi), %rax;  // 4バイト目 = ホイール (符号付き)
         testb %al, %al;
         jz 2f;
         movsbq %al, %rax;
-        movq $$0x93318, %rdi;
+        movq ${MOUSE_SCROLL_ADDR}, %rdi;
         addq %rax, (%rdi);  // 加算型: 複数パケットを蓄積
         jmp 2f;
 
@@ -382,13 +382,13 @@ void mouse_irq_handler() {
         //   bit 5 = ボタン5 (スクロール下, QEMUトラックパッド)
         // 注: QEMUはトラックパッドスクロールをボタンプレス→リリースとして
         //     連続パケットで送信するため、プレスのみ検出すればよい
-        movq $$0x93300, %rdi;
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
         movzbq (%rdi), %rax;  // 1バイト目 = ボタン状態
 
         // ボタン4チェック (bit 4 → スクロール上)
         testb $$0x10, %al;
         jz 21f;
-        movq $$0x93318, %rdi;
+        movq ${MOUSE_SCROLL_ADDR}, %rdi;
         addq $$1, (%rdi);  // 加算型: スクロール上を蓄積
         jmp 2f;
         21:;
@@ -396,14 +396,14 @@ void mouse_irq_handler() {
         // ボタン5チェック (bit 5 → スクロール下)
         testb $$0x20, %al;
         jz 2f;
-        movq $$0x93318, %rdi;
+        movq ${MOUSE_SCROLL_ADDR}, %rdi;
         subq $$1, (%rdi);  // 加算型: スクロール下を蓄積
 
         2:;
         xorq %rcx, %rcx;  // 位相リセット
 
         1:;
-        movq $$0x93310, %rdi;
+        movq ${MOUSE_PHASE_ADDR}, %rdi;
         movq %rcx, (%rdi);
 
         // EOI (スレーブPIC + マスターPIC)
