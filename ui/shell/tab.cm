@@ -206,7 +206,6 @@ impl TabComplete {
         cmd_entry(buf, n, "hostls" as ulong);   n = n + 1;
         cmd_entry(buf, n, "hostcat" as ulong);  n = n + 1;
         cmd_entry(buf, n, "apt" as ulong);      n = n + 1;
-        cmd_entry(buf, n, "brew" as ulong);     n = n + 1;
         return n;
     }
 
