@@ -105,7 +105,11 @@ impl Vfs {
                     }
                     ino = RamFs::create(fname as void*, S_IFREG | 0x1B6, bytes);
                     if (ino != 0) {
-                        RamFs::write(ino, tmp_buf, 0, bytes);
+                        Result<long, long> wr2 = RamFs::write(ino, tmp_buf, 0, bytes);
+                        match (wr2) {
+                            Result::Ok(v2) => {}
+                            Result::Err(e2) => {}
+                        }
                     }
                 }
                 if (ino == 0) {

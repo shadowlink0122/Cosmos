@@ -345,7 +345,11 @@ impl RamFs {
         // 既存の新名前エントリを削除
         Ino new_exist = RamFs::lookup(newname);
         if (new_exist != 0) {
-            RamFs::unlink(newname);
+            Result<long, long> ur = RamFs::unlink(newname);
+            match (ur) {
+                Result::Ok(v) => {}
+                Result::Err(e) => {}
+            }
         }
 
         // 旧名前エントリを検索して名前を差し替え

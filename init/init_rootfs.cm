@@ -12,6 +12,7 @@ import ../lib/printk;
 import ../lib/kstring;
 import ../fs/ramfs;
 import ../mm/pmm;
+import ../include/result;
 import ../ui/mem;
 
 // ============================================================
@@ -199,7 +200,11 @@ impl InitRootfs {
         }
 
         // ファイルサイズ設定 (188バイト)
-        RamFs::write(ino, data_page, 0, 188);
+        Result<long, long> wr = RamFs::write(ino, data_page, 0, 188);
+        match (wr) {
+            Result::Ok(v) => {}
+            Result::Err(e) => {}
+        }
 
         pr_info(w, "init_rootfs: /hello registered (188B, ELF64 static)" as void*);
     }

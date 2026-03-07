@@ -25,6 +25,8 @@ import ../lib/printk;
 import ../ui/shell/io;
 import ../ui/shell/defs;
 import ../ui/mem;
+import ../include/result;
+import ../include/errno;
 
 // ============================================================
 // Gen 定数
@@ -165,7 +167,11 @@ impl Gen {
             if (bytes == 0) { break; }
 
             // RamFSのデータバッファに直接コピー
-            RamFs::write(ino, GEN_TMP_BUF, offset, bytes);
+            Result<long, long> wr = RamFs::write(ino, GEN_TMP_BUF, offset, bytes);
+            match (wr) {
+                Result::Ok(v) => {}
+                Result::Err(e) => {}
+            }
             total_read = total_read + bytes;
             offset = offset + bytes;
 
@@ -203,7 +209,12 @@ impl Gen {
         }
 
         // RamFSからファイル削除
-        long result = RamFs::unlink(name_addr as void*);
+        long result = 0;
+        Result<long, long> ur = RamFs::unlink(name_addr as void*);
+        match (ur) {
+            Result::Ok(v) => { result = v; }
+            Result::Err(e) => { result = 0 - e; }
+        }
         if (result == 0) {
             Shell::set_color(10, 0);
             Shell::write("==> " as void*);
@@ -237,7 +248,11 @@ impl Gen {
                     // ELFかチェック (最初の4バイト: 0x7f 'E' 'L' 'F')
                     if (fsize >= 4) {
                         ulong buf4 = GEN_TMP_BUF;
-                        RamFs::read(ino, buf4, 0, 4);
+                        Result<long, long> rr = RamFs::read(ino, buf4, 0, 4);
+                        match (rr) {
+                            Result::Ok(v) => {}
+                            Result::Err(e) => {}
+                        }
                         ulong b0 = Mem::read_byte(buf4);
                         ulong b1 = Mem::read_byte(buf4 + 1);
                         ulong b2 = Mem::read_byte(buf4 + 2);
@@ -378,7 +393,12 @@ impl Gen {
 
         // exec実行
         SerialPort serial(COM1);
-        Pid pid = Loader::exec(name_addr as void*, &serial);
+        Pid pid = -1;
+        Result<long, long> er = Loader::exec(name_addr as void*, &serial);
+        match (er) {
+            Result::Ok(v) => { pid = v; }
+            Result::Err(e) => { pid = 0 - e; }
+        }
         if (pid >= 0) {
             Shell::write("==> Running " as void*);
             Shell::write(name_addr as void*);

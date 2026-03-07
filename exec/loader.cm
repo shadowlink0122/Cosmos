@@ -250,8 +250,11 @@ impl Loader {
                     Ino interp_ino = RamFs::lookup(interp_fname as void*);
                     if (interp_ino != 0) {
                         ulong interp_fsize = RamFs::file_size(interp_ino);
-                        RamFs::read(interp_ino, INTERP_TMP_BUF, 0, interp_fsize);
-                        interp_bytes = interp_fsize;
+                        Result<long, long> rr2 = RamFs::read(interp_ino, INTERP_TMP_BUF, 0, interp_fsize);
+                        match (rr2) {
+                            Result::Ok(v) => { interp_bytes = v as ulong; }
+                            Result::Err(e) => {}
+                        }
                     }
                 }
 

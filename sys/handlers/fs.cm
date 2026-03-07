@@ -353,8 +353,12 @@ impl SyscallFs {
             ulong base = *base_ptr;
             ulong len = *len_ptr;
             if (len > 0) {
-                long ret = Vfs::read(fd as long, base, len);
-                if (ret < 0) { return ret; }
+                long ret = 0;
+                Result<long, long> rr = Vfs::read(fd as long, base, len);
+                match (rr) {
+                    Result::Ok(v) => { ret = v; }
+                    Result::Err(e) => { return 0 - e; }
+                }
                 total = total + ret;
                 if ((ret as ulong) < len) { break; }  // 短い読み込み → 終了
             }
