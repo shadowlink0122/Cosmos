@@ -11,7 +11,7 @@ import ../../drivers/serial;
 import ../../lib/printk;
 import ../../ui/mem;
 import ../../ui/vga;
-import ../../ui/shell_const;
+import ../../ui/shell/defs;
 import ../../drivers/timer/rtc;
 import ../ktest;
 

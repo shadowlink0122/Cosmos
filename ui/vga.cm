@@ -5,7 +5,7 @@
 // カーソル更新、スクロール、画面クリア、スクロールバックを提供。
 // GUIモード時は全操作をスキップ。
 
-import ./shell_const;
+import ./shell/defs;
 import ./mem;
 import ../drivers/serial;
 

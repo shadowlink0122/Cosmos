@@ -1,0 +1,355 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell_tab - Tab補完
+//
+// TabComplete struct/impl — コマンド名/ファイル名/9pfsパス補完を提供。
+// shell.cmから深いネスト(5段)のロジックを関数に分割。
+
+import ../../include/types;
+import ./defs;
+import ../mem;
+import ./io;
+import ./prompt;
+import ./util;
+import ../../fs/ramfs;
+import ../../drivers/virtio/virtio_9p;
+import ../../include/keycode;
+import ../../include/color;
+
+// ============================================================
+// 補完用バッファアドレス
+// ============================================================
+
+const ulong CMD_LIST_ADDR = 0x9A000;
+const ulong PATH_LIST_ADDR = 0xA5B000;
+
+// ============================================================
+// ファイルスコープヘルパー（モジュールprivate）
+// ============================================================
+
+/// コマンド名をバッファにコピー (16バイト固定)
+void cmd_entry(ulong buf, ulong idx, ulong name) {
+    ulong dst = buf + idx * 16;
+    ulong i = 0;
+    while (i < 15) {
+        ulong c = Mem::read_byte(name + i);
+        Mem::write_byte(dst + i, c);
+        if (c == 0) { break; }
+        i = i + 1;
+    }
+    Mem::write_byte(dst + i, 0);
+}
+
+/// word_addrの先頭word_lenバイトがtarget_addrと一致するか
+ulong prefix_match(ulong target_addr, ulong word_addr, ulong word_len) {
+    ulong i = 0;
+    while (i < word_len) {
+        if (Mem::read_byte(target_addr + i) != Mem::read_byte(word_addr + i)) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+/// 文字列長を取得
+ulong str_len(ulong addr) {
+    ulong len = 0;
+    while (Mem::read_byte(addr + len) != 0) { len = len + 1; }
+    return len;
+}
+
+/// /mnt/host/ 配下の9pfsファイル名補完
+void tab_complete_9p(ulong path_list, ulong* path_count,
+                     ulong word_addr, ulong word_len,
+                     ulong* match_count_ptr, ulong* match_addr_ptr) {
+    if (Virtio9p::is_ready() == 0) { return; }
+
+    ulong fid = 12;
+    ulong walk_ok = Virtio9p::walk(0, fid, "" as ulong);
+    if (walk_ok == 0) { return; }
+
+    ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
+    if (open_ok == 0) { Virtio9p::clunk(fid); return; }
+
+    ulong dir_buf = 0xA5A000;
+    ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
+
+    // readdirデータ解析
+    ulong dpos = 0;
+    while (dpos < dir_len) {
+        dpos = dpos + 13;  // qid
+        dpos = dpos + 8;   // offset
+        ulong dtype = Mem::read_byte(dir_buf + dpos);
+        dpos = dpos + 1;
+        ulong nlen = Virtio9p::read_le16(dir_buf + dpos);
+        dpos = dpos + 2;
+
+        // フルパスを構築: /mnt/host/name
+        ulong pcount = *path_count;
+        ulong entry_addr = path_list + pcount * 128;
+        ulong pfx = "/mnt/host/" as ulong;
+        ulong pi = 0;
+        while (pi < 10) {
+            Mem::write_byte(entry_addr + pi, Mem::read_byte(pfx + pi));
+            pi = pi + 1;
+        }
+        ulong ni = 0;
+        while (ni < nlen && ni < 110) {
+            Mem::write_byte(entry_addr + 10 + ni, Mem::read_byte(dir_buf + dpos + ni));
+            ni = ni + 1;
+        }
+        Mem::write_byte(entry_addr + 10 + ni, 0);
+
+        // . と .. をスキップ
+        ulong skip = 0;
+        if (nlen == 1 && Mem::read_byte(dir_buf + dpos) == 46) { skip = 1; }
+        if (nlen == 2 && Mem::read_byte(dir_buf + dpos) == 46 && Mem::read_byte(dir_buf + dpos + 1) == 46) { skip = 1; }
+
+        if (skip == 0) {
+            if (prefix_match(entry_addr, word_addr, word_len) != 0) {
+                *match_count_ptr = *match_count_ptr + 1;
+                *match_addr_ptr = entry_addr;
+                *path_count = pcount + 1;
+            }
+        }
+        dpos = dpos + nlen;
+    }
+    Virtio9p::clunk(fid);
+}
+
+/// 仮想ディレクトリパス候補を追加
+void tab_complete_vpath(ulong path_list, ulong* path_count,
+                        ulong word_addr, ulong word_len,
+                        ulong* match_count_ptr, ulong* match_addr_ptr) {
+    ulong pcount = *path_count;
+
+    // "/mnt/" エントリ
+    ulong vp1 = path_list + pcount * 128;
+    ulong mnt_str = "/mnt/" as ulong;
+    ulong vi = 0;
+    while (vi < 5) {
+        Mem::write_byte(vp1 + vi, Mem::read_byte(mnt_str + vi));
+        vi = vi + 1;
+    }
+    Mem::write_byte(vp1 + 5, 0);
+    if (prefix_match(vp1, word_addr, word_len) != 0 && word_len < 5) {
+        *match_count_ptr = *match_count_ptr + 1;
+        *match_addr_ptr = vp1;
+        pcount = pcount + 1;
+    }
+
+    // "/mnt/host/" エントリ
+    ulong vp2 = path_list + pcount * 128;
+    ulong mnthost_str = "/mnt/host/" as ulong;
+    vi = 0;
+    while (vi < 10) {
+        Mem::write_byte(vp2 + vi, Mem::read_byte(mnthost_str + vi));
+        vi = vi + 1;
+    }
+    Mem::write_byte(vp2 + 10, 0);
+    if (prefix_match(vp2, word_addr, word_len) != 0 && word_len < 10) {
+        *match_count_ptr = *match_count_ptr + 1;
+        *match_addr_ptr = vp2;
+        pcount = pcount + 1;
+    }
+
+    *path_count = pcount;
+}
+
+// ============================================================
+// TabComplete — Tab補完
+// ============================================================
+
+/// TabComplete — Tab補完処理
+export struct TabComplete {}
+
+impl TabComplete {
+    /// ビルトインコマンド名リストを生成
+    /// buf: 出力先バッファ (各エントリ16バイト)
+    /// 返り値: コマンド数
+    static ulong fill_cmd_list(ulong buf) {
+        ulong n = 0;
+        cmd_entry(buf, n, "help" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "ps" as ulong);       n = n + 1;
+        cmd_entry(buf, n, "free" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "uptime" as ulong);   n = n + 1;
+        cmd_entry(buf, n, "uname" as ulong);    n = n + 1;
+        cmd_entry(buf, n, "date" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "clear" as ulong);    n = n + 1;
+        cmd_entry(buf, n, "reboot" as ulong);   n = n + 1;
+        cmd_entry(buf, n, "ls" as ulong);       n = n + 1;
+        cmd_entry(buf, n, "cat" as ulong);      n = n + 1;
+        cmd_entry(buf, n, "touch" as ulong);    n = n + 1;
+        cmd_entry(buf, n, "write" as ulong);    n = n + 1;
+        cmd_entry(buf, n, "echo" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "rm" as ulong);       n = n + 1;
+        cmd_entry(buf, n, "mkdir" as ulong);    n = n + 1;
+        cmd_entry(buf, n, "cd" as ulong);       n = n + 1;
+        cmd_entry(buf, n, "pwd" as ulong);      n = n + 1;
+        cmd_entry(buf, n, "env" as ulong);      n = n + 1;
+        cmd_entry(buf, n, "export" as ulong);   n = n + 1;
+        cmd_entry(buf, n, "history" as ulong);  n = n + 1;
+        cmd_entry(buf, n, "kill" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "cp" as ulong);       n = n + 1;
+        cmd_entry(buf, n, "mv" as ulong);       n = n + 1;
+        cmd_entry(buf, n, "head" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "tail" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "wc" as ulong);       n = n + 1;
+        cmd_entry(buf, n, "hexdump" as ulong);  n = n + 1;
+        cmd_entry(buf, n, "grep" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "sort" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "vmstat" as ulong);   n = n + 1;
+        cmd_entry(buf, n, "exec" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "test" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "ping" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "curl" as ulong);     n = n + 1;
+        cmd_entry(buf, n, "hostls" as ulong);   n = n + 1;
+        cmd_entry(buf, n, "hostcat" as ulong);  n = n + 1;
+        cmd_entry(buf, n, "apt" as ulong);      n = n + 1;
+        cmd_entry(buf, n, "brew" as ulong);     n = n + 1;
+        return n;
+    }
+
+    /// Tab補完実行
+    static void complete(ulong* len_ptr, ulong* cur_ptr) {
+        ulong len = *len_ptr;
+        if (len == 0) { return; }
+
+        // 最後のワード開始位置を検索
+        ulong word_start = 0;
+        ulong ws = 0;
+        while (ws < len) {
+            if (Mem::read_byte(CMD_BUF_ADDR + ws) == 32) {
+                word_start = ws + 1;
+            }
+            ws = ws + 1;
+        }
+        ulong word_len = len - word_start;
+        ulong is_first_word = 0;
+        if (word_start == 0) { is_first_word = 1; }
+
+        if (word_len == 0) { return; }
+
+        ulong word_addr = CMD_BUF_ADDR + word_start;
+        ulong match_count = 0;
+        ulong match_addr = 0;
+
+        // 1. コマンド名補完 (先頭ワードの場合)
+        ulong cmd_count = 0;
+        if (is_first_word != 0) {
+            cmd_count = TabComplete::fill_cmd_list(CMD_LIST_ADDR);
+            ulong ci = 0;
+            while (ci < cmd_count) {
+                ulong cname = CMD_LIST_ADDR + ci * 16;
+                if (prefix_match(cname, word_addr, word_len) != 0) {
+                    match_count = match_count + 1;
+                    match_addr = cname;
+                }
+                ci = ci + 1;
+            }
+        }
+
+        // 2. パス補完: ワードが / で始まる場合
+        ulong path_count = 0;
+        ulong first_ch = Mem::read_byte(word_addr);
+        if (first_ch == CHAR_SLASH) {
+            ulong is_host = 0;
+            if (word_len >= 10) {
+                ulong pmnt = "/mnt/host/" as ulong;
+                if (prefix_match(pmnt, word_addr, 10) != 0) {
+                    is_host = 1;
+                    ulong mc_tmp = match_count;
+                    ulong ma_tmp = match_addr;
+                    tab_complete_9p(PATH_LIST_ADDR, &path_count, word_addr, word_len,
+                                   &mc_tmp, &ma_tmp);
+                    match_count = mc_tmp;
+                    match_addr = ma_tmp;
+                }
+            }
+            if (is_host == 0) {
+                ulong mc_tmp = match_count;
+                ulong ma_tmp = match_addr;
+                tab_complete_vpath(PATH_LIST_ADDR, &path_count, word_addr, word_len,
+                                  &mc_tmp, &ma_tmp);
+                match_count = mc_tmp;
+                match_addr = ma_tmp;
+            }
+        }
+
+        // 3. ファイル名補完 (ramfs)
+        ulong dc = RamFs::dir_count();
+        ulong di = 0;
+        while (di < dc) {
+            ulong name = RamFs::dir_name(di);
+            if (name != 0) {
+                if (prefix_match(name, word_addr, word_len) != 0) {
+                    match_count = match_count + 1;
+                    match_addr = name;
+                }
+            }
+            di = di + 1;
+        }
+
+        // 結果処理
+        if (match_count == 1) {
+            // 一意マッチ: 補完実行
+            ulong name_len = str_len(match_addr);
+            ulong fill = word_len;
+            while (fill < name_len) {
+                ulong fch = Mem::read_byte(match_addr + fill);
+                if (len < CMD_BUF_SIZE - 1) {
+                    Mem::write_byte(CMD_BUF_ADDR + len, fch);
+                    len = len + 1;
+                    Shell::putc(fch);
+                }
+                fill = fill + 1;
+            }
+            *len_ptr = len;
+            *cur_ptr = len;
+        } else if (match_count > 1) {
+            // 複数マッチ: 候補一覧を表示
+            Shell::newline();
+
+            if (is_first_word != 0) {
+                ulong ci = 0;
+                while (ci < cmd_count) {
+                    ulong cname = CMD_LIST_ADDR + ci * 16;
+                    if (prefix_match(cname, word_addr, word_len) != 0) {
+                        Shell::write(cname as void*);
+                        Shell::write("  " as void*);
+                    }
+                    ci = ci + 1;
+                }
+            }
+
+            ulong pi = 0;
+            while (pi < path_count) {
+                ulong pentry = PATH_LIST_ADDR + pi * 128;
+                Shell::write(pentry as void*);
+                Shell::write("  " as void*);
+                pi = pi + 1;
+            }
+
+            di = 0;
+            while (di < dc) {
+                ulong name = RamFs::dir_name(di);
+                if (name != 0) {
+                    if (prefix_match(name, word_addr, word_len) != 0) {
+                        Shell::write(name as void*);
+                        Shell::write("  " as void*);
+                    }
+                }
+                di = di + 1;
+            }
+
+            // プロンプト再表示 + 入力済みテキスト復元
+            Shell::newline();
+            Prompt::draw();
+            ulong ri = 0;
+            while (ri < len) {
+                Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+                ri = ri + 1;
+            }
+        }
+    }
+}

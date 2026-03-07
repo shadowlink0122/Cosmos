@@ -3,10 +3,10 @@
 //
 // History struct/impl — リングバッファによるコマンド履歴。
 
-import ./shell_const;
+import ./shell/defs;
 import ./mem;
 import ./vga;
-import ./shell_io;
+import ./shell/io;
 import ../lib/kstring;
 
 /// History — コマンド履歴管理

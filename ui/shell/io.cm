@@ -5,10 +5,10 @@
 // 循環参照を避けるため、Terminal/Fb直接importなし。
 // 代わりにコールバック関数ポインタを使用。
 
-import ./shell_const;
-import ./mem;
-import ./vga;
-import ../drivers/serial;
+import ./defs;
+import ../mem;
+import ../vga;
+import ../../drivers/serial;
 
 // ============================================================
 // GUI出力コールバックアドレス

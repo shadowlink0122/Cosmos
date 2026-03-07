@@ -23,7 +23,7 @@ import ../sched/process;
 import ../sched/scheduler;
 import ../mm/mmap;
 import ../fs/devfs;
-import ../ui/shell_io;
+import ../ui/shell/io;
 import ../ui/vga;
 import ../fs/pipe;
 // ABI拡張: 分野別syscall

@@ -32,8 +32,8 @@ import ../net/app/dns;
 import ../fs/ramfs;
 import ../mm/pmm;
 import ../lib/kstring;
-import ../ui/shell_io;
-import ../ui/shell_const;
+import ../ui/shell/io;
+import ../ui/shell/defs;
 import ../ui/mem;
 
 // ============================================================

@@ -4,7 +4,7 @@
 // Shell依存を排除し、VGAとSerialへ直接出力。
 // shell/cmdの巨大importチェーンを回避。
 
-import ../ui/shell_const;
+import ../ui/shell/defs;
 import ../ui/mem;
 import ../ui/vga;
 import ../drivers/serial;

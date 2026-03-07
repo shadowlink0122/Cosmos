@@ -12,7 +12,7 @@ import ../../drivers/serial;
 import ../../lib/printk;
 import ../../sched/process;
 import ../../sched/scheduler;
-import ../../ui/shell_io;
+import ../../ui/shell/io;
 
 // ゲートタイプ定数
 export const ulong GATE_INT  = 0x8E;  // Interrupt Gate, DPL=0

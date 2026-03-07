@@ -1,0 +1,62 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell_pipe - パイプ処理
+//
+// Pipe struct/impl — コマンドライン中の '|' を検出し、パイプ接続処理を実行。
+
+import ./defs;
+import ../mem;
+import ../cmd;
+
+/// Pipe — パイプ処理
+export struct Pipe {}
+
+impl Pipe {
+    /// パイプ文字 '|' の位置を検索
+    /// 見つからなければ len を返す
+    static ulong find(ulong buf_addr, ulong len) {
+        ulong i = 0;
+        while (i < len) {
+            if (Mem::read_byte(buf_addr + i) == 124) {  // '|'
+                return i;
+            }
+            i = i + 1;
+        }
+        return len;  // パイプなし
+    }
+
+    /// パイプ付きコマンドを実行
+    static void exec(ulong buf_addr, ulong pipe_pos, ulong len, ulong* len_ptr) {
+        // cmd1: パイプ位置でNUL終端
+        Mem::write_byte(buf_addr + pipe_pos, 0);
+        // cmd1の末尾スペース除去
+        ulong t = pipe_pos;
+        while (t > 0) {
+            ulong tc = Mem::read_byte(buf_addr + t - 1);
+            if (tc != 32) { break; }
+            Mem::write_byte(buf_addr + t - 1, 0);
+            t = t - 1;
+        }
+        // cmd1実行
+        Cmd::dispatch();
+
+        // cmd2: 先頭スペース除去
+        ulong cmd2_start = pipe_pos + 1;
+        while (cmd2_start < len) {
+            if (Mem::read_byte(buf_addr + cmd2_start) != 32) { break; }
+            cmd2_start = cmd2_start + 1;
+        }
+        // cmd2をバッファ先頭にコピー
+        ulong cmd2_len = len - cmd2_start;
+        ulong ci = 0;
+        while (ci < cmd2_len) {
+            Mem::write_byte(buf_addr + ci, Mem::read_byte(buf_addr + cmd2_start + ci));
+            ci = ci + 1;
+        }
+        Mem::write_byte(buf_addr + cmd2_len, 0);
+        *len_ptr = cmd2_len;
+        // cmd2実行
+        if (cmd2_len > 0) {
+            Cmd::dispatch();
+        }
+    }
+}
