@@ -51,7 +51,8 @@ const ulong TERM_MAX_ROWS = 50;
 const ulong TERM_COLOR_OFFSET = 4096;
 
 /// VGA色→RGBパレットテーブルアドレス (16色 * 8B = 128B)
-const PhysAddr VGA_PALETTE_ADDR = 0xD81000;
+/// 注: WIN_STATE_ADDR(0xD81000) + 8windows*128B = 0xD81400 の後に配置
+const PhysAddr VGA_PALETTE_ADDR = 0xD81800;
 /// シェル色アドレス (低4bit=前景色)
 const PhysAddr SHELL_COLOR_ADDR = 0x95030;
 /// GUI出力dirtyフラグ (画面更新が必要か)

@@ -113,14 +113,8 @@ impl Wm {
 
     /// ターミナルウィンドウを作成
     static ulong create_terminal() {
-        ulong sw = Fb::width();
-        ulong sh = Fb::height();
-        // 画面の50%サイズ
-        ulong tw = sw / 2;
-        ulong th = sh / 2;
-        ulong tx = (sw - tw) / 2;
-        ulong ty = MENUBAR_HEIGHT + 40;
-        return Window::create(tx, ty, tw, th, "Terminal" as void*, 1);
+        // config.cmの定数を使用 (Cmコンパイラの除算バグ回避)
+        return Window::create(DEFAULT_TERM_X, DEFAULT_TERM_Y, DEFAULT_TERM_W, DEFAULT_TERM_H, "Terminal" as void*, 1);
     }
 
     /// マウスイベント処理
@@ -263,14 +257,10 @@ impl Wm {
                     // ターミナル: 空きスロットを検索
                     ulong slot = Terminal::find_free_slot();
                     if (slot < MAX_TERM_SLOTS) {
-                        ulong scr_w = Fb::width();
-                        ulong scr_h = Fb::height();
-                        ulong tw = scr_w / 2;
-                        ulong th = scr_h / 2;
-                        // 各ウィンドウを少しずらして配置
-                        ulong tx = (scr_w - tw) / 2 + slot * 30;
-                        ulong ty = MENUBAR_HEIGHT + 40 + slot * 30;
-                        ulong win_id = Window::create(tx, ty, tw, th, "Terminal" as void*, CONTENT_TERMINAL);
+                        // 各ウィンドウを少しずらして配置 (config.cm定数使用)
+                        ulong tx = DEFAULT_TERM_X + slot * 30;
+                        ulong ty = DEFAULT_TERM_Y + slot * 30;
+                        ulong win_id = Window::create(tx, ty, DEFAULT_TERM_W, DEFAULT_TERM_H, "Terminal" as void*, CONTENT_TERMINAL);
                         if (win_id < MAX_WINDOWS) {
                             Wm::set_active(win_id);
                             Terminal::init(slot, win_id);
