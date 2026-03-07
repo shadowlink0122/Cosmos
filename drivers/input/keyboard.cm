@@ -77,145 +77,145 @@ void init_scancode_table() {
     // === 通常テーブル（JIS配列） ===
 
     // 数字行
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x02, '1' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x03, '2' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x04, '3' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x05, '4' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x06, '5' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x07, '6' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x08, '7' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x09, '8' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0A, '9' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0B, '0' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0C, '-' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0D, '^' as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x02, Ascii::Digit1 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x03, Ascii::Digit2 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x04, Ascii::Digit3 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x05, Ascii::Digit4 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x06, Ascii::Digit5 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x07, Ascii::Digit6 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x08, Ascii::Digit7 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x09, Ascii::Digit8 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0A, Ascii::Digit9 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0B, Ascii::Digit0 as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0C, Ascii::Minus as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0D, Ascii::Caret as ulong);
 
     // 特殊キー
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0E, KEY_BACKSPACE);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0F, KEY_TAB);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x01, KEY_ESCAPE);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0E, Key::Backspace as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x0F, Key::Tab as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x01, Key::Escape as ulong);
 
     // Q行
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x10, 'q' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x11, 'w' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x12, 'e' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x13, 'r' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x14, 't' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x15, 'y' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x16, 'u' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x17, 'i' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x18, 'o' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x19, 'p' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1A, '@' as ulong);   // JIS: @
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1B, '[' as ulong);   // JIS: [
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x10, Ascii::LowerQ as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x11, Ascii::LowerW as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x12, Ascii::LowerE as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x13, Ascii::LowerR as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x14, Ascii::LowerT as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x15, Ascii::LowerY as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x16, Ascii::LowerU as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x17, Ascii::LowerI as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x18, Ascii::LowerO as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x19, Ascii::LowerP as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1A, Ascii::At as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1B, Ascii::BracketL as ulong);
 
     // Enter
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1C, KEY_ENTER);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1C, Key::Enter as ulong);
 
     // A行
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1E, 'a' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1F, 's' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x20, 'd' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x21, 'f' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x22, 'g' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x23, 'h' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x24, 'j' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x25, 'k' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x26, 'l' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x27, ';' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x28, ':' as ulong);   // JIS: :
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x29, '`' as ulong);   // hankaku/zenkaku
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2B, ']' as ulong);   // JIS: ]
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1E, Ascii::LowerA as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x1F, Ascii::LowerS as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x20, Ascii::LowerD as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x21, Ascii::LowerF as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x22, Ascii::LowerG as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x23, Ascii::LowerH as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x24, Ascii::LowerJ as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x25, Ascii::LowerK as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x26, Ascii::LowerL as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x27, Ascii::Semicolon as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x28, Ascii::Colon as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x29, Ascii::Backtick as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2B, Ascii::BracketR as ulong);
 
     // Z行
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2C, 'z' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2D, 'x' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2E, 'c' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2F, 'v' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x30, 'b' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x31, 'n' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x32, 'm' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x33, ',' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x34, '.' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x35, '/' as ulong);
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x73, 92);              // '\' (JIS: ろキー)
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2C, Ascii::LowerZ as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2D, Ascii::LowerX as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2E, Ascii::LowerC as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x2F, Ascii::LowerV as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x30, Ascii::LowerB as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x31, Ascii::LowerN as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x32, Ascii::LowerM as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x33, Ascii::Comma as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x34, Ascii::Period as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x35, Ascii::Slash as ulong);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x73, Ascii::Backslash as ulong);
 
     // スペース
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x39, KEY_SPACE);
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x39, Key::Space as ulong);
 
     // JIS追加キー
-    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x7D, 92);              // '¥' → '\'
+    kbd_write_byte(SCANCODE_TABLE_ADDR + 0x7D, Ascii::Backslash as ulong);
 
     // === Shiftテーブル（JIS配列） ===
 
     // 数字行 Shift
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x02, '!' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x03, '"' as ulong);   // JIS: Shift+2
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x04, '#' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x05, '$' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x06, '%' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x07, '&' as ulong);   // JIS: Shift+6
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x08, 39);              // '\'' (JIS: Shift+7)
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x09, '(' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0A, ')' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0B, '~' as ulong);   // JIS: Shift+0
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0C, '=' as ulong);   // JIS: Shift+-
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0D, '~' as ulong);   // JIS: Shift+^
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x02, Ascii::Exclaim as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x03, Ascii::DQuote as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x04, Ascii::Hash as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x05, Ascii::Dollar as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x06, Ascii::Percent as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x07, Ascii::Ampersand as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x08, Ascii::SQuote as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x09, Ascii::ParenL as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0A, Ascii::ParenR as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0B, Ascii::Tilde as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0C, Ascii::Equal as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0D, Ascii::Tilde as ulong);
 
     // 特殊キー Shift
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0E, KEY_BACKSPACE);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0F, KEY_TAB);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x01, KEY_ESCAPE);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0E, Key::Backspace as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x0F, Key::Tab as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x01, Key::Escape as ulong);
 
     // Q行 Shift (大文字)
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x10, 'Q' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x11, 'W' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x12, 'E' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x13, 'R' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x14, 'T' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x15, 'Y' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x16, 'U' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x17, 'I' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x18, 'O' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x19, 'P' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1A, '`' as ulong);   // JIS: Shift+@
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1B, '{' as ulong);   // JIS: Shift+[
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x10, Ascii::UpperQ as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x11, Ascii::UpperW as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x12, Ascii::UpperE as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x13, Ascii::UpperR as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x14, Ascii::UpperT as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x15, Ascii::UpperY as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x16, Ascii::UpperU as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x17, Ascii::UpperI as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x18, Ascii::UpperO as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x19, Ascii::UpperP as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1A, Ascii::Backtick as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1B, Ascii::BraceL as ulong);
 
     // Enter
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1C, KEY_ENTER);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1C, Key::Enter as ulong);
 
     // A行 Shift (大文字)
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1E, 'A' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1F, 'S' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x20, 'D' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x21, 'F' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x22, 'G' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x23, 'H' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x24, 'J' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x25, 'K' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x26, 'L' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x27, ':' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x28, '*' as ulong);   // JIS: Shift+:
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2B, '}' as ulong);   // JIS: Shift+]
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1E, Ascii::UpperA as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x1F, Ascii::UpperS as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x20, Ascii::UpperD as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x21, Ascii::UpperF as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x22, Ascii::UpperG as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x23, Ascii::UpperH as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x24, Ascii::UpperJ as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x25, Ascii::UpperK as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x26, Ascii::UpperL as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x27, Ascii::Colon as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x28, Ascii::Asterisk as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2B, Ascii::BraceR as ulong);
 
     // Z行 Shift (大文字)
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2C, 'Z' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2D, 'X' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2E, 'C' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2F, 'V' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x30, 'B' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x31, 'N' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x32, 'M' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x33, '<' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x34, '>' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x35, '?' as ulong);
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x73, '_' as ulong);   // JIS: Shift+ろ
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2C, Ascii::UpperZ as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2D, Ascii::UpperX as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2E, Ascii::UpperC as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x2F, Ascii::UpperV as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x30, Ascii::UpperB as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x31, Ascii::UpperN as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x32, Ascii::UpperM as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x33, Ascii::LessThan as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x34, Ascii::GreaterThan as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x35, Ascii::Question as ulong);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x73, Ascii::Underscore as ulong);
 
     // スペース
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x39, KEY_SPACE);
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x39, Key::Space as ulong);
 
     // JIS追加キー Shift
-    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x7D, '|' as ulong);   // JIS: Shift+¥
+    kbd_write_byte(SCANCODE_SHIFT_ADDR + 0x7D, Ascii::Pipe as ulong);
 }
 
 // ============================================================
