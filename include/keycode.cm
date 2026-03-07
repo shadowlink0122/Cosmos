@@ -10,20 +10,20 @@
 
 /// Key — 制御・特殊キーコード
 export enum Key {
-    Null      = 0,      // ヌル (入力なし)
-    CtrlC     = 3,      // Ctrl+C (割り込み)
-    Backspace = 8,      // バックスペース
-    Tab       = 9,      // タブ
-    Enter     = 10,     // 改行 (LF)
-    CtrlL     = 12,     // Ctrl+L (画面クリア)
-    CR        = 13,     // キャリッジリターン
-    Escape    = 27,     // Escape
-    Space     = 32,     // スペース
-    Delete    = 127,    // Delete
-    Up        = 128,    // 上矢印 (0x80, E0変換済み)
-    Down      = 129,    // 下矢印 (0x81)
-    Left      = 130,    // 左矢印 (0x82)
-    Right     = 131     // 右矢印 (0x83)
+    Null      = 0,
+    CtrlC     = 3,
+    Backspace = 8,
+    Tab       = 9,
+    Enter     = 10,
+    CtrlL     = 12,
+    CR        = 13,
+    Escape    = 27,
+    Space     = ' ',
+    Delete    = 127,
+    Up        = 128,
+    Down      = 129,
+    Left      = 130,
+    Right     = 131
 }
 
 // ============================================================
@@ -33,107 +33,67 @@ export enum Key {
 /// Ascii — 印字可能ASCII文字定数
 export enum Ascii {
     // 数字
-    Digit0 = 48,   // '0'
-    Digit1 = 49,   // '1'
-    Digit2 = 50,   // '2'
-    Digit3 = 51,   // '3'
-    Digit4 = 52,   // '4'
-    Digit5 = 53,   // '5'
-    Digit6 = 54,   // '6'
-    Digit7 = 55,   // '7'
-    Digit8 = 56,   // '8'
-    Digit9 = 57,   // '9'
-
-    // 小文字アルファベット
-    LowerA = 97,   // 'a'
-    LowerB = 98,   // 'b'
-    LowerC = 99,   // 'c'
-    LowerD = 100,  // 'd'
-    LowerE = 101,  // 'e'
-    LowerF = 102,  // 'f'
-    LowerG = 103,  // 'g'
-    LowerH = 104,  // 'h'
-    LowerI = 105,  // 'i'
-    LowerJ = 106,  // 'j'
-    LowerK = 107,  // 'k'
-    LowerL = 108,  // 'l'
-    LowerM = 109,  // 'm'
-    LowerN = 110,  // 'n'
-    LowerO = 111,  // 'o'
-    LowerP = 112,  // 'p'
-    LowerQ = 113,  // 'q'
-    LowerR = 114,  // 'r'
-    LowerS = 115,  // 's'
-    LowerT = 116,  // 't'
-    LowerU = 117,  // 'u'
-    LowerV = 118,  // 'v'
-    LowerW = 119,  // 'w'
-    LowerX = 120,  // 'x'
-    LowerY = 121,  // 'y'
-    LowerZ = 122,  // 'z'
+    Digit0 = '0',
+    Digit1,    // '1' (オートインクリメント)
+    Digit2,    // '2'
+    Digit3,    // '3'
+    Digit4,    // '4'
+    Digit5,    // '5'
+    Digit6,    // '6'
+    Digit7,    // '7'
+    Digit8,    // '8'
+    Digit9,    // '9'
 
     // 大文字アルファベット
-    UpperA = 65,   // 'A'
-    UpperB = 66,   // 'B'
-    UpperC = 67,   // 'C'
-    UpperD = 68,   // 'D'
-    UpperE = 69,   // 'E'
-    UpperF = 70,   // 'F'
-    UpperG = 71,   // 'G'
-    UpperH = 72,   // 'H'
-    UpperI = 73,   // 'I'
-    UpperJ = 74,   // 'J'
-    UpperK = 75,   // 'K'
-    UpperL = 76,   // 'L'
-    UpperM = 77,   // 'M'
-    UpperN = 78,   // 'N'
-    UpperO = 79,   // 'O'
-    UpperP = 80,   // 'P'
-    UpperQ = 81,   // 'Q'
-    UpperR = 82,   // 'R'
-    UpperS = 83,   // 'S'
-    UpperT = 84,   // 'T'
-    UpperU = 85,   // 'U'
-    UpperV = 86,   // 'V'
-    UpperW = 87,   // 'W'
-    UpperX = 88,   // 'X'
-    UpperY = 89,   // 'Y'
-    UpperZ = 90,   // 'Z'
+    UpperA = 'A',
+    UpperB,    UpperC,    UpperD,    UpperE,    UpperF,
+    UpperG,    UpperH,    UpperI,    UpperJ,    UpperK,
+    UpperL,    UpperM,    UpperN,    UpperO,    UpperP,
+    UpperQ,    UpperR,    UpperS,    UpperT,    UpperU,
+    UpperV,    UpperW,    UpperX,    UpperY,    UpperZ,
+
+    // 小文字アルファベット
+    LowerA = 'a',
+    LowerB,    LowerC,    LowerD,    LowerE,    LowerF,
+    LowerG,    LowerH,    LowerI,    LowerJ,    LowerK,
+    LowerL,    LowerM,    LowerN,    LowerO,    LowerP,
+    LowerQ,    LowerR,    LowerS,    LowerT,    LowerU,
+    LowerV,    LowerW,    LowerX,    LowerY,    LowerZ,
 
     // 記号 (通常)
-    Minus     = 45,   // '-'
-    Caret     = 94,   // '^'
-    At        = 64,   // '@'
-    BracketL  = 91,   // '['
-    BracketR  = 93,   // ']'
-    Semicolon = 59,   // ';'
-    Colon     = 58,   // ':'
-    Backtick  = 96,   // '`'
-    Comma     = 44,   // ','
-    Period    = 46,   // '.'
-    Slash     = 47,   // '/'
-    Backslash = 92,   // '\'
-    Pipe      = 124,  // '|'
+    Minus     = '-',
+    Caret     = '^',
+    At        = '@',
+    BracketL  = '[',
+    Backslash,   // '\' (92, オートインクリメント)
+    BracketR,    // ']' (93)
+    Semicolon = ';',
+    Colon     = ':',
+    Backtick  = '`',
+    Comma     = ',',
+    Period    = '.',
+    Slash     = '/',
+    Pipe      = '|',
 
     // 記号 (Shift)
-    Exclaim   = 33,   // '!'
-    DQuote    = 34,   // '"'
-    Hash      = 35,   // '#'
-    Dollar    = 36,   // '$'
-    Percent   = 37,   // '%'
-    Ampersand = 38,   // '&'
-    SQuote    = 39,   // '''
-    ParenL    = 40,   // '('
-    ParenR    = 41,   // ')'
-    Tilde     = 126,  // '~'
-    Equal     = 61,   // '='
-    BraceL    = 123,  // '{'
-    BraceR    = 125,  // '}'
-    Asterisk  = 42,   // '*'
-    LessThan  = 60,   // '<'
-    GreaterThan = 62, // '>'
-    Question  = 63,   // '?'
-    Underscore = 95   // '_'
+    Exclaim   = '!',
+    DQuote    = '"',
+    Hash      = '#',
+    Dollar    = '$',
+    Percent   = '%',
+    Ampersand = '&',
+    SQuote    = 39,    // '\'' — シングルクォートはリテラル不可
+    ParenL    = '(',
+    ParenR    = ')',
+    Tilde     = '~',
+    Equal     = '=',
+    BraceL    = '{',
+    BraceR    = '}',
+    Asterisk  = '*',
+    LessThan  = '<',
+    GreaterThan = '>',
+    Question  = '?',
+    Underscore = '_'
 }
 
 // ============================================================
