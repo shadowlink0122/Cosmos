@@ -186,68 +186,88 @@ impl Wm {
             ulong mx = Desktop::cursor_x();
             ulong my = Desktop::cursor_y();
 
-            // ウィンドウボタンヒットテスト
+            // ウィンドウヒットテスト (Z順序: 前面優先)
+            // アクティブウィンドウを最初にテスト（最前面に描画されているため）
             ulong handled = 0;
-            ulong i = 0;
-            while (i < MAX_WINDOWS) {
-                if (Window::is_visible(i) != 0) {
-                    ulong btn = Window::hit_button(i, mx, my);
-                    if (btn == WIN_BTN_CLOSE) {
-                        // 閉じる: ターミナルスロットも解放
-                        ulong ts = Terminal::find_by_window(i);
-                        if (ts < MAX_TERM_SLOTS) {
-                            Terminal::release(ts);
-                        }
-                        Window::close(i);
-                        Wm::compose();
-                        handled = 1;
-                        break;
-                    } else if (btn == WIN_BTN_MINIMIZE) {
-                        ulong ts = Terminal::find_by_window(i);
-                        if (ts < MAX_TERM_SLOTS) {
-                            Terminal::release(ts);
-                        }
-                        Window::close(i);
-                        Wm::compose();
-                        handled = 1;
-                        break;
-                    } else if (btn == WIN_BTN_MAXIMIZE) {
-                        Window::toggle_maximize(i);
-                        Wm::compose();
-                        handled = 1;
-                        break;
-                    }
+            ulong active = Wm::get_active();
 
-                    // タイトルバーヒットテスト → ドラッグ開始
-                    if (handled == 0) {
-                        ulong wx = Window::get_x(i);
-                        ulong wy = Window::get_y(i);
-                        ulong ww = Window::get_w(i);
-                        ulong wh = Window::get_h(i);
-                        if (mx >= wx && mx < wx + ww && my >= wy && my < wy + wh) {
-                            // ウィンドウ領域内クリック → アクティブ化
-                            if (Wm::get_active() != i) {
-                                Wm::set_active(i);
-                                Wm::compose();
-                            }
+            // ヒットテスト対象の順序を構築: アクティブ → 他(逆順)
+            // 最大MAX_WINDOWS=8 なので固定配列で十分
+            ulong[8] test_order;
+            ulong test_count = 0;
 
-                            // タイトルバー内ならドラッグ開始
-                            if (my < wy + TITLEBAR_HEIGHT) {
-                                ulong* drag_flag = DRAG_STATE_ADDR as ulong*;
-                                ulong* drag_win_p = (DRAG_STATE_ADDR + 8) as ulong*;
-                                ulong* drag_ox_p = (DRAG_STATE_ADDR + 0x10) as ulong*;
-                                ulong* drag_oy_p = (DRAG_STATE_ADDR + 0x18) as ulong*;
-                                *drag_flag = 1;
-                                *drag_win_p = i;
-                                *drag_ox_p = mx - wx;
-                                *drag_oy_p = my - wy;
-                            }
-                            handled = 1;
-                            break;
-                        }
-                    }
+            // アクティブウィンドウを最初に
+            if (active < MAX_WINDOWS && Window::is_visible(active) != 0) {
+                test_order[test_count] = active;
+                test_count = test_count + 1;
+            }
+            // 他のウィンドウ（逆順 = 後に作成されたものが手前）
+            ulong ri = MAX_WINDOWS;
+            while (ri > 0) {
+                ri = ri - 1;
+                if (ri != active && Window::is_visible(ri) != 0) {
+                    test_order[test_count] = ri;
+                    test_count = test_count + 1;
                 }
-                i = i + 1;
+            }
+
+            // ヒットテスト実行
+            ulong ti = 0;
+            while (ti < test_count) {
+                ulong i = test_order[ti];
+                ulong btn = Window::hit_button(i, mx, my);
+                if (btn == WIN_BTN_CLOSE) {
+                    ulong ts = Terminal::find_by_window(i);
+                    if (ts < MAX_TERM_SLOTS) {
+                        Terminal::release(ts);
+                    }
+                    Window::close(i);
+                    Wm::compose();
+                    handled = 1;
+                    break;
+                } else if (btn == WIN_BTN_MINIMIZE) {
+                    ulong ts = Terminal::find_by_window(i);
+                    if (ts < MAX_TERM_SLOTS) {
+                        Terminal::release(ts);
+                    }
+                    Window::close(i);
+                    Wm::compose();
+                    handled = 1;
+                    break;
+                } else if (btn == WIN_BTN_MAXIMIZE) {
+                    Window::toggle_maximize(i);
+                    Wm::compose();
+                    handled = 1;
+                    break;
+                }
+
+                // ウィンドウ領域内クリック判定
+                ulong wx = Window::get_x(i);
+                ulong wy = Window::get_y(i);
+                ulong ww = Window::get_w(i);
+                ulong wh = Window::get_h(i);
+                if (mx >= wx && mx < wx + ww && my >= wy && my < wy + wh) {
+                    // ウィンドウ内クリック → アクティブ化
+                    if (Wm::get_active() != i) {
+                        Wm::set_active(i);
+                        Wm::compose();
+                    }
+
+                    // タイトルバー内ならドラッグ開始
+                    if (my < wy + TITLEBAR_HEIGHT) {
+                        ulong* drag_flag = DRAG_STATE_ADDR as ulong*;
+                        ulong* drag_win_p = (DRAG_STATE_ADDR + 8) as ulong*;
+                        ulong* drag_ox_p = (DRAG_STATE_ADDR + 0x10) as ulong*;
+                        ulong* drag_oy_p = (DRAG_STATE_ADDR + 0x18) as ulong*;
+                        *drag_flag = 1;
+                        *drag_win_p = i;
+                        *drag_ox_p = mx - wx;
+                        *drag_oy_p = my - wy;
+                    }
+                    handled = 1;
+                    break;
+                }
+                ti = ti + 1;
             }
 
             // Dockアイコンクリック
