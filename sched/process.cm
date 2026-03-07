@@ -14,6 +14,7 @@ import ../drivers/serial;
 import ../lib/printk;
 import ../lib/kstring;
 import ../mm/pmm;
+import ../include/result;
 import ./scheduler;
 
 // ============================================================
@@ -112,9 +113,9 @@ impl ProcessTable {
     }
 
     /// PIDからプロセスを検索（スケジューラ内を走査）
-    static Process* find_by_pid(Pid target_pid) {
+    static Option<ulong> find_by_pid(Pid target_pid) {
         ulong* sched_ptr = SCHED_PTR_ADDR as ulong*;
-        if (*sched_ptr == 0) { return 0 as Process*; }
+        if (*sched_ptr == 0) { return Option::None; }
         RoundRobinScheduler* sched = (*sched_ptr) as RoundRobinScheduler*;
         ulong i = 0;
         while (i < sched->count) {
@@ -122,12 +123,12 @@ impl ProcessTable {
             if (proc_addr != 0) {
                 Process* proc = proc_addr as Process*;
                 if (proc->pid == target_pid) {
-                    return proc;
+                    return Option::Some(proc as ulong);
                 }
             }
             i = i + 1;
         }
-        return 0 as Process*;
+        return Option::None;
     }
 
     /// プロセス終了: ZOMBIE状態に遷移し、親にSIGCHLDを送信
@@ -135,7 +136,12 @@ impl ProcessTable {
         proc->exit_code = code;
         proc->state = TASK_ZOMBIE;
         // 親プロセスにSIGCHLDを送信
-        Process* parent = ProcessTable::find_by_pid(proc->parent_pid);
+        Process* parent = 0 as Process*;
+        Option<ulong> parent_opt = ProcessTable::find_by_pid(proc->parent_pid);
+        match (parent_opt) {
+            Option::Some(v) => { parent = v as Process*; }
+            Option::None => {}
+        }
         ulong parent_addr = parent as ulong;
         if (parent_addr != 0) {
             // SIGCHLD = 17, ビット17をセット

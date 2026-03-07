@@ -8,6 +8,7 @@ import ../include/types;
 import ../include/scheduler;
 import ../include/signal;
 import ../include/errno;
+import ../include/result;
 import ../sched/process;
 import ../sched/scheduler;
 
@@ -18,9 +19,12 @@ impl Signal {
     /// プロセスにシグナルを送信
     static long send(Pid target_pid, ulong sig) {
         if (sig == 0 || sig >= NSIG) { return 0 - EINVAL; }
-        Process* proc = ProcessTable::find_by_pid(target_pid);
-        ulong proc_addr = proc as ulong;
-        if (proc_addr == 0) { return 0 - ESRCH; }
+        Process* proc = 0 as Process*;
+        Option<ulong> proc_opt = ProcessTable::find_by_pid(target_pid);
+        match (proc_opt) {
+            Option::Some(v) => { proc = v as Process*; }
+            Option::None => { return 0 - ESRCH; }
+        }
         // SIGKILL / SIGSTOP は無視不可
         if (sig == SIGKILL) {
             // 即座にプロセスを終了

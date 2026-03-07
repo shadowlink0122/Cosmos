@@ -16,6 +16,7 @@ import ../lib/kstring;
 import ./vmm;
 import ./pmm;
 import ./mmap;
+import ../include/result;
 
 // ============================================================
 // ページフォルトエラーコードビット
@@ -68,7 +69,12 @@ export void handle_page_fault(ulong error_code) {
     // 非存在ページフォルト: Demand Paging を試行
     if (info.is_present == 0) {
         // VMAテーブルでこのアドレスがマッピング予約済みか確認
-        Vma* vma = Mmap::find_vma(cr2);
+        Vma* vma = 0 as Vma*;
+        Option<ulong> vma_opt = Mmap::find_vma(cr2);
+        match (vma_opt) {
+            Option::Some(v) => { vma = v as Vma*; }
+            Option::None => {}
+        }
         ulong vma_addr = vma as ulong;
         if (vma_addr != 0) {
             // VMA内 → 物理ページを割り当ててマッピング

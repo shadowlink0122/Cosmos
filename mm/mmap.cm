@@ -100,18 +100,18 @@ impl Mmap {
     }
 
     /// 仮想アドレスが属するVMAを検索
-    static Vma* find_vma(ulong addr) {
+    static Option<ulong> find_vma(ulong addr) {
         ulong i = 0;
         while (i < VMA_MAX) {
             Vma* vma = Mmap::get_vma(i);
             if (vma->used != 0) {
                 if (addr >= vma->start && addr < vma->end) {
-                    return vma;
+                    return Option::Some(vma as ulong);
                 }
             }
             i = i + 1;
         }
-        return 0 as Vma*;
+        return Option::None;
     }
 
     /// 使用されていない仮想アドレス範囲を検索
@@ -201,9 +201,12 @@ impl Mmap {
     static Result<long, long> do_munmap(ulong addr, ulong length) {
         if (length == 0) { return Result::Err(EINVAL); }
 
-        Vma* vma = Mmap::find_vma(addr);
-        ulong vma_addr = vma as ulong;
-        if (vma_addr == 0) { return Result::Err(EINVAL); }
+        Vma* vma = 0 as Vma*;
+        Option<ulong> vma_opt = Mmap::find_vma(addr);
+        match (vma_opt) {
+            Option::Some(v) => { vma = v as Vma*; }
+            Option::None => { return Result::Err(EINVAL); }
+        }
 
         // PMMを取得してページ解放
         ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;

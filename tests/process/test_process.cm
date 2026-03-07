@@ -6,6 +6,7 @@
 import ../../include/types;
 import ../../include/config;
 import ../../include/scheduler;
+import ../../include/result;
 import ../../drivers/serial;
 import ../../lib/printk;
 import ../../sched/process;
@@ -32,12 +33,20 @@ export void test_process() {
     }
 
     // PID 0 (idle) を検索
-    Process* idle = ProcessTable::find_by_pid(0);
-    ulong idle_addr = idle as ulong;
+    ulong idle_addr = 0;
+    Option<ulong> idle_opt = ProcessTable::find_by_pid(0);
+    match (idle_opt) {
+        Option::Some(v) => { idle_addr = v; }
+        Option::None => {}
+    }
     KTest::assert_nonzero(idle_addr, "find PID 0 (idle)" as void*);
 
     // 存在しないPID
-    Process* ghost = ProcessTable::find_by_pid(999);
-    ulong ghost_addr = ghost as ulong;
-    KTest::assert_eq(ghost_addr, 0, "find PID 999 returns null" as void*);
+    ulong ghost_found = 0;
+    Option<ulong> ghost_opt = ProcessTable::find_by_pid(999);
+    match (ghost_opt) {
+        Option::Some(v) => { ghost_found = 1; }
+        Option::None => { ghost_found = 0; }
+    }
+    KTest::assert_eq(ghost_found, 0, "find PID 999 returns null" as void*);
 }

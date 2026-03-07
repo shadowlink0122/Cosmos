@@ -236,14 +236,7 @@ impl Tcp {
             TcpState::SynRcvd  => { Tcp::set_state(conn_id, TCP_ESTABLISHED); }
             TcpState::FinWait1 => { Tcp::set_state(conn_id, TCP_FIN_WAIT_2); }
             TcpState::LastAck  => { Tcp::close_conn(conn_id); }
-            TcpState::Closed      => {}
-            TcpState::Listen      => {}
-            TcpState::SynSent     => {}
-            TcpState::Established => {}
-            TcpState::FinWait2    => {}
-            TcpState::CloseWait   => {}
-            TcpState::Closing     => {}
-            TcpState::TimeWait    => {}
+            _                  => {}
         }
     }
 
