@@ -3,8 +3,7 @@
 //
 // ウィンドウ内にテキスト入出力を提供するターミナル。
 // 最大4スロット（独立した実行空間）をサポート。
-// テキストバッファを保持し、compose()後に再描画可能。
-// VGA色コード対応。
+// テキストバッファ+色バッファを保持し、compose()後に再描画可能。
 
 import ../include/types;
 import ../include/config;
@@ -18,7 +17,7 @@ import ../ui/window;
 
 /// ターミナル背景色 (純黒)
 const ulong TERM_BG = 0x000000;
-/// ターミナルテキスト色 (デフォルト: 白)
+/// ターミナルテキスト色 (デフォルト: 明灰)
 const ulong TERM_FG = 0xCCCCCC;
 /// ターミナルパディング
 const ulong TERM_PAD = 4;
@@ -39,18 +38,18 @@ const ulong TERM_SLOT_SIZE = 64;
 //   0x28: active (8B) — 0=未使用, 1=使用中
 
 /// テキストバッファベースアドレス
-/// 各スロット: 80cols * 50rows = 4000バイト (文字) + 4000バイト (色)
+/// 各スロット: 文字4096B + 色4096B = 8192B
 const PhysAddr TERM_BUF_BASE = 0xD84000;
-/// テキストバッファサイズ (各スロット: 文字+色)
+/// テキストバッファサイズ (各スロット)
 const ulong TERM_BUF_SIZE = 8192;
-/// 最大カラム数 (テキストバッファ幅)
+/// 最大カラム数
 const ulong TERM_MAX_COLS = 80;
-/// 最大行数 (テキストバッファ高さ)
+/// 最大行数
 const ulong TERM_MAX_ROWS = 50;
 /// 色バッファオフセット (文字バッファの後ろ)
 const ulong TERM_COLOR_OFFSET = 4096;
 
-/// VGA色→RGBパレットテーブルアドレス
+/// VGA色→RGBパレットテーブルアドレス (16色 * 8B = 128B)
 const PhysAddr VGA_PALETTE_ADDR = 0xD81000;
 /// シェル色アドレス (低4bit=前景色)
 const PhysAddr SHELL_COLOR_ADDR = 0x95030;
@@ -61,10 +60,12 @@ export const PhysAddr GUI_DIRTY_ADDR = 0x95068;
 export struct Terminal {}
 
 impl Terminal {
+    // ============================================================
+    // VGA パレット管理
+    // ============================================================
+
     /// VGAパレットを初期化 (16色→RGBマッピング)
     static void init_palette() {
-        ulong* p = VGA_PALETTE_ADDR as ulong*;
-        // 標準VGA 16色パレット
         ulong* p0  = (VGA_PALETTE_ADDR + 0 * 8) as ulong*;   *p0  = 0x000000;  // 0: 黒
         ulong* p1  = (VGA_PALETTE_ADDR + 1 * 8) as ulong*;   *p1  = 0x0000AA;  // 1: 青
         ulong* p2  = (VGA_PALETTE_ADDR + 2 * 8) as ulong*;   *p2  = 0x00AA00;  // 2: 緑
@@ -75,7 +76,7 @@ impl Terminal {
         ulong* p7  = (VGA_PALETTE_ADDR + 7 * 8) as ulong*;   *p7  = 0xAAAAAA;  // 7: 明灰
         ulong* p8  = (VGA_PALETTE_ADDR + 8 * 8) as ulong*;   *p8  = 0x555555;  // 8: 暗灰
         ulong* p9  = (VGA_PALETTE_ADDR + 9 * 8) as ulong*;   *p9  = 0x5555FF;  // 9: 明青
-        ulong* p10 = (VGA_PALETTE_ADDR + 10 * 8) as ulong*;  *p10 = 0x55FF55;  // 10: 明緑 (プロンプト)
+        ulong* p10 = (VGA_PALETTE_ADDR + 10 * 8) as ulong*;  *p10 = 0x55FF55;  // 10: 明緑
         ulong* p11 = (VGA_PALETTE_ADDR + 11 * 8) as ulong*;  *p11 = 0x55FFFF;  // 11: 明シアン
         ulong* p12 = (VGA_PALETTE_ADDR + 12 * 8) as ulong*;  *p12 = 0xFF5555;  // 12: 明赤
         ulong* p13 = (VGA_PALETTE_ADDR + 13 * 8) as ulong*;  *p13 = 0xFF55FF;  // 13: 明マゼンタ
@@ -97,6 +98,10 @@ impl Terminal {
         return Terminal::vga_to_rgb(fg);
     }
 
+    // ============================================================
+    // Dirty フラグ管理
+    // ============================================================
+
     /// dirtyフラグを設定（画面更新が必要）
     static void set_dirty() {
         ulong* dirty = GUI_DIRTY_ADDR as ulong*;
@@ -111,6 +116,10 @@ impl Terminal {
         return val;
     }
 
+    // ============================================================
+    // スロット管理
+    // ============================================================
+
     /// スロットのベースアドレスを取得
     static ulong slot_addr(ulong slot) {
         return TERM_STATE_BASE + slot * TERM_SLOT_SIZE;
@@ -120,6 +129,54 @@ impl Terminal {
     static ulong buf_addr(ulong slot) {
         return TERM_BUF_BASE + slot * TERM_BUF_SIZE;
     }
+
+    /// スロットが使用中か
+    static ulong is_active(ulong slot) {
+        if (slot >= MAX_TERM_SLOTS) { return 0; }
+        ulong base = Terminal::slot_addr(slot);
+        ulong* active = (base + 0x28) as ulong*;
+        return *active;
+    }
+
+    /// 空きスロットを検索
+    static ulong find_free_slot() {
+        ulong i = 0;
+        while (i < MAX_TERM_SLOTS) {
+            if (Terminal::is_active(i) == 0) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return MAX_TERM_SLOTS;
+    }
+
+    /// スロットを解放
+    static void release(ulong slot) {
+        if (slot >= MAX_TERM_SLOTS) { return; }
+        ulong base = Terminal::slot_addr(slot);
+        ulong* active = (base + 0x28) as ulong*;
+        *active = 0;
+    }
+
+    /// ウィンドウIDからスロットを検索
+    static ulong find_by_window(ulong win_id) {
+        ulong i = 0;
+        while (i < MAX_TERM_SLOTS) {
+            if (Terminal::is_active(i) != 0) {
+                ulong base = Terminal::slot_addr(i);
+                ulong* wid = base as ulong*;
+                if (*wid == win_id) {
+                    return i;
+                }
+            }
+            i = i + 1;
+        }
+        return MAX_TERM_SLOTS;
+    }
+
+    // ============================================================
+    // 初期化・クリア
+    // ============================================================
 
     /// ターミナル初期化（スロットとウィンドウIDを関連付け）
     static void init(ulong slot, ulong win_id) {
@@ -151,14 +208,12 @@ impl Terminal {
         // パレット初期化
         Terminal::init_palette();
 
-        // テキストバッファクリア
+        // バッファ・画面クリア
         Terminal::clear_buf(slot);
-
-        // ターミナル背景を描画
         Terminal::clear(slot);
     }
 
-    /// テキストバッファクリア
+    /// テキストバッファ全クリア (文字+色)
     static void clear_buf(ulong slot) {
         if (slot >= MAX_TERM_SLOTS) { return; }
         ulong buf = Terminal::buf_addr(slot);
@@ -172,6 +227,23 @@ impl Terminal {
             i = i + 1;
         }
     }
+
+    /// ターミナル背景クリア
+    static void clear(ulong slot) {
+        if (slot >= MAX_TERM_SLOTS) { return; }
+        ulong base = Terminal::slot_addr(slot);
+        ulong* wid = base as ulong*;
+        ulong win_id = *wid;
+        ulong x = Window::get_x(win_id) + 1 + TERM_PAD;
+        ulong y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
+        ulong w = Window::get_w(win_id) - 2 - TERM_PAD * 2;
+        ulong h = Window::get_h(win_id) - TITLEBAR_HEIGHT - 2 - TERM_PAD * 2;
+        Fb::fill_rect(x, y, w, h, TERM_BG);
+    }
+
+    // ============================================================
+    // テキストバッファ操作
+    // ============================================================
 
     /// テキストバッファに文字と色を格納
     static void buf_put(ulong slot, ulong brow, ulong bcol, ulong ch) {
@@ -234,62 +306,9 @@ impl Terminal {
         return color;
     }
 
-    /// スロットが使用中か
-    static ulong is_active(ulong slot) {
-        if (slot >= MAX_TERM_SLOTS) { return 0; }
-        ulong base = Terminal::slot_addr(slot);
-        ulong* active = (base + 0x28) as ulong*;
-        return *active;
-    }
-
-    /// 空きスロットを検索
-    static ulong find_free_slot() {
-        ulong i = 0;
-        while (i < MAX_TERM_SLOTS) {
-            if (Terminal::is_active(i) == 0) {
-                return i;
-            }
-            i = i + 1;
-        }
-        return MAX_TERM_SLOTS;
-    }
-
-    /// スロットを解放
-    static void release(ulong slot) {
-        if (slot >= MAX_TERM_SLOTS) { return; }
-        ulong base = Terminal::slot_addr(slot);
-        ulong* active = (base + 0x28) as ulong*;
-        *active = 0;
-    }
-
-    /// ウィンドウIDからスロットを検索
-    static ulong find_by_window(ulong win_id) {
-        ulong i = 0;
-        while (i < MAX_TERM_SLOTS) {
-            if (Terminal::is_active(i) != 0) {
-                ulong base = Terminal::slot_addr(i);
-                ulong* wid = base as ulong*;
-                if (*wid == win_id) {
-                    return i;
-                }
-            }
-            i = i + 1;
-        }
-        return MAX_TERM_SLOTS;
-    }
-
-    /// ターミナル背景クリア
-    static void clear(ulong slot) {
-        if (slot >= MAX_TERM_SLOTS) { return; }
-        ulong base = Terminal::slot_addr(slot);
-        ulong* wid = base as ulong*;
-        ulong win_id = *wid;
-        ulong x = Window::get_x(win_id) + 1 + TERM_PAD;
-        ulong y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
-        ulong w = Window::get_w(win_id) - 2 - TERM_PAD * 2;
-        ulong h = Window::get_h(win_id) - TITLEBAR_HEIGHT - 2 - TERM_PAD * 2;
-        Fb::fill_rect(x, y, w, h, TERM_BG);
-    }
+    // ============================================================
+    // スクロール
+    // ============================================================
 
     /// 1行スクロール (最上行を破棄し、全行を1行上に移動)
     static void scroll_up_one(ulong slot) {
@@ -359,7 +378,12 @@ impl Terminal {
         }
     }
 
+    // ============================================================
+    // 文字出力
+    // ============================================================
+
     /// 1文字出力 (バッファに記録 + 画面描画)
+    /// switch/caseで制御文字を分岐
     static void putc(ulong slot, ulong ch) {
         if (slot >= MAX_TERM_SLOTS) { return; }
         ulong base = Terminal::slot_addr(slot);
@@ -368,13 +392,13 @@ impl Terminal {
         ulong* row = (base + 0x10) as ulong*;
         ulong* mc  = (base + 0x18) as ulong*;
         ulong* mr  = (base + 0x20) as ulong*;
-
         ulong win_id = *wid;
 
         // dirtyフラグを設定
         Terminal::set_dirty();
 
         if (ch == 10) {
+            // 改行: カーソルを次行先頭へ
             *col = 0;
             *row = *row + 1;
             if (*row >= *mr) {
@@ -382,47 +406,36 @@ impl Terminal {
                 *row = *mr - 1;
                 Terminal::redraw(slot);
             }
-            return;
-        }
-
-        if (ch == 8) {
-            // バックスペース: カーソルを左に移動
+        } else if (ch == 8) {
+            // バックスペース: カーソル左移動 + 文字消去
             if (*col > 0) {
                 *col = *col - 1;
-                // バッファの現在位置をクリア
                 Terminal::buf_put(slot, *row, *col, 0);
-                // 画面上のその位置を背景色で上書き
                 ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
                 ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
                 ulong px = base_x + (*col) * FONT_W;
                 ulong py = base_y + (*row) * FONT_H;
                 Font::draw_char(px, py, 32, TERM_BG, TERM_BG);
             }
-            return;
-        }
+        } else {
+            // 通常文字: バッファ記録 + 色付き描画
+            Terminal::buf_put(slot, *row, *col, ch);
+            ulong fg_rgb = Terminal::current_fg();
+            ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
+            ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
+            ulong px = base_x + (*col) * FONT_W;
+            ulong py = base_y + (*row) * FONT_H;
+            Font::draw_char(px, py, ch, fg_rgb, TERM_BG);
 
-        // バッファに記録 (色も一緒に)
-        Terminal::buf_put(slot, *row, *col, ch);
-
-        // 現在のシェル色を取得してRGBに変換
-        ulong fg_rgb = Terminal::current_fg();
-
-        // 文字描画位置
-        ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
-        ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
-        ulong px = base_x + (*col) * FONT_W;
-        ulong py = base_y + (*row) * FONT_H;
-
-        Font::draw_char(px, py, ch, fg_rgb, TERM_BG);
-
-        *col = *col + 1;
-        if (*col >= *mc) {
-            *col = 0;
-            *row = *row + 1;
-            if (*row >= *mr) {
-                Terminal::scroll_up_one(slot);
-                *row = *mr - 1;
-                Terminal::redraw(slot);
+            *col = *col + 1;
+            if (*col >= *mc) {
+                *col = 0;
+                *row = *row + 1;
+                if (*row >= *mr) {
+                    Terminal::scroll_up_one(slot);
+                    *row = *mr - 1;
+                    Terminal::redraw(slot);
+                }
             }
         }
     }
@@ -446,18 +459,23 @@ impl Terminal {
         }
     }
 
-    /// プロンプト表示 (バッファにも記録)
+    /// プロンプト表示 (個別putcで出力)
     static void prompt(ulong slot) {
         if (slot >= MAX_TERM_SLOTS) { return; }
-        Terminal::putc(slot, 0x63);  // 'c'
-        Terminal::putc(slot, 0x6F);  // 'o'
-        Terminal::putc(slot, 0x73);  // 's'
-        Terminal::putc(slot, 0x6D);  // 'm'
-        Terminal::putc(slot, 0x6F);  // 'o'
-        Terminal::putc(slot, 0x20);  // ' '
-        Terminal::putc(slot, 0x24);  // '$'
-        Terminal::putc(slot, 0x20);  // ' '
+        // 'c','o','s','m','o',' ','$',' '
+        Terminal::putc(slot, 0x63);
+        Terminal::putc(slot, 0x6F);
+        Terminal::putc(slot, 0x73);
+        Terminal::putc(slot, 0x6D);
+        Terminal::putc(slot, 0x6F);
+        Terminal::putc(slot, 0x20);
+        Terminal::putc(slot, 0x24);
+        Terminal::putc(slot, 0x20);
     }
+
+    // ============================================================
+    // 再描画
+    // ============================================================
 
     /// バッファからターミナル内容を再描画
     static void redraw(ulong slot) {
@@ -468,13 +486,10 @@ impl Terminal {
         ulong* wid = base as ulong*;
         ulong* mc  = (base + 0x18) as ulong*;
         ulong* mr  = (base + 0x20) as ulong*;
-
         ulong win_id = *wid;
 
-        // ターミナル背景を描画
         Terminal::clear(slot);
 
-        // テキストバッファから文字を再描画
         ulong base_x = Window::get_x(win_id) + 1 + TERM_PAD;
         ulong base_y = Window::get_y(win_id) + TITLEBAR_HEIGHT + 1 + TERM_PAD;
 
@@ -486,7 +501,6 @@ impl Terminal {
                 if (ch != 0) {
                     ulong px = base_x + c * FONT_W;
                     ulong py = base_y + r * FONT_H;
-                    // 色バッファから色を取得
                     ulong color_idx = Terminal::buf_get_color(slot, r, c);
                     ulong fg_rgb = Terminal::vga_to_rgb(color_idx);
                     Font::draw_char(px, py, ch, fg_rgb, TERM_BG);
