@@ -15,6 +15,7 @@ import ../../include/scheduler;
 import ../../include/page_alloc;
 import ../../include/vfs;
 import ../../include/errno;
+import ../../include/result;
 import ../../drivers/serial;
 import ../../lib/printk;
 import ../../lib/kstring;
@@ -299,7 +300,11 @@ impl SyscallFork {
         ulong hdr_read = 0;
         Ino sheb_ino = RamFs::lookup(fname_tmp as void*);
         if (sheb_ino != 0) {
-            hdr_read = RamFs::read(sheb_ino, shebang_buf, 0, 128) as ulong;
+            Result<long, long> rr = RamFs::read(sheb_ino, shebang_buf, 0, 128);
+            match (rr) {
+                Result::Ok(v) => { hdr_read = v as ulong; }
+                Result::Err(e) => { hdr_read = 0; }
+            }
         } else {
             hdr_read = NinePfs::read_file(fname_tmp, shebang_buf, 128);
         }
@@ -408,9 +413,11 @@ impl SyscallFork {
         }
 
         // Loader::exec で新プロセスを作成（既存のものを使う）
-        Pid pid = Loader::exec(cmdline_buf as void*, &dbg);
-        if (pid < 0) {
-            return 0 - ENOENT;
+        long pid = 0;
+        Result<long, long> er = Loader::exec(cmdline_buf as void*, &dbg);
+        match (er) {
+            Result::Ok(p) => { pid = p; }
+            Result::Err(e) => { return 0 - e; }
         }
 
         // 現在のプロセスをZOMBIEにして新プロセスに制御を移す

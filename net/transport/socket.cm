@@ -7,6 +7,8 @@
 
 import ../../include/types;
 import ../../include/net;
+import ../../include/result;
+import ../../include/errno;
 import ../../lib/kstring;
 import ../core/loopback;
 import ../transport/tcp;
@@ -66,7 +68,7 @@ impl Socket {
     }
 
     /// ソケット作成
-    static long create(ulong domain, ulong sock_type, ulong protocol) {
+    static Result<long, long> create(ulong domain, ulong sock_type, ulong protocol) {
         ulong i = 0;
         while (i < MAX_SOCKETS) {
             ulong base = SOCKET_TABLE_BASE + i * SOCKET_ENTRY_SIZE;
@@ -97,34 +99,34 @@ impl Socket {
                 *conn_ptr = 0xFFFFFFFFFFFFFFFF;
                 *recv_ptr = SOCK_RECV_BASE + i * SOCK_RECV_SLOT;
 
-                return i as long;
+                return Result::Ok(i as long);
             }
             i = i + 1;
         }
-        return -1;
+        return Result::Err(ENOMEM);
     }
 
     /// ソケットにアドレスをバインド
-    static long bind(ulong sock_id, ulong addr, ulong port) {
-        if (sock_id >= MAX_SOCKETS) { return -1; }
+    static Result<long, long> bind(ulong sock_id, ulong addr, ulong port) {
+        if (sock_id >= MAX_SOCKETS) { return Result::Err(EBADF); }
         ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
         ulong* used_ptr = base as ulong*;
-        if (*used_ptr == 0) { return -1; }
+        if (*used_ptr == 0) { return Result::Err(EBADF); }
 
         ulong* laddr_ptr = (base + SOCK_LOCAL_ADDR) as ulong*;
         ulong* lport_ptr = (base + SOCK_LOCAL_PORT) as ulong*;
         *laddr_ptr = addr;
         *lport_ptr = port;
 
-        return 0;
+        return Result::Ok(0);
     }
 
     /// TCPリッスン
-    static long listen(ulong sock_id, ulong backlog) {
-        if (sock_id >= MAX_SOCKETS) { return -1; }
+    static Result<long, long> listen(ulong sock_id, ulong backlog) {
+        if (sock_id >= MAX_SOCKETS) { return Result::Err(EBADF); }
         ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
         ulong* type_ptr = (base + SOCK_TYPE) as ulong*;
-        if (*type_ptr != SOCK_STREAM) { return -1; }
+        if (*type_ptr != SOCK_STREAM) { return Result::Err(EOPNOTSUPP); }
 
         ulong* state_ptr = (base + SOCK_STATE) as ulong*;
         ulong* bl_ptr    = (base + SOCK_BACKLOG) as ulong*;
@@ -141,15 +143,15 @@ impl Socket {
             Tcp::listen_conn(conn_id as ulong);
         }
 
-        return 0;
+        return Result::Ok(0);
     }
 
     /// TCP接続
-    static long connect(ulong sock_id, ulong addr, ulong port) {
-        if (sock_id >= MAX_SOCKETS) { return -1; }
+    static Result<long, long> connect(ulong sock_id, ulong addr, ulong port) {
+        if (sock_id >= MAX_SOCKETS) { return Result::Err(EBADF); }
         ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
         ulong* type_ptr = (base + SOCK_TYPE) as ulong*;
-        if (*type_ptr != SOCK_STREAM) { return -1; }
+        if (*type_ptr != SOCK_STREAM) { return Result::Err(EOPNOTSUPP); }
 
         ulong* raddr_ptr = (base + SOCK_REMOTE_ADDR) as ulong*;
         ulong* rport_ptr = (base + SOCK_REMOTE_PORT) as ulong*;
@@ -168,7 +170,7 @@ impl Socket {
                 Tcp::bind_conn(conn_id as ulong, *laddr_ptr, *lport_ptr);
                 Tcp::set_state(conn_id as ulong, TCP_ESTABLISHED);
             }
-            return 0;
+            return Result::Ok(0);
         }
 
         // === 非ループバック: 実TCP SYN送信 ===
@@ -197,22 +199,22 @@ impl Socket {
         while (wait < 500) {
             Socket::poll_net();
             if (*state_ptr == TCP_ESTABLISHED) {
-                return 0;
+                return Result::Ok(0);
             }
             wait = wait + 1;
         }
 
         // タイムアウト
-        return 0 - ETIMEDOUT;
+        return Result::Err(ETIMEDOUT);
     }
 
     /// データ送信
-    static long send(ulong sock_id, ulong data, ulong len) {
-        if (sock_id >= MAX_SOCKETS) { return -1; }
+    static Result<long, long> send(ulong sock_id, ulong data, ulong len) {
+        if (sock_id >= MAX_SOCKETS) { return Result::Err(EBADF); }
         ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
 
         ulong* used_ptr = base as ulong*;
-        if (*used_ptr == 0) { return -1; }
+        if (*used_ptr == 0) { return Result::Err(EBADF); }
 
         ulong* raddr_ptr = (base + SOCK_REMOTE_ADDR) as ulong*;
 
@@ -232,13 +234,13 @@ impl Socket {
                     i = i + 1;
                 }
                 *recv_len = *recv_len + len;
-                return len as long;
+                return Result::Ok(len as long);
             }
         }
 
         // === 非ループバック: TCPデータ送信 ===
         ulong* state_ptr = (base + SOCK_STATE) as ulong*;
-        if (*state_ptr != TCP_ESTABLISHED) { return -1; }
+        if (*state_ptr != TCP_ESTABLISHED) { return Result::Err(ENOTCONN); }
 
         ulong* rport_ptr = (base + SOCK_REMOTE_PORT) as ulong*;
         ulong* laddr_ptr = (base + SOCK_LOCAL_ADDR) as ulong*;
@@ -257,12 +259,12 @@ impl Socket {
         );
         *send_seq_ptr = *send_seq_ptr + len;
 
-        return len as long;
+        return Result::Ok(len as long);
     }
 
     /// データ受信
-    static long recv(ulong sock_id, ulong buf, ulong buf_len) {
-        if (sock_id >= MAX_SOCKETS) { return -1; }
+    static Result<long, long> recv(ulong sock_id, ulong buf, ulong buf_len) {
+        if (sock_id >= MAX_SOCKETS) { return Result::Err(EBADF); }
         ulong base = SOCKET_TABLE_BASE + sock_id * SOCKET_ENTRY_SIZE;
 
         ulong* recv_buf_ptr = (base + SOCK_RECV_BUF) as ulong*;
@@ -288,9 +290,9 @@ impl Socket {
         if (available == 0) {
             // 接続が閉じられた場合は0を返す (EOF)
             if (*state_ptr == TCP_CLOSE_WAIT || *state_ptr == TCP_CLOSED) {
-                return 0;
+                return Result::Ok(0);
             }
-            return 0 - EAGAIN;
+            return Result::Err(EAGAIN);
         }
 
         ulong copy_len = available;
@@ -317,7 +319,7 @@ impl Socket {
             *recv_len_ptr = 0;
         }
 
-        return copy_len as long;
+        return Result::Ok(copy_len as long);
     }
 
     /// ソケットを閉じる

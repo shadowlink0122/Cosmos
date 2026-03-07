@@ -97,7 +97,7 @@ impl Loader {
     /// cmdline: "busybox echo hello" のようなコマンドライン文字列
     /// 先頭ワードをファイル名として検索し、全体をargvとして構築
     /// 戻り値: 新プロセスのPID（失敗時 -1）
-    static Pid exec(void* cmdline, SerialPort* w) {
+    static Result<long, long> exec(void* cmdline, SerialPort* w) {
         // 前プロセスのユーザー空間ページを全解放（メモリリーク防止）
         Mmap::cleanup_all();
 
@@ -114,7 +114,7 @@ impl Loader {
         }
         if (fname_len == 0) {
             pr_err(w, "exec: empty command" as void*);
-            return 0 - EINVAL;
+            return Result::Err(EINVAL);
         }
 
         // ファイル名をNULL終端の一時バッファにコピー（検索用）
@@ -132,7 +132,7 @@ impl Loader {
             fsize = RamFs::file_size(ino);
             if (fsize < 64) {
                 pr_err(w, "exec: file too small for ELF" as void*);
-                return 0 - ENOEXEC;
+                return Result::Err(ENOEXEC);
             }
             long bytes = 0;
             match (RamFs::read(ino, ELF_TMP_BUF, 0, fsize)) {
@@ -141,7 +141,7 @@ impl Loader {
             }
             if (bytes <= 0) {
                 pr_err(w, "exec: failed to read file" as void*);
-                return 0 - EIO;
+                return Result::Err(EIO);
             }
         } else {
             // 9pフォールバック
@@ -150,7 +150,7 @@ impl Loader {
             ulong bytes_9p = NinePfs::read_file(fname_buf, ELF_TMP_BUF, ELF_MAX_SIZE);
             if (bytes_9p == 0) {
                 pr_err(w, "exec: file not found (ramfs/9p)" as void*);
-                return 0 - ENOENT;
+                return Result::Err(ENOENT);
             }
             fsize = bytes_9p;
             loaded_from_9p = 1;
@@ -163,7 +163,7 @@ impl Loader {
         w->println("[exec] Validating ELF header..." as void*);
         if (Elf::validate(ELF_TMP_BUF) == 0) {
             pr_err(w, "exec: invalid ELF64 binary" as void*);
-            return 0 - ENOEXEC;
+            return Result::Err(ENOEXEC);
         }
         w->println("[exec] ELF header valid" as void*);
 
@@ -348,7 +348,7 @@ impl Loader {
                         w->puts("[exec] ERROR: out of pages at " as void*);
                         print_dec(w, mapped);
                         w->println("" as void*);
-                        return 0 - ENOMEM;
+                        return Result::Err(ENOMEM);
                     }
                     memzero(phys_page as void*, PAGE_SIZE);
                     // ユーザープロセス用: PRESENT | WRITE | USER = 7
@@ -482,7 +482,7 @@ impl Loader {
         PhysAddr proc_mem = pmm->alloc_pages(0);
         if (proc_mem == 0) {
             pr_err(w, "exec: failed to allocate process memory" as void*);
-            return 0 - ENOMEM;
+            return Result::Err(ENOMEM);
         }
         memzero(proc_mem as void*, PAGE_SIZE);
         Process* proc = proc_mem as Process*;
@@ -814,7 +814,7 @@ impl Loader {
         // スケジューラに登録
         Sched::add(proc);
 
-        return new_pid;
+        return Result::Ok(new_pid as long);
     }
 
     /// auxvエントリを書き込むヘルパ

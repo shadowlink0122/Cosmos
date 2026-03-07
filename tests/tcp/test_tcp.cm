@@ -5,6 +5,7 @@
 
 import ../../include/types;
 import ../../include/config;
+import ../../include/result;
 import ../../drivers/serial;
 import ../../lib/printk;
 import ../../include/net;
@@ -21,28 +22,53 @@ export void test_tcp_conn() {
     TestIO::set_color(7, 0);
 
     Tcp::setup();
-    long server_fd = Socket::create(AF_INET, SOCK_STREAM, 0);
+    long server_fd = 0;
+    Result<long, long> sr = Socket::create(AF_INET, SOCK_STREAM, 0);
+    match (sr) {
+        Result::Ok(id) => { server_fd = id; }
+        Result::Err(e) => { server_fd = 0 - e; }
+    }
     ulong sf_ok = 0;
     if (server_fd >= 0) { sf_ok = 1; }
     KTest::assert_eq(sf_ok, 1, "TCP server socket" as void*);
 
-    long bind_r = Socket::bind(server_fd as ulong, 0, 8080);
+    long bind_r = 0;
+    Result<long, long> br = Socket::bind(server_fd as ulong, 0, 8080);
+    match (br) {
+        Result::Ok(n) => { bind_r = n; }
+        Result::Err(e) => { bind_r = 0 - e; }
+    }
     ulong bind_ok = 0;
     if (bind_r >= 0) { bind_ok = 1; }
     KTest::assert_eq(bind_ok, 1, "TCP bind :8080" as void*);
 
-    long listen_r = Socket::listen(server_fd as ulong, 5);
+    long listen_r = 0;
+    Result<long, long> lr = Socket::listen(server_fd as ulong, 5);
+    match (lr) {
+        Result::Ok(n) => { listen_r = n; }
+        Result::Err(e) => { listen_r = 0 - e; }
+    }
     ulong listen_ok = 0;
     if (listen_r >= 0) { listen_ok = 1; }
     KTest::assert_eq(listen_ok, 1, "TCP listen" as void*);
 
-    long client_fd = Socket::create(AF_INET, SOCK_STREAM, 0);
+    long client_fd = 0;
+    Result<long, long> cr = Socket::create(AF_INET, SOCK_STREAM, 0);
+    match (cr) {
+        Result::Ok(id) => { client_fd = id; }
+        Result::Err(e) => { client_fd = 0 - e; }
+    }
     ulong cf_ok = 0;
     if (client_fd >= 0) { cf_ok = 1; }
     KTest::assert_eq(cf_ok, 1, "TCP client socket" as void*);
 
     // 127.0.0.1 = 0x7F000001
-    long conn_r = Socket::connect(client_fd as ulong, 0x7F000001, 8080);
+    long conn_r = 0;
+    Result<long, long> cnr = Socket::connect(client_fd as ulong, 0x7F000001, 8080);
+    match (cnr) {
+        Result::Ok(n) => { conn_r = n; }
+        Result::Err(e) => { conn_r = 0 - e; }
+    }
     ulong conn_ok = 0;
     if (conn_r >= 0) { conn_ok = 1; }
     KTest::assert_eq(conn_ok, 1, "TCP connect" as void*);
@@ -60,14 +86,24 @@ export void test_tcp_conn() {
         i = i + 1;
     }
 
-    long send_r = Socket::send(client_fd as ulong, msg, 2);
+    long send_r = 0;
+    Result<long, long> snr = Socket::send(client_fd as ulong, msg, 2);
+    match (snr) {
+        Result::Ok(n) => { send_r = n; }
+        Result::Err(e) => { send_r = 0 - e; }
+    }
     ulong send_ok = 0;
     if (send_r >= 0) { send_ok = 1; }
     KTest::assert_eq(send_ok, 1, "TCP send" as void*);
 
     // recvテスト（server側で受信）
     ulong recv_buf = 0x9E500;
-    long recv_r = Socket::recv(server_fd as ulong, recv_buf, 64);
+    long recv_r = 0;
+    Result<long, long> rvr = Socket::recv(server_fd as ulong, recv_buf, 64);
+    match (rvr) {
+        Result::Ok(n) => { recv_r = n; }
+        Result::Err(e) => { recv_r = 0 - e; }
+    }
     ulong recv_ok = 0;
     if (recv_r >= 0) { recv_ok = 1; }
     KTest::assert_eq(recv_ok, 1, "TCP recv" as void*);

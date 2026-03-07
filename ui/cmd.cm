@@ -23,6 +23,7 @@ import ./shell/util;
 import ../drivers/serial;
 import ../sched/scheduler;
 import ../exec/loader;
+import ../include/result;
 import ../lib/kstring;
 import ../pkg/gen;
 import ./cmd/args;
@@ -225,9 +226,14 @@ impl Cmd {
             streq(CMD_BUF_ADDR as void*, "curl" as void*) != 0) {
             // 外部curlバイナリに委譲
             SerialPort serial(COM1);
-            Pid pid = Loader::exec(CMD_BUF_ADDR as void*, &serial);
+            long pid = 0;
+            Result<long, long> er = Loader::exec(CMD_BUF_ADDR as void*, &serial);
+            match (er) {
+                Result::Ok(p) => { pid = p; }
+                Result::Err(e) => { pid = 0 - e; }
+            }
             if (pid >= 0) {
-                while (Sched::is_alive(pid) != 0) {
+                while (Sched::is_alive(pid as long) != 0) {
                     Sched::run();
                 }
                 return;
@@ -307,10 +313,15 @@ impl Cmd {
         // 未知のコマンド → バイナリとして実行試行 (RamFS + 9p 両方)
         // "busybox echo hello" → exec_nameの最初の単語がバイナリ名
         SerialPort serial(COM1);
-        Pid pid = Loader::exec(exec_name as void*, &serial);
+        long pid = 0;
+        Result<long, long> er = Loader::exec(exec_name as void*, &serial);
+        match (er) {
+            Result::Ok(p) => { pid = p; }
+            Result::Err(e) => { pid = 0 - e; }
+        }
         if (pid >= 0) {
             // フォアグラウンド待機: 子プロセス完了まで待つ
-            while (Sched::is_alive(pid) != 0) {
+            while (Sched::is_alive(pid as long) != 0) {
                 Sched::run();
             }
             return;

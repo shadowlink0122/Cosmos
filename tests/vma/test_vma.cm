@@ -8,6 +8,7 @@ import ../../include/config;
 import ../../drivers/serial;
 import ../../lib/printk;
 import ../../mm/mmap;
+import ../../include/result;
 import ../test_io;
 import ../ktest;
 
@@ -37,7 +38,12 @@ export void test_vma() {
     KTest::assert_nonzero(vma_addr, "find_vma returns valid" as void*);
 
     // munmap
-    long ret = Mmap::do_munmap(addr, 4096);
+    long ret = 0;
+    Result<long, long> mr = Mmap::do_munmap(addr, 4096);
+    match (mr) {
+        Result::Ok(n) => { ret = n; }
+        Result::Err(e) => { ret = 0 - e; }
+    }
     KTest::assert_eq(ret as ulong, 0, "munmap returns 0" as void*);
     KTest::assert_eq(Mmap::count(), initial, "VMA count restored" as void*);
 }

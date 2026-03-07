@@ -34,8 +34,12 @@ impl SyscallNet {
     /// sys_socket: ソケット作成
     /// 戻り値: FD番号 (失敗時 -errno)
     static long do_socket(ulong domain, ulong sock_type, ulong protocol) {
-        long sock_id = Socket::create(domain, sock_type, protocol);
-        if (sock_id < 0) { return 0 - EMFILE; }
+        long sock_id = 0;
+        Result<long, long> cr = Socket::create(domain, sock_type, protocol);
+        match (cr) {
+            Result::Ok(id) => { sock_id = id; }
+            Result::Err(e) => { return 0 - e; }
+        }
         // ソケットIDをFDテーブルに登録
         Result<Fd, long> r = FdTable::alloc(sock_id as ulong, 0, FS_SOCKET);
         match (r) {
@@ -61,7 +65,11 @@ impl SyscallNet {
         ulong port = 0;
         SyscallNet::parse_sockaddr(addr_ptr, &ip, &port);
 
-        return Socket::connect(sock_id, ip, port);
+        Result<long, long> cr = Socket::connect(sock_id, ip, port);
+        match (cr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_bind: ソケットにアドレスをバインド
@@ -77,7 +85,11 @@ impl SyscallNet {
         ulong port = 0;
         SyscallNet::parse_sockaddr(addr_ptr, &ip, &port);
 
-        return Socket::bind(sock_id, ip, port);
+        Result<long, long> br = Socket::bind(sock_id, ip, port);
+        match (br) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_listen: TCPリッスン
@@ -87,7 +99,11 @@ impl SyscallNet {
         if (fs_type != FS_SOCKET) { return 0 - ENOTSOCK; }
 
         ulong sock_id = FdTable::get_ino(fd as long) as ulong;
-        return Socket::listen(sock_id, backlog);
+        Result<long, long> lr = Socket::listen(sock_id, backlog);
+        match (lr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_accept: TCP接続受け入れ
@@ -98,8 +114,12 @@ impl SyscallNet {
         if (fs_type != FS_SOCKET) { return 0 - ENOTSOCK; }
 
         // 新しいソケットを作成
-        long new_sock = Socket::create(AF_INET, SOCK_STREAM, 0);
-        if (new_sock < 0) { return 0 - EMFILE; }
+        long new_sock = 0;
+        Result<long, long> sc = Socket::create(AF_INET, SOCK_STREAM, 0);
+        match (sc) {
+            Result::Ok(id) => { new_sock = id; }
+            Result::Err(e) => { return 0 - e; }
+        }
 
         Result<Fd, long> r = FdTable::alloc(new_sock as ulong, 0, FS_SOCKET);
         match (r) {
@@ -119,7 +139,11 @@ impl SyscallNet {
         if (fs_type != FS_SOCKET) { return 0 - ENOTSOCK; }
 
         ulong sock_id = FdTable::get_ino(fd as long) as ulong;
-        return Socket::send(sock_id, buf, len);
+        Result<long, long> sr = Socket::send(sock_id, buf, len);
+        match (sr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_recvfrom: データ受信
@@ -130,7 +154,11 @@ impl SyscallNet {
         if (fs_type != FS_SOCKET) { return 0 - ENOTSOCK; }
 
         ulong sock_id = FdTable::get_ino(fd as long) as ulong;
-        return Socket::recv(sock_id, buf, len);
+        Result<long, long> rr = Socket::recv(sock_id, buf, len);
+        match (rr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_setsockopt: ソケットオプション設定

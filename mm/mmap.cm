@@ -11,6 +11,7 @@ import ../include/types;
 import ../include/config;
 import ../include/page_alloc;
 import ../include/errno;
+import ../include/result;
 import ../include/scheduler;
 import ../mm/vmm;
 import ../mm/pmm;
@@ -197,12 +198,12 @@ impl Mmap {
     }
 
     /// munmap: メモリマッピング解除
-    static long do_munmap(ulong addr, ulong length) {
-        if (length == 0) { return 0 - EINVAL; }
+    static Result<long, long> do_munmap(ulong addr, ulong length) {
+        if (length == 0) { return Result::Err(EINVAL); }
 
         Vma* vma = Mmap::find_vma(addr);
         ulong vma_addr = vma as ulong;
-        if (vma_addr == 0) { return 0 - EINVAL; }
+        if (vma_addr == 0) { return Result::Err(EINVAL); }
 
         // PMMを取得してページ解放
         ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;
@@ -227,7 +228,7 @@ impl Mmap {
 
         // VMAスロット解放
         vma->used = 0;
-        return 0;
+        return Result::Ok(0);
     }
 
     /// brk: ヒープ上限変更

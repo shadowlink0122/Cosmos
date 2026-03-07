@@ -456,7 +456,11 @@ impl Syscall {
 
     /// sys_munmap: メモリマッピング解除
     static long munmap(ulong addr, ulong length) {
-        return Mmap::do_munmap(addr, length);
+        Result<long, long> mr = Mmap::do_munmap(addr, length);
+        match (mr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_pipe: パイプ作成
@@ -1190,7 +1194,11 @@ export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
         }
 
         // 旧領域を解放
-        Mmap::do_munmap(old_addr, old_size);
+        Result<long, long> umr = Mmap::do_munmap(old_addr, old_size);
+        match (umr) {
+            Result::Ok(n) => {}
+            Result::Err(e) => {}
+        }
 
         return new_addr as long;
     }

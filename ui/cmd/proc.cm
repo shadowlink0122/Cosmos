@@ -15,6 +15,7 @@ import ../../drivers/serial;
 import ../../sched/process;
 import ../../sched/scheduler;
 import ../../exec/loader;
+import ../../include/result;
 import ../../sys/signal;
 import ./args;
 
@@ -123,10 +124,15 @@ impl CmdProc {
             return;
         }
         SerialPort serial(COM1);
-        Pid pid = Loader::exec(arg_addr as void*, &serial);
+        long pid = 0;
+        Result<long, long> er = Loader::exec(arg_addr as void*, &serial);
+        match (er) {
+            Result::Ok(p) => { pid = p; }
+            Result::Err(e) => { pid = 0 - e; }
+        }
         if (pid >= 0) {
             // フォアグラウンド待機: 子プロセス完了まで待つ
-            while (Sched::is_alive(pid) != 0) {
+            while (Sched::is_alive(pid as long) != 0) {
                 Sched::run();
             }
         } else {
