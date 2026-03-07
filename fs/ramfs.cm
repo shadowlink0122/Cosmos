@@ -203,7 +203,7 @@ impl RamFs {
 
     /// ファイル読み出し
     /// 成功=Ok(読み出しバイト数)、失敗=Err(errno)
-    static Result<ulong, long> read(Ino ino, ulong buf, ulong off, ulong cnt) {
+    static Result<long, long> read(Ino ino, ulong buf, ulong off, ulong cnt) {
         ulong io = find_ino(ino);
         if (io == 0xFFFFFFFFFFFFFFFF) { return Result::Err(ENOENT); }
         ulong* sp = (INO_BASE + io + 16) as ulong*;
@@ -217,12 +217,12 @@ impl RamFs {
             wb(buf + i, rb(*dp + off + i));
             i = i + 1;
         }
-        return Result::Ok(cnt);
+        return Result::Ok(cnt as long);
     }
 
     /// ファイル書き込み
     /// 成功=Ok(書き込みバイト数)、失敗=Err(errno)
-    static Result<ulong, long> write(Ino ino, ulong buf, ulong off, ulong cnt) {
+    static Result<long, long> write(Ino ino, ulong buf, ulong off, ulong cnt) {
         ulong io = find_ino(ino);
         if (io == 0xFFFFFFFFFFFFFFFF) { return Result::Err(ENOENT); }
         if (off + cnt > MAX_FILE_SIZE) { cnt = MAX_FILE_SIZE - off; }
@@ -237,7 +237,7 @@ impl RamFs {
         ulong* sp = (INO_BASE + io + 16) as ulong*;
         ulong ne = off + cnt;
         if (ne > *sp) { *sp = ne; }
-        return Result::Ok(cnt);
+        return Result::Ok(cnt as long);
     }
 
     /// ファイル内容の切り詰め
@@ -300,7 +300,7 @@ impl RamFs {
 
     /// ファイル削除（inode解放 + direntry削除）
     /// 成功=Ok(0)、失敗=Err(errno)
-    static Result<ulong, long> unlink(void* name) {
+    static Result<long, long> unlink(void* name) {
         ulong* dc = DIR_CNT as ulong*;
         ulong i = 0;
         while (i < *dc) {
@@ -341,7 +341,7 @@ impl RamFs {
 
     /// ファイル名変更 (rename)
     /// 成功=Ok(0)、失敗=Err(errno)
-    static Result<ulong, long> rename(void* oldname, void* newname) {
+    static Result<long, long> rename(void* oldname, void* newname) {
         // 既存の新名前エントリを削除
         Ino new_exist = RamFs::lookup(newname);
         if (new_exist != 0) {

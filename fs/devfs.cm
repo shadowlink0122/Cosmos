@@ -35,7 +35,7 @@ export struct DevFs {}
 impl DevFs {
     /// デバイスファイルの読み込み
     /// 成功=Ok(読み出しバイト数)、失敗=Err(errno)
-    static Result<ulong, long> read(ulong dev_id, ulong buf_addr, ulong count) {
+    static Result<long, long> read(ulong dev_id, ulong buf_addr, ulong count) {
         if (dev_id == DEV_NULL) {
             // /dev/null: 常にEOF (0バイト)
             return Result::Ok(0);
@@ -43,7 +43,7 @@ impl DevFs {
         if (dev_id == DEV_ZERO) {
             // /dev/zero: 0で埋める
             memzero(buf_addr as void*, count);
-            return Result::Ok(count);
+            return Result::Ok(count as long);
         }
         if (dev_id == DEV_RANDOM) {
             // /dev/random: 擬似乱数で埋める（PIT tick + LFSRベース）
@@ -64,17 +64,17 @@ impl DevFs {
                 `);
                 i = i + 1;
             }
-            return Result::Ok(count);
+            return Result::Ok(count as long);
         }
         return Result::Err(ENODEV);
     }
 
     /// デバイスファイルへの書き込み
     /// 成功=Ok(書き込みバイト数)、失敗=Err(errno)
-    static Result<ulong, long> write(ulong dev_id, ulong buf_addr, ulong count) {
+    static Result<long, long> write(ulong dev_id, ulong buf_addr, ulong count) {
         if (dev_id == DEV_NULL) {
             // /dev/null: 全て破棄、countを返す
-            return Result::Ok(count);
+            return Result::Ok(count as long);
         }
         if (dev_id == DEV_ZERO) {
             // /dev/zero: 書き込み不可

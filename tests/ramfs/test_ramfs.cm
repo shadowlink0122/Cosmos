@@ -49,23 +49,23 @@ export void test_ramfs() {
         Mem::write_byte(write_buf + i, wdata[i]);
         i = i + 1;
     }
-    ulong wn = 0;
-    Result<ulong, long> wr = RamFs::write(ino, write_buf, 0, 3);
+    long wn = 0;
+    Result<long, long> wr = RamFs::write(ino, write_buf, 0, 3);
     match (wr) {
         Result::Ok(v) => { wn = v; }
-        Result::Err(e) => { wn = 0; }
+        Result::Err(e) => { wn = 0 - e; }
     }
-    KTest::assert_eq(wn, 3, "RamFS write 3 bytes" as void*);
+    KTest::assert_eq(wn as ulong, 3, "RamFS write 3 bytes" as void*);
 
     ulong read_buf = 0x9F100;
     memzero(read_buf as void*, 16);
-    ulong rn = 0;
-    Result<ulong, long> rr = RamFs::read(ino, read_buf, 0, 3);
+    long rn = 0;
+    Result<long, long> rr = RamFs::read(ino, read_buf, 0, 3);
     match (rr) {
         Result::Ok(v) => { rn = v; }
-        Result::Err(e) => { rn = 0; }
+        Result::Err(e) => { rn = 0 - e; }
     }
-    KTest::assert_eq(rn, 3, "RamFS read 3 bytes" as void*);
+    KTest::assert_eq(rn as ulong, 3, "RamFS read 3 bytes" as void*);
 
     // データ整合性 — ループで検証
     i = 0;
@@ -79,13 +79,13 @@ export void test_ramfs() {
     KTest::assert_eq(fsize, 3, "RamFS file_size=3" as void*);
 
     // unlink
-    ulong ul = 0;
-    Result<ulong, long> ur = RamFs::unlink("_test_file" as void*);
+    long ul = 0;
+    Result<long, long> ur = RamFs::unlink("_test_file" as void*);
     match (ur) {
         Result::Ok(v) => { ul = v; }
-        Result::Err(e) => { ul = 999; }
+        Result::Err(e) => { ul = 0 - e; }
     }
-    KTest::assert_eq(ul, 0, "RamFS unlink returns 0" as void*);
+    KTest::assert_eq(ul as ulong, 0, "RamFS unlink returns 0" as void*);
     Ino after_del = RamFs::lookup("_test_file" as void*);
     KTest::assert_eq(after_del as ulong, 0, "RamFS lookup after unlink=0" as void*);
 

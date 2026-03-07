@@ -34,21 +34,21 @@ export void test_devfs() {
 
     // /dev/null read → EOF (0)
     ulong buf_addr = 0x9D000;  // テスト用一時バッファ
-    ulong n = 0;
-    Result<ulong, long> r1 = DevFs::read(DEV_NULL, buf_addr, 64);
+    long n = 0;
+    Result<long, long> r1 = DevFs::read(DEV_NULL, buf_addr, 64);
     match (r1) {
         Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0; }
+        Result::Err(e) => { n = 0 - e; }
     }
-    KTest::assert_eq(n, 0, "/dev/null read returns 0 (EOF)" as void*);
+    KTest::assert_eq(n as ulong, 0, "/dev/null read returns 0 (EOF)" as void*);
 
     // /dev/null write → count
-    Result<ulong, long> r2 = DevFs::write(DEV_NULL, buf_addr, 100);
+    Result<long, long> r2 = DevFs::write(DEV_NULL, buf_addr, 100);
     match (r2) {
         Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0; }
+        Result::Err(e) => { n = 0 - e; }
     }
-    KTest::assert_eq(n, 100, "/dev/null write returns count" as void*);
+    KTest::assert_eq(n as ulong, 100, "/dev/null write returns count" as void*);
 
     // /dev/zero read → fills zeros
     // バッファに0xFF埋め
@@ -61,12 +61,12 @@ export void test_devfs() {
         `);
         i = i + 1;
     }
-    Result<ulong, long> r3 = DevFs::read(DEV_ZERO, buf_addr, 16);
+    Result<long, long> r3 = DevFs::read(DEV_ZERO, buf_addr, 16);
     match (r3) {
         Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0; }
+        Result::Err(e) => { n = 0 - e; }
     }
-    KTest::assert_eq(n, 16, "/dev/zero read returns count" as void*);
+    KTest::assert_eq(n as ulong, 16, "/dev/zero read returns count" as void*);
     // 最初のバイトがゼロか確認
     ulong first_byte = 0;
     __asm__(`
@@ -78,10 +78,10 @@ export void test_devfs() {
     KTest::assert_eq(first_byte, 0, "/dev/zero fills with zeros" as void*);
 
     // /dev/random read → nonzero return
-    Result<ulong, long> r4 = DevFs::read(DEV_RANDOM, buf_addr, 32);
+    Result<long, long> r4 = DevFs::read(DEV_RANDOM, buf_addr, 32);
     match (r4) {
         Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0; }
+        Result::Err(e) => { n = 0 - e; }
     }
-    KTest::assert_eq(n, 32, "/dev/random read returns count" as void*);
+    KTest::assert_eq(n as ulong, 32, "/dev/random read returns count" as void*);
 }

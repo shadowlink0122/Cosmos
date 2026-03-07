@@ -127,7 +127,7 @@ impl Syscall {
         ulong fs_type = FdTable::get_fs_type(fd as long);
         if (fs_type == FS_DEVFS) {
             ulong dev_id = FdTable::get_ino(fd as long) as ulong;
-            Result<ulong, long> dr = DevFs::write(dev_id, buf_addr, count);
+            Result<long, long> dr = DevFs::write(dev_id, buf_addr, count);
             match (dr) {
                 Result::Ok(n) => { return n; }
                 Result::Err(e) => { return 0 - e; }
@@ -143,7 +143,7 @@ impl Syscall {
         }
         // RamFS/9pFS→VFS経由
         if (fs_type == FS_RAMFS || fs_type == FS_9PFS) {
-            Result<ulong, long> vr = Vfs::write(fd as long, buf_addr, count);
+            Result<long, long> vr = Vfs::write(fd as long, buf_addr, count);
             match (vr) {
                 Result::Ok(n) => { return n; }
                 Result::Err(e) => { return 0 - e; }
@@ -205,7 +205,7 @@ impl Syscall {
         ulong fs_type = FdTable::get_fs_type(fd as long);
         if (fs_type == FS_DEVFS) {
             ulong dev_id = FdTable::get_ino(fd as long) as ulong;
-            Result<ulong, long> dr = DevFs::read(dev_id, buf_addr, count);
+            Result<long, long> dr = DevFs::read(dev_id, buf_addr, count);
             match (dr) {
                 Result::Ok(n) => { return n; }
                 Result::Err(e) => { return 0 - e; }
@@ -230,7 +230,7 @@ impl Syscall {
             return 0;  // タイムアウト → EOF
         }
         // ramfsファイル → VFS経由
-        Result<ulong, long> vr = Vfs::read(fd as long, buf_addr, count);
+        Result<long, long> vr = Vfs::read(fd as long, buf_addr, count);
         match (vr) {
             Result::Ok(n) => { return n; }
             Result::Err(e) => { return 0 - e; }

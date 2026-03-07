@@ -138,7 +138,7 @@ impl Vfs {
 
     /// FDからデータを読み出し
     /// 成功=Ok(読み出しバイト数)、失敗=Err(errno)
-    static Result<ulong, long> read(Fd fd, ulong buf, ulong count) {
+    static Result<long, long> read(Fd fd, ulong buf, ulong count) {
         if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
 
         ulong fs_type = FdTable::get_fs_type(fd);
@@ -154,14 +154,14 @@ impl Vfs {
             if (total > 0) {
                 FdTable::set_offset(fd, offset + total);
             }
-            return Result::Ok(total);
+            return Result::Ok(total as long);
         }
 
         // ramfs
         if (fs_type == FS_RAMFS) {
             Ino ino = FdTable::get_ino(fd);
             ulong offset = FdTable::get_offset(fd);
-            Result<ulong, long> rr = RamFs::read(ino, buf, offset, count);
+            Result<long, long> rr = RamFs::read(ino, buf, offset, count);
             match (rr) {
                 Result::Ok(bytes) => {
                     if (bytes > 0) {
@@ -178,14 +178,14 @@ impl Vfs {
 
     /// FDにデータを書き込み
     /// 成功=Ok(書き込みバイト数)、失敗=Err(errno)
-    static Result<ulong, long> write(Fd fd, ulong buf, ulong count) {
+    static Result<long, long> write(Fd fd, ulong buf, ulong count) {
         if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
 
         ulong fs_type = FdTable::get_fs_type(fd);
 
         // コンソール (stdout/stderr) — シリアル出力
         if (fs_type == FS_CONSOLE) {
-            return Result::Ok(count);
+            return Result::Ok(count as long);
         }
 
         // 9pfs
@@ -196,14 +196,14 @@ impl Vfs {
                 ulong offset = FdTable::get_offset(fd);
                 FdTable::set_offset(fd, offset + written);
             }
-            return Result::Ok(written);
+            return Result::Ok(written as long);
         }
 
         // ramfs
         if (fs_type == FS_RAMFS) {
             Ino ino = FdTable::get_ino(fd);
             ulong offset = FdTable::get_offset(fd);
-            Result<ulong, long> wr = RamFs::write(ino, buf, offset, count);
+            Result<long, long> wr = RamFs::write(ino, buf, offset, count);
             match (wr) {
                 Result::Ok(bytes) => {
                     if (bytes > 0) {
@@ -220,7 +220,7 @@ impl Vfs {
 
     /// FDを閉じる
     /// 成功=Ok(0)、失敗=Err(errno)
-    static Result<ulong, long> close(Fd fd) {
+    static Result<long, long> close(Fd fd) {
         if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
 
         ulong fs_type = FdTable::get_fs_type(fd);
