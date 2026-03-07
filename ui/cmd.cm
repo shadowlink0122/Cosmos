@@ -310,8 +310,27 @@ impl Cmd {
             exec_name = exec_name + 1;
         }
 
-        // 未知のコマンド → バイナリとして実行試行 (RamFS + 9p 両方)
-        // "busybox echo hello" → exec_nameの最初の単語がバイナリ名
+        // バイナリ名を抽出（先頭ワードのみ: "busybox echo hello" → "busybox"）
+        ulong fname_tmp = 0x95100 as ulong;  // 一時バッファ（loaderと重ならないアドレス）
+        ulong fi = 0;
+        while (fi < 255) {
+            ulong fch = Mem::read_byte(exec_name + fi);
+            if (fch == 0 || fch == 32) { break; }  // NULLまたはスペースで終端
+            Mem::write_byte(fname_tmp + fi, fch);
+            fi = fi + 1;
+        }
+        Mem::write_byte(fname_tmp + fi, 0);  // NULL終端
+
+        // ファイル存在チェック: RamFSのみ（9pのI/O操作はGP例外リスクあり）
+        Ino lookup_ino = RamFs::lookup(fname_tmp as void*);
+        if (lookup_ino == 0) {
+            // RamFSに存在しない → command not found
+            Shell::write(CMD_BUF_ADDR as void*);
+            Shell::writeln(": command not found" as void*);
+            return;
+        }
+
+        // バイナリが存在する → Loader::exec で実行
         SerialPort serial(COM1);
         long pid = 0;
         Result<long, long> er = Loader::exec(exec_name as void*, &serial);

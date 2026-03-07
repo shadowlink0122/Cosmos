@@ -224,15 +224,6 @@ void main(ulong mb2_info, ulong mb2_magic) {
     InitRootfs::setup(&pmm, &serial);
 
     // === hello auto-execは省略（busyboxとvaddrが競合するため）===
-    // Pid hello_pid = Loader::exec("hello" as void*, &serial);
-
-    // === AUTO-EXEC は無効化（プロセス空間共有のため、シェルから手動実行）===
-    // Pid bb_pid = Loader::exec("busybox echo hello world" as void*, &serial);
-    // if (bb_pid >= 0) {
-    //     serial.puts("[INFO] busybox loaded, PID=" as void*);
-    //     print_dec(&serial, bb_pid as ulong);
-    //     serial.println("" as void*);
-    // }
 
     // === 13. GUI 初期化 (BGA直接モード設定) ===
     pr_info(&serial, "Initializing GUI desktop..." as void*);

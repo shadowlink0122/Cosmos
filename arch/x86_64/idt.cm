@@ -148,80 +148,30 @@ export void exc_general_protection() {
     SerialPort serial(COM1);
     serial.println("!!! GENERAL PROTECTION (#GP) !!!" as void*);
 
-    // TSS RSP0からフレーム情報を読み取り
-    // #GPはエラーコード付き: [error_code, RIP, CS, RFLAGS, RSP, SS]
-    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
-    ulong tss_rsp0 = *tss_rsp0_ptr;
-    ulong* err_ptr = (tss_rsp0 - 48) as ulong*;
-    ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
-    ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
-    ulong* rflags_ptr = (tss_rsp0 - 24) as ulong*;
-    ulong* ursp_ptr = (tss_rsp0 - 16) as ulong*;
+    // RBPからスタックダンプ（フレーム位置特定用）
+    ulong frame_base = 0;
+    __asm__(`movq %rbp, ${=r:frame_base}`);
 
-    // ログ出力
-    serial.puts("  error_code = " as void*);
-    serial.print_hex(*err_ptr);
-    serial.println("" as void*);
-    serial.puts("  RIP = " as void*);
-    serial.print_hex(*rip_ptr);
-    serial.puts("  CS = " as void*);
-    serial.print_hex(*cs_ptr);
-    serial.println("" as void*);
-    serial.puts("  RFLAGS = " as void*);
-    serial.print_hex(*rflags_ptr);
-    serial.puts("  RSP = " as void*);
-    serial.print_hex(*ursp_ptr);
-    serial.println("" as void*);
-
-    // スタックダンプ (現在のRSP)
-    ulong rsp_val = 0;
-    __asm__(`movq %rsp, %rax; movq %rax, ${=r:rsp_val}`);
-    ulong i = 0;
-    while (i < 8) {
-        ulong* sp = (rsp_val + i * 8) as ulong*;
-        serial.puts("  [RSP+" as void*);
-        serial.print_hex(i * 8);
+    ulong di = 0;
+    while (di < 12) {
+        ulong off = di * 8;
+        ulong addr = frame_base + off;
+        ulong* vp = addr as ulong*;
+        serial.puts("  [RBP+" as void*);
+        serial.print_hex(off);
         serial.puts("] = " as void*);
-        serial.print_hex(*sp);
+        serial.print_hex(*vp);
         serial.println("" as void*);
-        i = i + 1;
+        di = di + 1;
     }
 
-    // ユーザーモード#GP → プロセスkill→復帰
-    ulong cs_val = *cs_ptr;
-    if ((cs_val & 3) != 0) {
-        serial.println("[#GP] User process killed (SIGSEGV)" as void*);
-        Shell::set_color(12, 0);
-        Shell::writeln("General protection fault (core dumped)" as void*);
-        Shell::set_color(7, 0);
-
-        Process* cur = Sched::current();
-        ulong cur_addr = cur as ulong;
-        if (cur_addr != 0) {
-            Pid dying_pid = cur->pid;
-            ProcessTable::do_exit(cur, 139);
-            Sched::remove(dying_pid);
-        }
-        ulong idle_rip = pf_idle_loop as ulong;
-        __asm__(`
-            movq ${r:tss_rsp0}, %rsp;
-            pushq $$0x10;
-            pushq ${r:tss_rsp0};
-            pushq $$0x200;
-            pushq $$0x08;
-            pushq ${r:idle_rip};
-            iretq
-        `);
-        return;
-    }
-
-    // カーネルモード#GP — プロセスkillして復帰試行
-    // PID=1(シェル)含む全プロセスで復帰を試行し、halt停止を防止
-    serial.println("[#GP] Kernel GP - attempting recovery" as void*);
+    // GPエラー表示
+    serial.println("[#GP] Attempting recovery..." as void*);
     Shell::set_color(12, 0);
     Shell::writeln("General protection fault (core dumped)" as void*);
     Shell::set_color(7, 0);
 
+    // 現在のプロセスをkill（PID > 1のみ）
     Process* cur = Sched::current();
     ulong cur_addr = cur as ulong;
     if (cur_addr != 0 && cur->pid > 1) {
@@ -230,7 +180,9 @@ export void exc_general_protection() {
         Sched::remove(dying_pid);
     }
 
-    // 常にidle loopに復帰（タイマー割り込みでスケジューラが再開）
+    // idle loopに復帰
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
     ulong idle_rip = pf_idle_loop as ulong;
     __asm__(`
         movq ${r:tss_rsp0}, %rsp;

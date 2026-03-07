@@ -63,11 +63,12 @@ impl Process {
         return 0;
     }
 
-    /// カーネルスタックを割り当て (2ページ = 8KiB)
+    /// カーネルスタックを割り当て (4ページ = 16KiB)
+    /// Cmd::dispatch + Loader::exec + 割り込みフレームの深いコールスタック対応
     void alloc_stack(BuddyAllocator* pmm) {
-        PhysAddr stack = pmm->alloc_pages(1);
+        PhysAddr stack = pmm->alloc_pages(2);  // order=2: 4ページ
         if (stack != 0) {
-            self.kernel_stack = stack + PAGE_SIZE * 2;  // スタックは上から下に成長
+            self.kernel_stack = stack + PAGE_SIZE * 4;  // スタックは上から下に成長
         }
     }
 }

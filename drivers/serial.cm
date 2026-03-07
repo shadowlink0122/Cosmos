@@ -125,14 +125,14 @@ impl SerialPort for Writer {
     /// 文字列 + 改行出力
     void println(void* data) {
         self.puts(data);
-        self.putc(Key::CR as ulong);  // CR
+        self.putc(Key::CR as ulong);     // CR
         self.putc(Key::Enter as ulong);  // LF
     }
 
     /// 64ビット値の16進数出力
     void print_hex(ulong value) {
-        self.putc(Ascii::Digit0 as ulong);   // '0'
-        self.putc('x' as ulong);  // 'x'
+        self.putc(Ascii::Digit0 as ulong);  // '0'
+        self.putc(Ascii::LowerX as ulong);  // 'x'
         ulong i = 0;
         while (i < 16) {
             ulong shift = (15 - i) * 4;
