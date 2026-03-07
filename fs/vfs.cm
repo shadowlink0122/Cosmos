@@ -29,9 +29,9 @@ export struct Vfs {}
 
 impl Vfs {
     /// ファイルをオープンしFDを返す
-    /// 成功=fd番号(≥0)、失敗=負のerrno
-    static Fd open(void* name, ulong flags) {
-        if (name as ulong == 0) { return 0 - EINVAL; }
+    /// 成功=Ok(fd)、失敗=Err(errno)
+    static Result<Fd, long> open(void* name, ulong flags) {
+        if (name as ulong == 0) { return Result::Err(EINVAL); }
 
         // 9pfsパス判定: /mnt/host で始まるパス
         if (NinePfs::is_9p_path(name as ulong) != 0) {
@@ -40,7 +40,7 @@ impl Vfs {
 
             // 空きパスバッファを検索
             ulong slot = Vfs::alloc_9p_slot();
-            if (slot == 0xFFFFFFFF) { return 0 - EMFILE; }
+            if (slot == 0xFFFFFFFF) { return Result::Err(EMFILE); }
 
             // 相対パスをバッファにコピー
             ulong path_buf = VFS_9P_PATH_BASE + slot * VFS_9P_PATH_SIZE;
@@ -64,10 +64,10 @@ impl Vfs {
             // FD割り当て (inoフィールドにパスバッファアドレスを格納)
             Result<Fd, long> alloc_r = FdTable::alloc(path_buf as long, flags, FS_9PFS);
             match (alloc_r) {
-                Result::Ok(fd) => { return fd; }
+                Result::Ok(fd) => { return Result::Ok(fd); }
                 Result::Err(e) => {
                     Vfs::free_9p_slot(slot);
-                    return 0 - e;
+                    return Result::Err(e);
                 }
             }
         }
@@ -78,7 +78,7 @@ impl Vfs {
         if (ino == 0) {
             if ((flags & O_CREAT) != 0) {
                 ino = RamFs::create(name, S_IFREG | 0x1B6, 0);
-                if (ino == 0) { return 0 - ENOSPC; }
+                if (ino == 0) { return Result::Err(ENOSPC); }
             } else {
                 // 9pFSフォールバック: /lib/ 等のパスを9pFS経由でロード
                 // パスの先頭 '/' をスキップしてファイル名として検索
@@ -109,7 +109,7 @@ impl Vfs {
                     }
                 }
                 if (ino == 0) {
-                    return 0 - ENOENT;
+                    return Result::Err(ENOENT);
                 }
             }
         }
@@ -119,7 +119,7 @@ impl Vfs {
         Fd fd = 0;
         match (alloc_r) {
             Result::Ok(v) => { fd = v; }
-            Result::Err(e) => { return 0 - e; }
+            Result::Err(e) => { return Result::Err(e); }
         }
 
         // O_TRUNC: ファイル切り詰め
@@ -133,7 +133,7 @@ impl Vfs {
             FdTable::set_offset(fd, fsize);
         }
 
-        return fd;
+        return Result::Ok(fd);
     }
 
     /// FDからデータを読み出し

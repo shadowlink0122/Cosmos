@@ -208,7 +208,11 @@ impl SyscallFs {
         }
 
         // sys_openに委譲（importはsyscall.cmで行うため、Vfs::openを使用）
-        return Vfs::open(pathname as void*, flags);
+        Result<Fd, long> vr = Vfs::open(pathname as void*, flags);
+        match (vr) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_readlinkat: シンボリックリンク読み取り

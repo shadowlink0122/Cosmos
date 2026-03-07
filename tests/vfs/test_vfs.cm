@@ -7,6 +7,7 @@ import ../../include/types;
 import ../../include/config;
 import ../../include/vfs;
 import ../../include/errno;
+import ../../include/result;
 import ../../drivers/serial;
 import ../../lib/printk;
 import ../../lib/kstring;
@@ -24,7 +25,12 @@ export void test_vfs() {
     TestIO::set_color(7, 0);
 
     // O_CREAT で新規ファイル作成
-    Fd fd = Vfs::open("_vfs_test" as void*, O_CREAT | O_RDWR);
+    Fd fd = 0;
+    Result<Fd, long> r1 = Vfs::open("_vfs_test" as void*, O_CREAT | O_RDWR);
+    match (r1) {
+        Result::Ok(v) => { fd = v; }
+        Result::Err(e) => { fd = 0 - e; }
+    }
     ulong fd_ok = 0;
     if (fd >= 0) { fd_ok = 1; }
     KTest::assert_eq(fd_ok, 1, "VFS open O_CREAT" as void*);
@@ -36,14 +42,24 @@ export void test_vfs() {
     KTest::assert_eq(close_ok, 1, "VFS close" as void*);
 
     // reopen で読み込み検証
-    Fd fd2 = Vfs::open("_vfs_test" as void*, O_RDONLY);
+    Fd fd2 = 0;
+    Result<Fd, long> r2 = Vfs::open("_vfs_test" as void*, O_RDONLY);
+    match (r2) {
+        Result::Ok(v) => { fd2 = v; }
+        Result::Err(e) => { fd2 = 0 - e; }
+    }
     ulong fd2_ok = 0;
     if (fd2 >= 0) { fd2_ok = 1; }
     KTest::assert_eq(fd2_ok, 1, "VFS reopen O_RDONLY" as void*);
     Vfs::close(fd2);
 
     // 存在しないファイル → エラー
-    Fd err_fd2 = Vfs::open("_vfs_nonexistent" as void*, O_RDONLY);
+    Fd err_fd2 = 0;
+    Result<Fd, long> r3 = Vfs::open("_vfs_nonexistent" as void*, O_RDONLY);
+    match (r3) {
+        Result::Ok(v) => { err_fd2 = v; }
+        Result::Err(e) => { err_fd2 = 0 - e; }
+    }
     ulong is_enoent = 0;
     if (err_fd2 < 0) { is_enoent = 1; }
     KTest::assert_eq(is_enoent, 1, "VFS open nonexistent returns error" as void*);
@@ -55,7 +71,12 @@ export void test_vfs() {
     KTest::assert_eq(is_ebadf, 1, "VFS read invalid fd returns error" as void*);
 
     // NULLパス → EINVAL
-    Fd null_fd = Vfs::open(0 as void*, O_RDONLY);
+    Fd null_fd = 0;
+    Result<Fd, long> r4 = Vfs::open(0 as void*, O_RDONLY);
+    match (r4) {
+        Result::Ok(v) => { null_fd = v; }
+        Result::Err(e) => { null_fd = 0 - e; }
+    }
     ulong is_einval = 0;
     if (null_fd < 0) { is_einval = 1; }
     KTest::assert_eq(is_einval, 1, "VFS open NULL returns error" as void*);

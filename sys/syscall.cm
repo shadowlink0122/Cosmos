@@ -248,7 +248,11 @@ impl Syscall {
             }
             return 0 - ENOENT;
         }
-        return Vfs::open(name_addr as void*, flags);
+        Result<Fd, long> vr = Vfs::open(name_addr as void*, flags);
+        match (vr) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
     }
 
     /// sys_close: FDを閉じる
