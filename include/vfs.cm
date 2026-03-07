@@ -76,11 +76,21 @@ export const ulong MAX_FILE_SIZE = 0x4000000;  // 64MB（cc1/cm等の大型バ�
 /// ルートinode番号
 export const Ino ROOT_INO = 1;
 
+/// FS種別 — match式でパターンマッチ可能
+export enum FsType {
+    Console = 0,
+    RamFs   = 1,
+    DevFs   = 2,
+    Pipe    = 3,
+    NinePFs = 4,
+    Dir     = 5,
+}
+
+/// FS種別: stdin/stdout/stderr用特殊FS (後方互換)
+export const ulong FS_CONSOLE = 0;
+
 /// FS種別: ramfs
 export const ulong FS_RAMFS = 1;
-
-/// FS種別: stdin/stdout/stderr用特殊FS
-export const ulong FS_CONSOLE = 0;
 
 /// FS種別: DevFS (/dev/null, /dev/zero等)
 export const ulong FS_DEVFS = 2;

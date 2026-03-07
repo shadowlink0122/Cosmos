@@ -42,17 +42,12 @@ impl CmdProc {
                 Shell::print_dec(proc->pid as ulong);
                 Shell::write("    " as void*);
 
-                if (proc->state == TASK_RUNNING) {
-                    Shell::write("RUNNING  " as void*);
-                }
-                if (proc->state == TASK_READY) {
-                    Shell::write("READY    " as void*);
-                }
-                if (proc->state == TASK_BLOCKED) {
-                    Shell::write("BLOCKED  " as void*);
-                }
-                if (proc->state == TASK_ZOMBIE) {
-                    Shell::write("ZOMBIE   " as void*);
+                match (proc->state as TaskState) {
+                    TaskState::Running => { Shell::write("RUNNING  " as void*); }
+                    TaskState::Ready   => { Shell::write("READY    " as void*); }
+                    TaskState::Blocked => { Shell::write("BLOCKED  " as void*); }
+                    TaskState::Zombie  => { Shell::write("ZOMBIE   " as void*); }
+                    TaskState::Stopped => { Shell::write("STOPPED  " as void*); }
                 }
 
                 if (proc->pid == 0) { Shell::writeln("idle" as void*); }

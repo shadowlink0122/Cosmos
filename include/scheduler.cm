@@ -10,8 +10,16 @@ import ./types;
 
 // ============================================================
 // プロセス状態定数
-// ============================================================
+/// タスク状態 — match式でパターンマッチ可能
+export enum TaskState {
+    Running = 0,
+    Ready   = 1,
+    Blocked = 2,
+    Zombie  = 3,
+    Stopped = 4,
+}
 
+// タスク状態 (後方互換用const)
 export const ulong TASK_RUNNING  = 0;
 export const ulong TASK_READY    = 1;
 export const ulong TASK_BLOCKED  = 2;

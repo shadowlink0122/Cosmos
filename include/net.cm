@@ -66,6 +66,22 @@ export const ulong SOCK_DGRAM  = 2;  // UDP
 export const ulong SOCK_RAW    = 3;
 
 // TCP State
+/// TCP接続状態 — match式でパターンマッチ可能
+export enum TcpState {
+    Closed      = 0,
+    Listen      = 1,
+    SynSent     = 2,
+    SynRcvd     = 3,
+    Established = 4,
+    FinWait1    = 5,
+    FinWait2    = 6,
+    CloseWait   = 7,
+    Closing     = 8,
+    LastAck     = 9,
+    TimeWait    = 10,
+}
+
+// TCP State (後方互換用const — 既存コードとの互換性維持)
 export const ulong TCP_CLOSED      = 0;
 export const ulong TCP_LISTEN      = 1;
 export const ulong TCP_SYN_SENT    = 2;

@@ -232,21 +232,35 @@ impl Tcp {
         ulong* send_unack_ptr = (base + 48) as ulong*;
         *send_unack_ptr = ack_num;
 
-        if (state == TCP_SYN_RCVD) {
-            Tcp::set_state(conn_id, TCP_ESTABLISHED);
-        } else if (state == TCP_FIN_WAIT_1) {
-            Tcp::set_state(conn_id, TCP_FIN_WAIT_2);
-        } else if (state == TCP_LAST_ACK) {
-            Tcp::close_conn(conn_id);
+        match (state as TcpState) {
+            TcpState::SynRcvd  => { Tcp::set_state(conn_id, TCP_ESTABLISHED); }
+            TcpState::FinWait1 => { Tcp::set_state(conn_id, TCP_FIN_WAIT_2); }
+            TcpState::LastAck  => { Tcp::close_conn(conn_id); }
+            TcpState::Closed      => {}
+            TcpState::Listen      => {}
+            TcpState::SynSent     => {}
+            TcpState::Established => {}
+            TcpState::FinWait2    => {}
+            TcpState::CloseWait   => {}
+            TcpState::Closing     => {}
+            TcpState::TimeWait    => {}
         }
     }
 
     static void handle_fin(ulong conn_id) {
         ulong state = Tcp::get_state(conn_id);
-        if (state == TCP_ESTABLISHED) {
-            Tcp::set_state(conn_id, TCP_CLOSE_WAIT);
-        } else if (state == TCP_FIN_WAIT_2) {
-            Tcp::set_state(conn_id, TCP_TIME_WAIT);
+        match (state as TcpState) {
+            TcpState::Established => { Tcp::set_state(conn_id, TCP_CLOSE_WAIT); }
+            TcpState::FinWait2    => { Tcp::set_state(conn_id, TCP_TIME_WAIT); }
+            TcpState::Closed      => {}
+            TcpState::Listen      => {}
+            TcpState::SynSent     => {}
+            TcpState::SynRcvd     => {}
+            TcpState::FinWait1    => {}
+            TcpState::CloseWait   => {}
+            TcpState::Closing     => {}
+            TcpState::LastAck     => {}
+            TcpState::TimeWait    => {}
         }
     }
 }
