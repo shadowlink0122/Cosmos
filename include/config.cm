@@ -105,6 +105,9 @@ export const PhysAddr LINE_INDEX_BUF = 0x96000;
 /// マウスボタン前回状態アドレス
 export const PhysAddr MOUSE_PREV_BTN_ADDR = 0xD80900;
 
+/// 時計の前回秒数 (リアルタイム更新用)
+export const PhysAddr CLOCK_PREV_SEC_ADDR = 0xD80908;
+
 // ============================================================
 // ネットワーク/ホストバッファアドレス
 // ============================================================

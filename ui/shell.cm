@@ -35,6 +35,7 @@ import ../drivers/timer/pit;
 import ../drivers/input/mouse;
 import ../include/keycode;
 import ../include/color;
+import ../ui/menubar;
 
 // ============================================================
 // ShellInput — シェル入力処理＆メインループ
@@ -353,6 +354,10 @@ impl ShellInput {
                 ulong ch = Kbd::getchar();
                 if (ch == Key::Null as ulong) {
                     ShellInput::handle_scroll();
+                    // GUIモード時：時計リアルタイム更新
+                    if (Shell::is_gui() != 0) {
+                        MenuBar::update_clock();
+                    }
                     __asm__(`sti; hlt`);
                     Sched::tick();
                 } else if (ch == Key::Enter as ulong) {

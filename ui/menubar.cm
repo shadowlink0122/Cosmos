@@ -56,26 +56,52 @@ impl MenuBar {
         MenuBar::draw_clock();
     }
 
-    /// 時刻表示 (CMOS RTCから実時刻を取得)
+    /// 時刻表示 (CMOS RTCから実時刻を取得, HH:MM:SS形式)
     static void draw_clock() {
         ulong w = Fb::width();
 
         // CMOS RTCから現在時刻を取得
         ulong hh = Rtc::hours();
         ulong mm = Rtc::minutes();
+        ulong ss = Rtc::seconds();
 
-        // "HH:MM" 形式で右端に表示
-        ulong clock_x = w - 60;
+        // "HH:MM:SS" 形式で右端に表示 (8文字 × 8px = 64px + 余白)
+        ulong clock_x = w - 80;
 
         ulong h1 = hh / 10;
         ulong h2 = hh % 10;
         ulong m1 = mm / 10;
         ulong m2 = mm % 10;
+        ulong s1 = ss / 10;
+        ulong s2 = ss % 10;
 
         Font::draw_char(clock_x,      4, ASCII_DIGIT_BASE + h1, MENUBAR_FG, MENUBAR_BG);
         Font::draw_char(clock_x + 8,  4, ASCII_DIGIT_BASE + h2, MENUBAR_FG, MENUBAR_BG);
         Font::draw_char(clock_x + 16, 4, 0x3A,      MENUBAR_FG, MENUBAR_BG);  // ':'
         Font::draw_char(clock_x + 24, 4, 0x30 + m1, MENUBAR_FG, MENUBAR_BG);
         Font::draw_char(clock_x + 32, 4, 0x30 + m2, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_char(clock_x + 40, 4, 0x3A,      MENUBAR_FG, MENUBAR_BG);  // ':'
+        Font::draw_char(clock_x + 48, 4, 0x30 + s1, MENUBAR_FG, MENUBAR_BG);
+        Font::draw_char(clock_x + 56, 4, 0x30 + s2, MENUBAR_FG, MENUBAR_BG);
+
+        // 前回の秒数を保存（update_clockでの変化検出用）
+        ulong* prev_sec = CLOCK_PREV_SEC_ADDR as ulong*;
+        *prev_sec = ss;
+    }
+
+    /// 時計をリアルタイム更新（メインループから呼び出し）
+    /// 秒が変化した場合のみバックバッファ更新→VRAM blitで再描画
+    static void update_clock() {
+        ulong ss = Rtc::seconds();
+        ulong* prev_sec = CLOCK_PREV_SEC_ADDR as ulong*;
+        if (ss == *prev_sec) { return; }  // 変化なし → スキップ
+
+        // バックバッファに時計を再描画
+        MenuBar::draw_clock();
+
+        // 時計部分だけVRAMにblit (高速部分更新)
+        ulong w = Fb::width();
+        ulong clock_x = w - 80;
+        Fb::blit_rect(clock_x, 0, 80, MENUBAR_HEIGHT);
     }
 }
