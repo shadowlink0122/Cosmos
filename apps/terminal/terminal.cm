@@ -1,16 +1,16 @@
 //! platform: baremetal-x86
-// cosmo-linux::ui::terminal - GUIターミナルエミュレータ
+// cosmo-linux::apps::terminal - GUIターミナルエミュレータ
 //
 // ウィンドウ内にテキスト入出力を提供するターミナル。
 // 最大4スロット（独立した実行空間）をサポート。
 // テキストバッファ+色バッファを保持し、compose()後に再描画可能。
 
-import ../include/types;
-import ../include/config;
-import ../drivers/video/framebuffer;
-import ../drivers/video/font;
-import ../ui/window;
-import ../include/color;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ../../ui/window;
+import ../../include/color;
 
 // ============================================================
 // ターミナル定数

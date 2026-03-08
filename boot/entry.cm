@@ -45,7 +45,7 @@ import ../ui/desktop;
 import ../ui/menubar;
 import ../ui/window;
 import ../ui/wm;
-import ../ui/terminal;
+import ../apps/terminal/terminal;
 import ../ui/dock;
 
 /// GUI画面更新ヘルパー (コールバック用)
