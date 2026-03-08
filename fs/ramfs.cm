@@ -23,17 +23,17 @@ void wb(ulong a, ulong v) {
     __asm__(`movq ${r:a}, %r10; movq ${r:v}, %rax; movb %al, (%r10)`);
 }
 
-// メモリレイアウト（0x1000000 = 16MBから配置: ELF vaddr 0x400000との衝突回避）
-const PhysAddr INO_BASE  = 0x1000000;  // inode配列 (256 * 56 = 14KB)
-const PhysAddr DIR_BASE  = 0x1004000;  // ディレクトリ配列 (64 * 32 = 2KB)
-const PhysAddr NAME_BASE = 0x1005000;  // ファイル名領域 (64 * 32 = 2KB)
-const PhysAddr NEXT_INO  = 0x1006000;  // 次のinode番号
-const PhysAddr DIR_CNT   = 0x1006008;  // ディレクトリエントリ数
+// メモリレイアウト（フレームバッファ backbuf=0xE00000+3MB=0x1100000 の上位に配置）
+const PhysAddr INO_BASE  = 0x1200000;  // inode配列 (256 * 56 = 14KB)
+const PhysAddr DIR_BASE  = 0x1204000;  // ディレクトリ配列 (64 * 32 = 2KB)
+const PhysAddr NAME_BASE = 0x1205000;  // ファイル名領域 (64 * 32 = 2KB)
+const PhysAddr NEXT_INO  = 0x1206000;  // 次のinode番号
+const PhysAddr DIR_CNT   = 0x1206008;  // ディレクトリエントリ数
 
 // ファイルデータバッファプール (32MB領域)
 // MAX_FILE_SIZE=2MBで最大16ファイル = 32MB
-const PhysAddr DATA_POOL_BASE = 0x1100000;  // 17MB地点
-const PhysAddr DATA_POOL_NEXT = 0x1006010;  // 次の割り当てオフセット
+const PhysAddr DATA_POOL_BASE = 0x1300000;  // FB backbuf + RamFS metadata 上位
+const PhysAddr DATA_POOL_NEXT = 0x1206010;  // 次の割り当てオフセット
 const ulong    DATA_POOL_SIZE = 0x2000000;  // 32MB
 
 // 内部ヘルパー
@@ -288,6 +288,14 @@ impl RamFs {
         if (io == 0xFFFFFFFFFFFFFFFF) { return 0; }
         ulong* sp = (INO_BASE + io + 16) as ulong*;
         return *sp;
+    }
+
+    /// ファイルデータポインタ取得
+    static ulong file_data(Ino ino) {
+        ulong io = find_ino(ino);
+        if (io == 0xFFFFFFFFFFFFFFFF) { return 0; }
+        ulong* dp = (INO_BASE + io + 32) as ulong*;
+        return *dp;
     }
 
     /// ファイルモード取得 (S_IFREG, S_IFDIR等のビットマスク含む)

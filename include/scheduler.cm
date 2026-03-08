@@ -68,6 +68,7 @@ export struct Process {
     VirtAddr brk_addr;     // ヒープ上限アドレス
     VirtAddr user_stack;   // ユーザースタック先頭
     ulong is_user;         // ユーザープロセスフラグ (1=Ring3)
+    ulong fsbase;          // FS_BASE MSR値 (TLS用, Linux thread.fsbase互換)
 }
 
 // ============================================================

@@ -148,13 +148,17 @@ impl BuddyAllocator {
         if (aligned_end <= aligned_base) { return; }
 
         // カーネル領域・PMM管理領域・固定データ構造を保護
-        // 保護対象 (0 - 18MB):
-        //   0x000000-0x200000  カーネルコード・スタック
+        // 保護対象 (0 - 52MB):
+        //   0x000000-0x200000  カーネルコード・スタック・ページテーブル
         //   0x200000-0x212000  PMMビットマップ
+        //   0x300000-0x304000  プロセステーブル
+        //   0xB00000-0xC00000  カーネルスタックプール (64スロット×16KiB)
         //   0xD00000-0xD10000  フレームバッファ情報
         //   0xD80000-0xDA0000  カーソル/ウィンドウ/マウス状態
         //   0xE00000-0x1100000 バックバッファ (1024*768*4 = 3MB)
-        PhysAddr safe_start = 0x1200000;  // 18MB
+        //   0x1200000-0x1210000 RamFS構造体 (inode/dir/name)
+        //   0x1300000-0x3300000 RamFSデータプール (32MB)
+        PhysAddr safe_start = 0x3400000;  // 52MB (全固定領域の上位)
         if (aligned_base < safe_start) { aligned_base = safe_start; }
         if (aligned_end <= aligned_base) { return; }
 

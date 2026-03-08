@@ -54,6 +54,7 @@ impl Process {
         self.brk_addr = ELF_BRK_DEFAULT;
         self.user_stack = 0;
         self.is_user = 0;
+        self.fsbase = 0;
     }
 
     /// プロセスが実行可能か
@@ -63,13 +64,34 @@ impl Process {
         return 0;
     }
 
-    /// カーネルスタックを割り当て (4ページ = 16KiB)
-    /// Cmd::dispatch + Loader::exec + 割り込みフレームの深いコールスタック対応
+    /// カーネルスタックを固定プールから割り当て (16KiB)
+    /// PMM高アドレスによるユーザー空間仮想アドレス衝突を防止
     void alloc_stack(BuddyAllocator* pmm) {
-        PhysAddr stack = pmm->alloc_pages(2);  // order=2: 4ページ
-        if (stack != 0) {
-            self.kernel_stack = stack + PAGE_SIZE * 4;  // スタックは上から下に成長
+        ulong* next_slot = KSTACK_POOL_NEXT_ADDR as ulong*;
+        ulong slot = *next_slot;
+        if (slot >= KSTACK_POOL_MAX_SLOTS) {
+            self.kernel_stack = 0;
+            return;
         }
+        // スロットの物理アドレス: KSTACK_POOL_BASE + slot * KERNEL_STACK_SIZE
+        PhysAddr base = KSTACK_POOL_BASE + slot * KERNEL_STACK_SIZE;
+        memzero(base as void*, KERNEL_STACK_SIZE);
+        self.kernel_stack = base + KERNEL_STACK_SIZE;  // スタックは上から下に成長
+        *next_slot = slot + 1;
+    }
+
+    /// カーネルスタックを固定プールから割り当て (PMM不要版)
+    void alloc_stack_pool() {
+        ulong* next_slot = KSTACK_POOL_NEXT_ADDR as ulong*;
+        ulong slot = *next_slot;
+        if (slot >= KSTACK_POOL_MAX_SLOTS) {
+            self.kernel_stack = 0;
+            return;
+        }
+        PhysAddr base = KSTACK_POOL_BASE + slot * KERNEL_STACK_SIZE;
+        memzero(base as void*, KERNEL_STACK_SIZE);
+        self.kernel_stack = base + KERNEL_STACK_SIZE;
+        *next_slot = slot + 1;
     }
 }
 
@@ -90,6 +112,9 @@ impl ProcessTable {
         memzero(PROC_TABLE_BASE as void*, 64 * 256);
         ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
         *pid_ptr = 1;
+        // カーネルスタックプール初期化
+        ulong* kstack_next = KSTACK_POOL_NEXT_ADDR as ulong*;
+        *kstack_next = 0;
         pr_info(w, "Process table initialized (max 64)" as void*);
     }
 

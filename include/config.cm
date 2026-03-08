@@ -63,6 +63,16 @@ export const PhysAddr IDTR_ADDR = 0x82000;
 /// カーネルスタックサイズ
 export const Size KERNEL_STACK_SIZE = 16384;
 
+/// カーネルスタックプール — 固定物理アドレス領域
+/// PMMの高アドレス割当によるユーザー空間仮想アドレスとの衝突を防止
+/// 範囲: 0xB00000 - 0xBFFFFF (1MiB, 64スロット × 16KiB)
+/// 注意: PMM_DATA_BASE=0x200000, FB backbuf=0xE00000と非衝突
+export const PhysAddr KSTACK_POOL_BASE = 0xB00000;
+export const ulong KSTACK_POOL_MAX_SLOTS = 64;
+
+/// カーネルスタックプール次スロットインデックス格納アドレス
+export const PhysAddr KSTACK_POOL_NEXT_ADDR = 0x91050;
+
 // ============================================================
 // GUI画面・ウィンドウ定数
 // ============================================================

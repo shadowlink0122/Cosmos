@@ -134,14 +134,16 @@ impl Loader {
                 pr_err(w, "exec: file too small for ELF" as void*);
                 return Result::Err(ENOEXEC);
             }
-            long bytes = 0;
-            match (RamFs::read(ino, ELF_TMP_BUF, 0, fsize)) {
-                Result::Ok(v) => { bytes = v; }
-                Result::Err(e) => { bytes = 0 - e; }
-            }
-            if (bytes <= 0) {
-                pr_err(w, "exec: failed to read file" as void*);
+            // inodeのデータポインタから直接コピー
+            ulong data_addr = RamFs::file_data(ino);
+            if (data_addr == 0) {
+                pr_err(w, "exec: no data pointer in inode" as void*);
                 return Result::Err(EIO);
+            }
+            ulong ci = 0;
+            while (ci < fsize) {
+                Mem::write_byte(ELF_TMP_BUF + ci, Mem::read_byte(data_addr + ci));
+                ci = ci + 1;
             }
         } else {
             // 9pフォールバック
@@ -404,6 +406,7 @@ impl Loader {
                 ulong seg_end = p_vaddr + p_memsz;
                 if (seg_end > data_end) { data_end = seg_end; }
 
+
             }
             i = i + 1;
         }
@@ -554,6 +557,10 @@ impl Loader {
 
             // FS_BASE MSRを設定 (arch_prctlが後で上書きする)
             Cpu::wrmsr(0xC0000100, tls_base_vaddr);
+
+            // プロセス構造体にfsbaseを保存 (Linux thread.fsbase互換)
+            // switch_toでコンテキストスイッチ時にFS_BASEを復帰するために使用
+            proc->fsbase = tls_base_vaddr;
 
             w->puts("[exec] TLS initialized at 0x" as void*);
             w->print_hex(tls_base_vaddr);

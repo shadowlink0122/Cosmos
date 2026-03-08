@@ -207,6 +207,9 @@ impl PageTable {
         ulong pd_entry = self.read_entry(pd, pd_idx);
         if (self.entry_present(pd_entry) == 0) { return; }
 
+        // 2MB huge pageの場合は4KB単位のunmapは不可 → スキップ
+        if ((pd_entry & PTE_HUGE) != 0) { return; }
+
         PhysAddr pt = self.entry_addr(pd_entry);
         ulong pt_idx = self.pt_index(virt);
         self.write_entry(pt, pt_idx, 0);
@@ -233,6 +236,13 @@ impl PageTable {
         ulong pd_idx = self.pd_index(virt);
         ulong pd_entry = self.read_entry(pd, pd_idx);
         if (self.entry_present(pd_entry) == 0) { return 0; }
+
+        // 2MB huge pageの場合: 物理アドレスはhuge_base + 2MB内オフセット
+        if ((pd_entry & PTE_HUGE) != 0) {
+            PhysAddr huge_base = self.entry_addr(pd_entry);
+            ulong offset_2mb = virt & 0x1FFFFF;  // 2MB内オフセット
+            return huge_base + offset_2mb;
+        }
 
         PhysAddr pt = self.entry_addr(pd_entry);
         ulong pt_idx = self.pt_index(virt);

@@ -280,9 +280,65 @@ impl Mmap {
         return cnt;
     }
 
+    /// ページクリーンアップヘルパー（汎用）
+    /// identity-mapped(phys == virt)のページは解放せず、
+    /// PMM割当ページ(phys != virt)のみ解放してunmapする
+    static void cleanup_page(PageTable* pt, BuddyAllocator* pmm, ulong va) {
+        PhysAddr phys = pt->translate(va);
+        if (phys != 0) {
+            ulong phys_base = phys & ~0xFFF;
+            ulong va_base = va & ~0xFFF;
+            // PMM割当ページのみ解放（identity-mapped sub-pagesは解放しない）
+            if (phys_base != va_base) {
+                pmm->free_pages(phys_base, 0);
+            }
+        }
+        pt->unmap_page(va);
+    }
+
+    /// ユーザーマッピング専用クリーンアップヘルパー
+    /// exec時に明示的にマッピングしたページ(TLS, スタック等)を解放
+    /// split PT内のidentity-mapped sub-pagesには触れない
+    static void cleanup_user_page(PageTable* pt, BuddyAllocator* pmm, ulong va) {
+        // PD entryを確認 — huge pageの場合はスキップ（ユーザーページではない）
+        ulong pml4_idx = pt->pml4_index(va);
+        ulong pml4_entry = pt->read_entry(pt->pml4, pml4_idx);
+        if (pt->entry_present(pml4_entry) == 0) { return; }
+
+        PhysAddr pdpt = pt->entry_addr(pml4_entry);
+        ulong pdpt_idx = pt->pdpt_index(va);
+        ulong pdpt_entry = pt->read_entry(pdpt, pdpt_idx);
+        if (pt->entry_present(pdpt_entry) == 0) { return; }
+
+        PhysAddr pd = pt->entry_addr(pdpt_entry);
+        ulong pd_idx = pt->pd_index(va);
+        ulong pd_entry = pt->read_entry(pd, pd_idx);
+        if (pt->entry_present(pd_entry) == 0) { return; }
+        // huge pageの場合はユーザーマッピングではないのでスキップ
+        if ((pd_entry & PTE_HUGE) != 0) { return; }
+
+        // 4KB PT内のエントリを確認
+        PhysAddr the_pt = pt->entry_addr(pd_entry);
+        ulong pt_idx = pt->pt_index(va);
+        ulong pte = pt->read_entry(the_pt, pt_idx);
+        if (pt->entry_present(pte) == 0) { return; }
+
+        PhysAddr phys = pt->entry_addr(pte);
+        // PMM割当ページ(>= 0x3400000)のみ解放
+        if (phys >= 0x3400000) {
+            pmm->free_pages(phys, 0);
+        }
+        // 注意: PTエントリはここではゼロ化しない
+        // free_pagesがidentity mappingを使って解放済みページに書き込むため、
+        // 同じsplit PT上の他のエントリをゼロ化するとPFが発生する
+        // → restore_huge_pagesが split PT全体を解放してhuge page復元時に一括クリーンアップ
+    }
+
     /// ユーザー空間の全ページ解放（exec時のクリーンアップ）
     /// ELFセグメント(0x400000-data_end), brk領域, mmap VMA, ユーザースタックを解放
     static void cleanup_all() {
+        // ページテーブル操作中はプリエンプション禁止
+        __asm__(`cli`);
         ulong* pmm_ptr = PMM_PTR_ADDR as ulong*;
         BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
 
@@ -291,30 +347,16 @@ impl Mmap {
         PageTable pt(cr3);
 
         // 1. ELFセグメント領域の解放 (0x400000 - 0x800000)
-        //    最大バイナリのセグメント範囲をカバー(git=0x7F5000等)
         ulong va = ELF_BASE_VADDR;
         while (va < 0x800000) {
-            PhysAddr phys = pt.translate(va);
-            if (phys != 0) {
-                // identity map範囲(0-1GiB)のページは解放しない
-                if (phys >= 0x10000000) {
-                    pmm->free_pages(phys & ~0xFFF, 0);
-                }
-            }
-            pt.unmap_page(va);
+            Mmap::cleanup_page(&pt, pmm, va);
             va = va + 0x1000;
         }
 
         // 2. brk(ヒープ)領域の解放 (0x800000 - 0xA00000)
         va = HEAP_BASE;
         while (va < 0xA00000) {
-            PhysAddr phys = pt.translate(va);
-            if (phys != 0) {
-                if (phys >= 0x10000000) {
-                    pmm->free_pages(phys & ~0xFFF, 0);
-                }
-            }
-            pt.unmap_page(va);
+            Mmap::cleanup_page(&pt, pmm, va);
             va = va + 0x1000;
         }
 
@@ -325,13 +367,7 @@ impl Mmap {
             if (vma->used != 0) {
                 ulong mva = vma->start;
                 while (mva < vma->end) {
-                    PhysAddr phys = pt.translate(mva);
-                    if (phys != 0) {
-                        if (phys >= 0x10000000) {
-                            pmm->free_pages(phys & ~0xFFF, 0);
-                        }
-                    }
-                    pt.unmap_page(mva);
+                    Mmap::cleanup_page(&pt, pmm, mva);
                     mva = mva + 0x1000;
                 }
                 vma->used = 0;
@@ -339,20 +375,64 @@ impl Mmap {
             i = i + 1;
         }
 
-        // 4. ユーザースタック領域の解放 (0x7FFB0000 - 0x80000000)
-        va = 0x7FFB0000;
-        while (va < 0x80000000) {
-            PhysAddr phys = pt.translate(va);
-            if (phys != 0) {
-                if (phys >= 0x10000000) {
-                    pmm->free_pages(phys & ~0xFFF, 0);
-                }
-            }
-            pt.unmap_page(va);
-            va = va + 0x1000;
+        // 4. TLS (0x7FFC0000, 1ページ) + ユーザースタック (0x7FFD0000, 8ページ)
+        // split PTのidentity-mapped sub-pagesは解放しない
+        Mmap::cleanup_user_page(&pt, pmm, 0x7FFC0000);
+        ulong si = 0;
+        while (si < 8) {
+            Mmap::cleanup_user_page(&pt, pmm, 0x7FFD0000 + si * 0x1000);
+            si = si + 1;
         }
 
-        // 5. TLBフルフラッシュ
+        // 5. split済み2MB huge pageを復元
+        Mmap::restore_huge_pages(&pt, 0x400000, 0xA00000, pmm);
+        Mmap::restore_huge_pages(&pt, 0x7FA00000, 0x80000000, pmm);
+
+        // 6. TLBフルフラッシュ + 割込み復元
+        __asm__(`movq %cr3, %rax; movq %rax, %cr3`);
+        __asm__(`sti`);
+    }
+
+    /// split済み2MB huge pageを復元するヘルパー
+    /// 指定範囲のPDエントリを確認し、4KB PTに分割されていた場合は
+    /// PTを解放して元の2MB huge page(identity map: phys=virt)に戻す
+    static void restore_huge_pages(PageTable* pt, ulong range_start, ulong range_end, BuddyAllocator* pmm) {
+        // 2MBアラインメント
+        ulong va = range_start & ~0x1FFFFF;
+        while (va < range_end) {
+            // PD entryを直接確認
+            ulong pml4_idx = pt->pml4_index(va);
+            ulong pml4_entry = pt->read_entry(pt->pml4, pml4_idx);
+            if (pt->entry_present(pml4_entry) != 0) {
+                PhysAddr pdpt = pt->entry_addr(pml4_entry);
+                ulong pdpt_idx = pt->pdpt_index(va);
+                ulong pdpt_entry = pt->read_entry(pdpt, pdpt_idx);
+                if (pt->entry_present(pdpt_entry) != 0) {
+                    PhysAddr pd = pt->entry_addr(pdpt_entry);
+                    ulong pd_idx = pt->pd_index(va);
+                    ulong pd_entry = pt->read_entry(pd, pd_idx);
+
+                    // PD entryがpresentかつnon-huge(= 分割済み4KB PT)の場合
+                    if (pt->entry_present(pd_entry) != 0 && (pd_entry & PTE_HUGE) == 0) {
+                        // 分割されたPTのアドレス
+                        PhysAddr split_pt = pt->entry_addr(pd_entry);
+
+                        // PTをPMMに返却
+                        pmm->free_pages(split_pt, 0);
+
+                        // 元の2MB huge page PDエントリを復元
+                        // identity mapping: phys == virt (2MBアラインメント)
+                        PhysAddr huge_phys = va & ~0x1FFFFF;
+                        // Present + Write + HugePage = 0x83
+                        pt->write_entry(pd, pd_idx, huge_phys | 0x83);
+                    }
+                }
+            }
+            va = va + 0x200000;  // 次の2MBページ
+        }
+
+        // TLBフラッシュ: 4KB→2MB huge page復元後のstale TLBエントリを無効化
+        // Linux: flush_tlb_mm() に相当
         __asm__(`movq %cr3, %rax; movq %rax, %cr3`);
     }
 }

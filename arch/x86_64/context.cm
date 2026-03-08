@@ -13,32 +13,32 @@ export struct Context {}
 
 /// ユーザーモード遷移トランポリン
 /// switch_toのretから呼ばれ、iretqでRing3に遷移する
-/// カーネルスタック上にiretqフレーム(RIP, CS, RFLAGS, RSP, SS)が構築済み
-/// 注: Cmコンパイラが関数プロローグ(push rbp; mov rsp, rbp)を生成するため、
-///     RSPがiretqフレームから8バイトずれる。pop rbpで復元する。
 ///
-/// 重要: iretqはCS/SSのみ復元し、DS/ES/FS/GSは復元しない。
-///       DS/ESはユーザーデータセグメント(0x1B)に設定する。
-///       FS_BASEは固定アドレス(0x96100)から読み出してMSRに設定する。
-///       FS/GSセグメントレジスタには一切触れない。
+/// switch_toのretで戻った時点のRSPは、init_user_taskで設定した
+/// iretqフレームのRIP位置を指している。
+/// このため追加のスタック操作(leave等)は不要。
+///
+/// DS/ESをユーザーデータセグメント(0x1B)に設定し、
+/// FS_BASEをTLS_STORE_ADDRから読み出してMSRに設定した後、
+/// iretqでRing3に遷移する。
 void usermode_trampoline() {
     __asm__(`
-        // Cmコンパイラのプロローグを元に戻す
-        leave;
+        // Cmコンパイラのプロローグの影響を完全に排除
+        // switch_toのret直後のRSPを復元
+        // (Cmプロローグがpush rbpした場合に備えて)
+        movq %rbp, %rsp;
+        popq %rbp;
 
         // DS/ESをユーザーデータセグメント(0x1B)に設定
-        // 注意: DS/ES書き込みがFS_BASE MSRに影響する場合があるため、
-        //       wrmsrよりも先に実行する
         movq $$0x1B, %rax;
         movw %ax, %ds;
         movw %ax, %es;
 
-        // FS_BASE MSRを設定 (iretq直前に必ず最後に実行)
-        // DS/ES書き込み後にwrmsrすることで、FS_BASE値が確実に保持される
-        movl $$0xC0000100, %ecx;  // IA32_FS_BASE
-        movq 0x96100, %rax;       // TLS_BASE値読み出し
+        // FS_BASE MSRを設定
+        movl $$0xC0000100, %ecx;
+        movq 0x96100, %rax;
         movq %rax, %rdx;
-        shrq $$32, %rdx;  // EDX = 上位32bit
+        shrq $$32, %rdx;
         wrmsr;
 
         // iretqでRing3に遷移
@@ -48,7 +48,8 @@ void usermode_trampoline() {
 
 impl Context {
     /// 2つのProcess間でコンテキストスイッチを実行
-    /// Linux __switch_to 同様、RFLAGS も保存/復帰する。
+    /// Linux __switch_to 同様、RFLAGS・FS_BASE も保存/復帰する。
+    /// FS_BASE: Linux process_64.c: x86_fsgsbase_load() 参照
     /// 復帰後は必ず sti で割り込みを有効化する (Linux: local_irq_enable 相当)。
     static void switch_to(Process* prev, Process* next) {
         __asm__(`
@@ -86,7 +87,6 @@ impl Context {
             popfq;
 
             // 安全策: 割り込みを必ず有効化 (Linux local_irq_enable 相当)
-            // syscall中にCLI→コンテキストスイッチ→IF=0で復帰するケースを完全防止
             sti;
 
             ret
@@ -120,9 +120,7 @@ impl Context {
         //   [RSP+16] RFLAGS  (IF=1)
         //   [RSP+24] RSP     (ユーザーRSP)
         //   [RSP+32] SS      (ユーザーSS = 0x18 | 3 = 0x1B)
-        // その前にトランポリンコードのアドレスを置く
 
-        // トランポリン関数のアドレス（switch_toのretで呼ばれる）
         ulong sp = stack_top;
 
         // iretqフレーム（逆順にpush）
@@ -137,6 +135,8 @@ impl Context {
         ulong* p_tramp = sp as ulong*;
         *p_tramp = usermode_trampoline as ulong;
 
+        // switch_toのretでtrampolineにジャンプ
+        // trampolineは最初にpush rbpを元に戻してからiretqフレームに到達
         proc->context.rsp = sp;
         proc->context.rbp = sp;
         proc->context.rbx = 0;
