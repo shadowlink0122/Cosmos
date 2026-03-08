@@ -189,34 +189,117 @@ void main(ulong mb2_info, ulong mb2_magic) {
     TestIO::writeln("=== Cosmo Linux Kernel Tests ===" as void*);
     TestIO::set_color(7, 0);
 
-    test_input();
-    test_devfs();
-    test_pipe();
-    test_signal();
-    test_fd_table();
-    test_vma();
-    test_process();
-    test_loopback();
-    test_socket();
-    test_ipv4();
-    test_tcp_conn();
-    test_icmp();
-    test_ramfs();
-    test_kstring();
-    test_vfs();
-    test_procfs();
-    test_elf();
-    test_kmalloc();
-    test_syscall();
-    test_arp();
-    test_ethernet();
-    test_udp();
-    test_pmm();
-    test_vmm();
-    test_mouse();
-    test_irq();
-    test_gui();
-    test_result_same_type();
+    KTest::begin_suite("Input" as void*);
+    TestInput::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("DevFS" as void*);
+    TestDevfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Pipe" as void*);
+    TestPipe::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Signal" as void*);
+    TestSignal::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("FdTable" as void*);
+    TestFdTable::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("VMA" as void*);
+    TestVma::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Process" as void*);
+    TestProcess::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Loopback" as void*);
+    TestLoopback::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Socket" as void*);
+    TestSocket::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("IPv4" as void*);
+    TestIpv4::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("TCP" as void*);
+    TestTcp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ICMP" as void*);
+    TestIcmp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("RamFS" as void*);
+    TestRamfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("KString" as void*);
+    TestKstring::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("VFS" as void*);
+    TestVfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ProcFS" as void*);
+    TestProcfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ELF" as void*);
+    TestELF::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("KMalloc" as void*);
+    TestKmalloc::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Syscall" as void*);
+    TestSyscall::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ARP" as void*);
+    TestArp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Ethernet" as void*);
+    TestEthernet::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("UDP" as void*);
+    TestUdp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("PMM" as void*);
+    TestPmm::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("VMM" as void*);
+    TestVmm::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Mouse" as void*);
+    TestMouse::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("IRQ" as void*);
+    TestIrq::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("GUI" as void*);
+    TestGui::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Result" as void*);
+    TestResult::run();
+    KTest::end_suite();
 
     KTest::summary();
 

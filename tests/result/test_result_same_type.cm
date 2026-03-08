@@ -26,45 +26,59 @@ impl ResultHelper {
     }
 }
 
-/// T==E バグ再現テスト
-export void test_result_same_type() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[Result T==E]" as void*);
-    TestIO::set_color(7, 0);
+/// Result テストスイート
+export struct TestResult {}
 
-    // テスト1: Ok(0) — これは以前のバグ修正でPASSするはず
-    long v1 = 999;
-    Result<long, long> r1 = ResultHelper::return_ok_0();
-    match (r1) {
-        Result::Ok(v) => { v1 = v; }
-        Result::Err(e) => { v1 = 0 - e; }
+impl TestResult {
+    /// Ok(0)テスト
+    static void test_ok_zero() {
+        long v1 = 999;
+        Result<long, long> r1 = ResultHelper::return_ok_0();
+        match (r1) {
+            Result::Ok(v) => { v1 = v; }
+            Result::Err(e) => { v1 = 0 - e; }
+        }
+        KTest::assert_eq(v1 as ulong, 0, "Result<long,long> Ok(0)" as void*);
     }
-    KTest::assert_eq(v1 as ulong, 0, "Result<long,long> Ok(0)" as void*);
 
-    // テスト2: Ok(100) — T==Eバグの核心
-    long v2 = 999;
-    Result<long, long> r2 = ResultHelper::return_ok_100();
-    match (r2) {
-        Result::Ok(v) => { v2 = v; }
-        Result::Err(e) => { v2 = 0 - e; }
+    /// Ok(100)テスト — T==Eバグの核心
+    static void test_ok_value() {
+        long v2 = 999;
+        Result<long, long> r2 = ResultHelper::return_ok_100();
+        match (r2) {
+            Result::Ok(v) => { v2 = v; }
+            Result::Err(e) => { v2 = 0 - e; }
+        }
+        KTest::assert_eq(v2 as ulong, 100, "Result<long,long> Ok(100)" as void*);
     }
-    KTest::assert_eq(v2 as ulong, 100, "Result<long,long> Ok(100)" as void*);
 
-    // テスト3: Err(42) — エラーケース
-    long v3 = 999;
-    Result<long, long> r3 = ResultHelper::return_err_42();
-    match (r3) {
-        Result::Ok(v) => { v3 = v; }
-        Result::Err(e) => { v3 = e; }
+    /// Err(42)テスト
+    static void test_err() {
+        long v3 = 999;
+        Result<long, long> r3 = ResultHelper::return_err_42();
+        match (r3) {
+            Result::Ok(v) => { v3 = v; }
+            Result::Err(e) => { v3 = e; }
+        }
+        KTest::assert_eq(v3 as ulong, 42, "Result<long,long> Err(42)" as void*);
     }
-    KTest::assert_eq(v3 as ulong, 42, "Result<long,long> Err(42)" as void*);
 
-    // テスト4: インラインResult構築+match
-    long v4 = 999;
-    Result<long, long> r4 = Result::Ok(200);
-    match (r4) {
-        Result::Ok(v) => { v4 = v; }
-        Result::Err(e) => { v4 = 0 - e; }
+    /// インラインResult構築テスト
+    static void test_inline() {
+        long v4 = 999;
+        Result<long, long> r4 = Result::Ok(200);
+        match (r4) {
+            Result::Ok(v) => { v4 = v; }
+            Result::Err(e) => { v4 = 0 - e; }
+        }
+        KTest::assert_eq(v4 as ulong, 200, "Result<long,long> inline Ok(200)" as void*);
     }
-    KTest::assert_eq(v4 as ulong, 200, "Result<long,long> inline Ok(200)" as void*);
+
+    /// 全テスト実行
+    static void run() {
+        TestResult::test_ok_zero();
+        TestResult::test_ok_value();
+        TestResult::test_err();
+        TestResult::test_inline();
+    }
 }

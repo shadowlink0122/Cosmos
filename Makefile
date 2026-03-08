@@ -56,7 +56,7 @@ TIMEOUT := $(shell which timeout 2>/dev/null || which gtimeout 2>/dev/null || ec
 # ビルド
 # ============================================================
 
-.PHONY: all build run test clean help
+.PHONY: all build run test clean help apps build-all
 
 all: $(ELF)
 
@@ -64,10 +64,16 @@ build: clean all
 
 help:
 	@echo "Cosmo Linux ビルドシステム"
-	@echo "  make       - ビルド"
-	@echo "  make run   - QEMU起動"
-	@echo "  make test  - テスト"
-	@echo "  make clean - クリーン"
+	@echo "  make        - OSカーネルビルド"
+	@echo "  make apps   - ユーザーアプリケーションビルド"
+	@echo "  make build-all - OS + アプリ全ビルド"
+	@echo "  make run    - QEMU起動"
+	@echo "  make test   - テスト"
+	@echo "  make clean  - クリーン"
+
+apps: $(ELF) cm-build-all
+
+build-all: clean all apps
 
 $(BOOT_OBJ): $(BOOT_ASM)
 	@mkdir -p $(BUILD)
@@ -104,7 +110,7 @@ FAST_ELF   = $(BUILD)/cosmo-fast.elf
 
 # 分割コンパイル用: core/uiそれぞれの依存ソース
 CORE_SOURCES = $(shell find arch boot include lib mm sched sys fs exec init drivers net -name '*.cm' 2>/dev/null)
-UI_SOURCES   = $(shell find ui pkg -name '*.cm' 2>/dev/null)
+UI_SOURCES   = $(shell find apps -name '*.cm' 2>/dev/null)
 
 .PHONY: fast
 fast: $(FAST_ELF)
@@ -150,7 +156,7 @@ $(TEST_ELF): $(TEST_ELF64)
 # QEMU
 # ============================================================
 
-run: $(ELF)
+run: $(ELF) cm-build-all
 	@echo "=== Cosmo Linux 起動 ==="
 	@mkdir -p rootfs
 	$(QEMU) \
@@ -255,7 +261,7 @@ cm-build:
 # programs/*.cm を一括ビルド
 cm-build-all:
 	@mkdir -p $(BUILD) rootfs/packages
-	@for src in programs/*.cm; do \
+	@for src in apps/programs/*.cm; do \
 		[ -f "$$src" ] || continue; \
 		NAME=$$(basename $$src .cm); \
 		echo "[CM]   $$src → $$NAME"; \

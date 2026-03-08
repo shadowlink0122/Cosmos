@@ -11,31 +11,35 @@ import ../../include/net;
 import ../../net/transport/udp;
 import ../test_io;
 import ../ktest;
-import ../../ui/mem;
+import ../../apps/terminal/mem;
 
 /// UDP テストスイート
-export void test_udp() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[UDP]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestUdp {}
 
-    // UDPパケット構築
-    UdpHeader build_hdr = {
-        src_port: 12345,
-        dst_port: 53,  // DNS
-        length: 16,
-        checksum: 0
-    };
+impl TestUdp {
+    /// UDPパケット構築・パーステスト
+    static void test_build_parse() {
+        UdpHeader build_hdr = {
+            src_port: 12345,
+            dst_port: 53,  // DNS
+            length: 16,
+            checksum: 0
+        };
 
-    ulong pkt_buf = 0x9DA00;
-    ulong pkt_len = Udp::build(pkt_buf, &build_hdr);
-    KTest::assert_nonzero(pkt_len, "UDP build returns len>0" as void*);
+        ulong pkt_buf = 0x9DA00;
+        ulong pkt_len = Udp::build(pkt_buf, &build_hdr);
+        KTest::assert_nonzero(pkt_len, "UDP build returns len>0" as void*);
 
-    // パースして検証
-    UdpHeader parsed = { src_port: 0, dst_port: 0, length: 0, checksum: 0 };
-    ulong parse_ok = Udp::parse(pkt_buf, &parsed);
-    KTest::assert_nonzero(parse_ok, "UDP parse ok" as void*);
-    KTest::assert_eq(parsed.src_port, 12345, "UDP src_port=12345" as void*);
-    KTest::assert_eq(parsed.dst_port, 53, "UDP dst_port=53 (DNS)" as void*);
-    KTest::assert_eq(parsed.length, 16, "UDP length=16" as void*);
+        UdpHeader parsed = { src_port: 0, dst_port: 0, length: 0, checksum: 0 };
+        ulong parse_ok = Udp::parse(pkt_buf, &parsed);
+        KTest::assert_nonzero(parse_ok, "UDP parse ok" as void*);
+        KTest::assert_eq(parsed.src_port, 12345, "UDP src_port=12345" as void*);
+        KTest::assert_eq(parsed.dst_port, 53, "UDP dst_port=53 (DNS)" as void*);
+        KTest::assert_eq(parsed.length, 16, "UDP length=16" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestUdp::test_build_parse();
+    }
 }

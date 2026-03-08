@@ -10,89 +10,74 @@ import ../../lib/printk;
 import ../../exec/elf;
 import ../test_io;
 import ../ktest;
-import ../../ui/mem;
+import ../../apps/terminal/mem;
 
 /// ELF テストスイート
-export void test_elf() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[ELF]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestELF {}
 
-    // テスト用メモリにELF64ヘッダを構築 (64バイト)
-    ulong hdr = 0x9D600;
+impl TestELF {
+    /// テスト用ELFヘッダをメモリに構築
+    static void setup_header(ulong hdr) {
+        ulong[16] ident;
+        ident[0] = 0x7F; ident[1] = 0x45; ident[2] = 0x4C; ident[3] = 0x46;
+        ident[4] = 2; ident[5] = 1; ident[6] = 1; ident[7] = 0;
+        ulong i = 8;
+        while (i < 16) { ident[i] = 0; i = i + 1; }
 
-    // ELFマジック: 0x7F 'E' 'L' 'F'
-    ulong[16] ident;
-    ident[0] = 0x7F;  // マジック
-    ident[1] = 0x45;  // 'E'
-    ident[2] = 0x4C;  // 'L'
-    ident[3] = 0x46;  // 'F'
-    ident[4] = 2;     // ELFCLASS64
-    ident[5] = 1;     // ELFDATA2LSB
-    ident[6] = 1;     // EV_CURRENT
-    ident[7] = 0;     // OS/ABI
-    // ident[8..15] = 0 (パディング)
-    ulong i = 8;
-    while (i < 16) { ident[i] = 0; i = i + 1; }
+        i = 0;
+        while (i < 16) { Mem::write_byte(hdr + i, ident[i]); i = i + 1; }
 
-    // e_ident 書き込み
-    i = 0;
-    while (i < 16) {
-        Mem::write_byte(hdr + i, ident[i]);
-        i = i + 1;
+        Mem::write_byte(hdr + 0x10, 2); Mem::write_byte(hdr + 0x11, 0);  // ET_EXEC
+        Mem::write_byte(hdr + 0x12, 62); Mem::write_byte(hdr + 0x13, 0); // EM_X86_64
+        ulong* entry_ptr = (hdr + 0x18) as ulong*; *entry_ptr = 0x401000;
+        ulong* phoff_ptr = (hdr + 0x20) as ulong*; *phoff_ptr = 64;
+        Mem::write_byte(hdr + 0x36, 56); Mem::write_byte(hdr + 0x37, 0); // phentsize
+        Mem::write_byte(hdr + 0x38, 2); Mem::write_byte(hdr + 0x39, 0);  // phnum
     }
 
-    // e_type = ET_EXEC (2), e_machine = EM_X86_64 (62)
-    Mem::write_byte(hdr + 0x10, 2); Mem::write_byte(hdr + 0x11, 0);   // e_type
-    Mem::write_byte(hdr + 0x12, 62); Mem::write_byte(hdr + 0x13, 0);  // e_machine
+    /// マジック検証テスト
+    static void test_magic() {
+        ulong hdr = 0x9D600;
+        TestELF::setup_header(hdr);
 
-    // e_entry = 0x401000
-    ulong* entry_ptr = (hdr + 0x18) as ulong*;
-    *entry_ptr = 0x401000;
+        KTest::assert_eq(Elf::check_magic(hdr), 1, "ELF check_magic valid" as void*);
+        Mem::write_byte(hdr, 0x00);
+        KTest::assert_eq(Elf::check_magic(hdr), 0, "ELF check_magic invalid" as void*);
+        Mem::write_byte(hdr, 0x7F);
+    }
 
-    // e_phoff = 64 (0x40)
-    ulong* phoff_ptr = (hdr + 0x20) as ulong*;
-    *phoff_ptr = 64;
+    /// ヘッダフィールドテスト
+    static void test_header_fields() {
+        ulong hdr = 0x9D600;
+        KTest::assert_eq(Elf::get_class(hdr), ELFCLASS64, "ELF class=ELFCLASS64" as void*);
+        KTest::assert_eq(Elf::get_type(hdr), ET_EXEC, "ELF type=ET_EXEC" as void*);
+        KTest::assert_eq(Elf::get_machine(hdr), EM_X86_64, "ELF machine=EM_X86_64" as void*);
+        KTest::assert_eq(Elf::get_entry(hdr), 0x401000, "ELF entry=0x401000" as void*);
+        KTest::assert_eq(Elf::get_phoff(hdr), 64, "ELF phoff=64" as void*);
+        KTest::assert_eq(Elf::get_phentsize(hdr), 56, "ELF phentsize=56" as void*);
+        KTest::assert_eq(Elf::get_phnum(hdr), 2, "ELF phnum=2" as void*);
+    }
 
-    // e_phentsize = 56 (0x38)
-    Mem::write_byte(hdr + 0x36, 56);
-    Mem::write_byte(hdr + 0x37, 0);
+    /// validate・PIEテスト
+    static void test_validate() {
+        ulong hdr = 0x9D600;
+        KTest::assert_eq(Elf::validate(hdr), 1, "ELF validate valid" as void*);
+        KTest::assert_eq(Elf::is_pie(hdr), 0, "ELF is_pie ET_EXEC=0" as void*);
 
-    // e_phnum = 2
-    Mem::write_byte(hdr + 0x38, 2);
-    Mem::write_byte(hdr + 0x39, 0);
+        // ET_DYN に変更
+        Mem::write_byte(hdr + 0x10, 3); Mem::write_byte(hdr + 0x11, 0);
+        KTest::assert_eq(Elf::is_pie(hdr), 1, "ELF is_pie ET_DYN=1" as void*);
+        KTest::assert_eq(Elf::validate(hdr), 1, "ELF validate ET_DYN valid" as void*);
 
-    // --- マジック検証 ---
-    KTest::assert_eq(Elf::check_magic(hdr), 1, "ELF check_magic valid" as void*);
+        // 不正なmachine
+        Mem::write_byte(hdr + 0x12, 0); Mem::write_byte(hdr + 0x13, 0);
+        KTest::assert_eq(Elf::validate(hdr), 0, "ELF validate bad machine=0" as void*);
+    }
 
-    // 不正なマジック
-    Mem::write_byte(hdr, 0x00);  // マジック破壊
-    KTest::assert_eq(Elf::check_magic(hdr), 0, "ELF check_magic invalid" as void*);
-    Mem::write_byte(hdr, 0x7F);  // マジック復元
-
-    // --- ヘッダフィールド取得 ---
-    KTest::assert_eq(Elf::get_class(hdr), ELFCLASS64, "ELF class=ELFCLASS64" as void*);
-    KTest::assert_eq(Elf::get_type(hdr), ET_EXEC, "ELF type=ET_EXEC" as void*);
-    KTest::assert_eq(Elf::get_machine(hdr), EM_X86_64, "ELF machine=EM_X86_64" as void*);
-    KTest::assert_eq(Elf::get_entry(hdr), 0x401000, "ELF entry=0x401000" as void*);
-    KTest::assert_eq(Elf::get_phoff(hdr), 64, "ELF phoff=64" as void*);
-    KTest::assert_eq(Elf::get_phentsize(hdr), 56, "ELF phentsize=56" as void*);
-    KTest::assert_eq(Elf::get_phnum(hdr), 2, "ELF phnum=2" as void*);
-
-    // --- validate ---
-    KTest::assert_eq(Elf::validate(hdr), 1, "ELF validate valid" as void*);
-
-    // is_pie: ET_EXEC → 0
-    KTest::assert_eq(Elf::is_pie(hdr), 0, "ELF is_pie ET_EXEC=0" as void*);
-
-    // ET_DYN に変更 → is_pie=1
-    Mem::write_byte(hdr + 0x10, 3);
-    Mem::write_byte(hdr + 0x11, 0);
-    KTest::assert_eq(Elf::is_pie(hdr), 1, "ELF is_pie ET_DYN=1" as void*);
-    KTest::assert_eq(Elf::validate(hdr), 1, "ELF validate ET_DYN valid" as void*);
-
-    // 不正な machine → validate=0
-    Mem::write_byte(hdr + 0x12, 0);
-    Mem::write_byte(hdr + 0x13, 0);
-    KTest::assert_eq(Elf::validate(hdr), 0, "ELF validate bad machine=0" as void*);
+    /// 全テスト実行
+    static void run() {
+        TestELF::test_magic();
+        TestELF::test_header_fields();
+        TestELF::test_validate();
+    }
 }

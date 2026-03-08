@@ -4,9 +4,9 @@
 // Shell依存を排除し、VGAとSerialへ直接出力。
 // shell/cmdの巨大importチェーンを回避。
 
-import ../ui/shell/defs;
-import ../ui/mem;
-import ../ui/vga;
+import ../apps/terminal/shell/defs;
+import ../apps/terminal/mem;
+import ../apps/terminal/vga;
 import ../drivers/serial;
 
 /// TestIO — テスト出力用ユーティリティ
@@ -68,6 +68,6 @@ impl TestIO {
         *col_ptr = 0;
         *row_ptr = 0;
         *color_ptr = 7;  // 白文字+黒背景
-        Vga::clear_screen();
+        Vga::clear();
     }
 }

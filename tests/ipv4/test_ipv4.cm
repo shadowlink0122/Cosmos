@@ -11,79 +11,78 @@ import ../../include/net;
 import ../../net/core/ip;
 import ../test_io;
 import ../ktest;
-import ../../ui/mem;
+import ../../apps/terminal/mem;
 
 /// IPv4 テストスイート
-export void test_ipv4() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[IPv4]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestIpv4 {}
 
-    // IPv4パケットデータ（20バイト）を配列で定義
-    ulong[20] ip_data;
-    ip_data[0]  = 0x45; ip_data[1]  = 0;   // Version+IHL, TOS
-    ip_data[2]  = 0;    ip_data[3]  = 20;  // Total Length = 20
-    ip_data[4]  = 0;    ip_data[5]  = 0;   // Identification
-    ip_data[6]  = 0;    ip_data[7]  = 0;   // Flags + Fragment
-    ip_data[8]  = 64;   ip_data[9]  = 6;   // TTL=64, Proto=TCP(6)
-    ip_data[10] = 0;    ip_data[11] = 0;   // Checksum (初期0)
-    ip_data[12] = 127;  ip_data[13] = 0;   // Src: 127.0.0.1
-    ip_data[14] = 0;
-    ip_data[15] = 1;
-    ip_data[16] = 127;  ip_data[17] = 0;  // Dst: 127.0.0.1
-    ip_data[18] = 0;
-    ip_data[19] = 1;
+impl TestIpv4 {
+    /// ヘッダパーステスト
+    static void test_parse() {
+        ulong[20] ip_data;
+        ip_data[0]  = 0x45; ip_data[1]  = 0;
+        ip_data[2]  = 0;    ip_data[3]  = 20;
+        ip_data[4]  = 0;    ip_data[5]  = 0;
+        ip_data[6]  = 0;    ip_data[7]  = 0;
+        ip_data[8]  = 64;   ip_data[9]  = 6;
+        ip_data[10] = 0;    ip_data[11] = 0;
+        ip_data[12] = 127;  ip_data[13] = 0;
+        ip_data[14] = 0;    ip_data[15] = 1;
+        ip_data[16] = 127;  ip_data[17] = 0;
+        ip_data[18] = 0;    ip_data[19] = 1;
 
-    // 配列からメモリに書き込み
-    ulong pkt = 0x9E200;
-    ulong i = 0;
-    while (i < 20) {
-        Mem::write_byte(pkt + i, ip_data[i]);
-        i = i + 1;
+        ulong pkt = 0x9E200;
+        ulong i = 0;
+        while (i < 20) {
+            Mem::write_byte(pkt + i, ip_data[i]);
+            i = i + 1;
+        }
+
+        IpHeader hdr = { version: 0, ihl: 0, tos: 0, total_len: 0, id: 0, flags: 0, frag_off: 0, ttl: 0, protocol: 0, checksum: 0, src_addr: 0, dst_addr: 0 };
+        Ip::parse(pkt, &hdr);
+
+        ulong[8] checks;
+        checks[0] = hdr.version; checks[1] = 4;
+        checks[2] = hdr.ihl;     checks[3] = 5;
+        checks[4] = hdr.ttl;     checks[5] = 64;
+        checks[6] = hdr.protocol; checks[7] = 6;
+
+        ulong[4] labels;
+        labels[0] = "IP version=4" as ulong;
+        labels[1] = "IP ihl=5" as ulong;
+        labels[2] = "IP ttl=64" as ulong;
+        labels[3] = "IP proto=TCP(6)" as ulong;
+
+        i = 0;
+        while (i < 4) {
+            KTest::assert_eq(checks[i * 2], checks[i * 2 + 1], labels[i] as void*);
+            i = i + 1;
+        }
+
+        KTest::assert_eq((hdr.src_addr >> 24) & 0xFF, 127, "IP src[0]=127" as void*);
+        KTest::assert_eq((hdr.dst_addr >> 24) & 0xFF, 127, "IP dst[0]=127" as void*);
+        KTest::assert_eq(hdr.total_len, 20, "IP total_len=20" as void*);
     }
 
-    // パース検証
-    IpHeader hdr = { version: 0, ihl: 0, tos: 0, total_len: 0, id: 0, flags: 0, frag_off: 0, ttl: 0, protocol: 0, checksum: 0, src_addr: 0, dst_addr: 0 };
-    Ip::parse(pkt, &hdr);
+    /// チェックサム検証テスト
+    static void test_checksum() {
+        ulong pkt = 0x9E200;
+        Mem::write_byte(pkt + 10, 0);
+        Mem::write_byte(pkt + 11, 0);
+        ulong computed = Ip::checksum(pkt, 20);
+        ulong ck_ok = 0;
+        if (computed > 0) { ck_ok = 1; }
+        KTest::assert_eq(ck_ok, 1, "IP checksum computed>0" as void*);
 
-    // パース結果を配列で検証: [actual, expected] のペア
-    ulong[8] checks;
-    checks[0] = hdr.version;
-    checks[1] = 4;
-    checks[2] = hdr.ihl;
-    checks[3] = 5;
-    checks[4] = hdr.ttl;
-    checks[5] = 64;
-    checks[6] = hdr.protocol;
-    checks[7] = 6;
-
-    ulong[4] labels;
-    labels[0] = "IP version=4" as ulong;
-    labels[1] = "IP ihl=5" as ulong;
-    labels[2] = "IP ttl=64" as ulong;
-    labels[3] = "IP proto=TCP(6)" as ulong;
-
-    i = 0;
-    while (i < 4) {
-        KTest::assert_eq(checks[i * 2], checks[i * 2 + 1], labels[i] as void*);
-        i = i + 1;
+        Mem::write_byte(pkt + 10, (computed >> 8) & 0xFF);
+        Mem::write_byte(pkt + 11, computed & 0xFF);
+        ulong verify = Ip::checksum(pkt, 20);
+        KTest::assert_eq(verify, 0, "IP checksum verified=0" as void*);
     }
 
-    // チェックサム検証: フィールド=0で計算 → 正しい値
-    Mem::write_byte(pkt + 10, 0);
-    Mem::write_byte(pkt + 11, 0);
-    ulong computed = Ip::checksum(pkt, 20);
-    ulong ck_ok = 0;
-    if (computed > 0) { ck_ok = 1; }
-    KTest::assert_eq(ck_ok, 1, "IP checksum computed>0" as void*);
-
-    // チェックサム書き込み → 再計算 → 0
-    Mem::write_byte(pkt + 10, (computed >> 8) & 0xFF);
-    Mem::write_byte(pkt + 11, computed & 0xFF);
-    ulong verify = Ip::checksum(pkt, 20);
-    KTest::assert_eq(verify, 0, "IP checksum verified=0" as void*);
-
-    KTest::assert_eq((hdr.src_addr >> 24) & 0xFF, 127, "IP src[0]=127" as void*);
-    KTest::assert_eq((hdr.dst_addr >> 24) & 0xFF, 127, "IP dst[0]=127" as void*);
-    KTest::assert_eq(hdr.total_len, 20, "IP total_len=20" as void*);
+    /// 全テスト実行
+    static void run() {
+        TestIpv4::test_parse();
+        TestIpv4::test_checksum();
+    }
 }

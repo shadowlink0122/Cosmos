@@ -11,77 +11,86 @@ import ../../lib/printk;
 import ../../fs/devfs;
 import ../test_io;
 import ../ktest;
-import ../../ui/mem;
+import ../../apps/terminal/mem;
 
 /// DevFS テストスイート
-export void test_devfs() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[DevFS]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestDevfs {}
 
-    // /dev/null lookup
-    ulong dev = DevFs::lookup("null" as void*);
-    KTest::assert_eq(dev, DEV_NULL, "lookup /dev/null" as void*);
-
-    dev = DevFs::lookup("zero" as void*);
-    KTest::assert_eq(dev, DEV_ZERO, "lookup /dev/zero" as void*);
-
-    dev = DevFs::lookup("random" as void*);
-    KTest::assert_eq(dev, DEV_RANDOM, "lookup /dev/random" as void*);
-
-    dev = DevFs::lookup("nonexistent" as void*);
-    KTest::assert_eq(dev, 0, "lookup nonexistent returns 0" as void*);
-
-    // /dev/null read → EOF (0)
-    ulong buf_addr = 0x9D000;  // テスト用一時バッファ
-    long n = 0;
-    Result<long, long> r1 = DevFs::read(DEV_NULL, buf_addr, 64);
-    match (r1) {
-        Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0 - e; }
+impl TestDevfs {
+    /// lookupテスト
+    static void test_lookup() {
+        ulong dev = DevFs::lookup("null" as void*);
+        KTest::assert_eq(dev, DEV_NULL, "lookup /dev/null" as void*);
+        dev = DevFs::lookup("zero" as void*);
+        KTest::assert_eq(dev, DEV_ZERO, "lookup /dev/zero" as void*);
+        dev = DevFs::lookup("random" as void*);
+        KTest::assert_eq(dev, DEV_RANDOM, "lookup /dev/random" as void*);
+        dev = DevFs::lookup("nonexistent" as void*);
+        KTest::assert_eq(dev, 0, "lookup nonexistent returns 0" as void*);
     }
-    KTest::assert_eq(n as ulong, 0, "/dev/null read returns 0 (EOF)" as void*);
 
-    // /dev/null write → count
-    Result<long, long> r2 = DevFs::write(DEV_NULL, buf_addr, 100);
-    match (r2) {
-        Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0 - e; }
+    /// /dev/null読み書きテスト
+    static void test_dev_null() {
+        ulong buf_addr = 0x9D000;
+        long n = 0;
+        Result<long, long> r1 = DevFs::read(DEV_NULL, buf_addr, 64);
+        match (r1) {
+            Result::Ok(v) => { n = v; }
+            Result::Err(e) => { n = 0 - e; }
+        }
+        KTest::assert_eq(n as ulong, 0, "/dev/null read returns 0 (EOF)" as void*);
+
+        Result<long, long> r2 = DevFs::write(DEV_NULL, buf_addr, 100);
+        match (r2) {
+            Result::Ok(v) => { n = v; }
+            Result::Err(e) => { n = 0 - e; }
+        }
+        KTest::assert_eq(n as ulong, 100, "/dev/null write returns count" as void*);
     }
-    KTest::assert_eq(n as ulong, 100, "/dev/null write returns count" as void*);
 
-    // /dev/zero read → fills zeros
-    // バッファに0xFF埋め
-    ulong i = 0;
-    while (i < 16) {
-        ulong addr = buf_addr + i;
+    /// /dev/zero読み込みテスト
+    static void test_dev_zero() {
+        ulong buf_addr = 0x9D000;
+        ulong i = 0;
+        while (i < 16) {
+            ulong addr = buf_addr + i;
+            __asm__(`movq ${r:addr}, %rdi; movb $$0xFF, (%rdi)`);
+            i = i + 1;
+        }
+        long n = 0;
+        Result<long, long> r3 = DevFs::read(DEV_ZERO, buf_addr, 16);
+        match (r3) {
+            Result::Ok(v) => { n = v; }
+            Result::Err(e) => { n = 0 - e; }
+        }
+        KTest::assert_eq(n as ulong, 16, "/dev/zero read returns count" as void*);
+        ulong first_byte = 0;
         __asm__(`
-            movq ${r:addr}, %rdi;
-            movb $$0xFF, (%rdi)
+            movq ${r:buf_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:first_byte}
         `);
-        i = i + 1;
+        KTest::assert_eq(first_byte, 0, "/dev/zero fills with zeros" as void*);
     }
-    Result<long, long> r3 = DevFs::read(DEV_ZERO, buf_addr, 16);
-    match (r3) {
-        Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0 - e; }
-    }
-    KTest::assert_eq(n as ulong, 16, "/dev/zero read returns count" as void*);
-    // 最初のバイトがゼロか確認
-    ulong first_byte = 0;
-    __asm__(`
-        movq ${r:buf_addr}, %rdi;
-        xorq %rax, %rax;
-        movb (%rdi), %al;
-        movq %rax, ${=r:first_byte}
-    `);
-    KTest::assert_eq(first_byte, 0, "/dev/zero fills with zeros" as void*);
 
-    // /dev/random read → nonzero return
-    Result<long, long> r4 = DevFs::read(DEV_RANDOM, buf_addr, 32);
-    match (r4) {
-        Result::Ok(v) => { n = v; }
-        Result::Err(e) => { n = 0 - e; }
+    /// /dev/random読み込みテスト
+    static void test_dev_random() {
+        ulong buf_addr = 0x9D000;
+        long n = 0;
+        Result<long, long> r4 = DevFs::read(DEV_RANDOM, buf_addr, 32);
+        match (r4) {
+            Result::Ok(v) => { n = v; }
+            Result::Err(e) => { n = 0 - e; }
+        }
+        KTest::assert_eq(n as ulong, 32, "/dev/random read returns count" as void*);
     }
-    KTest::assert_eq(n as ulong, 32, "/dev/random read returns count" as void*);
+
+    /// 全テスト実行
+    static void run() {
+        TestDevfs::test_lookup();
+        TestDevfs::test_dev_null();
+        TestDevfs::test_dev_zero();
+        TestDevfs::test_dev_random();
+    }
 }

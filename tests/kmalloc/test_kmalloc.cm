@@ -14,59 +14,62 @@ import ../test_io;
 import ../ktest;
 
 /// Kmalloc テストスイート
-export void test_kmalloc() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[Kmalloc]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestKmalloc {}
 
-    // サイズクラス変換テスト — 配列ペア [input_size, expected_class]
-    ulong[16] class_tests;
-    class_tests[0]  = 1;    class_tests[1]  = 0;  // 1B → class 0 (16B)
-    class_tests[2]  = 16;   class_tests[3]  = 0;  // 16B → class 0
-    class_tests[4]  = 17;   class_tests[5]  = 1;  // 17B → class 1 (32B)
-    class_tests[6]  = 64;   class_tests[7]  = 2;  // 64B → class 2
-    class_tests[8]  = 128;  class_tests[9]  = 3;  // 128B → class 3
-    class_tests[10] = 256;  class_tests[11] = 4;  // 256B → class 4
-    class_tests[12] = 1024; class_tests[13] = 6;  // 1024B → class 6
-    class_tests[14] = 2048; class_tests[15] = 7;  // 2048B → class 7
+impl TestKmalloc {
+    /// サイズからクラスへの変換テスト
+    static void test_size_to_class() {
+        ulong[16] class_tests;
+        class_tests[0]  = 1;    class_tests[1]  = 0;
+        class_tests[2]  = 16;   class_tests[3]  = 0;
+        class_tests[4]  = 17;   class_tests[5]  = 1;
+        class_tests[6]  = 64;   class_tests[7]  = 2;
+        class_tests[8]  = 128;  class_tests[9]  = 3;
+        class_tests[10] = 256;  class_tests[11] = 4;
+        class_tests[12] = 1024; class_tests[13] = 6;
+        class_tests[14] = 2048; class_tests[15] = 7;
 
-    ulong i = 0;
-    while (i < 8) {
-        ulong sz = class_tests[i * 2];
-        ulong expected = class_tests[i * 2 + 1];
-        ulong actual = heap_size_to_class(sz);
-        KTest::assert_eq(actual, expected, "size_to_class" as void*);
-        i = i + 1;
+        ulong i = 0;
+        while (i < 8) {
+            ulong sz = class_tests[i * 2];
+            ulong expected = class_tests[i * 2 + 1];
+            ulong actual = heap_size_to_class(sz);
+            KTest::assert_eq(actual, expected, "size_to_class" as void*);
+            i = i + 1;
+        }
     }
 
-    // クラスからサイズへの逆変換 — 配列ペア [class, expected_size]
-    ulong[16] size_tests;
-    size_tests[0]  = 0;
-    size_tests[1]  = 16;
-    size_tests[2]  = 1;
-    size_tests[3]  = 32;
-    size_tests[4]  = 2;
-    size_tests[5]  = 64;
-    size_tests[6]  = 3;
-    size_tests[7]  = 128;
-    size_tests[8]  = 4;
-    size_tests[9]  = 256;
-    size_tests[10] = 5;
-    size_tests[11] = 512;
-    size_tests[12] = 6;
-    size_tests[13] = 1024;
-    size_tests[14] = 7;
-    size_tests[15] = 2048;
+    /// クラスからサイズへの逆変換テスト
+    static void test_class_to_size() {
+        ulong[16] size_tests;
+        size_tests[0]  = 0;  size_tests[1]  = 16;
+        size_tests[2]  = 1;  size_tests[3]  = 32;
+        size_tests[4]  = 2;  size_tests[5]  = 64;
+        size_tests[6]  = 3;  size_tests[7]  = 128;
+        size_tests[8]  = 4;  size_tests[9]  = 256;
+        size_tests[10] = 5;  size_tests[11] = 512;
+        size_tests[12] = 6;  size_tests[13] = 1024;
+        size_tests[14] = 7;  size_tests[15] = 2048;
 
-    i = 0;
-    while (i < 8) {
-        ulong cls = size_tests[i * 2];
-        ulong expected = size_tests[i * 2 + 1];
-        ulong actual = heap_class_to_size(cls);
-        KTest::assert_eq(actual, expected, "class_to_size" as void*);
-        i = i + 1;
+        ulong i = 0;
+        while (i < 8) {
+            ulong cls = size_tests[i * 2];
+            ulong expected = size_tests[i * 2 + 1];
+            ulong actual = heap_class_to_size(cls);
+            KTest::assert_eq(actual, expected, "class_to_size" as void*);
+            i = i + 1;
+        }
     }
 
-    // 境界値: 2048を超える → class 8 (ページ単位)
-    KTest::assert_eq(heap_size_to_class(4096), 8, "size_to_class 4096=page" as void*);
+    /// 境界値テスト
+    static void test_boundary() {
+        KTest::assert_eq(heap_size_to_class(4096), 8, "size_to_class 4096=page" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestKmalloc::test_size_to_class();
+        TestKmalloc::test_class_to_size();
+        TestKmalloc::test_boundary();
+    }
 }

@@ -16,81 +16,92 @@ import ../../fs/ramfs;
 import ../../fs/fd_table;
 import ../test_io;
 import ../ktest;
-import ../../ui/mem;
+import ../../apps/terminal/mem;
 
 /// VFS テストスイート
-export void test_vfs() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[VFS]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestVfs {}
 
-    // O_CREAT で新規ファイル作成
-    Fd fd = 0;
-    Result<Fd, long> r1 = Vfs::open("_vfs_test" as void*, O_CREAT | O_RDWR);
-    match (r1) {
-        Result::Ok(v) => { fd = v; }
-        Result::Err(e) => { fd = 0 - e; }
+impl TestVfs {
+    /// ファイル作成・クローズテスト
+    static void test_create_close() {
+        Fd fd = 0;
+        Result<Fd, long> r1 = Vfs::open("_vfs_test" as void*, O_CREAT | O_RDWR);
+        match (r1) {
+            Result::Ok(v) => { fd = v; }
+            Result::Err(e) => { fd = 0 - e; }
+        }
+        ulong fd_ok = 0;
+        if (fd >= 0) { fd_ok = 1; }
+        KTest::assert_eq(fd_ok, 1, "VFS open O_CREAT" as void*);
+
+        long close_ret = 0;
+        Result<long, long> cr = Vfs::close(fd);
+        match (cr) {
+            Result::Ok(v) => { close_ret = v; }
+            Result::Err(e) => { close_ret = 0 - e; }
+        }
+        ulong close_ok = 0;
+        if (close_ret >= 0) { close_ok = 1; }
+        KTest::assert_eq(close_ok, 1, "VFS close" as void*);
     }
-    ulong fd_ok = 0;
-    if (fd >= 0) { fd_ok = 1; }
-    KTest::assert_eq(fd_ok, 1, "VFS open O_CREAT" as void*);
 
-    // close
-    long close_ret = 0;
-    Result<long, long> cr = Vfs::close(fd);
-    match (cr) {
-        Result::Ok(v) => { close_ret = v; }
-        Result::Err(e) => { close_ret = 0 - e; }
+    /// 再オープンテスト
+    static void test_reopen() {
+        Fd fd2 = 0;
+        Result<Fd, long> r2 = Vfs::open("_vfs_test" as void*, O_RDONLY);
+        match (r2) {
+            Result::Ok(v) => { fd2 = v; }
+            Result::Err(e) => { fd2 = 0 - e; }
+        }
+        ulong fd2_ok = 0;
+        if (fd2 >= 0) { fd2_ok = 1; }
+        KTest::assert_eq(fd2_ok, 1, "VFS reopen O_RDONLY" as void*);
+        Vfs::close(fd2);
     }
-    ulong close_ok = 0;
-    if (close_ret >= 0) { close_ok = 1; }
-    KTest::assert_eq(close_ok, 1, "VFS close" as void*);
 
-    // reopen で読み込み検証
-    Fd fd2 = 0;
-    Result<Fd, long> r2 = Vfs::open("_vfs_test" as void*, O_RDONLY);
-    match (r2) {
-        Result::Ok(v) => { fd2 = v; }
-        Result::Err(e) => { fd2 = 0 - e; }
+    /// エラー処理テスト
+    static void test_errors() {
+        // 存在しないファイル
+        Fd err_fd2 = 0;
+        Result<Fd, long> r3 = Vfs::open("_vfs_nonexistent" as void*, O_RDONLY);
+        match (r3) {
+            Result::Ok(v) => { err_fd2 = v; }
+            Result::Err(e) => { err_fd2 = 0 - e; }
+        }
+        ulong is_enoent = 0;
+        if (err_fd2 < 0) { is_enoent = 1; }
+        KTest::assert_eq(is_enoent, 1, "VFS open nonexistent returns error" as void*);
+
+        // 無効なFDからの読み
+        long err = 0;
+        Result<long, long> er = Vfs::read(99, 0x9D300, 1);
+        match (er) {
+            Result::Ok(v) => { err = v; }
+            Result::Err(e) => { err = 0 - e; }
+        }
+        ulong is_ebadf = 0;
+        if (err < 0) { is_ebadf = 1; }
+        KTest::assert_eq(is_ebadf, 1, "VFS read invalid fd returns error" as void*);
+
+        // NULLパス
+        Fd null_fd = 0;
+        Result<Fd, long> r4 = Vfs::open(0 as void*, O_RDONLY);
+        match (r4) {
+            Result::Ok(v) => { null_fd = v; }
+            Result::Err(e) => { null_fd = 0 - e; }
+        }
+        ulong is_einval = 0;
+        if (null_fd < 0) { is_einval = 1; }
+        KTest::assert_eq(is_einval, 1, "VFS open NULL returns error" as void*);
+
+        // クリーンアップ
+        RamFs::unlink("_vfs_test" as void*);
     }
-    ulong fd2_ok = 0;
-    if (fd2 >= 0) { fd2_ok = 1; }
-    KTest::assert_eq(fd2_ok, 1, "VFS reopen O_RDONLY" as void*);
-    Vfs::close(fd2);
 
-    // 存在しないファイル → エラー
-    Fd err_fd2 = 0;
-    Result<Fd, long> r3 = Vfs::open("_vfs_nonexistent" as void*, O_RDONLY);
-    match (r3) {
-        Result::Ok(v) => { err_fd2 = v; }
-        Result::Err(e) => { err_fd2 = 0 - e; }
+    /// 全テスト実行
+    static void run() {
+        TestVfs::test_create_close();
+        TestVfs::test_reopen();
+        TestVfs::test_errors();
     }
-    ulong is_enoent = 0;
-    if (err_fd2 < 0) { is_enoent = 1; }
-    KTest::assert_eq(is_enoent, 1, "VFS open nonexistent returns error" as void*);
-
-    // 無効なFDからの読み → EBADF
-    long err = 0;
-    Result<long, long> er = Vfs::read(99, 0x9D300, 1);
-    match (er) {
-        Result::Ok(v) => { err = v; }
-        Result::Err(e) => { err = 0 - e; }
-    }
-    ulong is_ebadf = 0;
-    if (err < 0) { is_ebadf = 1; }
-    KTest::assert_eq(is_ebadf, 1, "VFS read invalid fd returns error" as void*);
-
-    // NULLパス → EINVAL
-    Fd null_fd = 0;
-    Result<Fd, long> r4 = Vfs::open(0 as void*, O_RDONLY);
-    match (r4) {
-        Result::Ok(v) => { null_fd = v; }
-        Result::Err(e) => { null_fd = 0 - e; }
-    }
-    ulong is_einval = 0;
-    if (null_fd < 0) { is_einval = 1; }
-    KTest::assert_eq(is_einval, 1, "VFS open NULL returns error" as void*);
-
-    // クリーンアップ
-    RamFs::unlink("_vfs_test" as void*);
 }

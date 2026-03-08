@@ -13,41 +13,56 @@ import ../test_io;
 import ../ktest;
 
 /// VMA テストスイート
-export void test_vma() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[VMA/Mmap]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestVma {}
 
-    // 初期VMA数
-    ulong initial = Mmap::count();
-    KTest::pass("initial VMA count read" as void*);
+impl TestVma {
+    /// mmap匿名マッピングテスト
+    static void test_mmap() {
+        ulong initial = Mmap::count();
+        KTest::pass("initial VMA count read" as void*);
 
-    // mmap — 匿名マッピング
-    ulong addr = Mmap::do_mmap(0, 4096, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS);
-    if (addr != MAP_FAILED) {
-        KTest::assert_true(1, "mmap anonymous succeeds" as void*);
-    } else {
-        KTest::assert_true(0, "mmap anonymous succeeds" as void*);
+        ulong addr = Mmap::do_mmap(0, 4096, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS);
+        if (addr != MAP_FAILED) {
+            KTest::assert_true(1, "mmap anonymous succeeds" as void*);
+        } else {
+            KTest::assert_true(0, "mmap anonymous succeeds" as void*);
+        }
+        KTest::assert_eq(Mmap::count(), initial + 1, "VMA count +1" as void*);
     }
-    KTest::assert_eq(Mmap::count(), initial + 1, "VMA count +1" as void*);
 
-    // find_vma
-    ulong vma_addr = 0;
-    Option<ulong> vma_opt = Mmap::find_vma(addr);
-    match (vma_opt) {
-        Option::Some(v) => { vma_addr = v; }
-        Option::None => {}
+    /// find_vmaテスト
+    static void test_find_vma() {
+        ulong addr = Mmap::do_mmap(0, 4096, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS);
+        ulong vma_addr = 0;
+        Option<ulong> vma_opt = Mmap::find_vma(addr);
+        match (vma_opt) {
+            Option::Some(v) => { vma_addr = v; }
+            Option::None => {}
+        }
+        KTest::assert_nonzero(vma_addr, "find_vma returns valid" as void*);
     }
-    KTest::assert_nonzero(vma_addr, "find_vma returns valid" as void*);
 
-    // munmap
-    long ret = 0;
-    Result<long, long> mr = Mmap::do_munmap(addr, 4096);
-    match (mr) {
-        Result::Ok(n) => { ret = n; }
-        Result::Err(e) => { ret = 0 - e; }
+    /// munmapテスト
+    static void test_munmap() {
+        ulong initial = Mmap::count();
+        ulong addr = Mmap::do_mmap(0, 4096, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS);
+        long ret = 0;
+        Result<long, long> mr = Mmap::do_munmap(addr, 4096);
+        match (mr) {
+            Result::Ok(n) => { ret = n; }
+            Result::Err(e) => { ret = 0 - e; }
+        }
+        KTest::assert_eq(ret as ulong, 0, "munmap returns 0" as void*);
+        KTest::assert_eq(Mmap::count(), initial, "VMA count restored" as void*);
     }
-    KTest::assert_eq(ret as ulong, 0, "munmap returns 0" as void*);
-    KTest::assert_eq(Mmap::count(), initial, "VMA count restored" as void*);
+
+    /// 全テスト実行
+    static void run() {
+        TestVma::test_mmap();
+        TestVma::test_find_vma();
+        TestVma::test_munmap();
+    }
 }

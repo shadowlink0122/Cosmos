@@ -12,53 +12,55 @@ import ../test_io;
 import ../ktest;
 
 /// VMM テストスイート
-export void test_vmm() {
-    TestIO::set_color(14, 0);
-    TestIO::writeln("[VMM]" as void*);
-    TestIO::set_color(7, 0);
+export struct TestVmm {}
 
-    // ページテーブルフラグ定数の検証 — 配列ペア [actual, expected]
-    ulong[14] flag_checks;
-    flag_checks[0]  = PTE_PRESENT;
-    flag_checks[1]  = 1;
-    flag_checks[2]  = PTE_WRITE;
-    flag_checks[3]  = 2;
-    flag_checks[4]  = PTE_USER;
-    flag_checks[5]  = 4;
-    flag_checks[6]  = PTE_PWT;
-    flag_checks[7]  = 8;
-    flag_checks[8]  = PTE_PCD;
-    flag_checks[9]  = 16;
-    flag_checks[10] = PTE_ACCESSED;
-    flag_checks[11] = 32;
-    flag_checks[12] = PTE_DIRTY;
-    flag_checks[13] = 64;
+impl TestVmm {
+    /// ページテーブルフラグ定数テスト
+    static void test_flags() {
+        ulong[14] flag_checks;
+        flag_checks[0]  = PTE_PRESENT;  flag_checks[1]  = 1;
+        flag_checks[2]  = PTE_WRITE;    flag_checks[3]  = 2;
+        flag_checks[4]  = PTE_USER;     flag_checks[5]  = 4;
+        flag_checks[6]  = PTE_PWT;      flag_checks[7]  = 8;
+        flag_checks[8]  = PTE_PCD;      flag_checks[9]  = 16;
+        flag_checks[10] = PTE_ACCESSED; flag_checks[11] = 32;
+        flag_checks[12] = PTE_DIRTY;    flag_checks[13] = 64;
 
-    ulong[7] flag_labels;
-    flag_labels[0] = "PTE_PRESENT=1" as ulong;
-    flag_labels[1] = "PTE_WRITE=2" as ulong;
-    flag_labels[2] = "PTE_USER=4" as ulong;
-    flag_labels[3] = "PTE_PWT=8" as ulong;
-    flag_labels[4] = "PTE_PCD=16" as ulong;
-    flag_labels[5] = "PTE_ACCESSED=32" as ulong;
-    flag_labels[6] = "PTE_DIRTY=64" as ulong;
+        ulong[7] flag_labels;
+        flag_labels[0] = "PTE_PRESENT=1" as ulong;
+        flag_labels[1] = "PTE_WRITE=2" as ulong;
+        flag_labels[2] = "PTE_USER=4" as ulong;
+        flag_labels[3] = "PTE_PWT=8" as ulong;
+        flag_labels[4] = "PTE_PCD=16" as ulong;
+        flag_labels[5] = "PTE_ACCESSED=32" as ulong;
+        flag_labels[6] = "PTE_DIRTY=64" as ulong;
 
-    ulong i = 0;
-    while (i < 7) {
-        KTest::assert_eq(flag_checks[i * 2], flag_checks[i * 2 + 1], flag_labels[i] as void*);
-        i = i + 1;
+        ulong i = 0;
+        while (i < 7) {
+            KTest::assert_eq(flag_checks[i * 2], flag_checks[i * 2 + 1], flag_labels[i] as void*);
+            i = i + 1;
+        }
     }
 
-    // 複合フラグ検証
-    KTest::assert_eq(KERNEL_PAGE_FLAGS, 3, "KERNEL_PAGE_FLAGS=PRESENT|WRITE" as void*);
-    KTest::assert_eq(USER_PAGE_FLAGS, 7, "USER_PAGE_FLAGS=PRESENT|WRITE|USER" as void*);
+    /// 複合フラグ・NXビットテスト
+    static void test_compound_flags() {
+        KTest::assert_eq(KERNEL_PAGE_FLAGS, 3, "KERNEL_PAGE_FLAGS=PRESENT|WRITE" as void*);
+        KTest::assert_eq(USER_PAGE_FLAGS, 7, "USER_PAGE_FLAGS=PRESENT|WRITE|USER" as void*);
+        KTest::assert_eq(PTE_NX, 0x8000000000000000, "PTE_NX=bit63" as void*);
+    }
 
-    // NX ビット（最上位ビット）
-    KTest::assert_eq(PTE_NX, 0x8000000000000000, "PTE_NX=bit63" as void*);
+    /// CR3レジスタ検証テスト
+    static void test_cr3() {
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        KTest::assert_nonzero(cr3, "CR3 nonzero (paging active)" as void*);
+        KTest::assert_eq(cr3 & 0xFFF, 0, "CR3 aligned 4KB" as void*);
+    }
 
-    // CR3レジスタの読み取り検証（ページテーブルが有効であること）
-    ulong cr3 = 0;
-    __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
-    KTest::assert_nonzero(cr3, "CR3 nonzero (paging active)" as void*);
-    KTest::assert_eq(cr3 & 0xFFF, 0, "CR3 aligned 4KB" as void*);
+    /// 全テスト実行
+    static void run() {
+        TestVmm::test_flags();
+        TestVmm::test_compound_flags();
+        TestVmm::test_cr3();
+    }
 }
