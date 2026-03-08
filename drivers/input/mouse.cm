@@ -6,8 +6,8 @@
 //
 // 参照: OSDev Wiki PS/2 Mouse, IntelliMouse protocol
 
-import ../../ui/mem;
-import ../../ui/vga;
+import ../../apps/terminal/mem;
+import ../../apps/terminal/vga;
 import ../../arch/x86_64/idt;
 
 // ============================================================

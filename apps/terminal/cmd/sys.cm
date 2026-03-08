@@ -3,19 +3,19 @@
 //
 // CmdSys struct/impl — uname, date, uptime, free, vmstat, reboot, clear。
 
-import ../../include/types;
-import ../../include/keycode;
-import ../../include/config;
-import ../../include/color;
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/config;
+import ../../../include/color;
 import ../shell/defs;
 import ../mem;
 import ../vga;
 import ../shell/io;
-import ../../drivers/serial;
-import ../../drivers/timer/pit;
-import ../../mm/pmm;
-import ../../mm/mmap;
-import ../../lib/kstring;
+import ../../../drivers/serial;
+import ../../../drivers/timer/pit;
+import ../../../mm/pmm;
+import ../../../mm/mmap;
+import ../../../lib/kstring;
 
 /// CmdSys — システム情報コマンド群
 export struct CmdSys {}
@@ -150,7 +150,7 @@ impl CmdSys {
         if (*gui != 0) {
             Shell::gui_clear();
         } else {
-            Vga::clear_screen();
+            Vga::clear();
         }
     }
 

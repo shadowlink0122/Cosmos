@@ -4,16 +4,16 @@
 // ウィンドウの描画順序管理と全画面再描画。
 // ウィンドウドラッグ移動、Dockクリック→アプリ起動。
 
-import ../include/types;
-import ../include/config;
-import ../drivers/video/framebuffer;
-import ../drivers/video/font;
-import ../drivers/input/mouse;
-import ../ui/desktop;
-import ../ui/menubar;
-import ../ui/window;
-import ../ui/dock;
-import ../apps/terminal/terminal;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ../../drivers/input/mouse;
+import ./desktop;
+import ./menubar;
+import ./window;
+import ./dock;
+import ../terminal/terminal;
 
 // ============================================================
 // ドラッグ状態アドレス

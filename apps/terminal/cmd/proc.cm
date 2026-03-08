@@ -3,20 +3,20 @@
 //
 // CmdProc struct/impl — ps, kill, exec。
 
-import ../../include/types;
-import ../../include/keycode;
-import ../../include/config;
-import ../../include/scheduler;
-import ../../include/signal;
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/config;
+import ../../../include/scheduler;
+import ../../../include/signal;
 import ../shell/defs;
 import ../mem;
 import ../shell/io;
-import ../../drivers/serial;
-import ../../sched/process;
-import ../../sched/scheduler;
-import ../../exec/loader;
-import ../../include/result;
-import ../../sys/signal;
+import ../../../drivers/serial;
+import ../../../sched/process;
+import ../../../sched/scheduler;
+import ../../../exec/loader;
+import ../../../include/result;
+import ../../../sys/signal;
 import ./args;
 
 /// CmdProc — プロセス管理コマンド群

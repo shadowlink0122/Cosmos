@@ -7,7 +7,7 @@ import ./shell/defs;
 import ./mem;
 import ./vga;
 import ./shell/io;
-import ../lib/kstring;
+import ../../lib/kstring;
 
 /// History — コマンド履歴管理
 export struct History {}

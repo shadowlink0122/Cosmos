@@ -9,7 +9,7 @@ import ../../include/types;
 import ../../include/config;
 import ../../drivers/video/framebuffer;
 import ../../drivers/video/font;
-import ../../ui/window;
+import ../desktop/window;
 import ../../include/color;
 
 // ============================================================

@@ -21,10 +21,10 @@ import ./dns;
 import ./http;
 import ../../include/keycode;
 import ../../lib/kstring;
-import ../../ui/shell/io;
-import ../../ui/shell/util;
-import ../../ui/shell/defs;
-import ../../ui/mem;
+import ../../apps/terminal/shell/io;
+import ../../apps/terminal/shell/util;
+import ../../apps/terminal/shell/defs;
+import ../../apps/terminal/mem;
 
 // ============================================================
 // Curl 定数

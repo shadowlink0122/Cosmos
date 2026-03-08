@@ -5,11 +5,11 @@
 // アプリアイコン（簡易表示）を配置。
 // クリックでアプリ起動。
 
-import ../include/types;
-import ../include/config;
-import ../drivers/video/framebuffer;
-import ../drivers/video/font;
-import ../include/color;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ../../include/color;
 
 // ============================================================
 // Dock定数

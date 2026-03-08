@@ -27,7 +27,7 @@ import ../../arch/x86_64/usermode;
 import ../../exec/loader;
 import ../../fs/ramfs;
 import ../../fs/ninepfs;
-import ../../ui/mem;
+import ../../apps/terminal/mem;
 
 // ============================================================
 // PMMポインタはphys_addr.cmのPMM_GLOBAL_PTR_ADDRを使用

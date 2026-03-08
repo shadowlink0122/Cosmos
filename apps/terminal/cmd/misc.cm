@@ -3,18 +3,18 @@
 //
 // CmdMisc struct/impl — echo, cd, pwd, env, export, history, help。
 
-import ../../include/types;
-import ../../include/keycode;
-import ../../include/color;
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/color;
 import ../shell/defs;
 import ../mem;
 import ../vga;
 import ../shell/io;
 import ../env;
 import ../history;
-import ../../fs/ramfs;
-import ../../include/vfs;
-import ../../lib/kstring;
+import ../../../fs/ramfs;
+import ../../../include/vfs;
+import ../../../lib/kstring;
 
 /// Cwd — カレントディレクトリ管理（外部参照用の前方宣言）
 // Cwd は shell/util.cm で定義されている

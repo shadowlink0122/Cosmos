@@ -3,11 +3,11 @@
 //
 // macOS Sonoma 風のグラデーション背景とマウスカーソル。
 
-import ../include/types;
-import ../include/config;
-import ../drivers/video/framebuffer;
-import ../drivers/video/font;
-import ../include/color;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ../../include/color;
 
 /// カーソル状態アドレス
 const PhysAddr CURSOR_STATE_ADDR = 0xD80800;

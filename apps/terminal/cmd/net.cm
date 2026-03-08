@@ -3,20 +3,20 @@
 //
 // CmdNet struct/impl — ping, parse_ip, print_ip。
 
-import ../../include/types;
-import ../../include/keycode;
-import ../../include/net;
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/net;
 import ../shell/defs;
 import ../mem;
 import ../shell/io;
-import ../../drivers/serial;
-import ../../drivers/timer/pit;
-import ../../drivers/virtio/virtio_net;
-import ../../net/core/ethernet;
-import ../../net/core/ip;
-import ../../net/transport/icmp;
-import ../../net/core/arp;
-import ../../net/app/dns;
+import ../../../drivers/serial;
+import ../../../drivers/timer/pit;
+import ../../../drivers/virtio/virtio_net;
+import ../../../net/core/ethernet;
+import ../../../net/core/ip;
+import ../../../net/transport/icmp;
+import ../../../net/core/arp;
+import ../../../net/app/dns;
 
 /// CmdNet — ネットワークコマンド群
 export struct CmdNet {}

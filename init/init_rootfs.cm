@@ -13,7 +13,7 @@ import ../lib/kstring;
 import ../fs/ramfs;
 import ../mm/pmm;
 import ../include/result;
-import ../ui/mem;
+import ../apps/terminal/mem;
 
 // ============================================================
 // hello バイナリデータ

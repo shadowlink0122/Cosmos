@@ -4,16 +4,16 @@
 // TabComplete struct/impl — コマンド名/ファイル名/9pfsパス補完を提供。
 // shell.cmから深いネスト(5段)のロジックを関数に分割。
 
-import ../../include/types;
+import ../../../include/types;
 import ./defs;
 import ../mem;
 import ./io;
 import ./prompt;
 import ./util;
-import ../../fs/ramfs;
-import ../../drivers/virtio/virtio_9p;
-import ../../include/keycode;
-import ../../include/color;
+import ../../../fs/ramfs;
+import ../../../drivers/virtio/virtio_9p;
+import ../../../include/keycode;
+import ../../../include/color;
 
 // ============================================================
 // 補完用バッファアドレス

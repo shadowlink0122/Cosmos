@@ -3,12 +3,12 @@
 //
 // CmdHost struct/impl — hostls, hostcat (9pfs経由)。
 
-import ../../include/types;
-import ../../include/config;
+import ../../../include/types;
+import ../../../include/config;
 import ../shell/defs;
 import ../mem;
 import ../shell/io;
-import ../../drivers/virtio/virtio_9p;
+import ../../../drivers/virtio/virtio_9p;
 
 /// CmdHost — ホストFSコマンド群
 export struct CmdHost {}

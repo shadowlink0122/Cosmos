@@ -30,7 +30,7 @@ import ../mm/kmalloc;
 import ../sched/process;
 import ../sched/scheduler;
 import ../sys/syscall;
-import ../ui/shell;
+import ../apps/terminal/shell;
 import ../fs/ramfs;
 import ../fs/fd_table;
 import ../fs/pipe;
@@ -41,12 +41,12 @@ import ../exec/loader;
 import ../init/init_rootfs;
 import ../drivers/video/framebuffer;
 import ../drivers/video/font;
-import ../ui/desktop;
-import ../ui/menubar;
-import ../ui/window;
-import ../ui/wm;
+import ../apps/desktop/desktop;
+import ../apps/desktop/menubar;
+import ../apps/desktop/window;
+import ../apps/desktop/wm;
 import ../apps/terminal/terminal;
-import ../ui/dock;
+import ../apps/desktop/dock;
 
 /// GUI画面更新ヘルパー (コールバック用)
 void gui_flush_helper() {

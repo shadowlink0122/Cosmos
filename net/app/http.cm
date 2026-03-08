@@ -7,7 +7,7 @@
 import ../../include/types;
 import ../../include/keycode;
 import ../../lib/kstring;
-import ../../ui/shell/util;
+import ../../apps/terminal/shell/util;
 
 // ============================================================
 // HTTP 定数

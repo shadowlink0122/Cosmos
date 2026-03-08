@@ -4,22 +4,22 @@
 // CmdFs struct/impl — ls, cat, touch, write, cp, mv, rm, mkdir,
 //                     wc, hexdump, head, tail, sort, grep。
 
-import ../../include/types;
-import ../../include/keycode;
-import ../../include/config;
-import ../../include/vfs;
-import ../../include/color;
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/config;
+import ../../../include/vfs;
+import ../../../include/color;
 import ../shell/defs;
 import ../mem;
 import ../shell/io;
-import ../../drivers/serial;
-import ../../fs/ramfs;
-import ../../fs/procfs;
-import ../../fs/ninepfs;
-import ../../mm/pmm;
-import ../../lib/kstring;
-import ../../include/result;
-import ../../include/errno;
+import ../../../drivers/serial;
+import ../../../fs/ramfs;
+import ../../../fs/procfs;
+import ../../../fs/ninepfs;
+import ../../../mm/pmm;
+import ../../../lib/kstring;
+import ../../../include/result;
+import ../../../include/errno;
 import ./args;
 import ./host;
 

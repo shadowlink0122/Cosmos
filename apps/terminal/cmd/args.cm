@@ -3,8 +3,8 @@
 //
 // CmdArgs struct/impl — コマンドバッファからの引数抽出。
 
-import ../../include/types;
-import ../../include/keycode;
+import ../../../include/types;
+import ../../../include/keycode;
 import ../shell/defs;
 import ../mem;
 

@@ -6,7 +6,7 @@
 
 import ./io;
 import ../env;
-import ../../include/color;
+import ../../../include/color;
 
 /// Prompt — シェルプロンプト描画
 export struct Prompt {}

@@ -13,8 +13,8 @@
 //   history.cm      — History (コマンド履歴)
 //   cmd.cm          — Cmd (コマンド群+ディスパッチ)
 
-import ../include/types;
-import ../include/config;
+import ../../include/types;
+import ../../include/config;
 import ./shell/defs;
 import ./mem;
 import ./vga;
@@ -26,16 +26,16 @@ import ./cmd;
 import ./shell/prompt;
 import ./shell/tab;
 import ./shell/pipe;
-import ../drivers/serial;
-import ../drivers/input/keyboard;
-import ../init/init;
-import ../fs/ramfs;
-import ../sched/scheduler;
-import ../drivers/timer/pit;
-import ../drivers/input/mouse;
-import ../include/keycode;
-import ../include/color;
-import ../ui/menubar;
+import ../../drivers/serial;
+import ../../drivers/input/keyboard;
+import ../../init/init;
+import ../../fs/ramfs;
+import ../../sched/scheduler;
+import ../../drivers/timer/pit;
+import ../../drivers/input/mouse;
+import ../../include/keycode;
+import ../../include/color;
+import ../desktop/menubar;
 
 // ============================================================
 // ShellInput — シェル入力処理＆メインループ
@@ -309,7 +309,7 @@ impl ShellInput {
 
         // ウェルカムバナー
         Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
-        Vga::clear_screen();
+        Vga::clear();
         Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
         Shell::writeln("========================================" as void*);
         Shell::writeln("  Cosmo Linux v0.1.0" as void*);
@@ -385,7 +385,7 @@ impl ShellInput {
                     if (Shell::is_gui() != 0) {
                         Shell::gui_clear();
                     } else {
-                        Vga::clear_screen();
+                        Vga::clear();
                     }
                     *len_ptr = 0;
                     *cur_ptr = 0;

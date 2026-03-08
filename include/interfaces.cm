@@ -1,0 +1,83 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::interfaces - カーネルインターフェース定義
+//
+// 将来のポリモーフィックディスパッチ基盤。
+// 各サブシステムの公開APIを契約として定義。
+//
+// 使用法:
+//   interface定義 → impl Struct for Interface { ... }
+//
+// 参照: Cm言語 interface/impl パターン
+
+import ./types;
+import ./vfs;
+import ./result;
+
+// ============================================================
+// FileSystem — ファイルシステム抽象化インターフェース
+// ============================================================
+//
+// RamFs, NinePfs, ProcFs 等のファイルシステム実装が
+// 共通APIとして提供すべきメソッド群。
+// 現在のVFS (vfs.cm) はFS種別による条件分岐で手動ディスパッチしているが、
+// 将来的にこのinterfaceをVFSディスパッチテーブルとして利用可能。
+
+export interface FileSystem {
+    /// ファイル検索: 名前からinode番号を返す (0=見つからない)
+    Ino lookup(void* name);
+
+    /// ファイル作成: 新しいinodeを割り当てて返す (0=失敗)
+    Ino create(void* name, ulong mode, ulong data_addr);
+
+    /// ファイル読み出し: ino のデータを buf に読み込む
+    Result<long, long> read(Ino ino, ulong buf, ulong off, ulong cnt);
+
+    /// ファイル書き込み: buf のデータを ino に書き込む
+    Result<long, long> write(Ino ino, ulong buf, ulong off, ulong cnt);
+
+    /// ファイル削除
+    Result<long, long> unlink(void* name);
+
+    /// ファイルサイズ取得
+    ulong file_size(Ino ino);
+}
+
+// ============================================================
+// BlockDevice — ブロックデバイス抽象化インターフェース
+// ============================================================
+//
+// Virtio9p, 将来の VirtioBlk, Ramdisk 等の
+// ブロックI/Oデバイスが実装すべきメソッド群。
+
+export interface BlockDevice {
+    /// デバイスからデータを読み出し
+    /// 返り値: 読み出したバイト数 (0=失敗/EOF)
+    ulong read(ulong buf, ulong offset, ulong count);
+
+    /// デバイスにデータを書き込み
+    /// 返り値: 書き込んだバイト数 (0=失敗)
+    ulong write(ulong buf, ulong offset, ulong count);
+
+    /// デバイスの準備状態を返す (0=未準備, 1=準備完了)
+    ulong is_ready();
+}
+
+// ============================================================
+// ConsoleOutput — コンソール出力抽象化インターフェース
+// ============================================================
+//
+// VGAテキストモード、GUIターミナル等の
+// テキスト出力デバイスが実装すべきメソッド群。
+// 現在の Shell::putc() は is_gui() で条件分岐しているが、
+// 将来的にこのinterfaceで出力先を抽象化可能。
+
+export interface ConsoleOutput {
+    /// 1文字出力
+    void putc(ulong ch);
+
+    /// 文字列出力
+    void puts(void* msg);
+
+    /// 画面クリア
+    void clear();
+}

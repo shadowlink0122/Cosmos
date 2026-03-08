@@ -3,12 +3,12 @@
 //
 // タイトルバー + 信号機ボタン + コンテンツ領域。
 
-import ../include/types;
-import ../include/config;
-import ../drivers/video/framebuffer;
-import ../drivers/video/font;
-import ../ui/menubar;
-import ../include/color;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ./menubar;
+import ../../include/color;
 
 // ============================================================
 // ウィンドウ定数

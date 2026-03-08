@@ -4,14 +4,14 @@
 // 画面最上部に半透明メニューバーを描画。
 // 左にアプリ名、右に時刻表示（CMOS RTC）。
 
-import ../include/types;
-import ../include/config;
-import ../drivers/video/framebuffer;
-import ../drivers/video/font;
-import ../include/color;
-import ../drivers/timer/pit;
-import ../drivers/timer/rtc;
-import ../ui/mem;
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ../../include/color;
+import ../../drivers/timer/pit;
+import ../../drivers/timer/rtc;
+import ../terminal/mem;
 
 // ============================================================
 // メニューバー定数

@@ -22,9 +22,9 @@ import ../mm/pmm;
 import ../exec/loader;
 import ../lib/kstring;
 import ../lib/printk;
-import ../ui/shell/io;
-import ../ui/shell/defs;
-import ../ui/mem;
+import ../apps/terminal/shell/io;
+import ../apps/terminal/shell/defs;
+import ../apps/terminal/mem;
 import ../include/result;
 import ../include/errno;
 

@@ -18,7 +18,7 @@ import ../../fs/fd_table;
 import ../../fs/vfs;
 import ../../fs/ramfs;
 import ../table;
-import ../../ui/shell/util;
+import ../../apps/terminal/shell/util;
 
 // ============================================================
 // stat構造体定数 (Linux x86_64 struct stat = 144バイト)

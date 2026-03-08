@@ -7,6 +7,7 @@ import ../include/types;
 import ../include/config;
 import ../include/vfs;
 import ../include/result;
+import ../include/interfaces;
 import ../include/errno;
 import ../drivers/serial;
 import ../lib/printk;
@@ -107,7 +108,7 @@ ulong name_eq(ulong a, ulong b) {
 /// RamFS — メモリ上ファイルシステム
 export struct RamFs {}
 
-impl RamFs {
+impl RamFs for FileSystem {
     /// VFS初期化
     static void setup(SerialPort* w) {
         memzero(INO_BASE as void*, MAX_INODES * 56);

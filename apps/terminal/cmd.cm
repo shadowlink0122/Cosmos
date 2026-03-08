@@ -11,21 +11,21 @@
 //   cmd/host.cm — CmdHost (ホストFS)
 //   cmd/misc.cm — CmdMisc (汎用ユーティリティ)
 
-import ../include/types;
-import ../include/keycode;
-import ../include/config;
-import ../include/color;
+import ../../include/types;
+import ../../include/keycode;
+import ../../include/config;
+import ../../include/color;
 import ./shell/defs;
 import ./mem;
 import ./vga;
 import ./shell/io;
 import ./shell/util;
-import ../drivers/serial;
-import ../sched/scheduler;
-import ../exec/loader;
-import ../include/result;
-import ../lib/kstring;
-import ../pkg/gen;
+import ../../drivers/serial;
+import ../../sched/scheduler;
+import ../../exec/loader;
+import ../../include/result;
+import ../../lib/kstring;
+import ../../pkg/gen;
 import ./cmd/args;
 import ./cmd/fs;
 import ./cmd/proc;

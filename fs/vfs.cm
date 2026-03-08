@@ -16,7 +16,7 @@ import ./ramfs;
 import ./ninepfs;
 import ../lib/kstring;
 import ../drivers/virtio/virtio_9p;
-import ../ui/mem;
+import ../apps/terminal/mem;
 
 // 9pFS用パスバッファ (FDごとに相対パスを保存)
 // 最大8ファイル同時オープン × 128バイト/パス = 1KB
