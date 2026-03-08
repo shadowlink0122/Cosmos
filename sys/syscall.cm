@@ -89,8 +89,7 @@ impl Syscall {
 
     /// sys_write: fdに書き込み
     static long write(ulong fd, ulong buf_addr, ulong count) {
-        // fd 1 (stdout) と fd 2 (stderr) → シリアル出力
-        // ユーザープロセスの場合はVGA画面にも出力
+        // fd 1 (stdout) と fd 2 (stderr) → シリアル出力 + 画面出力
         if (fd == 1 || fd == 2) {
             SerialPort serial(COM1);
             Process* cur = Sched::current();
@@ -110,16 +109,27 @@ impl Syscall {
                     movq %rax, ${=r:ch}
                 `);
                 serial.putc(ch as utiny);
-                // ユーザープロセスの場合のみVGA画面にも出力
-                // 注: Shell::putcはVGA+serial両方に書くのでVga::putc直接使用
+                // ユーザープロセスの場合のみ画面にも出力
                 if (is_user != 0) {
                     if (ch == 10) {
-                        Vga::putc(10);
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(10);
+                        } else {
+                            Vga::putc(10);
+                        }
                     } else if (ch >= 32 && ch < 127) {
-                        Vga::putc(ch);
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(ch);
+                        } else {
+                            Vga::putc(ch);
+                        }
                     }
                 }
                 i = i + 1;
+            }
+            // GUIモード時は画面更新
+            if (is_user != 0 && Shell::is_gui() != 0) {
+                Shell::gui_flush();
             }
             return count as long;
         }
@@ -597,7 +607,7 @@ impl Syscall {
             }
             return total;
         }
-        // stdout/stderr: シリアル出力 + VGA画面出力
+        // stdout/stderr: シリアル出力 + 画面出力
         SerialPort serial(COM1);
         Process* cur = Sched::current();
         ulong cur_addr = cur as ulong;
@@ -623,18 +633,30 @@ impl Syscall {
                     movq %rax, ${=r:ch}
                 `);
                 serial.putc(ch as utiny);
-                // ユーザープロセスの場合VGA画面にも出力
+                // ユーザープロセスの場合画面にも出力
                 if (is_user != 0) {
                     if (ch == 10) {
-                        Vga::putc(10);
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(10);
+                        } else {
+                            Vga::putc(10);
+                        }
                     } else if (ch >= 32 && ch < 127) {
-                        Vga::putc(ch);
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(ch);
+                        } else {
+                            Vga::putc(ch);
+                        }
                     }
                 }
                 j = j + 1;
             }
             total = total + (len as long);
             i = i + 1;
+        }
+        // GUIモード時は画面更新
+        if (is_user != 0 && Shell::is_gui() != 0) {
+            Shell::gui_flush();
         }
         return total;
     }
