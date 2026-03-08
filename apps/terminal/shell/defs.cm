@@ -1,0 +1,53 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell_const - シェル用共通定数
+//
+// 全UIモジュールが参照する固定メモリアドレスと定数。
+
+import ../../../include/types;
+
+// ============================================================
+// シェル用固定メモリ
+// ============================================================
+
+export const PhysAddr SHELL_SERIAL_ADDR = 0x95008;
+export const PhysAddr SHELL_PMM_ADDR = 0x95010;
+
+/// VGA直接操作用状態
+export const PhysAddr SH_VGA_COL_ADDR   = 0x95020;
+export const PhysAddr SH_VGA_ROW_ADDR   = 0x95028;
+export const PhysAddr SH_VGA_COLOR_ADDR = 0x95030;
+
+/// コマンドバッファ
+export const PhysAddr CMD_BUF_ADDR = 0x94000;
+export const PhysAddr CMD_LEN_ADDR = 0x94080;
+export const PhysAddr CMD_CUR_ADDR = 0x94088;  // カーソル位置
+export const ulong CMD_BUF_SIZE = 128;
+
+/// コマンド履歴
+export const PhysAddr HIST_BASE = 0x95100;
+export const PhysAddr HIST_COUNT = 0x95500;
+export const PhysAddr HIST_INDEX = 0x95508;
+export const ulong HIST_MAX = 8;
+export const ulong HIST_ENTRY_SIZE = 128;
+
+/// VGAスクロールバックバッファ
+export const PhysAddr SCROLL_BUF = 0x97000;
+export const PhysAddr SCROLL_HEAD = 0x97FA0;
+export const PhysAddr SCROLL_COUNT = 0x97FA8;
+export const ulong SCROLL_MAX = 50;
+export const ulong SCROLL_COLS = 80;
+
+/// 環境変数テーブル
+export const PhysAddr ENV_TABLE = 0x98000;
+export const ulong ENV_MAX = 16;
+export const ulong ENV_KEY_LEN = 32;
+export const ulong ENV_VAL_LEN = 96;
+export const ulong ENV_ENTRY_SIZE = 128;
+
+/// VGAバッファ
+export const PhysAddr VGA_BUF = 0xB8000;
+export const ulong VGA_COLS = 80;
+export const ulong VGA_ROWS = 25;
+
+/// GUIモードフラグ (1=GUI有効 → VGAテキスト出力を無効化)
+export const PhysAddr GUI_MODE_ADDR = 0x95038;

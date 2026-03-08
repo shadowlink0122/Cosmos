@@ -1,0 +1,148 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::vfs - VFS 構造体・定数定義
+//
+// Linux VFS に対応するファイルシステム抽象化の共通型。
+// 参照: linux/include/linux/fs.h
+
+import ./types;
+
+// ============================================================
+// ファイル種別 (mode フィールドのビットマスク)
+// ============================================================
+
+/// 通常ファイル
+export const ulong S_IFREG = 0x8000;
+
+/// ディレクトリ
+export const ulong S_IFDIR = 0x4000;
+
+/// ファイル種別マスク
+export const ulong S_IFMT  = 0xF000;
+
+// ============================================================
+// オープンフラグ
+// ============================================================
+
+/// 読み取り専用
+export const ulong O_RDONLY = 0;
+
+/// 書き込み専用
+export const ulong O_WRONLY = 1;
+
+/// 読み書き
+export const ulong O_RDWR   = 2;
+
+/// ファイル作成
+export const ulong O_CREAT  = 0x40;
+
+/// ファイル切り詰め
+export const ulong O_TRUNC  = 0x200;
+
+/// 追記モード
+export const ulong O_APPEND = 0x400;
+
+// ============================================================
+// FD定数
+// ============================================================
+
+/// 標準入力
+export const Fd STDIN_FD  = 0;
+
+/// 標準出力
+export const Fd STDOUT_FD = 1;
+
+/// 標準エラー出力
+export const Fd STDERR_FD = 2;
+
+/// 最大ファイルディスクリプタ数
+export const ulong MAX_FD = 64;
+
+// ============================================================
+// FS定数
+// ============================================================
+
+/// 最大inode数
+export const ulong MAX_INODES = 256;
+
+/// 最大ディレクトリエントリ数
+export const ulong MAX_DIR_ENTRIES = 64;
+
+/// ファイル名最大長
+export const ulong MAX_NAME_LEN = 32;
+
+/// ファイルデータ最大サイズ（2MiB: 大きな実行ファイルに対応）
+export const ulong MAX_FILE_SIZE = 0x4000000;  // 64MB（cc1/cm等の大型バイナリ対応）
+
+/// ルートinode番号
+export const Ino ROOT_INO = 1;
+
+/// FS種別 — match式でパターンマッチ可能
+export enum FsType {
+    Console = 0,
+    RamFs   = 1,
+    DevFs   = 2,
+    Pipe    = 3,
+    NinePFs = 4,
+    Dir     = 5,
+}
+
+/// FS種別: stdin/stdout/stderr用特殊FS (後方互換)
+export const ulong FS_CONSOLE = 0;
+
+/// FS種別: ramfs
+export const ulong FS_RAMFS = 1;
+
+/// FS種別: DevFS (/dev/null, /dev/zero等)
+export const ulong FS_DEVFS = 2;
+
+/// FS種別: パイプ
+export const ulong FS_PIPE = 3;
+
+/// FS種別: 9pfs (virtio-9pホストFS)
+export const ulong FS_9PFS = 4;
+
+/// FS種別: ディレクトリ
+export const ulong FS_DIR = 5;
+
+/// O_DIRECTORY フラグ
+export const ulong O_DIRECTORY = 0x10000;
+
+// ============================================================
+// Inode — ファイル/ディレクトリのメタデータ
+// ============================================================
+
+/// iノード構造体
+export struct Inode {
+    Ino ino;          // iノード番号
+    ulong mode;       // ファイル種別 + パーミッション
+    ulong size;       // ファイルサイズ（バイト）
+    ulong nlink;      // ハードリンク数
+    ulong data_addr;  // データ領域の物理アドレス（ramfs用）
+    ulong fs_type;    // ファイルシステム種別
+    ulong used;       // このエントリが使用中か (0=未使用, 1=使用中)
+}
+
+// ============================================================
+// DirEntry — ディレクトリエントリ
+// ============================================================
+
+/// ディレクトリエントリ構造体
+export struct DirEntry {
+    ulong name_addr;   // ファイル名の格納アドレス（32バイト固定領域）
+    Ino ino;           // 対応するiノード番号
+    ulong entry_type;  // エントリ種別 (S_IFREG / S_IFDIR)
+    ulong used;        // このエントリが使用中か (0=未使用, 1=使用中)
+}
+
+// ============================================================
+// FileDesc — オープンファイル記述子
+// ============================================================
+
+/// ファイルディスクリプタ構造体
+export struct FileDesc {
+    Ino ino;        // 対応するiノード番号
+    ulong offset;   // 現在の読み書き位置
+    ulong flags;    // オープンフラグ
+    ulong fs_type;  // ファイルシステム種別
+    ulong used;     // このFDが使用中か (0=未使用, 1=使用中)
+}

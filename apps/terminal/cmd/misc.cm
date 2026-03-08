@@ -1,0 +1,172 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd::misc - 汎用ユーティリティコマンド
+//
+// CmdMisc struct/impl — echo, cd, pwd, env, export, history, help。
+
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/color;
+import ../shell/defs;
+import ../mem;
+import ../vga;
+import ../shell/io;
+import ../env;
+import ../history;
+import ../../../fs/ramfs;
+import ../../../include/vfs;
+import ../../../lib/kstring;
+
+/// Cwd — カレントディレクトリ管理（外部参照用の前方宣言）
+// Cwd は shell/util.cm で定義されている
+import ../shell/util;
+
+/// CmdMisc — 汎用ユーティリティコマンド群
+export struct CmdMisc {}
+
+impl CmdMisc {
+
+    /// help コマンド: ヘルプ表示
+    static void help() {
+        Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
+        Shell::writeln("=== Cosmo Linux Shell ===" as void*);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+        Shell::writeln("  help ps free uptime uname date clear reboot" as void*);
+        Shell::writeln("  ls cat touch write cp mv rm mkdir" as void*);
+        Shell::writeln("  head tail wc hexdump grep sort" as void*);
+        Shell::writeln("  echo cd pwd env export history kill" as void*);
+        Shell::writeln("  vmstat exec test ping curl  cmd1 | cmd2  Tab=complete" as void*);
+        Shell::writeln("  cm version/help" as void*);
+        Shell::writeln("  apt install/list/search/run" as void*);
+        Shell::writeln("  [Up/Down]=history Ctrl+C=cancel Ctrl+L=clear" as void*);
+    }
+
+    /// echo コマンド: テキスト出力
+    static void echo(ulong text_addr) {
+        if (text_addr != 0) {
+            Shell::writeln(text_addr as void*);
+        } else {
+            Shell::newline();
+        }
+    }
+
+    /// cd コマンド: ディレクトリ変更
+    static void cd(ulong dir_addr) {
+        if (dir_addr == 0) {
+            // cd のみ → ルートに移動
+            Cwd::set("/" as void*);
+            return;
+        }
+        // "/" は常に存在
+        ulong ch0 = Mem::read_byte(dir_addr);
+        if (ch0 == Ascii::Slash as ulong) {
+            // 絶対パス
+            Cwd::set(dir_addr as void*);
+            return;
+        }
+        // ".." → 親ディレクトリ
+        if (ch0 == Ascii::Period as ulong) {
+            ulong ch1 = Mem::read_byte(dir_addr + 1);
+            if (ch1 == Ascii::Period as ulong) {
+                ulong ch2 = Mem::read_byte(dir_addr + 2);
+                if (ch2 == 0) {
+                    Cwd::set("/" as void*);
+                    return;
+                }
+            }
+            if (ch1 == 0) {
+                // "." → 何もしない
+                return;
+            }
+        }
+        // 相対パス → CWD + "/" + dir で合成（簡易版: ルート直下のみ）
+        // ramfsでディレクトリ存在確認
+        Ino ino = RamFs::lookup(dir_addr as void*);
+        if (ino == 0) {
+            Shell::write("cd: no such directory: " as void*);
+            Shell::writeln(dir_addr as void*);
+            return;
+        }
+        // "/" + name に合成
+        ulong tmp_buf = TMP_BUF;
+        Mem::write_byte(tmp_buf, Ascii::Slash as ulong);  // '/'
+        ulong j = 0;
+        while (true) {
+            ulong c = Mem::read_byte(dir_addr + j);
+            if (c == 0) { break; }
+            Mem::write_byte(tmp_buf + 1 + j, c);
+            j = j + 1;
+        }
+        Mem::write_byte(tmp_buf + 1 + j, 0);
+        Cwd::set(tmp_buf as void*);
+    }
+
+    /// pwd コマンド: カレントディレクトリ表示
+    static void pwd() {
+        ulong addr = Cwd::get();
+        Shell::writeln(addr as void*);
+    }
+
+    /// env コマンド: 環境変数一覧表示
+    static void env() {
+        ulong i = 0;
+        while (i < ENV_MAX) {
+            ulong entry = ENV_TABLE + i * ENV_ENTRY_SIZE;
+            if (Mem::read_byte(entry) != 0) {
+                Shell::write(entry as void*);
+                Shell::putc(Ascii::Equal as ulong);  // '='
+                Shell::writeln((entry + ENV_KEY_LEN) as void*);
+            }
+            i = i + 1;
+        }
+    }
+
+    /// export コマンド: 環境変数設定 (export KEY=VALUE)
+    static void export_var(ulong arg_addr) {
+        if (arg_addr == 0) { CmdMisc::env(); return; }
+        // '=' を探す
+        ulong pos = 0;
+        while (true) {
+            ulong c = Mem::read_byte(arg_addr + pos);
+            if (c == 0) { break; }
+            if (c == Ascii::Equal as ulong) {  // '='
+                Mem::write_byte(arg_addr + pos, 0);
+                Env::set(arg_addr as void*, (arg_addr + pos + 1) as void*);
+                return;
+            }
+            pos = pos + 1;
+        }
+        // '=' がない場合: 値を表示
+        ulong val = Env::get(arg_addr as void*);
+        if (val != 0) {
+            Shell::write(arg_addr as void*);
+            Shell::putc(Ascii::Equal as ulong);
+            Shell::writeln(val as void*);
+        } else {
+            Shell::writeln("undefined" as void*);
+        }
+    }
+
+    /// history コマンド: コマンド履歴表示
+    static void show_history() {
+        ulong* count = HIST_COUNT as ulong*;
+        if (*count == 0) {
+            Shell::writeln("(no history)" as void*);
+            return;
+        }
+        ulong total = *count;
+        if (total > HIST_MAX) { total = HIST_MAX; }
+        ulong i = 0;
+        while (i < total) {
+            ulong idx = total - 1 - i;
+            ulong addr = History::get(idx);
+            if (addr != 0) {
+                Shell::write("  " as void*);
+                Shell::print_dec(i + 1);
+                Shell::write("  " as void*);
+                Shell::writeln(addr as void*);
+            }
+            i = i + 1;
+        }
+    }
+
+}

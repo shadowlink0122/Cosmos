@@ -1,0 +1,92 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::procfs::test_procfs - ProcFS テスト
+//
+// /proc 仮想ファイルの読み取りを検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../fs/procfs;
+import ../test_io;
+import ../ktest;
+import ../../apps/terminal/mem;
+
+/// ProcFS テストスイート
+export struct TestProcfs {}
+
+impl TestProcfs {
+    /// /proc/version テスト
+    static void test_version() {
+        ulong buf = 0x9D400;
+        memzero(buf as void*, 256);
+        ulong len = ProcFs::version(buf);
+        KTest::assert_nonzero(len, "procfs version len>0" as void*);
+        KTest::assert_eq(Mem::read_byte(buf), 67, "procfs version starts with 'C'" as void*);
+    }
+
+    /// /proc/meminfo テスト
+    static void test_meminfo() {
+        ulong buf = 0x9D400;
+        memzero(buf as void*, 256);
+        ulong len = ProcFs::meminfo(buf);
+        KTest::assert_nonzero(len, "procfs meminfo len>0" as void*);
+        KTest::assert_eq(Mem::read_byte(buf), 77, "procfs meminfo starts with 'M'" as void*);
+    }
+
+    /// /proc/uptime テスト
+    static void test_uptime() {
+        ulong buf = 0x9D400;
+        memzero(buf as void*, 256);
+        ulong len = ProcFs::uptime(buf);
+        KTest::assert_nonzero(len, "procfs uptime len>0" as void*);
+    }
+
+    /// /proc/cpuinfo テスト
+    static void test_cpuinfo() {
+        ulong buf = 0x9D400;
+        memzero(buf as void*, 512);
+        ulong len = ProcFs::cpuinfo(buf);
+        KTest::assert_nonzero(len, "procfs cpuinfo len>0" as void*);
+        KTest::assert_eq(Mem::read_byte(buf), 112, "procfs cpuinfo starts with 'p'" as void*);
+    }
+
+    /// /proc/stat テスト
+    static void test_stat() {
+        ulong buf = 0x9D400;
+        memzero(buf as void*, 256);
+        ulong len = ProcFs::stat(buf);
+        KTest::assert_nonzero(len, "procfs stat len>0" as void*);
+        KTest::assert_eq(Mem::read_byte(buf), 99, "procfs stat starts with 'c'" as void*);
+    }
+
+    /// /proc/self/status テスト
+    static void test_self_status() {
+        ulong buf = 0x9D400;
+        memzero(buf as void*, 256);
+        ulong len = ProcFs::self_status(buf);
+        KTest::assert_nonzero(len, "procfs self/status len>0" as void*);
+        KTest::assert_eq(Mem::read_byte(buf), 78, "procfs self/status starts with 'N'" as void*);
+    }
+
+    /// read_fileディスパッチテスト
+    static void test_read_file() {
+        ulong buf = 0x9D400;
+        ulong len = ProcFs::read_file("nonexistent" as void*, buf);
+        KTest::assert_eq(len, 0, "procfs read_file unknown=0" as void*);
+        len = ProcFs::read_file("version" as void*, buf);
+        KTest::assert_nonzero(len, "procfs read_file version>0" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestProcfs::test_version();
+        TestProcfs::test_meminfo();
+        TestProcfs::test_uptime();
+        TestProcfs::test_cpuinfo();
+        TestProcfs::test_stat();
+        TestProcfs::test_self_status();
+        TestProcfs::test_read_file();
+    }
+}

@@ -1,0 +1,92 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::kstring::test_kstring - KString テスト
+//
+// strlen, strcmp, streq, memcpy, memzero のユニットテスト。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../test_io;
+import ../ktest;
+import ../../apps/terminal/mem;
+
+/// KString テストスイート
+export struct TestKstring {}
+
+impl TestKstring {
+    /// strlenテスト
+    static void test_strlen() {
+        Size len = KString::strlen("Hello" as void*);
+        KTest::assert_eq(len, 5, "strlen(\"Hello\")=5" as void*);
+        len = KString::strlen("" as void*);
+        KTest::assert_eq(len, 0, "strlen(\"\")=0" as void*);
+    }
+
+    /// strcmp/streqテスト
+    static void test_compare() {
+        long cmp = KString::strcmp("abc" as void*, "abc" as void*);
+        KTest::assert_eq(cmp as ulong, 0, "strcmp equal=0" as void*);
+        cmp = KString::strcmp("abc" as void*, "abd" as void*);
+        ulong cmp_neg = 0;
+        if (cmp < 0) { cmp_neg = 1; }
+        KTest::assert_eq(cmp_neg, 1, "strcmp \"abc\"<\"abd\"" as void*);
+
+        ulong eq = KString::streq("test" as void*, "test" as void*);
+        KTest::assert_eq(eq, 1, "streq equal=1" as void*);
+        eq = KString::streq("test" as void*, "rest" as void*);
+        KTest::assert_eq(eq, 0, "streq differ=0" as void*);
+    }
+
+    /// memcpyテスト
+    static void test_memcpy() {
+        ulong src_buf = 0x9F200;
+        ulong dst_buf = 0x9F300;
+        ulong[3] test_data;
+        test_data[0] = 65;
+        test_data[1] = 66;
+        test_data[2] = 67;
+
+        ulong i = 0;
+        while (i < 3) {
+            Mem::write_byte(src_buf + i, test_data[i]);
+            i = i + 1;
+        }
+        memzero(dst_buf as void*, 8);
+        memcpy(dst_buf as void*, src_buf as void*, 3);
+
+        i = 0;
+        while (i < 3) {
+            KTest::assert_eq(Mem::read_byte(dst_buf + i), test_data[i], "memcpy verify" as void*);
+            i = i + 1;
+        }
+    }
+
+    /// memzeroテスト
+    static void test_memzero() {
+        ulong dst_buf = 0x9F300;
+        ulong[2] fill;
+        fill[0] = 0xFF;
+        fill[1] = 0xFF;
+        ulong i = 0;
+        while (i < 2) {
+            Mem::write_byte(dst_buf + i, fill[i]);
+            i = i + 1;
+        }
+        memzero(dst_buf as void*, 2);
+        i = 0;
+        while (i < 2) {
+            KTest::assert_eq(Mem::read_byte(dst_buf + i), 0, "memzero verify" as void*);
+            i = i + 1;
+        }
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestKstring::test_strlen();
+        TestKstring::test_compare();
+        TestKstring::test_memcpy();
+        TestKstring::test_memzero();
+    }
+}

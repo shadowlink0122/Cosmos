@@ -1,0 +1,250 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::types - Linux互換型定義
+//
+// Cm の typedef でカーネル全体の型を一元定義する。
+// Cm の組み込み型:
+//   utiny  (8bit符号なし)  / tiny  (8bit符号付き)
+//   ushort (16bit符号なし) / short (16bit符号付き)
+//   uint   (32bit符号なし) / int   (32bit符号付き)
+//   ulong  (64bit符号なし) / long  (64bit符号付き)
+//
+// 参照: linux/include/linux/types.h
+
+// ============================================================
+// メモリ・アドレス型
+// ============================================================
+
+/// 物理アドレス型（64ビット）
+export typedef PhysAddr = ulong;
+
+/// 仮想アドレス型（64ビット）
+export typedef VirtAddr = ulong;
+
+/// メモリサイズ型（バイト数、64ビット）
+export typedef Size = ulong;
+
+/// RGB色値型（24ビット色, 0xRRGGBB形式）
+export typedef Rgb = ulong;
+
+/// 符号付きサイズ型（エラー戻り値兼用）
+export typedef SSize = long;
+
+/// ポインタ幅整数型
+export typedef UIntPtr = ulong;
+
+// ============================================================
+// 固定幅整数型（Cmネイティブ型を使用）
+// ============================================================
+
+/// 符号なし8ビット整数
+export typedef U8 = utiny;
+
+/// 符号付き8ビット整数
+export typedef S8 = tiny;
+
+/// 符号なし16ビット整数
+export typedef U16 = ushort;
+
+/// 符号付き16ビット整数
+export typedef S16 = short;
+
+/// 符号なし32ビット整数
+export typedef U32 = uint;
+
+/// 符号付き32ビット整数
+export typedef S32 = int;
+
+/// 符号なし64ビット整数
+export typedef U64 = ulong;
+
+/// 符号付き64ビット整数
+export typedef S64 = long;
+
+// ============================================================
+// I/O関連型
+// ============================================================
+
+/// I/Oポート番号（16ビット: 0x0000〜0xFFFF）
+export typedef IoPort = ushort;
+
+/// ASCII文字コード（8ビット）
+export typedef AsciiChar = utiny;
+
+// ============================================================
+// プロセス関連型
+// ============================================================
+
+/// プロセスID（Linux互換、符号付き32bit相当）
+export typedef Pid = long;
+
+/// ユーザID
+export typedef Uid = ulong;
+
+/// グループID
+export typedef Gid = ulong;
+
+// ============================================================
+// ファイルシステム関連型
+// ============================================================
+
+/// ファイルオフセット
+export typedef Off = long;
+
+/// iノード番号
+export typedef Ino = ulong;
+
+/// デバイス番号
+export typedef Dev = ulong;
+
+/// ファイルモード（パーミッション）
+export typedef Mode = ulong;
+
+/// ファイルディスクリプタ
+export typedef Fd = long;
+
+// ============================================================
+// 割り込み・ハードウェア関連型
+// ============================================================
+
+/// 割り込みベクタ番号（0-255、8ビットで十分だがulong維持）
+export typedef Vector = ulong;
+
+/// IRQ番号
+export typedef Irq = ulong;
+
+/// GDTセレクタ値
+export typedef Selector = ushort;
+
+// ============================================================
+// 定数
+// ============================================================
+
+/// ページサイズ（4KiB）
+export const ulong PAGE_SIZE = 4096;
+
+/// ページシフト
+export const ulong PAGE_SHIFT = 12;
+
+/// ページマスク (アドレスの下位12ビットを除去)
+export const ulong PAGE_MASK = 0xFFFFFFFFFFFFF000;
+
+/// ページオフセットマスク (下位12ビットを抽出)
+export const ulong PAGE_OFFSET_MASK = 0xFFF;
+
+/// NULL
+export const ulong NULL_ADDR = 0;
+
+// ============================================================
+// ビットマスク定数
+// ============================================================
+
+/// 8ビットマスク
+export const ulong MASK_8BIT = 0xFF;
+
+/// 16ビットマスク
+export const ulong MASK_16BIT = 0xFFFF;
+
+/// 32ビットマスク
+export const ulong MASK_32BIT = 0xFFFFFFFF;
+
+/// 4ビットマスク (VGA色等)
+export const ulong MASK_4BIT = 0x0F;
+
+// ============================================================
+// INVALID / センチネル値
+// ============================================================
+
+/// 無効インデックス (32ビット)
+export const ulong INVALID_U32 = 0xFFFFFFFF;
+
+/// 無効インデックス (64ビット)
+export const ulong INVALID_U64 = 0xFFFFFFFFFFFFFFFF;
+
+// ============================================================
+// GDTセグメントセレクタ
+// ============================================================
+
+/// カーネルコードセグメント (GDT entry 1)
+export const ulong KERNEL_CS = 0x08;
+
+/// カーネルデータセグメント (GDT entry 2)
+export const ulong KERNEL_DS = 0x10;
+
+/// ユーザーコードセグメント (GDT entry 3 | RPL3)
+export const ulong USER_CS = 0x1B;
+
+/// ユーザーデータセグメント (GDT entry 4 | RPL3)
+export const ulong USER_DS = 0x23;
+
+/// RFLAGS: 割り込みフラグ (IF)
+export const ulong RFLAGS_IF = 0x200;
+
+// ============================================================
+// VGAハードウェア定数
+// ============================================================
+
+/// VGAカーソルコントロールレジスタポート (CRTC Index)
+export const ulong VGA_CRTC_INDEX = 0x3D4;
+
+/// VGAカーソルデータレジスタポート (CRTC Data)
+export const ulong VGA_CRTC_DATA = 0x3D5;
+
+/// VGAカーソルハイバイトレジスタ
+export const ulong VGA_CURSOR_HIGH = 0x0E;
+
+/// VGAカーソルロウバイトレジスタ
+export const ulong VGA_CURSOR_LOW = 0x0F;
+
+/// VGAデフォルト色属性 (白文字/黒背景)
+export const ulong VGA_DEFAULT_COLOR = 0x07;
+
+/// ASCII数字ベース '0'
+export const ulong ASCII_DIGIT_BASE = 0x30;
+
+// ============================================================
+// ファイルパーミッション定数
+// ============================================================
+
+/// 全パーミッション (rwxrwxrwx = 0o777)
+export const ulong PERM_ALL = 0x1FF;
+
+/// ファイル標準パーミッション (rw-rw-rw- = 0o666)
+export const ulong PERM_FILE_DEFAULT = 0x1B6;
+
+// ============================================================
+// PCI設定空間定数
+// ============================================================
+
+/// PCI CONFIG_ADDRESS有効ビット
+export const ulong PCI_CONFIG_ENABLE = 0x80000000;
+
+/// PCIレジスタオフセットマスク
+export const ulong PCI_REG_MASK = 0xFC;
+
+/// PCI I/Oベースマスク
+export const ulong PCI_IO_BASE_MASK = 0xFFFFFFFC;
+
+// ============================================================
+// メモリアドレス定数
+// ============================================================
+
+/// TSSベースアドレス
+export const PhysAddr TSS_BASE_ADDR = 0x83000;
+
+/// ELFプロセスbrkデフォルト開始
+export const ulong ELF_BRK_DEFAULT = 0x800000;
+
+/// CWDバッファアドレス
+export const PhysAddr CWD_BUF_ADDR = 0x95600;
+
+/// タブ補完用ディレクトリバッファ
+export const PhysAddr TAB_DIR_BUF = 0xA5A000;
+
+/// ICMPエコー識別子
+export const ulong ICMP_ECHO_ID = 0x4321;
+
+/// VBEフレームバッファマップ開始
+export const PhysAddr FB_MAP_BASE = 0xC0000000;
+
+/// 2MiBページサイズ
+export const ulong PAGE_SIZE_2MB = 0x200000;

@@ -1,0 +1,90 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::ethernet - Ethernetフレーム処理
+//
+// IEEE 802.3 Ethernet II フレームの解析と構築。
+// 参照: linux/include/linux/if_ether.h
+
+import ../../include/types;
+import ../../include/net;
+import ../../lib/kstring;
+
+// ============================================================
+// Ethernet ヘッダ (14バイト)
+// ============================================================
+
+/// Ethernetフレームヘッダ
+export struct EthHeader {
+    ulong dst_hi;    // 宛先MAC上位32bit
+    ulong dst_lo;    // 宛先MAC下位16bit
+    ulong src_hi;    // 送信元MAC上位32bit
+    ulong src_lo;    // 送信元MAC下位16bit
+    ulong eth_type;  // プロトコルタイプ (ETH_TYPE_IP等)
+    ulong padding;   // アラインメント
+}
+
+// ============================================================
+// Ethernet 処理
+// ============================================================
+
+export struct Ethernet {}
+
+impl Ethernet {
+    /// フレームヘッダを解析
+    static ulong parse(ulong data, EthHeader* header) {
+        if (data == 0) { return 0; }
+
+        // 宛先MAC (6バイト)
+        ulong b0 = Mem::read_byte(data);
+        ulong b1 = Mem::read_byte(data + 1);
+        ulong b2 = Mem::read_byte(data + 2);
+        ulong b3 = Mem::read_byte(data + 3);
+        ulong b4 = Mem::read_byte(data + 4);
+        ulong b5 = Mem::read_byte(data + 5);
+        header->dst_hi = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        header->dst_lo = (b4 << 8) | b5;
+
+        // 送信元MAC (6バイト)
+        b0 = Mem::read_byte(data + 6);
+        b1 = Mem::read_byte(data + 7);
+        b2 = Mem::read_byte(data + 8);
+        b3 = Mem::read_byte(data + 9);
+        b4 = Mem::read_byte(data + 10);
+        b5 = Mem::read_byte(data + 11);
+        header->src_hi = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        header->src_lo = (b4 << 8) | b5;
+
+        // EtherType (2バイト、ビッグエンディアン)
+        ulong t0 = Mem::read_byte(data + 12);
+        ulong t1 = Mem::read_byte(data + 13);
+        header->eth_type = (t0 << 8) | t1;
+
+        return 14;  // ヘッダサイズ
+    }
+
+    /// フレームヘッダを構築
+    static ulong build(ulong data, EthHeader* header) {
+        if (data == 0) { return 0; }
+
+        // 宛先MAC
+        Mem::write_byte(data,     (header->dst_hi >> 24) & 0xFF);
+        Mem::write_byte(data + 1, (header->dst_hi >> 16) & 0xFF);
+        Mem::write_byte(data + 2, (header->dst_hi >> 8) & 0xFF);
+        Mem::write_byte(data + 3, header->dst_hi & 0xFF);
+        Mem::write_byte(data + 4, (header->dst_lo >> 8) & 0xFF);
+        Mem::write_byte(data + 5, header->dst_lo & 0xFF);
+
+        // 送信元MAC
+        Mem::write_byte(data + 6,  (header->src_hi >> 24) & 0xFF);
+        Mem::write_byte(data + 7,  (header->src_hi >> 16) & 0xFF);
+        Mem::write_byte(data + 8,  (header->src_hi >> 8) & 0xFF);
+        Mem::write_byte(data + 9,  header->src_hi & 0xFF);
+        Mem::write_byte(data + 10, (header->src_lo >> 8) & 0xFF);
+        Mem::write_byte(data + 11, header->src_lo & 0xFF);
+
+        // EtherType
+        Mem::write_byte(data + 12, (header->eth_type >> 8) & 0xFF);
+        Mem::write_byte(data + 13, header->eth_type & 0xFF);
+
+        return 14;
+    }
+}

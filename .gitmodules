@@ -1,0 +1,6 @@
+[submodule "Cm"]
+	path = Cm
+	url = https://github.com/shadowlink0122/Cm.git
+[submodule "linux"]
+	path = linux
+	url = https://github.com/torvalds/linux.git

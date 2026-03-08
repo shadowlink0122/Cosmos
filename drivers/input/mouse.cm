@@ -1,0 +1,422 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::mouse - PS/2マウスドライバ (ホイールモード)
+//
+// IRQ12 (ベクタ44) でマウスイベントを受信。
+// ホイール上下のみ検出し、VGAスクロールバック操作に使用。
+//
+// 参照: OSDev Wiki PS/2 Mouse, IntelliMouse protocol
+
+import ../../apps/terminal/mem;
+import ../../apps/terminal/vga;
+import ../../arch/x86_64/idt;
+
+// ============================================================
+// マウス定数
+// ============================================================
+
+/// マウスパケットバッファ (固定メモリ)
+const PhysAddr MOUSE_PACKET_ADDR = 0x93300;  // 4バイト (ホイールモード)
+const PhysAddr MOUSE_PHASE_ADDR  = 0x93310;  // 現在のパケット位相 (0-3)
+const PhysAddr MOUSE_SCROLL_ADDR = 0x93318;  // スクロールイベント: +1=上, -1=下, 0=なし
+const PhysAddr MOUSE_DEVID_ADDR  = 0x93320;  // Device ID (0=標準, 3=IM, 4=IMEX)
+const PhysAddr MOUSE_PKTSZ_ADDR  = 0x93328;  // パケットサイズ (3 or 4)
+const PhysAddr MOUSE_DX_ADDR     = 0x93330;  // X移動デルタ蓄積
+const PhysAddr MOUSE_DY_ADDR     = 0x93338;  // Y移動デルタ蓄積
+const PhysAddr MOUSE_BTN_ADDR    = 0x93340;  // ボタン状態 (bit0=左, bit1=右, bit2=中)
+const PhysAddr MOUSE_EVENT_ADDR  = 0x93348;  // イベントフラグ (0=なし, 1=移動あり)
+
+// ============================================================
+// PS/2マウスポートアクセス
+// ============================================================
+
+/// AUXポートにデータを書き込み (コマンド前にステータス待ち)
+void mouse_aux_write(ulong data) {
+    // コントローラのInput Buffer Empty待ち
+    ulong timeout = 10000;
+    while (timeout > 0) {
+        ulong status = 0;
+        __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:status}`);
+        if ((status & 2) == 0) { break; }
+        timeout = timeout - 1;
+    }
+    // AUXポートへの書き込みプレフィクス
+    __asm__(`movb $$0xD4, %al; outb %al, $$0x64`);
+    // データ書き込み
+    timeout = 10000;
+    while (timeout > 0) {
+        ulong status = 0;
+        __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:status}`);
+        if ((status & 2) == 0) { break; }
+        timeout = timeout - 1;
+    }
+    ulong d = data;
+    __asm__(`movq ${r:d}, %rax; outb %al, $$0x60`);
+}
+
+/// AUXポートからACK読み取り (bit 5チェック: AUXデータのみ返す)
+ulong mouse_aux_read() {
+    ulong timeout = 10000;
+    while (timeout > 0) {
+        ulong status = 0;
+        __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:status}`);
+        if ((status & 1) != 0) {
+            ulong data = 0;
+            __asm__(`inb $$0x60, %al; movzbq %al, %rax; movq %rax, ${=r:data}`);
+            // bit 5 = AUXデータのみ返す (キーボードデータは破棄)
+            if ((status & 0x20) != 0) {
+                return data;
+            }
+            // キーボードデータは破棄して待ち続ける
+        }
+        timeout = timeout - 1;
+    }
+    return 0xFF;
+}
+
+/// コントローラデータ読み取り (CCB等、bit 5非依存)
+ulong mouse_read_data() {
+    ulong timeout = 10000;
+    while (timeout > 0) {
+        ulong status = 0;
+        __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:status}`);
+        if ((status & 1) != 0) {
+            ulong data = 0;
+            __asm__(`inb $$0x60, %al; movzbq %al, %rax; movq %rax, ${=r:data}`);
+            return data;
+        }
+        timeout = timeout - 1;
+    }
+    return 0xFF;
+}
+
+/// Input Buffer Empty待ち
+void mouse_wait_input() {
+    ulong timeout = 10000;
+    while (timeout > 0) {
+        ulong status = 0;
+        __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:status}`);
+        if ((status & 2) == 0) { return; }
+        timeout = timeout - 1;
+    }
+}
+
+// ============================================================
+// Mouse — PS/2マウスドライバ
+// ============================================================
+
+export struct Mouse {}
+
+impl Mouse {
+    /// マウス初期化 (ホイールモード有効化)
+    static void setup() {
+        // パケット状態初期化
+        ulong* phase = MOUSE_PHASE_ADDR as ulong*;
+        *phase = 0;
+        ulong* scroll = MOUSE_SCROLL_ADDR as ulong*;
+        *scroll = 0;
+        ulong* dx = MOUSE_DX_ADDR as ulong*;
+        *dx = 0;
+        ulong* dy = MOUSE_DY_ADDR as ulong*;
+        *dy = 0;
+        ulong* btn = MOUSE_BTN_ADDR as ulong*;
+        *btn = 0;
+        ulong* evt = MOUSE_EVENT_ADDR as ulong*;
+        *evt = 0;
+
+        // === 割り込み無効化 ===
+        // PS/2コントローラの初期化中にキーボードIRQハンドラが
+        // ポート0x60のデータを横取りするレースコンディションを防止
+        __asm__(`cli`);
+
+        // Output Bufferフラッシュ（残留データ排除）
+        ulong flush_i = 0;
+        while (flush_i < 16) {
+            ulong status = 0;
+            __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:status}`);
+            if ((status & 1) == 0) { break; }
+            __asm__(`inb $$0x60, %al`);  // 破棄
+            flush_i = flush_i + 1;
+        }
+
+        // PS/2コントローラのAUXデバイスを有効化
+        // コマンド: 0xA8 = AUXデバイス有効化
+        mouse_wait_input();
+        __asm__(`movb $$0xA8, %al; outb %al, $$0x64`);
+
+        // CCBを読み取り、IRQ1とIRQ12の両方を有効化
+        // コマンド 0x20 = CCB読み取り
+        mouse_wait_input();
+        __asm__(`movb $$0x20, %al; outb %al, $$0x64`);
+        ulong ccb = mouse_read_data();  // CCBはコントローラデータ
+        ccb = ccb | 3;                  // bit 0 = IRQ1有効, bit 1 = IRQ12有効
+        ccb = ccb & 0xCF;               // bit 4,5 = 両ポートクロック有効 (キーボード+AUX)
+        // コマンド 0x60 = CCB書き込み
+        mouse_wait_input();
+        __asm__(`movb $$0x60, %al; outb %al, $$0x64`);
+        mouse_wait_input();
+        ulong ccb_val = ccb;
+        __asm__(`movq ${r:ccb_val}, %rax; outb %al, $$0x60`);
+
+        // IntelliMouseプロトコル有効化 (ホイールモード)
+        // マジックシーケンス: サンプルレートを200→100→80に設定
+        mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
+        mouse_aux_write(200);  mouse_aux_read();  // 200
+        mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
+        mouse_aux_write(100);  mouse_aux_read();  // 100
+        mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
+        mouse_aux_write(80);   mouse_aux_read();  // 80
+
+        // Get Device ID → 3(IntelliMouse)確認
+        mouse_aux_write(0xF2); mouse_aux_read();  // Get Device ID ACK
+        ulong dev_id = mouse_aux_read();          // Device ID (0=標準, 3=IM, 4=IMEX)
+
+        // Device IDとパケットサイズを保存
+        ulong* devid_ptr = MOUSE_DEVID_ADDR as ulong*;
+        *devid_ptr = dev_id;
+        ulong* pktsz_ptr = MOUSE_PKTSZ_ADDR as ulong*;
+        if (dev_id == 3 || dev_id == 4) {
+            *pktsz_ptr = 4;  // IntelliMouse: 4バイトパケット
+        } else {
+            *pktsz_ptr = 3;  // 標準: 3バイトパケット
+        }
+
+        // 注意: Set Defaults (0xF6) を呼ばない
+        // Set Defaultsを呼ぶとDevice IDが0にリセットされ、
+        // IntelliMouseプロトコルが無効化されてしまう
+
+        // サンプルレートを100Hz (10ms間隔) に設定
+        // IntelliMouseネゴシエーション後に設定することでDevice IDは維持される
+        mouse_aux_write(0xF3); mouse_aux_read();  // Set Sample Rate
+        mouse_aux_write(100);  mouse_aux_read();  // 100Hz = 10ms
+
+        // データ報告有効化
+        mouse_aux_write(0xF4); mouse_aux_read();  // Enable Data Reporting
+
+        // PIC: IRQ12を有効化 (スレーブPICのIRQ4 = マスクビット4)
+        ulong mask = 0;
+        __asm__(`inb $$0xA1, %al; movzbq %al, %rax; movq %rax, ${=r:mask}`);
+        mask = mask & 0xEF;  // ビット4をクリア
+        ulong m = mask;
+        __asm__(`movq ${r:m}, %rax; outb %al, $$0xA1`);
+
+        // マスターPIC: IRQ2(カスケード)を有効化 (スレーブPIC割り込みに必要)
+        ulong master_mask = 0;
+        __asm__(`inb $$0x21, %al; movzbq %al, %rax; movq %rax, ${=r:master_mask}`);
+        master_mask = master_mask & 0xFB;  // ビット2をクリア (IRQ2=カスケード)
+        ulong mm = master_mask;
+        __asm__(`movq ${r:mm}, %rax; outb %al, $$0x21`);
+
+        // IDT: ベクタ44にIRQ12ハンドラ登録
+        Idt::set_gate(44, mouse_irq_handler as ulong, GATE_INT);
+
+        // Output Bufferフラッシュ（初期化中の残留データ排除）
+        ulong flush_j = 0;
+        while (flush_j < 16) {
+            ulong status = 0;
+            __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:status}`);
+            if ((status & 1) == 0) { break; }
+            __asm__(`inb $$0x60, %al`);  // 破棄
+            flush_j = flush_j + 1;
+        }
+
+        // === 割り込み再有効化 ===
+        __asm__(`sti`);
+    }
+
+    /// スクロールイベントを取得 (閾値ベース)
+    static long get_scroll() {
+        ulong* scroll = MOUSE_SCROLL_ADDR as ulong*;
+        long val = *scroll as long;
+        if (val >= 2 || val <= -2) {
+            *scroll = 0;
+            return val;
+        }
+        return 0;
+    }
+
+    /// XY移動デルタ取得 & リセット
+    static long get_dx() {
+        ulong* dx = MOUSE_DX_ADDR as ulong*;
+        long val = *dx as long;
+        *dx = 0;
+        return val;
+    }
+
+    static long get_dy() {
+        ulong* dy = MOUSE_DY_ADDR as ulong*;
+        long val = *dy as long;
+        *dy = 0;
+        return val;
+    }
+
+    /// ボタン状態取得
+    static ulong get_buttons() {
+        ulong* btn = MOUSE_BTN_ADDR as ulong*;
+        return *btn;
+    }
+
+    /// イベント有無チェック & リセット
+    static ulong has_event() {
+        ulong* evt = MOUSE_EVENT_ADDR as ulong*;
+        ulong val = *evt;
+        *evt = 0;
+        return val;
+    }
+}
+
+// ============================================================
+// IRQ12 ハンドラ (マウス)
+// ============================================================
+
+/// PS/2マウス IRQ12 ハンドラ
+/// パケットサイズを動的判定 (MOUSE_PKTSZ_ADDR: 3 or 4)
+/// 4バイトモード: 4バイト目のホイールデータでスクロール
+/// 3バイトモード: QEMUトラックパッドのボタン4/5でスクロール
+void mouse_irq_handler() {
+    __asm__(`
+        pushq %rax;
+        pushq %rbx;
+        pushq %rcx;
+        pushq %rdx;
+        pushq %rdi;
+        pushq %rsi;
+
+        // データ読み取り
+        xorq %rax, %rax;
+        inb $$0x60, %al;
+        movq %rax, %rbx;  // %rbx = データバイト
+
+        // 位相取得
+        movq ${MOUSE_PHASE_ADDR}, %rdi;
+        movq (%rdi), %rcx;  // %rcx = phase
+
+        // === パケット同期バリデーション ===
+        // phase=0 (パケット先頭) の場合、bit 3が1であることを確認
+        // PS/2仕様: 第1バイトのbit 3は常に1
+        // 0の場合はパケット同期がずれている → 破棄してEOIのみ送信
+        testq %rcx, %rcx;
+        jnz 30f;            // phase != 0ならスキップ
+        testb $$0x08, %bl;  // bit 3チェック
+        jnz 30f;            // bit 3 = 1なら正常
+        // 同期エラー: phaseを0に保ったままEOIへジャンプ
+        xorq %rcx, %rcx;
+        jmp 1f;
+        30:;
+
+        // パケットバッファに格納
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
+        addq %rcx, %rdi;
+        movb %bl, (%rdi);
+
+        // 位相更新
+        incq %rcx;
+
+        // パケットサイズ取得 (MOUSE_PKTSZ_ADDR)
+        movq ${MOUSE_PKTSZ_ADDR}, %rdi;
+        movq (%rdi), %rdx;  // %rdx = パケットサイズ (3 or 4)
+
+        // パケットサイズが0の場合は4をデフォルトとする
+        testq %rdx, %rdx;
+        jnz 10f;
+        movq $$4, %rdx;
+        10:;
+
+        cmpq %rdx, %rcx;  // phase == パケットサイズ?
+        jl 1f;
+
+        // パケット完了 — XY移動を取得してカーソル移動に使用
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
+
+        // byte 0 = ボタン状態 → MOUSE_BTN_ADDR
+        movzbq (%rdi), %rax;
+        andq $$0x07, %rax;  // bit0-2 = 左/右/中ボタン
+        movq ${MOUSE_BTN_ADDR}, %rdi;
+        movq %rax, (%rdi);
+
+        // byte 1 = X移動 (符号付き) → MOUSE_DX_ADDR
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
+        movzbq 1(%rdi), %rax;
+        movzbq (%rdi), %rbx;
+        testb $$0x10, %bl;  // byte0 bit4 = X sign
+        jz 40f;
+        orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
+        40:;
+        movq ${MOUSE_DX_ADDR}, %rdi;
+        addq %rax, (%rdi);
+
+        // byte 2 = Y移動 (符号付き) → MOUSE_DY_ADDR
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
+        movzbq 2(%rdi), %rax;
+        movzbq (%rdi), %rbx;
+        testb $$0x20, %bl;  // byte0 bit5 = Y sign
+        jz 41f;
+        orq $$0xFFFFFFFFFFFFFF00, %rax;  // 符号拡張
+        41:;
+        movq ${MOUSE_DY_ADDR}, %rdi;
+        addq %rax, (%rdi);
+
+        // イベントフラグ設定
+        movq ${MOUSE_EVENT_ADDR}, %rdi;
+        movq $$1, (%rdi);
+
+        cmpq $$4, %rdx;
+        jne 20f;
+
+        // === 4バイトモード (IntelliMouse): ホイールバイト解析 ===
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
+        movzbq 3(%rdi), %rax;  // 4バイト目 = ホイール (符号付き)
+        testb %al, %al;
+        jz 2f;
+        movsbq %al, %rax;
+        movq ${MOUSE_SCROLL_ADDR}, %rdi;
+        addq %rax, (%rdi);  // 加算型: 複数パケットを蓄積
+        jmp 2f;
+
+        20:;
+        // === 3バイトモード: ボタンバイトからスクロール検出 ===
+        // QEMUトラックパッド: ボタン4(上スクロール)=0x09, ボタン5(下スクロール)=0x11
+        // パケット1バイト目のビット:
+        //   bit 0 = 左ボタン, bit 1 = 右ボタン, bit 2 = 中ボタン
+        //   bit 3 = always 1 (有効マーカー)
+        //   bit 4 = ボタン4 (スクロール上, QEMUトラックパッド)
+        //   bit 5 = ボタン5 (スクロール下, QEMUトラックパッド)
+        // 注: QEMUはトラックパッドスクロールをボタンプレス→リリースとして
+        //     連続パケットで送信するため、プレスのみ検出すればよい
+        movq ${MOUSE_PACKET_ADDR}, %rdi;
+        movzbq (%rdi), %rax;  // 1バイト目 = ボタン状態
+
+        // ボタン4チェック (bit 4 → スクロール上)
+        testb $$0x10, %al;
+        jz 21f;
+        movq ${MOUSE_SCROLL_ADDR}, %rdi;
+        addq $$1, (%rdi);  // 加算型: スクロール上を蓄積
+        jmp 2f;
+        21:;
+
+        // ボタン5チェック (bit 5 → スクロール下)
+        testb $$0x20, %al;
+        jz 2f;
+        movq ${MOUSE_SCROLL_ADDR}, %rdi;
+        subq $$1, (%rdi);  // 加算型: スクロール下を蓄積
+
+        2:;
+        xorq %rcx, %rcx;  // 位相リセット
+
+        1:;
+        movq ${MOUSE_PHASE_ADDR}, %rdi;
+        movq %rcx, (%rdi);
+
+        // EOI (スレーブPIC + マスターPIC)
+        movb $$0x20, %al;
+        outb %al, $$0xA0;
+        outb %al, $$0x20;
+
+        popq %rsi;
+        popq %rdi;
+        popq %rdx;
+        popq %rcx;
+        popq %rbx;
+        popq %rax;
+        iretq;
+    `);
+}

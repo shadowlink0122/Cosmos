@@ -1,0 +1,520 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::video::framebuffer - フレームバッファドライバ
+//
+// VBEリニアフレームバッファへのピクセル・矩形・描画プリミティブ。
+// ダブルバッファリング対応。
+
+import ../../include/types;
+import ../../include/config;
+import ../../boot/multiboot2;
+import ../../lib/kstring;
+
+// ============================================================
+// フレームバッファ状態（固定メモリアドレスに格納）
+// ============================================================
+
+/// フレームバッファ情報格納アドレス
+const PhysAddr FB_INFO_ADDR = 0xD00000;  // 13MB地点
+// レイアウト:
+//   0x00: fb_addr (8バイト)
+//   0x08: width   (8バイト)
+//   0x10: height  (8バイト)
+//   0x18: pitch   (8バイト)
+//   0x20: bpp     (8バイト)
+//   0x28: backbuf (8バイト) — バックバッファアドレス
+
+/// バックバッファアドレス (14MB地点, 1024*768*4 = 3MB)
+const PhysAddr FB_BACKBUF_ADDR = 0xE00000;
+
+/// Fb — フレームバッファドライバ
+export struct Fb {}
+
+impl Fb {
+    // ============================================================
+    // BGA (Bochs VGA Adapter) I/O ポート定数
+    // ============================================================
+
+    /// BGA I/O ポート
+    // VBE_DISPI_IOPORT_INDEX = 0x01CE
+    // VBE_DISPI_IOPORT_DATA  = 0x01CF
+
+    /// BGA レジスタインデックス
+    // INDEX_XRES   = 0x01
+    // INDEX_YRES   = 0x02
+    // INDEX_BPP    = 0x03
+    // INDEX_ENABLE = 0x04
+
+    /// BGA 有効化フラグ
+    // VBE_DISPI_ENABLED     = 0x01
+    // VBE_DISPI_LFB_ENABLED = 0x40
+
+    /// BGAレジスタ書き込みヘルパー
+    static void bga_write(ulong index, ulong value) {
+        ulong idx_port = 0x01CE;
+        ulong dat_port = 0x01CF;
+        __asm__(`
+            movq ${r:index}, %rax;
+            movq ${r:idx_port}, %rdx;
+            outw %ax, %dx;
+            movq ${r:value}, %rax;
+            movq ${r:dat_port}, %rdx;
+            outw %ax, %dx
+        `);
+    }
+
+    /// BGAレジスタ読み取りヘルパー
+    static ulong bga_read(ulong index) {
+        ulong idx_port = 0x01CE;
+        ulong dat_port = 0x01CF;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:index}, %rax;
+            movq ${r:idx_port}, %rdx;
+            outw %ax, %dx;
+            movq ${r:dat_port}, %rdx;
+            xorq %rax, %rax;
+            inw %dx, %ax;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// PCI コンフィグ空間読み取り (32ビット)
+    static ulong pci_read32(ulong bus, ulong dev, ulong func, ulong offset) {
+        // PCI config address: 0x80000000 | (bus<<16) | (dev<<11) | (func<<8) | (offset & 0xFC)
+        ulong addr = PCI_CONFIG_ENABLE | (bus << 16) | (dev << 11) | (func << 8) | (offset & PCI_REG_MASK);
+        ulong pci_addr_port = 0x0CF8;
+        ulong pci_data_port = 0x0CFC;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:addr}, %rax;
+            movq ${r:pci_addr_port}, %rdx;
+            outl %eax, %dx;
+            movq ${r:pci_data_port}, %rdx;
+            xorq %rax, %rax;
+            inl %dx, %eax;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// フレームバッファ初期化 — BGA I/O ポート直接操作
+    static void init(BootInfo* info) {
+        ulong req_width = 1024;
+        ulong req_height = 768;
+        ulong req_bpp = 32;
+
+        // 1. BGA を無効化
+        Fb::bga_write(4, 0);  // INDEX_ENABLE = 0
+
+        // 2. 解像度・BPP設定
+        Fb::bga_write(1, req_width);   // INDEX_XRES
+        Fb::bga_write(2, req_height);  // INDEX_YRES
+        Fb::bga_write(3, req_bpp);     // INDEX_BPP
+
+        // 3. BGA を有効化 (LFB モード)
+        Fb::bga_write(4, 0x41);  // ENABLED | LFB_ENABLED
+
+        // 4. フレームバッファアドレス取得
+        //   QEMU -vga std: PCI bus=0, dev=2, func=0, BAR0=offset 0x10
+        ulong fb_phys = Fb::pci_read32(0, 2, 0, 0x10);
+        fb_phys = fb_phys & 0xFFFFFFF0;  // 下位4ビットはフラグ
+
+        // 5. フレームバッファ領域のページマッピングを動的追加
+        //    fb_phys (0xFD000000) は 3-4GiB 範囲にある
+        //    PDPT[3] → PD3 のマッピングを64ビットモードで直接書き込み
+        Fb::map_framebuffer(fb_phys);
+
+        // フレームバッファ情報を格納
+        ulong pitch = req_width * (req_bpp / 8);
+
+        ulong* fb_addr_ptr  = FB_INFO_ADDR as ulong*;
+        ulong* width_ptr    = (FB_INFO_ADDR + 8) as ulong*;
+        ulong* height_ptr   = (FB_INFO_ADDR + 16) as ulong*;
+        ulong* pitch_ptr    = (FB_INFO_ADDR + 24) as ulong*;
+        ulong* bpp_ptr      = (FB_INFO_ADDR + 32) as ulong*;
+        ulong* backbuf_ptr  = (FB_INFO_ADDR + 40) as ulong*;
+
+        *fb_addr_ptr = fb_phys;
+        *width_ptr   = req_width;
+        *height_ptr  = req_height;
+        *pitch_ptr   = pitch;
+        *bpp_ptr     = req_bpp;
+        *backbuf_ptr = FB_BACKBUF_ADDR;
+    }
+
+    /// フレームバッファ領域のページマッピングを動的に追加
+    /// 3-4GiB 範囲（0xC0000000-0xFFFFFFFF）を 2MiB ページでマッピング
+    static void map_framebuffer(ulong fb_phys) {
+        // PD3 用のページディレクトリを安全なアドレスに作成
+        // 0xD08000 (13MB + 32KB) — カーネルデータと衝突しない領域
+        ulong pd3_addr = 0xD08000;
+
+        // PD3 をゼロ初期化 (512エントリ × 8バイト = 4096バイト)
+        memzero(pd3_addr as void*, 4096);
+
+        // PD3 の各エントリに 2MiB ページマッピングを設定
+        // 3GiB (0xC0000000) から 2MiB ずつ
+        ulong i = 0;
+        while (i < 512) {
+            ulong phys = FB_MAP_BASE + i * PAGE_SIZE_2MB;
+            // PDE: phys | PS(2MiB) | Write | Present = phys | 0x83
+            ulong entry = phys | 0x83;
+            ulong* pde = (pd3_addr + i * 8) as ulong*;
+            *pde = entry;
+            i = i + 1;
+        }
+
+        // PDPT[3] にPD3のアドレスを書き込み
+        // PDPT は 0x2000 にある (header.S で設定)
+        // PDPT[3] = offset 3*8 = 0x2018
+        ulong pdpt3_addr = 0x2018;
+        ulong* pdpt3 = pdpt3_addr as ulong*;
+        *pdpt3 = pd3_addr | 0x03;  // Present + Write
+
+        // TLB フラッシュ (CR3 再ロード)
+        __asm__(`
+            movq %cr3, %rax;
+            movq %rax, %cr3
+        `);
+    }
+
+    /// フレームバッファが有効か
+    static ulong is_available() {
+        ulong* fb_addr_ptr = FB_INFO_ADDR as ulong*;
+        if (*fb_addr_ptr != 0) { return 1; }
+        return 0;
+    }
+
+    /// 画面幅
+    static ulong width() {
+        ulong* ptr = (FB_INFO_ADDR + 8) as ulong*;
+        return *ptr;
+    }
+
+    /// 画面高さ
+    static ulong height() {
+        ulong* ptr = (FB_INFO_ADDR + 16) as ulong*;
+        return *ptr;
+    }
+
+    /// pitch (1行のバイト数)
+    static ulong pitch() {
+        ulong* ptr = (FB_INFO_ADDR + 24) as ulong*;
+        return *ptr;
+    }
+
+    /// BPP
+    static ulong bpp() {
+        ulong* ptr = (FB_INFO_ADDR + 32) as ulong*;
+        return *ptr;
+    }
+
+    /// フレームバッファアドレス
+    static ulong addr() {
+        ulong* ptr = FB_INFO_ADDR as ulong*;
+        return *ptr;
+    }
+
+    /// バックバッファアドレス
+    static ulong backbuf() {
+        ulong* ptr = (FB_INFO_ADDR + 40) as ulong*;
+        return *ptr;
+    }
+
+    // ============================================================
+    // 描画プリミティブ
+    // ============================================================
+
+    /// ピクセル書き込み (バックバッファ)
+    /// color: 0xAARRGGBB (32bpp ARGB)
+    static void put_pixel(ulong x, ulong y, ulong color) {
+        ulong w = Fb::width();
+        ulong h = Fb::height();
+        if (x >= w || y >= h) { return; }
+        ulong offset = y * Fb::pitch() + x * 4;
+        ulong* pixel = (Fb::backbuf() + offset) as ulong*;
+        // 32ビット書き込み
+        ulong addr = Fb::backbuf() + offset;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:color}, %rax;
+            movl %eax, (%rdi)
+        `);
+    }
+
+    /// ピクセル直接書き込み (VRAM)
+    static void put_pixel_direct(ulong x, ulong y, ulong color) {
+        ulong w = Fb::width();
+        ulong h = Fb::height();
+        if (x >= w || y >= h) { return; }
+        ulong addr = Fb::addr() + y * Fb::pitch() + x * 4;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:color}, %rax;
+            movl %eax, (%rdi)
+        `);
+    }
+
+    /// 矩形塗りつぶし (バックバッファ)
+    static void fill_rect(ulong x, ulong y, ulong w, ulong h, ulong color) {
+        ulong scr_w = Fb::width();
+        ulong scr_h = Fb::height();
+        ulong pitch = Fb::pitch();
+        ulong buf = Fb::backbuf();
+
+        ulong ey = y + h;
+        if (ey > scr_h) { ey = scr_h; }
+        ulong ew = x + w;
+        if (ew > scr_w) { ew = scr_w; }
+
+        ulong cy = y;
+        while (cy < ey) {
+            ulong row_base = buf + cy * pitch;
+            ulong cx = x;
+            while (cx < ew) {
+                // volatile書き込み: 最適化除去防止
+                ulong dest = row_base + cx * 4;
+                Fb::write_pixel32(dest, color);
+                cx = cx + 1;
+            }
+            cy = cy + 1;
+        }
+    }
+
+    /// 32ビットピクセル書き込み (volatile — 最適化除去防止)
+    static void write_pixel32(ulong addr, ulong val) {
+        __asm__(`
+            movq ${r:addr}, %r8;
+            movq ${r:val}, %r9;
+            movl %r9d, (%r8)
+        `);
+    }
+
+    /// 水平線
+    static void hline(ulong x, ulong y, ulong w, ulong color) {
+        Fb::fill_rect(x, y, w, 1, color);
+    }
+
+    /// 垂直線
+    static void vline(ulong x, ulong y, ulong h, ulong color) {
+        Fb::fill_rect(x, y, 1, h, color);
+    }
+
+    /// 矩形枠 (塗りつぶしなし)
+    static void draw_rect(ulong x, ulong y, ulong w, ulong h, ulong color) {
+        Fb::hline(x, y, w, color);          // 上辺
+        Fb::hline(x, y + h - 1, w, color);  // 下辺
+        Fb::vline(x, y, h, color);          // 左辺
+        Fb::vline(x + w - 1, y, h, color);  // 右辺
+    }
+
+    /// バックバッファ → VRAM フリップ
+    static void flip() {
+        ulong src = Fb::backbuf();
+        ulong dst = Fb::addr();
+        ulong size = Fb::height() * Fb::pitch();
+
+        // 8バイト単位の高速コピー
+        ulong count = size / 8;
+        __asm__(`
+            movq ${r:src}, %rsi;
+            movq ${r:dst}, %rdi;
+            movq ${r:count}, %rcx;
+            rep movsq
+        `);
+    }
+
+    /// バックバッファ → VRAM 部分矩形コピー (ダーティレクト)
+    /// カーソル移動時の旧位置復元に使用
+    static void blit_rect(ulong x, ulong y, ulong w, ulong h) {
+        ulong scr_w = Fb::width();
+        ulong scr_h = Fb::height();
+        ulong pitch = Fb::pitch();
+        ulong src_base = Fb::backbuf();
+        ulong dst_base = Fb::addr();
+
+        ulong ey = y + h;
+        if (ey > scr_h) { ey = scr_h; }
+        ulong ew = x + w;
+        if (ew > scr_w) { ew = scr_w; }
+        ulong actual_w = ew - x;
+
+        ulong cy = y;
+        while (cy < ey) {
+            ulong row_off = cy * pitch + x * 4;
+            ulong src = src_base + row_off;
+            ulong dst = dst_base + row_off;
+            // 4バイト単位でコピー
+            ulong px = 0;
+            while (px < actual_w) {
+                ulong s = src + px * 4;
+                ulong d = dst + px * 4;
+                __asm__(`
+                    movq ${r:s}, %rsi;
+                    movl (%rsi), %eax;
+                    movq ${r:d}, %rdi;
+                    movl %eax, (%rdi)
+                `);
+                px = px + 1;
+            }
+            cy = cy + 1;
+        }
+    }
+
+    /// VRAM に直接矩形塗りつぶし
+    static void vram_fill_rect(ulong x, ulong y, ulong w, ulong h, ulong color) {
+        ulong scr_w = Fb::width();
+        ulong scr_h = Fb::height();
+        ulong pitch = Fb::pitch();
+        ulong vram = Fb::addr();
+
+        ulong ey = y + h;
+        if (ey > scr_h) { ey = scr_h; }
+        ulong ew = x + w;
+        if (ew > scr_w) { ew = scr_w; }
+
+        ulong cy = y;
+        while (cy < ey) {
+            ulong row_addr = vram + cy * pitch;
+            ulong cx = x;
+            while (cx < ew) {
+                ulong addr = row_addr + cx * 4;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    movq ${r:color}, %rax;
+                    movl %eax, (%rdi)
+                `);
+                cx = cx + 1;
+            }
+            cy = cy + 1;
+        }
+    }
+
+    /// 画面全体をクリア
+    static void clear(ulong color) {
+        Fb::fill_rect(0, 0, Fb::width(), Fb::height(), color);
+    }
+
+    /// 2色間のグラデーション色を計算 (t: 0-255)
+    /// unsigned-safe: c2 < c1 でも正しく補間
+    static ulong lerp_color(ulong c1, ulong c2, ulong t) {
+        ulong r1 = (c1 >> 16) & 0xFF;
+        ulong g1 = (c1 >> 8) & 0xFF;
+        ulong b1 = c1 & 0xFF;
+        ulong r2 = (c2 >> 16) & 0xFF;
+        ulong g2 = (c2 >> 8) & 0xFF;
+        ulong b2 = c2 & 0xFF;
+
+        // unsigned-safe 補間: 方向で条件分岐
+        ulong r = r1;
+        if (r2 >= r1) {
+            r = r1 + ((r2 - r1) * t) / 255;
+        } else {
+            r = r1 - ((r1 - r2) * t) / 255;
+        }
+
+        ulong g = g1;
+        if (g2 >= g1) {
+            g = g1 + ((g2 - g1) * t) / 255;
+        } else {
+            g = g1 - ((g1 - g2) * t) / 255;
+        }
+
+        ulong b = b1;
+        if (b2 >= b1) {
+            b = b1 + ((b2 - b1) * t) / 255;
+        } else {
+            b = b1 - ((b1 - b2) * t) / 255;
+        }
+
+        return (r << 16) | (g << 8) | b;
+    }
+
+    /// 垂直グラデーション塗りつぶし
+    static void gradient_v(ulong x, ulong y, ulong w, ulong h, ulong c1, ulong c2) {
+        ulong row = 0;
+        while (row < h) {
+            ulong t = (row * 255) / h;
+            ulong color = Fb::lerp_color(c1, c2, t);
+            Fb::fill_rect(x, y + row, w, 1, color);
+            row = row + 1;
+        }
+    }
+
+    /// 角丸矩形塗りつぶし (radius=角丸半径)
+    static void fill_rounded_rect(ulong x, ulong y, ulong w, ulong h, ulong r, ulong color) {
+        // 中央部分
+        if (h > r * 2) {
+            Fb::fill_rect(x, y + r, w, h - r * 2, color);
+        }
+        // 上部
+        Fb::fill_rect(x + r, y, w - r * 2, r, color);
+        // 下部
+        Fb::fill_rect(x + r, y + h - r, w - r * 2, r, color);
+
+        // 四隅（簡易的な角丸: 円近似）
+        ulong ry = 0;
+        while (ry < r) {
+            // 円の方程式: x^2 + y^2 = r^2 → x = sqrt(r^2 - y^2)
+            // 整数近似
+            ulong dy = r - ry;
+            ulong rx = Fb::isqrt(r * r - dy * dy);
+
+            // 左上
+            Fb::fill_rect(x + r - rx, y + ry, rx, 1, color);
+            // 右上
+            Fb::fill_rect(x + w - r, y + ry, rx, 1, color);
+            // 左下
+            Fb::fill_rect(x + r - rx, y + h - r + (r - ry) - 1, rx, 1, color);
+            // 右下
+            Fb::fill_rect(x + w - r, y + h - r + (r - ry) - 1, rx, 1, color);
+
+            ry = ry + 1;
+        }
+    }
+
+    /// 整数平方根 (Newtonの方法)
+    static ulong isqrt(ulong n) {
+        if (n == 0) { return 0; }
+        ulong x = n;
+        ulong y = (x + 1) / 2;
+        while (y < x) {
+            x = y;
+            y = (x + n / x) / 2;
+        }
+        return x;
+    }
+
+    /// 円の塗りつぶし
+    static void fill_circle(ulong cx, ulong cy, ulong r, ulong color) {
+        ulong y = 0;
+        while (y < r * 2) {
+            ulong dy = r - y;
+            // 符号なし演算のため、r*r >= dy*dy チェック
+            ulong dy2 = dy * dy;
+            if (r * r >= dy2) {
+                ulong dx = Fb::isqrt(r * r - dy2);
+                Fb::fill_rect(cx - dx, cy - r + y, dx * 2, 1, color);
+            }
+            y = y + 1;
+        }
+    }
+
+    /// アルファブレンド (32bpp, alpha: 0-255)
+    static ulong blend(ulong bg, ulong fg, ulong alpha) {
+        ulong rb = (bg >> 16) & 0xFF;
+        ulong gb = (bg >> 8) & 0xFF;
+        ulong bb = bg & 0xFF;
+        ulong rf = (fg >> 16) & 0xFF;
+        ulong gf = (fg >> 8) & 0xFF;
+        ulong bf = fg & 0xFF;
+
+        ulong inv = 255 - alpha;
+        ulong r = (rf * alpha + rb * inv) / 255;
+        ulong g = (gf * alpha + gb * inv) / 255;
+        ulong b = (bf * alpha + bb * inv) / 255;
+
+        return (r << 16) | (g << 8) | b;
+    }
+}

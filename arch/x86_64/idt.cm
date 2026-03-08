@@ -1,0 +1,467 @@
+//! platform: baremetal-x86
+// cosmo-linux::arch::x86_64::idt - IDT設定
+//
+// 256ベクタのIDT。例外ハンドラ（#DE, #DF, #GP, #PF）を登録。
+// Idt struct/impl パターンで実装。
+// 参照: linux/arch/x86/kernel/idt.c
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/phys_addr;
+import ../../include/scheduler;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../sched/process;
+import ../../sched/scheduler;
+import ../../apps/terminal/shell/io;
+
+// ゲートタイプ定数
+export const ulong GATE_INT  = 0x8E;  // Interrupt Gate, DPL=0
+export const ulong GATE_TRAP = 0x8F;  // Trap Gate, DPL=0
+export const ulong GATE_USER = 0xEF;  // Trap Gate, DPL=3
+
+// ============================================================
+// 例外ハンドラ（関数ポインタとして使うためモジュールレベル）
+// ============================================================
+
+export void exc_default() {
+    SerialPort serial(COM1);
+    serial.println("!!! UNHANDLED EXCEPTION !!!" as void*);
+    // TSS RSP0からフレーム情報を表示
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
+    ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
+    ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
+    ulong* err_ptr = (tss_rsp0 - 48) as ulong*;
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(*rip_ptr);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(*cs_ptr);
+    serial.println("" as void*);
+
+    // ユーザーモード例外ならプロセスkill→復帰
+    ulong cs_val = *cs_ptr;
+    if ((cs_val & 3) != 0) {
+        serial.println("[EXC] User process killed (unhandled exception)" as void*);
+        Shell::set_color(12, 0);
+        Shell::writeln("Fatal exception (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            Pid dying_pid = cur->pid;
+            ProcessTable::do_exit(cur, 134);
+            Sched::remove(dying_pid);
+        }
+        ulong idle_rip = pf_idle_loop as ulong;
+        __asm__(`
+            movq ${r:tss_rsp0}, %rsp;
+            pushq $$0x10;
+            pushq ${r:tss_rsp0};
+            pushq $$0x200;
+            pushq $$0x08;
+            pushq ${r:idle_rip};
+            iretq
+        `);
+        return;
+    }
+
+    // カーネルモード — プロセスkillして復帰試行
+    serial.println("[EXC] Kernel exception - attempting recovery" as void*);
+    Shell::set_color(12, 0);
+    Shell::writeln("Fatal exception (core dumped)" as void*);
+    Shell::set_color(7, 0);
+
+    if (Sched::current() as ulong != 0 && Sched::current()->pid > 1) {
+        Process* cur = Sched::current();
+        Pid dying_pid = cur->pid;
+        ProcessTable::do_exit(cur, 134);
+        Sched::remove(dying_pid);
+    }
+
+    // 常にidle loopに復帰（halt停止を防止）
+    ulong idle_rip = pf_idle_loop as ulong;
+    __asm__(`
+        movq ${r:tss_rsp0}, %rsp;
+        pushq $$0x10;
+        pushq ${r:tss_rsp0};
+        pushq $$0x200;
+        pushq $$0x08;
+        pushq ${r:idle_rip};
+        iretq
+    `);
+}
+
+export void exc_divide_error() {
+    SerialPort serial(COM1);
+    serial.println("!!! DIVIDE ERROR (#DE) !!!" as void*);
+
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
+    // #DEはエラーコードなし: RIP at RSP0-40ではなくRSP0-32 (5 qwords: SS,RSP,RFLAGS,CS,RIP)
+    ulong* rip_ptr = (tss_rsp0 - 40) as ulong*;
+    ulong* cs_ptr = (tss_rsp0 - 32) as ulong*;
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(*rip_ptr);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(*cs_ptr);
+    serial.println("" as void*);
+
+    ulong cs_val = *cs_ptr;
+    if ((cs_val & 3) != 0) {
+        serial.println("[#DE] User process killed (SIGFPE)" as void*);
+        Shell::set_color(12, 0);
+        Shell::writeln("Floating point exception (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            Pid dying_pid = cur->pid;
+            ProcessTable::do_exit(cur, 136);
+            Sched::remove(dying_pid);
+        }
+        ulong idle_rip = pf_idle_loop as ulong;
+        __asm__(`
+            movq ${r:tss_rsp0}, %rsp;
+            pushq $$0x10;
+            pushq ${r:tss_rsp0};
+            pushq $$0x200;
+            pushq $$0x08;
+            pushq ${r:idle_rip};
+            iretq
+        `);
+        return;
+    }
+    __asm__(`cli; 1: hlt; jmp 1b`);
+}
+
+export void exc_double_fault() {
+    SerialPort serial(COM1);
+    serial.println("!!! DOUBLE FAULT (#DF) !!!" as void*);
+    // #DFはリカバリ不可能、システム停止
+    __asm__(`cli; 1: hlt; jmp 1b`);
+}
+
+export void exc_general_protection() {
+    SerialPort serial(COM1);
+    serial.println("!!! GENERAL PROTECTION (#GP) !!!" as void*);
+
+    // RSPベースで例外フレームを読み取り
+    // objdump確認: プロローグ = 4 push(32B) + sub $0x28(40B) = 72B
+    // 例外フレーム: [error_code, RIP, CS, RFLAGS, RSP, SS]
+    ulong rsp_now = 0;
+    __asm__(`movq %rsp, ${=r:rsp_now}`);
+    ulong frame = rsp_now + 72;  // プロローグの72バイトを加算
+
+    ulong* err_ptr = (frame) as ulong*;
+    ulong* rip_ptr = (frame + 8) as ulong*;
+    ulong* cs_ptr = (frame + 16) as ulong*;
+    ulong* rfl_ptr = (frame + 24) as ulong*;
+    ulong* rsp_ptr = (frame + 32) as ulong*;
+
+    serial.puts("  error_code = " as void*);
+    serial.print_hex(*err_ptr);
+    serial.println("" as void*);
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(*rip_ptr);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(*cs_ptr);
+    serial.println("" as void*);
+    serial.puts("  RFLAGS = " as void*);
+    serial.print_hex(*rfl_ptr);
+    serial.puts("  RSP = " as void*);
+    serial.print_hex(*rsp_ptr);
+    serial.println("" as void*);
+
+    // GPエラー表示
+    serial.println("[#GP] Attempting recovery..." as void*);
+    Shell::set_color(12, 0);
+    Shell::writeln("General protection fault (core dumped)" as void*);
+    Shell::set_color(7, 0);
+
+    // 現在のプロセスをkill（PID > 1のみ）
+    Process* cur = Sched::current();
+    ulong cur_addr = cur as ulong;
+    if (cur_addr != 0 && cur->pid > 1) {
+        Pid dying_pid = cur->pid;
+        ProcessTable::do_exit(cur, 139);
+        Sched::remove(dying_pid);
+    }
+
+    // idle loopに復帰
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
+    ulong idle_rip = pf_idle_loop as ulong;
+    __asm__(`
+        movq ${r:tss_rsp0}, %rsp;
+        pushq $$0x10;
+        pushq ${r:tss_rsp0};
+        pushq $$0x200;
+        pushq $$0x08;
+        pushq ${r:idle_rip};
+        iretq
+    `);
+}
+
+/// PF後のアイドルループ
+/// iretqで復帰した後、タイマー割り込みでスケジューラがシェルに切替
+void pf_idle_loop() {
+    __asm__(`sti; 1: hlt; jmp 1b`);
+}
+
+export void exc_page_fault() {
+    SerialPort serial(COM1);
+    serial.println("!!! PAGE FAULT (#PF) !!!" as void*);
+    ulong cr2 = 0;
+    __asm__(`movq %cr2, %rax; movq %rax, ${=r:cr2}`);
+    serial.puts("  CR2 = " as void*);
+    serial.print_hex(cr2);
+    serial.println("" as void*);
+
+    // TSS RSP0ベースで例外フレームを読み取り
+    // ユーザーモードPF: CPUがTSS RSP0に遷移し、以下の順でpush:
+    //   TSS_RSP0 - 8:  SS
+    //   TSS_RSP0 - 16: RSP
+    //   TSS_RSP0 - 24: RFLAGS
+    //   TSS_RSP0 - 32: CS
+    //   TSS_RSP0 - 40: RIP
+    //   TSS_RSP0 - 48: error_code (PFの場合)
+    ulong* tss_rsp0_ptr = TSS_RSP0_ADDR as ulong*;
+    ulong tss_rsp0 = *tss_rsp0_ptr;
+
+    ulong err_code = *((tss_rsp0 - 48) as ulong*);
+    ulong rip_val  = *((tss_rsp0 - 40) as ulong*);
+    ulong cs_val   = *((tss_rsp0 - 32) as ulong*);
+    ulong rfl_val  = *((tss_rsp0 - 24) as ulong*);
+    ulong rsp_val  = *((tss_rsp0 - 16) as ulong*);
+    ulong ss_val   = *((tss_rsp0 - 8)  as ulong*);
+
+    serial.puts("  RIP = " as void*);
+    serial.print_hex(rip_val);
+    serial.puts("  CS = " as void*);
+    serial.print_hex(cs_val);
+    serial.println("" as void*);
+
+    serial.puts("  err_code = " as void*);
+    serial.print_hex(err_code);
+    serial.puts("  RFLAGS = " as void*);
+    serial.print_hex(rfl_val);
+    serial.println("" as void*);
+
+    serial.puts("  user_RSP = " as void*);
+    serial.print_hex(rsp_val);
+    serial.puts("  user_SS = " as void*);
+    serial.print_hex(ss_val);
+    serial.println("" as void*);
+
+    // PTE walk: CR3からCR2のページテーブルエントリを直接ダンプ
+    ulong cr3_val = 0;
+    __asm__(`movq %cr3, ${=r:cr3_val}`);
+    serial.puts("  CR3 = " as void*);
+    serial.print_hex(cr3_val);
+    serial.println("" as void*);
+
+    // PML4
+    ulong pml4_base = cr3_val & ~0xFFF;
+    ulong pml4_idx = (cr2 >> 39) & 0x1FF;
+    ulong* pml4_ptr = (pml4_base + pml4_idx * 8) as ulong*;
+    ulong pml4e = *pml4_ptr;
+    serial.puts("  PML4[" as void*);
+    serial.print_hex(pml4_idx);
+    serial.puts("] = " as void*);
+    serial.print_hex(pml4e);
+    serial.println("" as void*);
+
+    if ((pml4e & 1) != 0) {
+        // PDPT
+        ulong pdpt_base = pml4e & ~0xFFF;
+        ulong pdpt_idx = (cr2 >> 30) & 0x1FF;
+        ulong* pdpt_ptr = (pdpt_base + pdpt_idx * 8) as ulong*;
+        ulong pdpte = *pdpt_ptr;
+        serial.puts("  PDPT[" as void*);
+        serial.print_hex(pdpt_idx);
+        serial.puts("] = " as void*);
+        serial.print_hex(pdpte);
+        serial.println("" as void*);
+
+        if ((pdpte & 1) != 0) {
+            // PD
+            ulong pd_base = pdpte & ~0xFFF;
+            ulong pd_idx = (cr2 >> 21) & 0x1FF;
+            ulong* pd_ptr = (pd_base + pd_idx * 8) as ulong*;
+            ulong pde = *pd_ptr;
+            serial.puts("  PD[" as void*);
+            serial.print_hex(pd_idx);
+            serial.puts("] = " as void*);
+            serial.print_hex(pde);
+            if ((pde & 0x80) != 0) {
+                serial.puts(" [HUGE]" as void*);
+            }
+            serial.println("" as void*);
+
+            if ((pde & 1) != 0 && (pde & 0x80) == 0) {
+                // PT (非Huge)
+                ulong pt_base = pde & ~0xFFF;
+                ulong pt_idx = (cr2 >> 12) & 0x1FF;
+                ulong* pt_ptr = (pt_base + pt_idx * 8) as ulong*;
+                ulong pte = *pt_ptr;
+                serial.puts("  PT[" as void*);
+                serial.print_hex(pt_idx);
+                serial.puts("] = " as void*);
+                serial.print_hex(pte);
+                serial.println("" as void*);
+            }
+        }
+    }
+
+    // フレーム値の妥当性チェック: CS=0ならカーネルPF（フレーム位置が異なる）
+    if (cs_val == 0 && rip_val == 0) {
+        serial.println("  [note] kernel PF: frame not at TSS_RSP0" as void*);
+        // カーネルスタックダンプ
+        ulong handler_rbp = 0;
+        __asm__(`movq %rbp, ${=r:handler_rbp}`);
+        ulong i = 0;
+        while (i < 8) {
+            ulong* slot = (handler_rbp + i * 8) as ulong*;
+            serial.puts("  [rbp+" as void*);
+            serial.print_hex(i * 8);
+            serial.puts("] = " as void*);
+            serial.print_hex(*slot);
+            serial.println("" as void*);
+            i = i + 1;
+        }
+    }
+
+    // ユーザーモード#PF → プロセスkill (SIGSEGV)
+    if ((cs_val & 3) != 0) {
+        serial.puts("  user_RSP = " as void*);
+        serial.print_hex(rsp_val);
+        serial.println("" as void*);
+
+        // ユーザースタックダンプ
+        if (rsp_val > ELF_BASE_VADDR) {
+            ulong i = 0;
+            while (i < 8) {
+                ulong* ustack = (rsp_val + i * 8) as ulong*;
+                serial.puts("  [ursp+" as void*);
+                serial.print_hex(i * 8);
+                serial.puts("] = " as void*);
+                serial.print_hex(*ustack);
+                serial.println("" as void*);
+                i = i + 1;
+            }
+        }
+        serial.println("[#PF] User process killed (SIGSEGV)" as void*);
+
+        Shell::set_color(12, 0);
+        Shell::writeln("Segmentation fault (core dumped)" as void*);
+        Shell::set_color(7, 0);
+
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            Pid dying_pid = cur->pid;
+            ProcessTable::do_exit(cur, 139);
+            Sched::remove(dying_pid);
+        }
+
+        ulong idle_rip = pf_idle_loop as ulong;
+        __asm__(`
+            movq ${r:tss_rsp0}, %rsp;
+            pushq $$0x10;
+            pushq ${r:tss_rsp0};
+            pushq $$0x200;
+            pushq $$0x08;
+            pushq ${r:idle_rip};
+            iretq
+        `);
+    }
+
+    // カーネルモード#PF → 復帰試行
+    serial.println("[#PF] Kernel PF - attempting recovery" as void*);
+
+    Shell::set_color(12, 0);
+    Shell::writeln("Segmentation fault (core dumped)" as void*);
+    Shell::set_color(7, 0);
+
+    Process* cur = Sched::current();
+    ulong cur_addr = cur as ulong;
+    if (cur_addr != 0 && cur->pid > 1) {
+        Pid dying_pid = cur->pid;
+        ProcessTable::do_exit(cur, 139);
+        Sched::remove(dying_pid);
+    }
+
+    ulong idle_rip = pf_idle_loop as ulong;
+    __asm__(`
+        movq ${r:tss_rsp0}, %rsp;
+        pushq $$0x10;
+        pushq ${r:tss_rsp0};
+        pushq $$0x200;
+        pushq $$0x08;
+        pushq ${r:idle_rip};
+        iretq
+    `);
+}
+
+/// Idt — IDT管理
+export struct Idt {}
+
+impl Idt {
+    /// IDTエントリを設定
+    static void set_gate(Vector vec, ulong handler, ulong gate_type) {
+        PhysAddr entry = IDT_ADDR + vec * 16;
+
+        ulong low = 0;
+        low = low | (handler & 0xFFFF);
+        low = low | (0x08 << 16);
+        low = low | (gate_type << 40);
+        low = low | (((handler >> 16) & 0xFFFF) << 48);
+        ulong* lp = entry as ulong*;
+        *lp = low;
+
+        ulong high = (handler >> 32) & 0xFFFFFFFF;
+        ulong* hp = (entry + 8) as ulong*;
+        *hp = high;
+    }
+
+    /// IDTを初期化してロード
+    static void setup(SerialPort* w) {
+        ulong i = 0;
+        while (i < 256 * 16) {
+            ulong* p = (IDT_ADDR + i) as ulong*;
+            *p = 0;
+            i = i + 8;
+        }
+
+        // 全ベクタにデフォルトハンドラ登録
+        ulong def = exc_default as ulong;
+        Vector v = 0;
+        while (v < 256) {
+            Idt::set_gate(v, def, GATE_INT);
+            v = v + 1;
+        }
+
+        // 主要例外ハンドラ
+        Idt::set_gate(0,  exc_divide_error as ulong,       GATE_TRAP);
+        Idt::set_gate(8,  exc_double_fault as ulong,       GATE_TRAP);
+        Idt::set_gate(13, exc_general_protection as ulong, GATE_TRAP);
+        Idt::set_gate(14, exc_page_fault as ulong,         GATE_TRAP);
+
+        // IDTR構築・ロード
+        ulong* idtr_lim = IDTR_ADDR as ulong*;
+        *idtr_lim = 256 * 16 - 1;
+        ulong* idtr_base = (IDTR_ADDR + 2) as ulong*;
+        *idtr_base = IDT_ADDR;
+
+        ulong idtr = IDTR_ADDR;
+        __asm__(`
+            movq ${r:idtr}, %rax;
+            lidt (%rax)
+        `);
+
+        pr_info(w, "IDT initialized (256 vectors)" as void*);
+    }
+}

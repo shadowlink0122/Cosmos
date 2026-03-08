@@ -1,0 +1,73 @@
+//! platform: baremetal-x86
+// cosmo-linux::test::test_io - テスト出力用薄いIOモジュール
+//
+// Shell依存を排除し、VGAとSerialへ直接出力。
+// shell/cmdの巨大importチェーンを回避。
+
+import ../apps/terminal/shell/defs;
+import ../apps/terminal/mem;
+import ../apps/terminal/vga;
+import ../drivers/serial;
+
+/// TestIO — テスト出力用ユーティリティ
+export struct TestIO {}
+
+impl TestIO {
+    /// VGA色設定 (fg: 0-15, bg: 0-15)
+    static void set_color(ulong fg, ulong bg) {
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        *color_ptr = (bg * 16) + fg;
+    }
+
+    /// 文字列出力（VGA + Serial）
+    static void write(void* msg) {
+        Vga::puts(msg);
+        // Serial出力は省略（テスト結果はQEMUシリアルへ別途出力）
+    }
+
+    /// 文字列出力 + 改行
+    static void writeln(void* msg) {
+        Vga::puts(msg);
+        Vga::putc(10);
+    }
+
+    /// 1文字出力
+    static void putc(ulong ch) {
+        Vga::putc(ch);
+    }
+
+    /// 10進数出力
+    static void print_dec(ulong val) {
+        if (val == 0) {
+            Vga::putc(48);  // '0'
+            return;
+        }
+        // 最大20桁（ulongの最大値）
+        ulong buf_addr = 0x9FF00;
+        ulong pos = 0;
+        ulong v = val;
+        while (v > 0) {
+            ulong digit = v - (v / 10) * 10;
+            Mem::write_byte(buf_addr + pos, digit + 48);
+            pos = pos + 1;
+            v = v / 10;
+        }
+        // 逆順で出力
+        while (pos > 0) {
+            pos = pos - 1;
+            ulong ch = Mem::read_byte(buf_addr + pos);
+            Vga::putc(ch);
+        }
+    }
+
+    /// VGA初期化（行/列/色をゼロクリア）
+    static void init() {
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        *col_ptr = 0;
+        *row_ptr = 0;
+        *color_ptr = 7;  // 白文字+黒背景
+        Vga::clear();
+    }
+}

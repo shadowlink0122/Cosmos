@@ -1,0 +1,332 @@
+//! platform: baremetal-x86
+// cosmo-linux::test::test_entry - テスト専用エントリポイント
+//
+// header.S → main() → カーネル初期化 → 全テスト実行 → QEMU終了
+// make test 経由で自動実行される。
+// 参照: linux/init/main.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../drivers/serial;
+import ../drivers/timer/pit;
+import ../drivers/input/mouse;
+
+import ../drivers/input/keyboard;
+import ../lib/kstring;
+import ../lib/printk;
+import ../arch/x86_64/cpu;
+import ../arch/x86_64/gdt;
+import ../arch/x86_64/idt;
+import ../arch/x86_64/context;
+import ../boot/multiboot2;
+import ../mm/pmm;
+import ../mm/vmm;
+import ../mm/kmalloc;
+import ../sched/process;
+import ../sched/scheduler;
+import ./test_io;
+import ../fs/ramfs;
+import ../fs/fd_table;
+import ../fs/pipe;
+import ../fs/vfs;
+import ../init/init;
+import ../include/net;
+import ../net/core/loopback;
+import ../net/transport/socket;
+import ../net/transport/tcp;
+import ../net/core/arp;
+import ../net/core/ethernet;
+import ../net/transport/udp;
+import ../mm/vmm;
+import ./ktest;
+
+// テストスイートのインポート
+import ./input/test_input;
+import ./devfs/test_devfs;
+import ./pipe/test_pipe;
+import ./signal/test_signal;
+import ./fd_table/test_fd_table;
+import ./vma/test_vma;
+import ./process/test_process;
+import ./loopback/test_loopback;
+import ./socket/test_socket;
+import ./ipv4/test_ipv4;
+import ./tcp/test_tcp;
+import ./icmp/test_icmp;
+import ./ramfs/test_ramfs;
+import ./kstring/test_kstring;
+import ./vfs/test_vfs;
+import ./procfs/test_procfs;
+import ./elf/test_elf;
+import ./kmalloc/test_kmalloc;
+import ./syscall/test_syscall;
+import ./arp/test_arp;
+import ./ethernet/test_ethernet;
+import ./udp/test_udp;
+import ./pmm/test_pmm;
+import ./vmm/test_vmm;
+import ./mouse/test_mouse;
+import ./irq/test_irq;
+import ./gui/test_gui;
+import ./result/test_result_same_type;
+
+// ============================================================
+// テスト用エントリポイント
+// ============================================================
+
+void main(ulong mb2_info, ulong mb2_magic) {
+    // === 1. シリアルコンソール確立 ===
+    SerialPort serial(COM1);
+    DebugPort debug(DEBUGCON);
+
+    serial.println("" as void*);
+    serial.println("========================================" as void*);
+    serial.println("  Cosmo Linux v0.1.0 - TEST MODE" as void*);
+    serial.println("========================================" as void*);
+    serial.println("" as void*);
+
+    pr_info(&serial, "test_kernel() entered" as void*);
+
+    // === 2. Multiboot1マジック検証 ===
+    if (mb2_magic != MB_MAGIC) {
+        pr_err(&serial, "Invalid Multiboot1 magic!" as void*);
+    }
+
+    // === 3. ブート情報解析 ===
+    BootInfo boot_info = {
+        mmap_addr: 0,
+        mmap_entry_size: 0,
+        mmap_count: 0,
+        fb_addr: 0,
+        fb_width: 0,
+        fb_height: 0,
+        fb_pitch: 0,
+        fb_bpp: 0,
+        total_memory: 0
+    };
+
+    if (mb2_magic == MB_MAGIC) {
+        Multiboot::parse(mb2_info, &boot_info, &serial);
+    }
+
+    // === 5. アーキテクチャ初期化 ===
+    pr_info(&serial, "Initializing architecture..." as void*);
+    Gdt::setup(&serial);
+    Idt::setup(&serial);
+
+    // === 6. メモリ管理初期化 ===
+    pr_info(&serial, "Initializing memory management..." as void*);
+
+    BuddyAllocator pmm();
+    if (boot_info.mmap_count > 0) {
+        Pmm::setup(&pmm, boot_info.mmap_addr, boot_info.mmap_entry_size,
+            boot_info.mmap_count, &serial);
+    }
+
+    ulong cr3_val = 0;
+    __asm__(`
+        movq %cr3, %rax;
+        movq %rax, ${=r:cr3_val}
+    `);
+    PageTable vmm(cr3_val);
+    vmm_init(&vmm, &serial);
+
+    KernelHeap heap();
+    if (pmm.total_pages > 0) {
+        kmalloc_init(&heap, &pmm, &serial);
+    }
+
+    // === 7. VFS初期化 ===
+    pr_info(&serial, "Initializing VFS..." as void*);
+    RamFs::setup(&serial);
+    FdTable::setup();
+    Cwd::setup();
+    Pipe::setup();
+
+    // PMMポインタとVMMポインタをグローバルアドレスに登録
+    // (mmap.cm, loader.cm, usermode.cm等がこのアドレスからPMMを参照する)
+    ulong pmm_addr = (&pmm) as ulong;
+    ulong* pmm_global_ptr = 0x95010 as ulong*;
+    *pmm_global_ptr = pmm_addr;
+    ulong vmm_addr = (&vmm) as ulong;
+    ulong* vmm_global_ptr = 0x91020 as ulong*;
+    *vmm_global_ptr = vmm_addr;
+
+    // === 8. プロセス管理初期化 ===
+    pr_info(&serial, "Initializing process management..." as void*);
+
+    ProcessTable::setup(&serial);
+
+    Process idle(0, 0);
+    ProcessTable::create_idle(&idle, &serial);
+
+    RoundRobinScheduler sched();
+    Sched::setup(&sched, &idle, &serial);
+
+    // === 9. テストIO初期化 ===
+    TestIO::init();
+
+    // === 10. PIC/PIT/キーボード/マウス初期化 ===
+    pr_info(&serial, "Initializing hardware drivers..." as void*);
+    PIT::setup(&serial);
+    Kbd::setup(&serial);
+    Mouse::setup();
+
+    // === 11. ネットワーク初期化 ===
+    pr_info(&serial, "Initializing network stack..." as void*);
+    Loopback::setup();
+    Tcp::setup();
+    Socket::setup();
+    Arp::setup();
+
+    // === 12. テスト実行 ===
+    pr_info(&serial, "Running kernel tests..." as void*);
+
+    KTest::reset();
+    TestIO::writeln("" as void*);
+    TestIO::set_color(11, 0);
+    TestIO::writeln("=== Cosmo Linux Kernel Tests ===" as void*);
+    TestIO::set_color(7, 0);
+
+    KTest::begin_suite("Input" as void*);
+    TestInput::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("DevFS" as void*);
+    TestDevfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Pipe" as void*);
+    TestPipe::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Signal" as void*);
+    TestSignal::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("FdTable" as void*);
+    TestFdTable::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("VMA" as void*);
+    TestVma::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Process" as void*);
+    TestProcess::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Loopback" as void*);
+    TestLoopback::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Socket" as void*);
+    TestSocket::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("IPv4" as void*);
+    TestIpv4::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("TCP" as void*);
+    TestTcp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ICMP" as void*);
+    TestIcmp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("RamFS" as void*);
+    TestRamfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("KString" as void*);
+    TestKstring::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("VFS" as void*);
+    TestVfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ProcFS" as void*);
+    TestProcfs::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ELF" as void*);
+    TestELF::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("KMalloc" as void*);
+    TestKmalloc::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Syscall" as void*);
+    TestSyscall::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("ARP" as void*);
+    TestArp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Ethernet" as void*);
+    TestEthernet::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("UDP" as void*);
+    TestUdp::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("PMM" as void*);
+    TestPmm::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("VMM" as void*);
+    TestVmm::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Mouse" as void*);
+    TestMouse::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("IRQ" as void*);
+    TestIrq::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("GUI" as void*);
+    TestGui::run();
+    KTest::end_suite();
+
+    KTest::begin_suite("Result" as void*);
+    TestResult::run();
+    KTest::end_suite();
+
+    KTest::summary();
+
+    // === 13. QEMU終了 ===
+    // isa-debug-exit デバイス (iobase=0xf4) への書き込みでQEMU終了
+    pr_info(&serial, "Tests complete, shutting down QEMU..." as void*);
+
+    // ACPIシャットダウン (QEMU)
+    ulong acpi_port = 0x604;
+    ulong acpi_val  = 0x2000;
+    __asm__(`
+        movq ${r:acpi_port}, %rdx;
+        movq ${r:acpi_val}, %rax;
+        outw %ax, %dx
+    `);
+
+    // フォールバック: isa-debug-exit (iobase=0xf4)
+    ulong dbg_port = 0xf4;
+    ulong dbg_val  = 0x00;
+    __asm__(`
+        movq ${r:dbg_port}, %rdx;
+        movq ${r:dbg_val}, %rax;
+        outb %al, %dx
+    `);
+
+    // 万が一のフォールバック
+    while (true) {
+        Cpu::hlt();
+    }
+}

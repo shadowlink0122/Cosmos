@@ -1,0 +1,427 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell - カーネルシェル（メインループ）
+//
+// ShellInput struct/impl — REPL（Read-Eval-Print Loop）を実行。
+// 各機能は個別ファイルに分割済み:
+//   shell_const.cm  — 共通定数
+//   shell_io.cm     — Shell (VGA+シリアル出力)
+//   shell_prompt.cm — Prompt (プロンプト描画)
+//   shell_tab.cm    — TabComplete (Tab補完)
+//   shell_pipe.cm   — Pipe (パイプ処理)
+//   shell_util.cm   — StrUtil (文字列比較)
+//   env.cm          — Env (環境変数)
+//   history.cm      — History (コマンド履歴)
+//   cmd.cm          — Cmd (コマンド群+ディスパッチ)
+
+import ../../include/types;
+import ../../include/config;
+import ./shell/defs;
+import ./mem;
+import ./vga;
+import ./shell/io;
+import ./shell/util;
+import ./env;
+import ./history;
+import ./cmd;
+import ./shell/prompt;
+import ./shell/tab;
+import ./shell/pipe;
+import ../../drivers/serial;
+import ../../drivers/input/keyboard;
+import ../../init/init;
+import ../../fs/ramfs;
+import ../../sched/scheduler;
+import ../../drivers/timer/pit;
+import ../../drivers/input/mouse;
+import ../../include/keycode;
+import ../../include/color;
+import ../desktop/menubar;
+
+// ============================================================
+// ShellInput — シェル入力処理＆メインループ
+// ============================================================
+
+/// ShellInput — シェルの入力処理とメインREPLループ
+export struct ShellInput {}
+
+impl ShellInput {
+
+    /// スクロールバック中ならライブモードに復帰
+    static void restore_scrollback() {
+        ulong* sb_active = SCROLLBACK_ACTIVE_ADDR as ulong*;
+        if (*sb_active != 0) {
+            ulong* sb_pos = SCROLLBACK_POS_ADDR as ulong*;
+            *sb_pos = 0;
+            *sb_active = 0;
+            ulong si = 0;
+            while (si < 25 * 80 * 2) {
+                Mem::write_byte(VGA_BUF + si, Mem::read_byte(SCROLLBACK_LIVE_ADDR + si));
+                si = si + 1;
+            }
+        }
+    }
+
+    /// Backspaceキー処理
+    static void handle_backspace(ulong* len_ptr, ulong* cur_ptr) {
+        ulong len = *len_ptr;
+        ulong cursor = *cur_ptr;
+        if (cursor == 0) { return; }
+
+        // カーソル以降を1つ左にシフト
+        ulong si = cursor - 1;
+        while (si < len - 1) {
+            Mem::write_byte(CMD_BUF_ADDR + si, Mem::read_byte(CMD_BUF_ADDR + si + 1));
+            si = si + 1;
+        }
+        *len_ptr = len - 1;
+        *cur_ptr = cursor - 1;
+
+        // VGA: カーソルを1つ左に移動
+        Shell::putc(Key::Backspace as ulong);
+
+        // カーソル位置から末尾まで再描画
+        ulong ri = cursor - 1;
+        ulong new_len = len - 1;
+        while (ri < new_len) {
+            Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+            ri = ri + 1;
+        }
+        // 末尾のゴミを消す
+        Shell::putc(Key::Space as ulong);
+
+        // カーソルを正しい位置に戻す
+        ulong back = new_len - (cursor - 1) + 1;
+        ulong bi = 0;
+        while (bi < back) {
+            Shell::putc(Key::Backspace as ulong);
+            bi = bi + 1;
+        }
+
+        // シリアルにも反映
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->putc(Key::Backspace as ulong);
+        ri = cursor - 1;
+        while (ri < new_len) {
+            ser->putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+            ri = ri + 1;
+        }
+        ser->putc(Key::Space as ulong);
+        bi = 0;
+        while (bi < back) {
+            ser->putc(Key::Backspace as ulong);
+            bi = bi + 1;
+        }
+    }
+
+    /// 左矢印キー処理
+    static void handle_left(ulong* cur_ptr) {
+        ulong cursor = *cur_ptr;
+        if (cursor == 0) { return; }
+        *cur_ptr = cursor - 1;
+        if (Shell::is_gui() == 0) {
+            ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+            ulong col = *col_ptr;
+            if (col > 0) {
+                *col_ptr = col - 1;
+                Vga::update_cursor();
+            }
+        }
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->putc(Key::Escape as ulong);
+        ser->putc(Ascii::BracketL as ulong);
+        ser->putc('D' as ulong);
+    }
+
+    /// 右矢印キー処理
+    static void handle_right(ulong* len_ptr, ulong* cur_ptr) {
+        ulong len = *len_ptr;
+        ulong cursor = *cur_ptr;
+        if (cursor >= len) { return; }
+        *cur_ptr = cursor + 1;
+        if (Shell::is_gui() == 0) {
+            ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+            ulong col = *col_ptr;
+            if (col < VGA_COLS - 1) {
+                *col_ptr = col + 1;
+                Vga::update_cursor();
+            }
+        }
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->putc(Key::Escape as ulong);
+        ser->putc(Ascii::BracketL as ulong);
+        ser->putc('C' as ulong);
+    }
+
+    /// 上矢印キー処理（履歴ナビゲーション）
+    static void handle_up(ulong* cur_ptr, ulong* len_ptr, ulong* hist_pos) {
+        ulong addr = History::get(*hist_pos);
+        if (addr != 0) {
+            History::restore(addr);
+            *cur_ptr = *len_ptr;
+            *hist_pos = *hist_pos + 1;
+        }
+    }
+
+    /// 下矢印キー処理（履歴ナビゲーション）
+    static void handle_down(ulong* cur_ptr, ulong* len_ptr, ulong* hist_pos) {
+        if (*hist_pos == 0) { return; }
+        *hist_pos = *hist_pos - 1;
+        if (*hist_pos > 0) {
+            ulong addr = History::get(*hist_pos - 1);
+            if (addr != 0) {
+                History::restore(addr);
+                *cur_ptr = *len_ptr;
+            }
+        } else {
+            // 最下端: 未入力状態に復元
+            ulong old_len = *len_ptr;
+            ulong k = 0;
+            while (k < old_len) { Shell::putc(8); k = k + 1; }
+            k = 0;
+            while (k < old_len) { Shell::putc(Key::Space as ulong); k = k + 1; }
+            k = 0;
+            while (k < old_len) { Shell::putc(8); k = k + 1; }
+
+            // シリアル: 行消去
+            ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+            SerialPort* ser = (*ser_ptr) as SerialPort*;
+            ser->putc(Key::CR as ulong);
+            ser->putc(Key::Escape as ulong);
+            ser->putc(Ascii::BracketL as ulong);
+            ser->putc(Ascii::UpperK as ulong);
+            ser->puts("cosmo:" as void*);
+            ulong cwd_disp = Cwd::get();
+            ser->puts(cwd_disp as void*);
+            ser->puts("$ " as void*);
+
+            *len_ptr = 0;
+            *cur_ptr = 0;
+        }
+    }
+
+    /// 通常文字入力処理
+    static void handle_char_input(ulong ch, ulong* len_ptr, ulong* cur_ptr) {
+        // スクロールバック中ならライブモードに復帰
+        ShellInput::restore_scrollback();
+
+        ulong len = *len_ptr;
+        ulong cursor = *cur_ptr;
+        if (len >= CMD_BUF_SIZE - 1) { return; }
+
+        if (cursor == len) {
+            // 末尾に追加（高速パス）
+            Mem::write_byte(CMD_BUF_ADDR + len, ch & 0xFF);
+            *len_ptr = len + 1;
+            *cur_ptr = cursor + 1;
+            Shell::putc(ch);
+        } else {
+            // カーソル位置に挿入: 右にシフト
+            ulong si = len;
+            while (si > cursor) {
+                Mem::write_byte(CMD_BUF_ADDR + si, Mem::read_byte(CMD_BUF_ADDR + si - 1));
+                si = si - 1;
+            }
+            Mem::write_byte(CMD_BUF_ADDR + cursor, ch & 0xFF);
+            *len_ptr = len + 1;
+            *cur_ptr = cursor + 1;
+
+            // カーソル位置以降を再描画
+            ulong ri = cursor;
+            ulong new_len = len + 1;
+            while (ri < new_len) {
+                Shell::putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+                ri = ri + 1;
+            }
+            ulong back = new_len - (cursor + 1);
+            ulong bi = 0;
+            while (bi < back) { Shell::putc(8); bi = bi + 1; }
+
+            // シリアルにも反映
+            ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+            SerialPort* ser = (*ser_ptr) as SerialPort*;
+            ri = cursor;
+            while (ri < new_len) {
+                ser->putc(Mem::read_byte(CMD_BUF_ADDR + ri));
+                ri = ri + 1;
+            }
+            bi = 0;
+            while (bi < back) { ser->putc(Key::Backspace as ulong); bi = bi + 1; }
+        }
+    }
+
+    /// Enterキー処理 → コマンド実行
+    static void handle_enter(ulong* len_ptr, ulong* cur_ptr) {
+        // スクロールバック中ならライブモードに復帰
+        if (Shell::is_gui() == 0) {
+            ShellInput::restore_scrollback();
+        }
+        Shell::newline();
+        ulong len = *len_ptr;
+        Mem::write_byte(CMD_BUF_ADDR + len, 0);
+        if (len > 0) {
+            History::add(CMD_BUF_ADDR, len);
+            // パイプチェック
+            ulong pipe_pos = Pipe::find(CMD_BUF_ADDR, len);
+            if (pipe_pos < len) {
+                Pipe::exec(CMD_BUF_ADDR, pipe_pos, len, len_ptr);
+            } else {
+                Cmd::dispatch();
+            }
+        }
+        *len_ptr = 0;
+        *cur_ptr = 0;
+    }
+
+    /// マウスホイール/トラックパッドスクロール処理
+    static void handle_scroll() {
+        long scroll_ev = Mouse::get_scroll();
+        if (scroll_ev > 0) {
+            long lines = scroll_ev;
+            if (lines > 5) { lines = 5; }
+            while (lines > 0) {
+                Vga::scroll_down();
+                lines = lines - 1;
+            }
+        } else if (scroll_ev < 0) {
+            long lines = 0 - scroll_ev;
+            if (lines > 5) { lines = 5; }
+            while (lines > 0) {
+                Vga::scroll_up();
+                lines = lines - 1;
+            }
+        }
+        if (Shell::is_gui() != 0) {
+            ulong* dirty = GUI_DIRTY_ADDR as ulong*;
+            if (*dirty != 0) {
+                *dirty = 0;
+                Shell::gui_flush();
+            }
+        }
+    }
+
+    /// シェルメインREPLループ
+    static void main() {
+        // 初期化
+        Vga::scrollback_init();
+
+        // ウェルカムバナー
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+        Vga::clear();
+        Shell::set_color(VGA_IDX_LIGHT_CYAN, 0);
+        Shell::writeln("========================================" as void*);
+        Shell::writeln("  Cosmo Linux v0.1.0" as void*);
+        Shell::writeln("  Written in Cm - A Linux reimagined" as void*);
+        Shell::writeln("========================================" as void*);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+        Shell::writeln("" as void*);
+        Shell::writeln("Welcome to Cosmo Linux!" as void*);
+        Shell::writeln("Type 'help' for available commands." as void*);
+        Shell::writeln("" as void*);
+
+        // バッファ初期化
+        ulong* len_ptr = CMD_LEN_ADDR as ulong*;
+        *len_ptr = 0;
+        ulong* cur_ptr = CMD_CUR_ADDR as ulong*;
+        *cur_ptr = 0;
+
+        // サブシステム初期化
+        History::setup();
+        Env::setup();
+
+        // 9pfs利用可能時のパッケージチェック
+        if (Virtio9p::is_ready() != 0) {
+            Shell::set_color(VGA_IDX_YELLOW, 0);
+            Shell::writeln("Checking host packages..." as void*);
+            Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+        }
+        Shell::writeln("" as void*);
+
+        // 履歴ナビゲーション位置
+        ulong hist_pos = 0;
+
+        // REPLループ
+        while (true) {
+            Prompt::draw();
+            hist_pos = 0;
+            *cur_ptr = 0;
+
+            // キー入力ループ
+            ulong input_done = 0;
+            while (input_done == 0) {
+                ulong ch = Kbd::getchar();
+                if (ch == Key::Null as ulong) {
+                    ShellInput::handle_scroll();
+                    // GUIモード時：時計リアルタイム更新
+                    if (Shell::is_gui() != 0) {
+                        MenuBar::update_clock();
+                    }
+                    __asm__(`sti; hlt`);
+                    Sched::tick();
+                } else if (ch == Key::Enter as ulong) {
+                    ShellInput::handle_enter(len_ptr, cur_ptr);
+                    input_done = 1;
+                } else if (ch == Key::Backspace as ulong) {
+                    ShellInput::handle_backspace(len_ptr, cur_ptr);
+                } else if (ch == Key::Left as ulong) {
+                    ShellInput::handle_left(cur_ptr);
+                } else if (ch == Key::Right as ulong) {
+                    ShellInput::handle_right(len_ptr, cur_ptr);
+                } else if (ch == Key::Up as ulong) {
+                    ShellInput::handle_up(cur_ptr, len_ptr, &hist_pos);
+                } else if (ch == Key::Down as ulong) {
+                    ShellInput::handle_down(cur_ptr, len_ptr, &hist_pos);
+                } else if (ch == Key::CtrlC as ulong) {
+                    Shell::set_color(VGA_IDX_LIGHT_BLUE, 0);
+                    Shell::write("^C" as void*);
+                    Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+                    Shell::newline();
+                    *len_ptr = 0;
+                    *cur_ptr = 0;
+                    input_done = 1;
+                } else if (ch == Key::CtrlL as ulong) {
+                    if (Shell::is_gui() != 0) {
+                        Shell::gui_clear();
+                    } else {
+                        Vga::clear();
+                    }
+                    *len_ptr = 0;
+                    *cur_ptr = 0;
+                    input_done = 1;
+                } else if (ch == Key::Tab as ulong) {
+                    TabComplete::complete(len_ptr, cur_ptr);
+                } else {
+                    ShellInput::handle_char_input(ch, len_ptr, cur_ptr);
+                }
+            }
+        }
+    }
+
+    /// シェル初期化
+    static void init(ulong serial_addr, ulong pmm_addr) {
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        *ser_ptr = serial_addr;
+        ulong* pmm_ptr = SHELL_PMM_ADDR as ulong*;
+        *pmm_ptr = pmm_addr;
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        *col_ptr = 0;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        *row_ptr = 0;
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        *color_ptr = VGA_DEFAULT_COLOR;
+        ulong* l_ptr = CMD_LEN_ADDR as ulong*;
+        *l_ptr = 0;
+    }
+}
+
+/// 後方互換ラッパー: shell_init
+export void shell_init(ulong serial_addr, ulong pmm_addr) {
+    ShellInput::init(serial_addr, pmm_addr);
+}
+
+/// 後方互換ラッパー: shell_main
+export void shell_main() {
+    ShellInput::main();
+}

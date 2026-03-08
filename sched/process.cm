@@ -1,0 +1,228 @@
+//! platform: baremetal-x86
+// cosmo-linux::sched::process - プロセス管理
+//
+// Process 構造体のメソッド実装。
+// ProcessTable struct/impl パターンで実装。
+//
+// 参照: linux/kernel/fork.c, linux/kernel/exit.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../include/page_alloc;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ../mm/pmm;
+import ../include/result;
+import ./scheduler;
+
+// ============================================================
+// プロセステーブル
+// ============================================================
+
+/// グローバルプロセステーブル配置先
+const PhysAddr PROC_TABLE_BASE = 0x300000;
+
+/// 次のPID（カーネル固定データ領域に配置 — PMMと非衝突）
+const PhysAddr NEXT_PID_ADDR = 0x91040;
+
+/// スケジューラポインタ配置アドレス（scheduler.cmと共有）
+const PhysAddr SCHED_PTR_ADDR = 0x91000;
+
+// ============================================================
+// impl Process
+// ============================================================
+
+impl Process {
+    /// コンストラクタ: 空プロセス
+    overload self(Pid pid_val, Pid parent) {
+        self.pid = pid_val;
+        self.parent_pid = parent;
+        self.state = TASK_READY;
+        self.kernel_stack = 0;
+        self.page_table = 0;
+        self.exit_code = 0;
+        self.context = {
+            rsp: 0, rbp: 0, rbx: 0,
+            r12: 0, r13: 0, r14: 0, r15: 0,
+            rip: 0, rflags: 0x200
+        };
+        self.time_slice = 10;
+        self.priority = 20;
+        self.pending_signal = 0;
+        self.brk_addr = ELF_BRK_DEFAULT;
+        self.user_stack = 0;
+        self.is_user = 0;
+        self.fsbase = 0;
+    }
+
+    /// プロセスが実行可能か
+    ulong is_runnable() {
+        if (self.state == TASK_RUNNING) { return 1; }
+        if (self.state == TASK_READY) { return 1; }
+        return 0;
+    }
+
+    /// カーネルスタックを固定プールから割り当て (16KiB)
+    /// PMM高アドレスによるユーザー空間仮想アドレス衝突を防止
+    void alloc_stack(BuddyAllocator* pmm) {
+        ulong* next_slot = KSTACK_POOL_NEXT_ADDR as ulong*;
+        ulong slot = *next_slot;
+        if (slot >= KSTACK_POOL_MAX_SLOTS) {
+            self.kernel_stack = 0;
+            return;
+        }
+        // スロットの物理アドレス: KSTACK_POOL_BASE + slot * KERNEL_STACK_SIZE
+        PhysAddr base = KSTACK_POOL_BASE + slot * KERNEL_STACK_SIZE;
+        memzero(base as void*, KERNEL_STACK_SIZE);
+        self.kernel_stack = base + KERNEL_STACK_SIZE;  // スタックは上から下に成長
+        *next_slot = slot + 1;
+    }
+
+    /// カーネルスタックを固定プールから割り当て (PMM不要版)
+    void alloc_stack_pool() {
+        ulong* next_slot = KSTACK_POOL_NEXT_ADDR as ulong*;
+        ulong slot = *next_slot;
+        if (slot >= KSTACK_POOL_MAX_SLOTS) {
+            self.kernel_stack = 0;
+            return;
+        }
+        PhysAddr base = KSTACK_POOL_BASE + slot * KERNEL_STACK_SIZE;
+        memzero(base as void*, KERNEL_STACK_SIZE);
+        self.kernel_stack = base + KERNEL_STACK_SIZE;
+        *next_slot = slot + 1;
+    }
+}
+
+/// ProcessTable — プロセステーブル管理
+export struct ProcessTable {}
+
+impl ProcessTable {
+    /// 次のPIDを発行
+    static Pid alloc_pid() {
+        ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
+        Pid pid = (*pid_ptr) as long;
+        *pid_ptr = *pid_ptr + 1;
+        return pid;
+    }
+
+    /// プロセステーブルを初期化
+    static void setup(SerialPort* w) {
+        memzero(PROC_TABLE_BASE as void*, 64 * 256);
+        ulong* pid_ptr = NEXT_PID_ADDR as ulong*;
+        *pid_ptr = 1;
+        // カーネルスタックプール初期化
+        ulong* kstack_next = KSTACK_POOL_NEXT_ADDR as ulong*;
+        *kstack_next = 0;
+        pr_info(w, "Process table initialized (max 64)" as void*);
+    }
+
+    /// idle プロセス (PID 0) を作成
+    static void create_idle(Process* idle, SerialPort* w) {
+        ulong cr3 = 0;
+        __asm__(`
+            movq %cr3, %rax;
+            movq %rax, ${=r:cr3}
+        `);
+        idle->pid = 0;
+        idle->parent_pid = 0;
+        idle->state = TASK_RUNNING;
+        idle->page_table = cr3;
+        idle->time_slice = 0;
+        idle->priority = 99;
+        idle->pending_signal = 0;
+        idle->brk_addr = ELF_BRK_DEFAULT;
+        idle->user_stack = 0;
+        idle->is_user = 0;
+        pr_info(w, "Idle process (PID 0) created" as void*);
+    }
+
+    /// PIDからプロセスを検索（スケジューラ内を走査）
+    static Option<ulong> find_by_pid(Pid target_pid) {
+        ulong* sched_ptr = SCHED_PTR_ADDR as ulong*;
+        if (*sched_ptr == 0) { return Option::None; }
+        RoundRobinScheduler* sched = (*sched_ptr) as RoundRobinScheduler*;
+        ulong i = 0;
+        while (i < sched->count) {
+            ulong proc_addr = sched->get_proc(i);
+            if (proc_addr != 0) {
+                Process* proc = proc_addr as Process*;
+                if (proc->pid == target_pid) {
+                    return Option::Some(proc as ulong);
+                }
+            }
+            i = i + 1;
+        }
+        return Option::None;
+    }
+
+    /// プロセス終了: ZOMBIE状態に遷移し、親にSIGCHLDを送信
+    static void do_exit(Process* proc, long code) {
+        proc->exit_code = code;
+        proc->state = TASK_ZOMBIE;
+        // 親プロセスにSIGCHLDを送信
+        Process* parent = 0 as Process*;
+        Option<ulong> parent_opt = ProcessTable::find_by_pid(proc->parent_pid);
+        match (parent_opt) {
+            Option::Some(v) => { parent = v as Process*; }
+            Option::None => {}
+        }
+        ulong parent_addr = parent as ulong;
+        if (parent_addr != 0) {
+            // SIGCHLD = 17, ビット17をセット
+            parent->pending_signal = parent->pending_signal | (1 << 17);
+            // 親がBLOCKED（waitで待機中）ならREADYに復帰
+            if (parent->state == TASK_BLOCKED) {
+                parent->state = TASK_READY;
+            }
+        }
+    }
+
+    /// 子プロセスの終了を待つ (wait4相当)
+    /// 戻り値: 子プロセスのexit_code。子がなければ -ECHILD。
+    static Result<long, long> do_wait(Process* parent, Pid wait_pid, ulong options) {
+        ulong* sched_ptr = SCHED_PTR_ADDR as ulong*;
+        if (*sched_ptr == 0) { return Result::Err(ECHILD); }
+        RoundRobinScheduler* sched = (*sched_ptr) as RoundRobinScheduler*;
+
+        // ブロッキング: ZOMBIEの子を探し、見つからなければSched::run()でyield
+        // WNOHANG(1): ブロッキングしない
+        ulong max_retry = 500;
+        if ((options & 1) != 0) { max_retry = 1; }  // WNOHANG
+
+        ulong retry = 0;
+        while (retry < max_retry) {
+            // ZOMBIEの子プロセスを検索
+            ulong i = 0;
+            while (i < sched->count) {
+                ulong proc_addr = sched->get_proc(i);
+                if (proc_addr != 0) {
+                    Process* child = proc_addr as Process*;
+                    if (child->parent_pid == parent->pid) {
+                        if (child->state == TASK_ZOMBIE) {
+                            if (wait_pid == 0 - 1 || child->pid == wait_pid) {
+                                long code = child->exit_code;
+                                // ZOMBIEプロセスを回収（スロットを無効化）
+                                child->state = TASK_STOPPED;
+                                return Result::Ok(code);
+                            }
+                        }
+                    }
+                }
+                i = i + 1;
+            }
+            // ZOMBIEが見つからない→コンテキストスイッチして子プロセスを実行
+            if (retry + 1 < max_retry) {
+                Sched::run();
+            }
+            retry = retry + 1;
+        }
+        return Result::Err(ECHILD);
+    }
+}
+
+// 互換ラッパー
+export Pid alloc_pid() { return ProcessTable::alloc_pid(); }
+export void process_table_init(SerialPort* w) { ProcessTable::setup(w); }
+export void create_idle_process(Process* idle, SerialPort* w) { ProcessTable::create_idle(idle, w); }

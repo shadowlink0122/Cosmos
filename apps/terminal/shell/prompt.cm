@@ -1,0 +1,27 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell_prompt - プロンプト描画
+//
+// Prompt struct/impl — シェルプロンプト表示。
+// shell_mainとTab補完の2箇所で共有。
+
+import ./io;
+import ../env;
+import ../../../include/color;
+
+/// Prompt — シェルプロンプト描画
+export struct Prompt {}
+
+impl Prompt {
+    /// カラー付きプロンプトを描画: cosmo:/path$
+    static void draw() {
+        ulong cwd_addr = Cwd::get();
+        Shell::set_color(VGA_IDX_LIGHT_GREEN, 0);
+        Shell::write("cosmo" as void*);
+        Shell::set_color(VGA_IDX_YELLOW, 0);
+        Shell::write(":" as void*);
+        Shell::set_color(VGA_IDX_LIGHT_RED, 0);
+        Shell::write(cwd_addr as void*);
+        Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+        Shell::write("$ " as void*);
+    }
+}

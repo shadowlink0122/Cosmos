@@ -1,0 +1,142 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd::proc - プロセス管理コマンド
+//
+// CmdProc struct/impl — ps, kill, exec。
+
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/config;
+import ../../../include/scheduler;
+import ../../../include/signal;
+import ../shell/defs;
+import ../mem;
+import ../shell/io;
+import ../../../drivers/serial;
+import ../../../sched/process;
+import ../../../sched/scheduler;
+import ../../../exec/loader;
+import ../../../include/result;
+import ../../../sys/signal;
+import ./args;
+
+/// CmdProc — プロセス管理コマンド群
+export struct CmdProc {}
+
+impl CmdProc {
+
+    /// ps コマンド: プロセス一覧表示
+    static void ps() {
+        Shell::writeln("" as void*);
+        Shell::writeln("  PID  STATE    NAME" as void*);
+        Shell::writeln("  ---  -------  --------" as void*);
+
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+
+        ulong i = 0;
+        while (i < sched->count) {
+            ulong proc_addr = sched->get_proc(i);
+            if (proc_addr != 0) {
+                Process* proc = proc_addr as Process*;
+                Shell::write("  " as void*);
+                Shell::print_dec(proc->pid as ulong);
+                Shell::write("    " as void*);
+
+                match (proc->state as TaskState) {
+                    TaskState::Running => { Shell::write("RUNNING  " as void*); }
+                    TaskState::Ready   => { Shell::write("READY    " as void*); }
+                    TaskState::Blocked => { Shell::write("BLOCKED  " as void*); }
+                    TaskState::Zombie  => { Shell::write("ZOMBIE   " as void*); }
+                    TaskState::Stopped => { Shell::write("STOPPED  " as void*); }
+                }
+
+                if (proc->pid == 0) { Shell::writeln("idle" as void*); }
+                if (proc->pid == 1) { Shell::writeln("shell" as void*); }
+                if (proc->pid > 1) { Shell::writeln("task" as void*); }
+            }
+            i = i + 1;
+        }
+        Shell::writeln("" as void*);
+    }
+
+    /// kill コマンド: プロセスにシグナル送信
+    /// kill <pid> — SIGTERM送信
+    /// kill -9 <pid> — SIGKILL送信
+    static void kill(ulong arg_addr) {
+        if (arg_addr == 0) {
+            Shell::writeln("Usage: kill [-9] <pid>" as void*);
+            return;
+        }
+        ulong sig = SIGTERM;
+        ulong pid_addr = arg_addr;
+        if (Mem::read_byte(arg_addr) == Ascii::Minus as ulong) {
+            if (Mem::read_byte(arg_addr + 1) == Ascii::Digit9 as ulong) {
+                sig = SIGKILL;
+                pid_addr = CmdArgs::arg(arg_addr);
+                if (pid_addr == 0) {
+                    Shell::writeln("Usage: kill -9 <pid>" as void*);
+                    return;
+                }
+            }
+        }
+        ulong pid_val = 0;
+        ulong pi = 0;
+        while (true) {
+            ulong ch = Mem::read_byte(pid_addr + pi);
+            if (ch == Key::Null as ulong || ch == Key::Space as ulong) { break; }
+            if (ch >= Ascii::Digit0 as ulong && ch <= Ascii::Digit9 as ulong) {
+                pid_val = pid_val * 10 + (ch - Ascii::Digit0 as ulong);
+            } else {
+                Shell::writeln("kill: invalid pid" as void*);
+                return;
+            }
+            pi = pi + 1;
+        }
+        if (pi == 0) {
+            Shell::writeln("kill: missing pid" as void*);
+            return;
+        }
+        if (pid_val == 0) {
+            Shell::writeln("kill: cannot kill idle process" as void*);
+            return;
+        }
+        long result = 0;
+        Result<long, long> sr = Signal::send(pid_val as long, sig);
+        match (sr) {
+            Result::Ok(v) => { result = v; }
+            Result::Err(e) => { result = 0 - e; }
+        }
+        if (result == 0) {
+            Shell::write("Signal " as void*);
+            Shell::print_dec(sig);
+            Shell::write(" sent to PID " as void*);
+            Shell::print_dec(pid_val);
+            Shell::newline();
+        } else {
+            Shell::writeln("kill: no such process" as void*);
+        }
+    }
+
+    /// exec コマンド: ELFバイナリをロードして実行
+    static void exec_cmd(ulong arg_addr) {
+        if (arg_addr == 0) {
+            Shell::writeln("Usage: exec <filename>" as void*);
+            return;
+        }
+        SerialPort serial(COM1);
+        long pid = 0;
+        Result<long, long> er = Loader::exec(arg_addr as void*, &serial);
+        match (er) {
+            Result::Ok(p) => { pid = p; }
+            Result::Err(e) => { pid = 0 - e; }
+        }
+        if (pid >= 0) {
+            // フォアグラウンド待機: 子プロセス完了まで待つ
+            while (Sched::is_alive(pid as long) != 0) {
+                Sched::run();
+            }
+        } else {
+            Shell::writeln("exec: failed to load ELF" as void*);
+        }
+    }
+}

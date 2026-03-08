@@ -1,0 +1,47 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd::args - コマンド引数パースユーティリティ
+//
+// CmdArgs struct/impl — コマンドバッファからの引数抽出。
+
+import ../../../include/types;
+import ../../../include/keycode;
+import ../shell/defs;
+import ../mem;
+
+/// CmdArgs — コマンド引数パース
+export struct CmdArgs {}
+
+impl CmdArgs {
+
+    /// コマンドバッファから最初のスペース以降の引数アドレスを取得
+    /// 戻り値: 引数の開始アドレス（0なら引数なし）
+    static ulong arg(ulong buf_addr) {
+        ulong i = 0;
+        // 最初のスペースを探す
+        while (true) {
+            ulong ch = Mem::read_byte(buf_addr + i);
+            if (ch == 0) { return 0; }  // 引数なし
+            if (ch == Key::Space as ulong) {
+                // スペース後の非スペースを探す
+                while (true) {
+                    i = i + 1;
+                    ulong ch2 = Mem::read_byte(buf_addr + i);
+                    if (ch2 == 0) { return 0; }
+                    if (ch2 != Key::Space as ulong) {
+                        return buf_addr + i;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    /// 第2引数（第1引数の後のスペース以降）のアドレスを取得
+    static ulong arg2(ulong buf_addr) {
+        ulong first = CmdArgs::arg(buf_addr);
+        if (first == 0) { return 0; }
+        return CmdArgs::arg(first);
+    }
+
+}

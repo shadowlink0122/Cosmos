@@ -1,0 +1,84 @@
+//! platform: baremetal-x86
+// Result<T,E> T==E バグ再現テスト
+// Result<long, long>::Ok(100) が正しく抽出できるか確認
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/result;
+import ../../include/errno;
+import ../test_io;
+import ../ktest;
+
+/// Result<long, long> 型を返すヘルパー
+struct ResultHelper {}
+
+impl ResultHelper {
+    static Result<long, long> return_ok_100() {
+        return Result::Ok(100);
+    }
+
+    static Result<long, long> return_ok_0() {
+        return Result::Ok(0);
+    }
+
+    static Result<long, long> return_err_42() {
+        return Result::Err(42);
+    }
+}
+
+/// Result テストスイート
+export struct TestResult {}
+
+impl TestResult {
+    /// Ok(0)テスト
+    static void test_ok_zero() {
+        long v1 = 999;
+        Result<long, long> r1 = ResultHelper::return_ok_0();
+        match (r1) {
+            Result::Ok(v) => { v1 = v; }
+            Result::Err(e) => { v1 = 0 - e; }
+        }
+        KTest::assert_eq(v1 as ulong, 0, "Result<long,long> Ok(0)" as void*);
+    }
+
+    /// Ok(100)テスト — T==Eバグの核心
+    static void test_ok_value() {
+        long v2 = 999;
+        Result<long, long> r2 = ResultHelper::return_ok_100();
+        match (r2) {
+            Result::Ok(v) => { v2 = v; }
+            Result::Err(e) => { v2 = 0 - e; }
+        }
+        KTest::assert_eq(v2 as ulong, 100, "Result<long,long> Ok(100)" as void*);
+    }
+
+    /// Err(42)テスト
+    static void test_err() {
+        long v3 = 999;
+        Result<long, long> r3 = ResultHelper::return_err_42();
+        match (r3) {
+            Result::Ok(v) => { v3 = v; }
+            Result::Err(e) => { v3 = e; }
+        }
+        KTest::assert_eq(v3 as ulong, 42, "Result<long,long> Err(42)" as void*);
+    }
+
+    /// インラインResult構築テスト
+    static void test_inline() {
+        long v4 = 999;
+        Result<long, long> r4 = Result::Ok(200);
+        match (r4) {
+            Result::Ok(v) => { v4 = v; }
+            Result::Err(e) => { v4 = 0 - e; }
+        }
+        KTest::assert_eq(v4 as ulong, 200, "Result<long,long> inline Ok(200)" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestResult::test_ok_zero();
+        TestResult::test_ok_value();
+        TestResult::test_err();
+        TestResult::test_inline();
+    }
+}

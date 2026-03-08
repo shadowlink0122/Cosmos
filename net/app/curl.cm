@@ -1,0 +1,691 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::curl - HTTP GETクライアント (curlコマンド)
+//
+// URL解析 → DNS解決 → TCP 3-way handshake → HTTP GET送信 →
+// レスポンス受信・表示。QEMU SLIRP経由でインターネット接続。
+//
+// 使用例: curl http://example.com
+
+import ../../include/types;
+import ../../include/net;
+import ../../include/errno;
+import ../../include/result;
+import ../../drivers/virtio/virtio_net;
+import ../../drivers/serial;
+import ../../drivers/timer/pit;
+import ../core/ethernet;
+import ../core/ip;
+import ../transport/tcp;
+import ../core/arp;
+import ./dns;
+import ./http;
+import ../../include/keycode;
+import ../../lib/kstring;
+import ../../apps/terminal/shell/io;
+import ../../apps/terminal/shell/util;
+import ../../apps/terminal/shell/defs;
+import ../../apps/terminal/mem;
+
+// ============================================================
+// Curl 定数
+// ============================================================
+
+// パケットバッファ (送信/受信用)
+const ulong CURL_TX_BUF = 0xA80000;    // 送信パケットバッファ (2KB)
+const ulong CURL_RX_BUF = 0xA81000;    // 受信パケットバッファ (2KB)
+const ulong CURL_HOST_BUF = 0xA82000;  // ホスト名バッファ (256B)
+const ulong CURL_PATH_BUF = 0xA82100;  // パスバッファ (256B)
+const ulong CURL_RESP_BUF = 0xA83000;  // レスポンス蓄積バッファ (16KB)
+const ulong CURL_RESP_MAX = 16384;     // 最大レスポンスサイズ
+
+// TCPクライアントポート（エフェメラル）
+const ulong CURL_LOCAL_PORT_BASE = 0xA82200;
+
+// ============================================================
+// Curl — HTTP GETクライアント
+// ============================================================
+
+export struct Curl {}
+
+impl Curl {
+
+    /// curl <url> — HTTP GETリクエストを実行しレスポンスを表示
+    static void get(ulong url_addr) {
+        if (url_addr == 0) {
+            Shell::writeln("Usage: curl <url>" as void*);
+            return;
+        }
+
+        if (VirtioNet::is_ready() == 0) {
+            Shell::writeln("curl: network not available" as void*);
+            return;
+        }
+
+        // HTTPS検出 (TLS未実装)
+        if (startswith(url_addr as void*, "https://" as void*) != 0) {
+            Shell::writeln("curl: HTTPS is not supported (TLS not implemented)" as void*);
+            Shell::writeln("  Use http:// instead" as void*);
+            return;
+        }
+
+        // 1. URL解析: http://hostname/path
+        ulong host_buf = CURL_HOST_BUF;
+        ulong path_buf = CURL_PATH_BUF;
+        ulong port = 80;
+
+        ulong ok = Curl::parse_url(url_addr, host_buf, path_buf, &port);
+        if (ok == 0) {
+            Shell::writeln("curl: invalid URL (use http://host/path)" as void*);
+            return;
+        }
+
+        // ホスト名表示
+        Shell::write("Connecting to " as void*);
+        Shell::write(host_buf as void*);
+        Shell::write(":" as void*);
+        Shell::print_dec(port);
+        Shell::writeln("..." as void*);
+
+        // 2. DNS解決
+        ulong remote_ip = Dns::resolve(host_buf);
+        if (remote_ip == 0) {
+            Shell::writeln("curl: DNS resolution failed" as void*);
+            return;
+        }
+
+        Shell::write("Resolved: " as void*);
+        Curl::print_ip(remote_ip);
+        Shell::newline();
+
+        // 3. TCP 3-way handshake
+        ulong local_port = Curl::next_port();
+        ulong conn_id = Curl::tcp_connect(remote_ip, port, local_port);
+        if (conn_id == INVALID_U32) {
+            Shell::writeln("curl: TCP connection failed" as void*);
+            return;
+        }
+
+        // 4. HTTP GETリクエスト送信
+        ulong req_len = Curl::build_http_get(CURL_TX_BUF + 14 + 20 + 20,
+            path_buf, host_buf);
+
+        // TCP+IP+Ethernetでラップして送信
+        ulong sent = Curl::tcp_send(conn_id, remote_ip, port, local_port,
+            CURL_TX_BUF + 14 + 20 + 20, req_len);
+        if (sent == 0) {
+            Shell::writeln("curl: failed to send request" as void*);
+            return;
+        }
+
+        // 5. レスポンス受信
+        ulong resp_total = 0;
+        ulong resp_buf = CURL_RESP_BUF;
+        ulong timeout = PIT::get_ticks() + 500;  // 5秒タイムアウト
+        ulong fin_received = 0;
+
+        while (PIT::get_ticks() < timeout && fin_received == 0) {
+            ulong rx_len = VirtioNet::recv(CURL_RX_BUF, 1500);
+            if (rx_len > 0) {
+                // Ethernetヘッダ確認
+                ulong et_hi = Mem::read_byte(CURL_RX_BUF + 12);
+                ulong et_lo = Mem::read_byte(CURL_RX_BUF + 13);
+                ulong etype = (et_hi << 8) | et_lo;
+
+                if (etype == ETH_TYPE_ARP) {
+                    Arp::handle_packet(CURL_RX_BUF + 14, rx_len - 14);
+                } else if (etype == ETH_TYPE_IP) {
+                    ulong ip_proto = Mem::read_byte(CURL_RX_BUF + 14 + 9);
+                    if (ip_proto == IP_PROTO_TCP) {
+                        // IPヘッダ長
+                        ulong ip_ihl = Mem::read_byte(CURL_RX_BUF + 14) & 0x0F;
+                        ulong ip_hdr_len = ip_ihl * 4;
+
+                        // TCPヘッダ解析
+                        TcpHeader tcp_hdr = {
+                            src_port: 0, dst_port: 0,
+                            seq_num: 0, ack_num: 0,
+                            data_offset: 0, flags: 0,
+                            window: 0, checksum: 0, urgent_ptr: 0
+                        };
+                        ulong tcp_hdr_len = Tcp::parse(CURL_RX_BUF + 14 + ip_hdr_len, &tcp_hdr);
+
+                        // 宛先ポート確認
+                        if (tcp_hdr.dst_port == local_port && tcp_hdr.src_port == port) {
+                            // データがあればコピー
+                            ulong total_ip_len_hi = Mem::read_byte(CURL_RX_BUF + 14 + 2);
+                            ulong total_ip_len_lo = Mem::read_byte(CURL_RX_BUF + 14 + 3);
+                            ulong total_ip_len = (total_ip_len_hi << 8) | total_ip_len_lo;
+                            ulong tcp_payload_len = total_ip_len - ip_hdr_len - tcp_hdr_len;
+
+                            if (tcp_payload_len > 0 && resp_total + tcp_payload_len <= CURL_RESP_MAX) {
+                                // ペイロードコピー
+                                ulong payload_start = CURL_RX_BUF + 14 + ip_hdr_len + tcp_hdr_len;
+                                ulong ci = 0;
+                                while (ci < tcp_payload_len) {
+                                    Mem::write_byte(resp_buf + resp_total + ci,
+                                        Mem::read_byte(payload_start + ci));
+                                    ci = ci + 1;
+                                }
+                                resp_total = resp_total + tcp_payload_len;
+
+                                // コネクション状態更新
+                                ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+                                ulong* recv_next_ptr = (base + 56) as ulong*;
+                                *recv_next_ptr = tcp_hdr.seq_num + tcp_payload_len;
+                                ulong* send_next_ptr = (base + 40) as ulong*;
+
+                                // ACK送信
+                                Curl::tcp_send_ack(conn_id, remote_ip, port, local_port,
+                                    *send_next_ptr,
+                                    tcp_hdr.seq_num + tcp_payload_len);
+                            }
+
+                            // FIN受信チェック
+                            if ((tcp_hdr.flags & TCP_FIN) != 0) {
+                                fin_received = 1;
+                                // FIN ACK送信
+                                ulong base2 = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+                                ulong* sn_ptr = (base2 + 40) as ulong*;
+                                Curl::tcp_send_ack(conn_id, remote_ip, port, local_port,
+                                    *sn_ptr,
+                                    tcp_hdr.seq_num + 1);
+                            }
+
+                            // タイムアウトリセット（データ受信中）
+                            timeout = PIT::get_ticks() + 300;
+                        }
+                    }
+                }
+            }
+            __asm__(`pause`);
+        }
+
+        // 6. レスポンス表示
+        if (resp_total > 0) {
+            // HTTPヘッダとボディの分離
+            ulong body_start = Curl::find_body(resp_buf, resp_total);
+            if (body_start > 0) {
+                // ボディのみ表示
+                ulong bi = body_start;
+                while (bi < resp_total) {
+                    ulong ch = Mem::read_byte(resp_buf + bi);
+                    if (ch >= Key::Space as ulong && ch < Key::Delete as ulong) {
+                        Shell::putc(ch);
+                    } else if (ch == Key::Enter as ulong) {
+                        Shell::newline();
+                    } else if (ch == Key::CR as ulong) {
+                        // CR: 無視
+                    } else if (ch == Key::Tab as ulong) {
+                        Shell::putc(Key::Space as ulong);  // Tab → space
+                    }
+                    bi = bi + 1;
+                }
+            } else {
+                // ヘッダ/ボディ分離できない: 全体表示
+                ulong bi = 0;
+                while (bi < resp_total) {
+                    ulong ch = Mem::read_byte(resp_buf + bi);
+                    if (ch >= Key::Space as ulong && ch < Key::Delete as ulong) {
+                        Shell::putc(ch);
+                    } else if (ch == Key::Enter as ulong) {
+                        Shell::newline();
+                    }
+                    bi = bi + 1;
+                }
+            }
+            Shell::newline();
+        } else {
+            Shell::writeln("curl: no response received" as void*);
+        }
+
+        // TCP接続クローズ
+        Tcp::close_conn(conn_id);
+    }
+
+    // ====================================================================
+    // URL解析: "http://host:port/path" → host, path, port
+    // ====================================================================
+    static ulong parse_url(ulong url, ulong host_out, ulong path_out, ulong* port_out) {
+        // "http://" プレフィックスをスキップ
+        ulong pos = 0;
+        if (startswith(url as void*, "http://" as void*) != 0) {
+            pos = 7;
+        }
+
+        // ホスト名の抽出 (':'か'/'か終端まで)
+        ulong host_len = 0;
+        while (host_len < 200) {
+            ulong ch = Mem::read_byte(url + pos + host_len);
+            if (ch == Key::Null as ulong || ch == Ascii::Slash as ulong || ch == Ascii::Colon as ulong) { break; }
+            Mem::write_byte(host_out + host_len, ch);
+            host_len = host_len + 1;
+        }
+        Mem::write_byte(host_out + host_len, 0);
+
+        if (host_len == 0) { return 0; }
+
+        pos = pos + host_len;
+
+        // ポート番号チェック
+        ulong ch = Mem::read_byte(url + pos);
+        if (ch == Ascii::Colon as ulong) {
+            pos = pos + 1;
+            ulong port_val = 0;
+            while (true) {
+                ch = Mem::read_byte(url + pos);
+                if (ch < Ascii::Digit0 as ulong || ch > Ascii::Digit9 as ulong) { break; }
+                port_val = port_val * 10 + (ch - Ascii::Digit0 as ulong);
+                pos = pos + 1;
+            }
+            if (port_val > 0) {
+                *port_out = port_val;
+            }
+        }
+
+        // パスの抽出
+        ch = Mem::read_byte(url + pos);
+        if (ch == Ascii::Slash as ulong) {
+            ulong path_len = 0;
+            while (path_len < 200) {
+                ch = Mem::read_byte(url + pos + path_len);
+                if (ch == 0) { break; }
+                Mem::write_byte(path_out + path_len, ch);
+                path_len = path_len + 1;
+            }
+            Mem::write_byte(path_out + path_len, 0);
+        } else {
+            // パスなし → "/"
+            Mem::write_byte(path_out, Ascii::Slash as ulong);
+            Mem::write_byte(path_out + 1, Key::Null as ulong);
+        }
+
+        return 1;
+    }
+
+    // ====================================================================
+    // TCP 3-way handshake (SYN → SYN+ACK → ACK)
+    // ====================================================================
+    static ulong tcp_connect(ulong remote_ip, ulong remote_port, ulong local_port) {
+        // コネクション作成
+        long cid = -1;
+        Result<long, long> tcr = Tcp::create();
+        match (tcr) {
+            Result::Ok(v) => { cid = v; }
+            Result::Err(e) => {}
+        }
+        if (cid < 0) { return INVALID_U32; }
+        ulong conn_id = cid as ulong;
+
+        Tcp::bind_conn(conn_id, GUEST_IP, local_port);
+
+        // コネクション情報設定
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* rport_ptr = (base + 16) as ulong*;
+        ulong* raddr_ptr = (base + 32) as ulong*;
+        *rport_ptr = remote_port;
+        *raddr_ptr = remote_ip;
+
+        // ISN (Initial Sequence Number)
+        ulong isn = PIT::get_ticks() * 12345 + 67890;
+
+        ulong* send_next_ptr = (base + 40) as ulong*;
+        *send_next_ptr = isn;
+
+        // SYN送信
+        Curl::tcp_send_flags(remote_ip, remote_port, local_port,
+            isn, 0, TCP_SYN);
+        Tcp::set_state(conn_id, TCP_SYN_SENT);
+
+        // SYN+ACK待機 (3秒タイムアウト)
+        ulong timeout = PIT::get_ticks() + 300;
+        while (PIT::get_ticks() < timeout) {
+            ulong rx_len = VirtioNet::recv(CURL_RX_BUF, 1500);
+            if (rx_len > 0) {
+                ulong et_hi = Mem::read_byte(CURL_RX_BUF + 12);
+                ulong et_lo = Mem::read_byte(CURL_RX_BUF + 13);
+                ulong etype = (et_hi << 8) | et_lo;
+
+                if (etype == ETH_TYPE_ARP) {
+                    Arp::handle_packet(CURL_RX_BUF + 14, rx_len - 14);
+                } else if (etype == ETH_TYPE_IP) {
+                    ulong ip_proto = Mem::read_byte(CURL_RX_BUF + 14 + 9);
+                    if (ip_proto == IP_PROTO_TCP) {
+                        ulong ip_ihl = Mem::read_byte(CURL_RX_BUF + 14) & 0x0F;
+                        ulong ip_hdr_len = ip_ihl * 4;
+
+                        TcpHeader tcp_hdr = {
+                            src_port: 0, dst_port: 0,
+                            seq_num: 0, ack_num: 0,
+                            data_offset: 0, flags: 0,
+                            window: 0, checksum: 0, urgent_ptr: 0
+                        };
+                        Tcp::parse(CURL_RX_BUF + 14 + ip_hdr_len, &tcp_hdr);
+
+                        if (tcp_hdr.dst_port == local_port &&
+                            tcp_hdr.src_port == remote_port &&
+                            (tcp_hdr.flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
+                            // SYN+ACK受信！
+                            ulong* recv_next_ptr = (base + 56) as ulong*;
+                            *recv_next_ptr = tcp_hdr.seq_num + 1;
+                            *send_next_ptr = isn + 1;
+
+                            // ACK送信
+                            Curl::tcp_send_flags(remote_ip, remote_port, local_port,
+                                isn + 1, tcp_hdr.seq_num + 1, TCP_ACK);
+                            Tcp::set_state(conn_id, TCP_ESTABLISHED);
+                            return conn_id;
+                        }
+                    }
+                }
+            }
+            __asm__(`pause`);
+        }
+
+        // タイムアウト
+        Tcp::close_conn(conn_id);
+        return INVALID_U32;
+    }
+
+    // ====================================================================
+    // TCPフラグパケット送信 (SYN, ACK, FIN等)
+    // ====================================================================
+    static void tcp_send_flags(ulong remote_ip, ulong remote_port,
+        ulong local_port, ulong seq, ulong ack,
+        ulong flags) {
+        ulong buf = CURL_TX_BUF;
+        ulong pos = 0;
+
+        // Ethernet ヘッダ
+        ulong our_mac = VirtioNet::mac();
+        ulong gw_mac = GATEWAY_MAC;
+
+        // 宛先MAC (ゲートウェイ)
+        Mem::write_byte(buf, (gw_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 1, (gw_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 2, (gw_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 3, (gw_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 4, (gw_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 5, gw_mac & 0xFF);
+
+        // 送信元MAC
+        Mem::write_byte(buf + 6, (our_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 7, (our_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 8, (our_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 9, (our_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 10, (our_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 11, our_mac & 0xFF);
+
+        // EtherType: IPv4
+        Mem::write_byte(buf + 12, 0x08);
+        Mem::write_byte(buf + 13, 0x00);
+        pos = 14;
+
+        // TCPヘッダ構築 (20バイト)
+        ulong tcp_start = pos + 20;
+        TcpHeader tcp_hdr = {
+            src_port: local_port,
+            dst_port: remote_port,
+            seq_num: seq,
+            ack_num: ack,
+            data_offset: 5,
+            flags: flags,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0
+        };
+        ulong tcp_len = Tcp::build(buf + tcp_start, &tcp_hdr);
+
+        // TCPチェックサム計算（疑似ヘッダ含む）
+        ulong tcp_cksum = Curl::tcp_checksum(GUEST_IP, remote_ip,
+            buf + tcp_start, tcp_len);
+        Mem::write_byte(buf + tcp_start + 16, (tcp_cksum >> 8) & 0xFF);
+        Mem::write_byte(buf + tcp_start + 17, tcp_cksum & 0xFF);
+
+        // IPヘッダ構築
+        IpHeader ip_hdr = {
+            version: 4, ihl: 5, tos: 0,
+            total_len: 20 + tcp_len,
+            id: 0, flags: 2, frag_off: 0,
+            ttl: 64, protocol: IP_PROTO_TCP,
+            checksum: 0,
+            src_addr: GUEST_IP,
+            dst_addr: remote_ip
+        };
+        Ip::build(buf + pos, &ip_hdr);
+
+        // 送信
+        VirtioNet::send(buf, 14 + 20 + tcp_len);
+    }
+
+    // ====================================================================
+    // TCP ACK送信
+    // ====================================================================
+    static void tcp_send_ack(ulong conn_id, ulong remote_ip,
+        ulong remote_port, ulong local_port,
+        ulong seq, ulong ack) {
+        Curl::tcp_send_flags(remote_ip, remote_port, local_port,
+            seq, ack, TCP_ACK);
+    }
+
+    // ====================================================================
+    // TCPデータ送信 (ESTABLISHED状態)
+    // ====================================================================
+    static ulong tcp_send(ulong conn_id, ulong remote_ip,
+        ulong remote_port, ulong local_port,
+        ulong data, ulong data_len) {
+        ulong buf = CURL_TX_BUF;
+        ulong pos = 0;
+
+        ulong base = TCP_CONN_BASE + conn_id * TCP_CONN_SIZE;
+        ulong* send_next_ptr = (base + 40) as ulong*;
+        ulong* recv_next_ptr = (base + 56) as ulong*;
+        ulong seq = *send_next_ptr;
+        ulong ack = *recv_next_ptr;
+
+        // Ethereum ヘッダ
+        ulong our_mac = VirtioNet::mac();
+        ulong gw_mac = GATEWAY_MAC;
+
+        Mem::write_byte(buf, (gw_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 1, (gw_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 2, (gw_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 3, (gw_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 4, (gw_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 5, gw_mac & 0xFF);
+
+        Mem::write_byte(buf + 6, (our_mac >> 40) & 0xFF);
+        Mem::write_byte(buf + 7, (our_mac >> 32) & 0xFF);
+        Mem::write_byte(buf + 8, (our_mac >> 24) & 0xFF);
+        Mem::write_byte(buf + 9, (our_mac >> 16) & 0xFF);
+        Mem::write_byte(buf + 10, (our_mac >> 8) & 0xFF);
+        Mem::write_byte(buf + 11, our_mac & 0xFF);
+
+        Mem::write_byte(buf + 12, 0x08);
+        Mem::write_byte(buf + 13, 0x00);
+        pos = 14;
+
+        // TCPヘッダ + ペイロード
+        ulong tcp_start = pos + 20;
+        TcpHeader tcp_hdr = {
+            src_port: local_port,
+            dst_port: remote_port,
+            seq_num: seq,
+            ack_num: ack,
+            data_offset: 5,
+            flags: TCP_ACK | TCP_PSH,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0
+        };
+        ulong tcp_hdr_len = Tcp::build(buf + tcp_start, &tcp_hdr);
+
+        // ペイロードをTCPヘッダの後にコピー
+        ulong di = 0;
+        while (di < data_len) {
+            Mem::write_byte(buf + tcp_start + tcp_hdr_len + di,
+                Mem::read_byte(data + di));
+            di = di + 1;
+        }
+
+        // TCPチェックサム (ヘッダ + ペイロード)
+        ulong tcp_total = tcp_hdr_len + data_len;
+        ulong tcp_cksum = Curl::tcp_checksum(GUEST_IP, remote_ip,
+            buf + tcp_start, tcp_total);
+        Mem::write_byte(buf + tcp_start + 16, (tcp_cksum >> 8) & 0xFF);
+        Mem::write_byte(buf + tcp_start + 17, tcp_cksum & 0xFF);
+
+        // IPヘッダ
+        IpHeader ip_hdr = {
+            version: 4, ihl: 5, tos: 0,
+            total_len: 20 + tcp_total,
+            id: 0, flags: 2, frag_off: 0,
+            ttl: 64, protocol: IP_PROTO_TCP,
+            checksum: 0,
+            src_addr: GUEST_IP,
+            dst_addr: remote_ip
+        };
+        Ip::build(buf + pos, &ip_hdr);
+
+        // send_next更新
+        *send_next_ptr = seq + data_len;
+
+        // 送信
+        VirtioNet::send(buf, 14 + 20 + tcp_total);
+        return data_len;
+    }
+
+    // ====================================================================
+    // HTTP GETリクエスト構築
+    // ====================================================================
+    static ulong build_http_get(ulong buf, ulong path, ulong host) {
+        ulong pos = 0;
+
+        // "GET "
+        pos = Curl::write_str(buf, pos, "GET " as void*, 4);
+        // パス
+        ulong pi = 0;
+        while (true) {
+            ulong ch = Mem::read_byte(path + pi);
+            if (ch == 0) { break; }
+            Mem::write_byte(buf + pos, ch);
+            pos = pos + 1;
+            pi = pi + 1;
+        }
+        // " HTTP/1.1\r\n"
+        pos = Curl::write_str(buf, pos, " HTTP/1.1\r\n" as void*, 11);
+
+        // "Host: "
+        pos = Curl::write_str(buf, pos, "Host: " as void*, 6);
+        pi = 0;
+        while (true) {
+            ulong ch = Mem::read_byte(host + pi);
+            if (ch == 0) { break; }
+            Mem::write_byte(buf + pos, ch);
+            pos = pos + 1;
+            pi = pi + 1;
+        }
+        pos = Curl::write_str(buf, pos, "\r\n" as void*, 2);
+
+        // "Connection: close\r\n"
+        pos = Curl::write_str(buf, pos, "Connection: close\r\n" as void*, 19);
+
+        // "User-Agent: CosmoLinux/0.1\r\n"
+        pos = Curl::write_str(buf, pos, "User-Agent: CosmoLinux/0.1\r\n" as void*, 28);
+
+        // 空行 (ヘッダ終端)
+        pos = Curl::write_str(buf, pos, "\r\n" as void*, 2);
+
+        return pos;
+    }
+
+    // ====================================================================
+    // HTTPレスポンスのボディ開始位置を検索 (\r\n\r\n)
+    // ====================================================================
+    static ulong find_body(ulong data, ulong len) {
+        ulong i = 0;
+        while (i + 3 < len) {
+            if (Mem::read_byte(data + i) == Key::CR as ulong &&
+                Mem::read_byte(data + i + 1) == Key::Enter as ulong &&
+                Mem::read_byte(data + i + 2) == Key::CR as ulong &&
+                Mem::read_byte(data + i + 3) == Key::Enter as ulong) {
+                return i + 4;
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // ====================================================================
+    // TCPチェックサム計算（疑似ヘッダ込み, RFC 793）
+    // ====================================================================
+    static ulong tcp_checksum(ulong src_ip, ulong dst_ip,
+        ulong tcp_data, ulong tcp_len) {
+        ulong sum = 0;
+
+        // 疑似ヘッダ
+        sum = sum + ((src_ip >> 16) & 0xFFFF);
+        sum = sum + (src_ip & 0xFFFF);
+        sum = sum + ((dst_ip >> 16) & 0xFFFF);
+        sum = sum + (dst_ip & 0xFFFF);
+        sum = sum + IP_PROTO_TCP;
+        sum = sum + tcp_len;
+
+        // TCPデータ
+        ulong i = 0;
+        while (i < tcp_len) {
+            ulong hi = Mem::read_byte(tcp_data + i);
+            ulong lo = 0;
+            if (i + 1 < tcp_len) {
+                lo = Mem::read_byte(tcp_data + i + 1);
+            }
+            sum = sum + ((hi << 8) | lo);
+            i = i + 2;
+        }
+
+        // キャリー折り返し
+        while ((sum >> 16) > 0) {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+
+        return (sum ^ 0xFFFF) & 0xFFFF;
+    }
+
+    // ====================================================================
+    // ヘルパー: 文字列書き込み
+    // ====================================================================
+    static ulong write_str(ulong buf, ulong pos, void* str, ulong len) {
+        ulong src = str as ulong;
+        ulong i = 0;
+        while (i < len) {
+            Mem::write_byte(buf + pos + i, Mem::read_byte(src + i));
+            i = i + 1;
+        }
+        return pos + len;
+    }
+
+    // ====================================================================
+    // ヘルパー: エフェメラルポート生成
+    // ====================================================================
+    static ulong next_port() {
+        ulong* port_ptr = CURL_LOCAL_PORT_BASE as ulong*;
+        ulong p = *port_ptr;
+        if (p < 49152) { p = 49152; }
+        p = p + 1;
+        if (p > 65000) { p = 49152; }
+        *port_ptr = p;
+        return p;
+    }
+
+    // ====================================================================
+    // ヘルパー: IPアドレス表示
+    // ====================================================================
+    static void print_ip(ulong ip) {
+        Shell::print_dec((ip >> 24) & 0xFF);
+        Shell::putc(Ascii::Period as ulong);
+        Shell::print_dec((ip >> 16) & 0xFF);
+        Shell::putc(Ascii::Period as ulong);
+        Shell::print_dec((ip >> 8) & 0xFF);
+        Shell::putc(Ascii::Period as ulong);
+        Shell::print_dec(ip & 0xFF);
+    }
+}

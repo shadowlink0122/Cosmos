@@ -1,0 +1,316 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::syscall_proc - プロセス・シグナル関連syscall
+//
+// getuid/getgid/geteuid/getegid, clock_gettime, nanosleep,
+// rt_sigaction, rt_sigprocmask, prlimit64, getrandom 等を実装。
+//
+// 参照: linux/kernel/sys.c, linux/kernel/time.c
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/errno;
+import ../../include/scheduler;
+import ../../arch/x86_64/cpu;
+import ../../sched/process;
+import ../../sched/scheduler;
+import ../table;
+
+// ============================================================
+// 時刻関連定数
+// ============================================================
+
+/// CLOCK_REALTIME
+const ulong CLOCK_REALTIME  = 0;
+
+/// CLOCK_MONOTONIC
+const ulong CLOCK_MONOTONIC = 1;
+
+/// struct timespec サイズ (Linux x86_64: 16バイト)
+/// { time_t tv_sec; long tv_nsec; }
+
+// PIT/TSCベースの簡易カウンタ (起動からのtick数)
+const PhysAddr BOOT_TICK_ADDR = 0x9B000;
+
+// ============================================================
+// prlimit64 リソース定数
+// ============================================================
+
+const ulong RLIMIT_STACK   = 3;
+const ulong RLIMIT_NOFILE  = 7;
+const ulong RLIMIT_AS      = 9;
+
+// struct rlimit { rlim_t rlim_cur; rlim_t rlim_max; } = 16バイト
+
+// ============================================================
+// SyscallProc — プロセス・シグナル関連syscall
+// ============================================================
+
+export struct SyscallProc {}
+
+impl SyscallProc {
+    /// sys_getuid: ユーザーID取得 (常にroot=0)
+    static long getuid() { return 0; }
+
+    /// sys_getgid: グループID取得 (常にroot=0)
+    static long getgid() { return 0; }
+
+    /// sys_geteuid: 実効UID取得 (常にroot=0)
+    static long geteuid() { return 0; }
+
+    /// sys_getegid: 実効GID取得 (常にroot=0)
+    static long getegid() { return 0; }
+
+    /// sys_clock_gettime: 時刻取得
+    /// 参照: linux/kernel/time/posix-timers.c
+    static long clock_gettime(ulong clk_id, ulong tp_addr) {
+        if (tp_addr == 0) { return 0 - EFAULT; }
+
+        // PIT tick数をベースに秒数を計算
+        // 1 tick ≈ 10ms (100 Hz timer), ticks / 100 = 秒
+        ulong* tick_ptr = BOOT_TICK_ADDR as ulong*;
+        ulong ticks = *tick_ptr;
+        ulong seconds = ticks / 100;
+        ulong nsec = (ticks % 100) * 10000000;  // 残りticksをナノ秒に
+
+        // struct timespec { tv_sec (8B), tv_nsec (8B) }
+        ulong* tv_sec = tp_addr as ulong*;
+        ulong* tv_nsec = (tp_addr + 8) as ulong*;
+
+        if (clk_id == CLOCK_REALTIME) {
+            // 2026年3月1日のUNIX時刻 + 起動からの秒数（近似値）
+            *tv_sec = 1772531200 + seconds;
+            *tv_nsec = nsec;
+            return 0;
+        }
+        if (clk_id == CLOCK_MONOTONIC) {
+            *tv_sec = seconds;
+            *tv_nsec = nsec;
+            return 0;
+        }
+        return 0 - EINVAL;
+    }
+
+    /// sys_nanosleep: スリープ（簡易busy-wait実装）
+    static long nanosleep(ulong req_addr, ulong rem_addr) {
+        if (req_addr == 0) { return 0 - EFAULT; }
+
+        // struct timespec { tv_sec, tv_nsec }
+        ulong* req_sec = req_addr as ulong*;
+        ulong* req_nsec = (req_addr + 8) as ulong*;
+
+        // 簡易実装: busy-waitでスリープ
+        // 1秒 ≈ 10^9 ループ程度（CPUクロック依存）
+        ulong loops = (*req_sec) * 100000 + (*req_nsec) / 10000;
+        ulong i = 0;
+        while (i < loops) {
+            __asm__(`pause`);
+            i = i + 1;
+        }
+
+        // 残りの時間を0に設定
+        if (rem_addr != 0) {
+            ulong* rem_sec = rem_addr as ulong*;
+            ulong* rem_nsec = (rem_addr + 8) as ulong*;
+            *rem_sec = 0;
+            *rem_nsec = 0;
+        }
+        return 0;
+    }
+
+    /// sys_rt_sigaction: シグナルハンドラ登録
+    /// 参照: linux/kernel/signal.c
+    /// 簡易版: 登録を受け付けるが実際のハンドラ実行はしない
+    static long rt_sigaction(ulong signum, ulong act_addr, ulong oldact_addr, ulong sigsetsize) {
+        // SIGKILL(9)とSIGSTOP(19)は変更不可
+        if (signum == 9 || signum == 19) {
+            return 0 - EINVAL;
+        }
+        // oldactに現在のハンドラ情報を返す（ゼロ埋め=デフォルト動作）
+        if (oldact_addr != 0) {
+            memzero(oldact_addr as void*, 32);
+        }
+        // 実際のハンドラ登録は現段階ではスキップ（成功を返す）
+        return 0;
+    }
+
+    /// sys_rt_sigprocmask: シグナルマスク操作
+    /// 簡易版: 操作を受け付けるが実際のマスク変更はしない
+    static long rt_sigprocmask(ulong how, ulong set_addr, ulong oldset_addr, ulong sigsetsize) {
+        // 現在のマスクを返す（空）
+        if (oldset_addr != 0) {
+            ulong* old = oldset_addr as ulong*;
+            *old = 0;
+        }
+        return 0;
+    }
+
+    /// sys_prlimit64: リソース制限
+    /// 参照: linux/kernel/sys.c
+    static long prlimit64(ulong pid, ulong resource, ulong new_rlim, ulong old_rlim) {
+        // 古い制限値を返す
+        if (old_rlim != 0) {
+            ulong* cur = old_rlim as ulong*;
+            ulong* max = (old_rlim + 8) as ulong*;
+            if (resource == RLIMIT_STACK) {
+                *cur = 8388608;  // 8MB スタック
+                *max = 0xFFFFFFFFFFFFFFFF;
+            } else if (resource == RLIMIT_NOFILE) {
+                *cur = 16;  // MAX_FD
+                *max = 16;
+            } else if (resource == RLIMIT_AS) {
+                *cur = 0xFFFFFFFFFFFFFFFF;
+                *max = 0xFFFFFFFFFFFFFFFF;
+            } else {
+                *cur = 0xFFFFFFFFFFFFFFFF;
+                *max = 0xFFFFFFFFFFFFFFFF;
+            }
+        }
+        return 0;
+    }
+
+    /// sys_getrandom: ランダムデータ取得
+    /// RDRAND命令を使用してハードウェアRNGからデータを生成
+    static long getrandom(ulong buf, ulong buflen, ulong flags) {
+        if (buf == 0) { return 0 - EFAULT; }
+        ulong i = 0;
+        while (i < buflen) {
+            // RDRAND で8バイトのランダム値を取得
+            ulong rand_val = 0;
+            __asm__(`
+                1: rdrand %rax;
+                jnc 1b;
+                movq %rax, ${=r:rand_val}
+            `);
+            // バイト単位でバッファに書き込み
+            ulong j = 0;
+            while (j < 8 && (i + j) < buflen) {
+                ulong byte_val = (rand_val >> (j * 8)) & 0xFF;
+                ulong addr = buf + i + j;
+                __asm__(`movq ${r:addr}, %rdi; movq ${r:byte_val}, %rax; movb %al, (%rdi)`);
+                j = j + 1;
+            }
+            i = i + 8;
+        }
+        return buflen as long;
+    }
+
+    /// sys_gettid: スレッドID取得 (PIDと同一)
+    static long gettid() {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) { return cur->pid; }
+        return 1;
+    }
+
+    /// sys_sigaltstack: 代替シグナルスタック設定
+    /// 簡易版: 設定を受け付けるが実際のスタック切替はしない
+    static long sigaltstack(ulong ss_addr, ulong old_ss_addr) {
+        // old_ssに現在のスタック情報を返す (SS_DISABLE)
+        if (old_ss_addr != 0) {
+            ulong* ss_sp = old_ss_addr as ulong*;
+            ulong* ss_flags = (old_ss_addr + 8) as ulong*;
+            ulong* ss_size = (old_ss_addr + 16) as ulong*;
+            *ss_sp = 0;
+            *ss_flags = 2;  // SS_DISABLE
+            *ss_size = 0;
+        }
+        return 0;
+    }
+
+    /// sys_futex: futex操作
+    /// 簡易版: FUTEX_WAITはスキップ、FUTEX_WAKEは0を返す
+    static long futex(ulong uaddr, ulong op, ulong val, ulong timeout, ulong uaddr2, ulong val3) {
+        ulong cmd = op & 0x7F;  // FUTEX_PRIVATE_FLAG をマスク
+        if (cmd == 0) {
+            // FUTEX_WAIT: 値が一致したらスリープ（簡易: 即return）
+            return 0 - EAGAIN;
+        }
+        if (cmd == 1) {
+            // FUTEX_WAKE: ウェイク（簡易: 0を返す）
+            return 0;
+        }
+        return 0;
+    }
+
+    /// sys_getrusage: リソース使用量取得
+    /// 簡易版: 全てゼロ
+    static long getrusage(ulong who, ulong usage_addr) {
+        if (usage_addr == 0) { return 0 - EFAULT; }
+        memzero(usage_addr as void*, 144);  // struct rusage = 144バイト
+        return 0;
+    }
+
+    /// sys_sysinfo: システム情報取得
+    static long sysinfo(ulong info_addr) {
+        if (info_addr == 0) { return 0 - EFAULT; }
+        memzero(info_addr as void*, 112);  // struct sysinfo = 112バイト
+
+        // uptime (秒)
+        ulong* tick_ptr = BOOT_TICK_ADDR as ulong*;
+        ulong ticks = *tick_ptr;
+        ulong* uptime = info_addr as ulong*;
+        *uptime = ticks / 100;
+
+        // totalram (256MB)
+        ulong* totalram = (info_addr + 32) as ulong*;
+        *totalram = 256 * 1024 * 1024;
+
+        // freeram (200MB 概算)
+        ulong* freeram = (info_addr + 40) as ulong*;
+        *freeram = 200 * 1024 * 1024;
+
+        // mem_unit = 1
+        ulong* mem_unit_ptr = (info_addr + 104) as ulong*;
+        *mem_unit_ptr = 1;
+
+        // procs = 実行中プロセス数
+        ulong* procs_ptr = (info_addr + 64) as ulong*;
+        *procs_ptr = 1;
+
+        return 0;
+    }
+
+    /// sys_gettimeofday: 現在時刻取得
+    static long gettimeofday(ulong tv_addr, ulong tz_addr) {
+        if (tv_addr != 0) {
+            ulong* tick_ptr = BOOT_TICK_ADDR as ulong*;
+            ulong ticks = *tick_ptr;
+            ulong seconds = ticks / 100;
+            ulong usec = (ticks % 100) * 10000;
+
+            ulong* tv_sec = tv_addr as ulong*;
+            ulong* tv_usec = (tv_addr + 8) as ulong*;
+            *tv_sec = 1772531200 + seconds;
+            *tv_usec = usec;
+        }
+        if (tz_addr != 0) {
+            memzero(tz_addr as void*, 8);
+        }
+        return 0;
+    }
+
+    /// sys_madvise: メモリアドバイス (無視)
+    static long madvise(ulong addr, ulong length, ulong advice) {
+        return 0;
+    }
+
+    /// sys_umask: ファイル作成マスク設定
+    static long umask(ulong mask) {
+        return 0x22;  // 常に022を返す
+    }
+
+    /// sys_sched_yield: CPUを譲る
+    static long sched_yield() {
+        return 0;
+    }
+
+    /// sys_sched_getaffinity: CPUアフィニティ取得
+    static long sched_getaffinity(ulong pid, ulong cpusetsize, ulong mask_addr) {
+        if (mask_addr == 0) { return 0 - EFAULT; }
+        // 単一CPU: ビット0のみ設定
+        memzero(mask_addr as void*, cpusetsize);
+        ulong* mask = mask_addr as ulong*;
+        *mask = 1;
+        return cpusetsize as long;
+    }
+}

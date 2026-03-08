@@ -1,0 +1,583 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::syscall_fs - ファイルシステム関連syscall
+//
+// stat, lseek, openat, readlinkat, faccessat, getdents64,
+// pread64, pwrite64, readv, fcntl 等のファイルシステムsyscallを実装。
+//
+// 参照: linux/fs/stat.c, linux/fs/open.c, linux/fs/readdir.c
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/errno;
+import ../../include/result;
+import ../../include/vfs;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../fs/fd_table;
+import ../../fs/vfs;
+import ../../fs/ramfs;
+import ../table;
+import ../../apps/terminal/shell/util;
+
+// ============================================================
+// stat構造体定数 (Linux x86_64 struct stat = 144バイト)
+// ============================================================
+
+// struct stat フィールドオフセット
+const ulong STAT_ST_DEV     = 0;    // 8バイト
+const ulong STAT_ST_INO     = 8;    // 8バイト
+const ulong STAT_ST_NLINK   = 16;   // 8バイト
+const ulong STAT_ST_MODE    = 24;   // 4バイト
+const ulong STAT_ST_UID     = 28;   // 4バイト
+const ulong STAT_ST_GID     = 32;   // 4バイト
+const ulong STAT_ST_RDEV    = 40;   // 8バイト
+const ulong STAT_ST_SIZE    = 48;   // 8バイト
+const ulong STAT_ST_BLKSIZE = 56;   // 8バイト
+const ulong STAT_ST_BLOCKS  = 64;   // 8バイト
+const ulong STAT_SIZE       = 144;  // struct stat 全体サイズ
+
+// AT_FDCWD: カレントディレクトリを基準にする
+const long AT_FDCWD = 0 - 100;
+
+// fcntl コマンド
+const ulong F_GETFD = 1;
+const ulong F_SETFD = 2;
+const ulong F_GETFL = 3;
+const ulong F_SETFL = 4;
+const ulong F_DUPFD = 0;
+const ulong F_DUPFD_CLOEXEC = 1030;
+
+// getdents64 エントリ構造
+// struct linux_dirent64 {
+//     u64 d_ino;     // inode番号
+//     u64 d_off;     // ディレクトリストリーム内オフセット
+//     u16 d_reclen;  // エントリサイズ
+//     u8  d_type;    // ファイルタイプ
+//     char d_name[]; // ファイル名
+// }
+
+// ディレクトリエントリタイプ
+const ulong DT_REG  = 8;  // 通常ファイル
+const ulong DT_DIR  = 4;  // ディレクトリ
+
+// ============================================================
+// SyscallFs — ファイルシステム関連syscall
+// ============================================================
+
+export struct SyscallFs {}
+
+impl SyscallFs {
+    /// stat/fstat共通: struct statを埋める
+    static void fill_stat(ulong stat_addr, ulong ino, ulong mode, ulong size) {
+        // 全体をゼロ初期化
+        memzero(stat_addr as void*, STAT_SIZE);
+
+        // st_ino
+        ulong* ino_ptr = (stat_addr + STAT_ST_INO) as ulong*;
+        *ino_ptr = ino;
+
+        // st_nlink = 1
+        ulong* nlink_ptr = (stat_addr + STAT_ST_NLINK) as ulong*;
+        *nlink_ptr = 1;
+
+        // st_mode (4バイトだが上位をゼロクリアしているので安全)
+        ulong* mode_ptr = (stat_addr + STAT_ST_MODE) as ulong*;
+        *mode_ptr = mode;
+
+        // st_size
+        ulong* size_ptr = (stat_addr + STAT_ST_SIZE) as ulong*;
+        *size_ptr = size;
+
+        // st_blksize = 4096
+        ulong* blksize_ptr = (stat_addr + STAT_ST_BLKSIZE) as ulong*;
+        *blksize_ptr = 4096;
+
+        // st_blocks = ceil(size / 512)
+        ulong* blocks_ptr = (stat_addr + STAT_ST_BLOCKS) as ulong*;
+        *blocks_ptr = (size + 511) / 512;
+    }
+
+    /// sys_fstat: FDからファイル情報を取得
+    static long fstat(ulong fd, ulong stat_addr) {
+        if (stat_addr == 0) { return 0 - EFAULT; }
+        // stdin/stdout/stderr: キャラクタデバイス
+        if (fd == 0 || fd == 1 || fd == 2) {
+            SyscallFs::fill_stat(stat_addr, fd, 0x2190, 0);
+            return 0;
+        }
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        ulong fsize = RamFs::file_size(ino);
+        SyscallFs::fill_stat(stat_addr, ino, 0x81A4, fsize);
+        return 0;
+    }
+
+    /// sys_newfstatat: パス名からファイル情報を取得 (AT_FDCWD対応)
+    static long newfstatat(long dirfd, ulong pathname, ulong stat_addr, ulong flags) {
+        if (stat_addr == 0) { return 0 - EFAULT; }
+        if (pathname == 0) { return 0 - EFAULT; }
+
+        // ルートディレクトリ "/" の特別処理
+        ulong first_ch = 0;
+        __asm__(`movq ${r:pathname}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:first_ch}`);
+        ulong second_ch = 0;
+        ulong second_addr = pathname + 1;
+        __asm__(`movq ${r:second_addr}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:second_ch}`);
+        if (first_ch == 47 && second_ch == 0) {
+            // "/" → ディレクトリ (S_IFDIR | 0755 = 0x41ED)
+            SyscallFs::fill_stat(stat_addr, 1, 0x41ED, 4096);
+            return 0;
+        }
+
+        // RamFSでファイルを検索
+        // パス先頭の'/'をスキップ（RamFSはプレフィックスなしで格納）
+        ulong search_path = pathname;
+        ulong sp_ch = 0;
+        __asm__(`movq ${r:search_path}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sp_ch}`);
+        if (sp_ch == 47) {
+            search_path = pathname + 1;
+        }
+        Ino ino = RamFs::lookup(search_path as void*);
+        if (ino == 0) {
+            return 0 - ENOENT;
+        }
+        ulong fsize = RamFs::file_size(ino);
+
+        // ファイルタイプ判定: inodeのmodeから取得
+        ulong stored_mode = RamFs::get_mode(ino);
+        ulong file_mode = 0x81A4;  // デフォルト: 通常ファイル (0100644)
+        if ((stored_mode & S_IFMT) == S_IFDIR) {
+            file_mode = 0x41ED;  // ディレクトリ (0040755)
+            fsize = 4096;
+        }
+        SyscallFs::fill_stat(stat_addr, ino, file_mode, fsize);
+        return 0;
+    }
+
+    /// sys_lseek: ファイルオフセットを移動
+    static long lseek(ulong fd, long offset, ulong whence) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        ulong fsize = RamFs::file_size(ino);
+        ulong cur_off = FdTable::get_offset(fd as long);
+        ulong new_off = 0;
+
+        // SEEK_SET = 0, SEEK_CUR = 1, SEEK_END = 2
+        if (whence == 0) {
+            // SEEK_SET
+            new_off = offset as ulong;
+        } else if (whence == 1) {
+            // SEEK_CUR
+            new_off = cur_off + (offset as ulong);
+        } else if (whence == 2) {
+            // SEEK_END
+            new_off = fsize + (offset as ulong);
+        } else {
+            return 0 - EINVAL;
+        }
+
+        FdTable::set_offset(fd as long, new_off);
+        return new_off as long;
+    }
+
+    /// sys_openat: ディレクトリFD相対でファイルをオープン
+    static long openat(long dirfd, ulong pathname, ulong flags, ulong mode) {
+        // AT_FDCWD (-100) またはパスが絶対パスならopen()に委譲
+        // 現段階ではAT_FDCWDのみサポート
+        if (pathname == 0) { return 0 - EFAULT; }
+
+        // ルートディレクトリ "/" → ディレクトリFDを返す
+        ulong fb = 0;
+        __asm__(`movq ${r:pathname}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:fb}`);
+        if (fb == 0x2F) {
+            ulong sb = 0;
+            ulong na1 = pathname + 1;
+            __asm__(`movq ${r:na1}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sb}`);
+            if (sb == 0) {
+                Result<Fd, long> r = FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+                match (r) {
+                    Result::Ok(fd) => { return fd; }
+                    Result::Err(e) => { return 0 - e; }
+                }
+            }
+        }
+
+        // sys_openに委譲（importはsyscall.cmで行うため、Vfs::openを使用）
+        Result<Fd, long> vr = Vfs::open(pathname as void*, flags);
+        match (vr) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_readlinkat: シンボリックリンク読み取り
+    /// /proc/self/exe に対応
+    static long readlinkat(long dirfd, ulong pathname, ulong buf, ulong bufsiz) {
+        if (pathname == 0 || buf == 0) { return 0 - EFAULT; }
+        if (bufsiz == 0) { return 0 - EINVAL; }
+
+        // /proc/self/exe → 実行中バイナリのパス（簡易版）
+        if (startswith(pathname as void*, "/proc/self/exe" as void*) != 0) {
+            ulong fake_path = "/usr/bin/program" as ulong;
+            ulong i = 0;
+            while (i < bufsiz) {
+                ulong ch = 0;
+                ulong src = fake_path + i;
+                __asm__(`movq ${r:src}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
+                if (ch == 0) { return i as long; }
+                ulong dst = buf + i;
+                __asm__(`movq ${r:dst}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+                i = i + 1;
+            }
+            return bufsiz as long;
+        }
+
+        return 0 - ENOENT;
+    }
+
+    /// sys_faccessat: ファイルアクセス確認
+    static long faccessat(long dirfd, ulong pathname, ulong mode, ulong flags) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        // RamFSでファイルを検索
+        Ino ino = RamFs::lookup(pathname as void*);
+        if (ino != 0) { return 0; }
+        return 0 - ENOENT;
+    }
+
+    /// sys_getdents64: ディレクトリエントリ読み出し
+    static long getdents64(ulong fd, ulong dirp, ulong count) {
+        // FDオフセットで読み取り位置を管理（2回目以降はEOF=0を返す）
+        ulong fd_offset = FdTable::get_offset(fd as long);
+        ulong dir_count = RamFs::dir_count();
+        if (fd_offset >= dir_count) {
+            return 0;  // EOF: 全エントリ読み取り済み
+        }
+
+        // RamFSのディレクトリ一覧を返す
+        ulong offset = 0;
+        ulong i = fd_offset;
+        while (i < dir_count && offset + 24 < count) {
+            ulong name = RamFs::dir_name(i);
+            if (name != 0) {
+                Ino ino = RamFs::dir_ino(i);
+                ulong dtype = RamFs::dir_type(i);
+
+                // ファイル名長を計算
+                ulong name_len = strlen(name as void*);
+
+                // レコードサイズ: 8(d_ino) + 8(d_off) + 2(d_reclen) + 1(d_type) + name_len + 1(null)
+                // 8バイトアラインメント
+                ulong reclen = 19 + name_len + 1;
+                reclen = (reclen + 7) & ~7;
+
+                if (offset + reclen > count) { break; }
+
+                ulong entry = dirp + offset;
+
+                // d_ino (8バイト)
+                ulong* d_ino = entry as ulong*;
+                *d_ino = ino;
+
+                // d_off (8バイト) — 次のエントリのオフセット
+                ulong* d_off = (entry + 8) as ulong*;
+                *d_off = i + 1;
+
+                // d_reclen (2バイト)
+                ulong* d_reclen_ptr = (entry + 16) as ulong*;
+                *d_reclen_ptr = reclen;
+
+                // d_type (1バイト, offset 18)
+                ulong d_type_val = DT_REG;
+                if (dtype == S_IFDIR) { d_type_val = DT_DIR; }
+                ulong d_type_addr = entry + 18;
+                __asm__(`movq ${r:d_type_addr}, %rdi; movq ${r:d_type_val}, %rax; movb %al, (%rdi)`);
+
+                // d_name (offset 19)
+                ulong j = 0;
+                while (j <= name_len) {
+                    ulong ch = 0;
+                    ulong s = name + j;
+                    __asm__(`movq ${r:s}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
+                    ulong d = entry + 19 + j;
+                    __asm__(`movq ${r:d}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+                    j = j + 1;
+                }
+
+                offset = offset + reclen;
+            }
+            i = i + 1;
+        }
+        // FDオフセットを更新（次回の読み取り位置）
+        FdTable::set_offset(fd as long, i);
+        return offset as long;
+    }
+
+    /// sys_pread64: オフセット指定読み込み
+    static long pread64(ulong fd, ulong buf, ulong count, ulong offset) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        Result<long, long> rr = RamFs::read(ino, buf, offset, count);
+        match (rr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_pwrite64: オフセット指定書き込み
+    static long pwrite64(ulong fd, ulong buf, ulong count, ulong offset) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong ino = FdTable::get_ino(fd as long) as ulong;
+        Result<long, long> wr = RamFs::write(ino, buf, offset, count);
+        match (wr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_readv: scatter read (iovec配列による読み込み)
+    static long readv(ulong fd, ulong iov_addr, ulong iovcnt) {
+        long total = 0;
+        ulong i = 0;
+        while (i < iovcnt) {
+            ulong* base_ptr = (iov_addr + i * 16) as ulong*;
+            ulong* len_ptr = (iov_addr + i * 16 + 8) as ulong*;
+            ulong base = *base_ptr;
+            ulong len = *len_ptr;
+            if (len > 0) {
+                long ret = 0;
+                Result<long, long> rr = Vfs::read(fd as long, base, len);
+                match (rr) {
+                    Result::Ok(v) => { ret = v; }
+                    Result::Err(e) => { return 0 - e; }
+                }
+                total = total + ret;
+                if ((ret as ulong) < len) { break; }  // 短い読み込み → 終了
+            }
+            i = i + 1;
+        }
+        return total;
+    }
+
+    /// sys_fcntl: ファイルディスクリプタ制御
+    static long fcntl(ulong fd, ulong cmd, ulong arg) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        if (cmd == F_GETFD) {
+            return 0;  // FD_CLOEXEC = 0 (デフォルト)
+        }
+        if (cmd == F_SETFD) {
+            return 0;  // 設定を無視（成功を返す）
+        }
+        if (cmd == F_GETFL) {
+            return FdTable::get_flags(fd as long) as long;
+        }
+        if (cmd == F_SETFL) {
+            return 0;  // フラグ変更を無視
+        }
+        if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
+            // arg以上の最小FDにdup
+            Result<Fd, long> r = FdTable::dup2(fd as long, arg as long);
+            match (r) {
+                Result::Ok(v) => { return v; }
+                Result::Err(e) => { return 0 - e; }
+            }
+        }
+        return 0 - EINVAL;
+    }
+
+    /// sys_dup: FD複製
+    static long dup(ulong oldfd) {
+        if (FdTable::is_valid(oldfd as long) == 0) {
+            return 0 - EBADF;
+        }
+        // 最小の空きFDにコピー
+        Result<Fd, long> r = FdTable::dup_lowest(oldfd as long);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_dup3: FD複製 (dup2 + flags)
+    static long dup3(ulong oldfd, ulong newfd, ulong flags) {
+        if (FdTable::is_valid(oldfd as long) == 0) {
+            return 0 - EBADF;
+        }
+        if (oldfd == newfd) {
+            return 0 - EINVAL;
+        }
+        Result<Fd, long> r = FdTable::dup2(oldfd as long, newfd as long);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_stat: パス名からファイル情報取得 (newfstatat互換)
+    static long stat(ulong pathname, ulong stat_addr) {
+        return SyscallFs::newfstatat(AT_FDCWD, pathname, stat_addr, 0);
+    }
+
+    /// sys_lstat: パス名からファイル情報取得 (シンボリックリンク非追跡)
+    /// 現在シンボリックリンク未対応のためstatと同一動作
+    static long lstat(ulong pathname, ulong stat_addr) {
+        return SyscallFs::newfstatat(AT_FDCWD, pathname, stat_addr, 0);
+    }
+
+    /// sys_unlinkat: ディレクトリFD相対でファイル削除
+    static long unlinkat(long dirfd, ulong pathname, ulong flags) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        // AT_REMOVEDIR (0x200) → rmdir
+        ulong is_removedir = flags & 0x200;
+        if (is_removedir != 0) {
+            // ディレクトリ削除はRamFSでは未サポート
+            return 0 - ENOTEMPTY;
+        }
+        // 先頭の/をスキップ
+        ulong search = pathname;
+        ulong ch = 0;
+        __asm__(`movq ${r:search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:ch}`);
+        if (ch == 47) { search = pathname + 1; }
+        // RamFSでファイルを名前で削除
+        Result<long, long> ur = RamFs::unlink(search as void*);
+        match (ur) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_mkdirat: ディレクトリFD相対でディレクトリ作成
+    static long mkdirat(long dirfd, ulong pathname, ulong mode) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        // RamFSにディレクトリエントリを作成
+        ulong search = pathname;
+        ulong ch = 0;
+        __asm__(`movq ${r:search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:ch}`);
+        if (ch == 47) { search = pathname + 1; }
+
+        // 既存チェック
+        Ino existing = RamFs::lookup(search as void*);
+        if (existing != 0) { return 0 - EEXIST; }
+
+        // ディレクトリとしてエントリ作成
+        return RamFs::mkdir(search as void*);
+    }
+
+    /// sys_renameat: ファイル名変更
+    static long renameat(long olddirfd, ulong oldpath, long newdirfd, ulong newpath) {
+        if (oldpath == 0 || newpath == 0) { return 0 - EFAULT; }
+        // 先頭の/をスキップ
+        ulong old_search = oldpath;
+        ulong old_ch = 0;
+        __asm__(`movq ${r:old_search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:old_ch}`);
+        if (old_ch == 47) { old_search = oldpath + 1; }
+
+        ulong new_search = newpath;
+        ulong new_ch = 0;
+        __asm__(`movq ${r:new_search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:new_ch}`);
+        if (new_ch == 47) { new_search = newpath + 1; }
+
+        Result<long, long> rr = RamFs::rename(old_search as void*, new_search as void*);
+        match (rr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_pipe2: パイプ作成 (flags付き)
+    static long pipe2(ulong pipefd_addr, ulong flags) {
+        if (pipefd_addr == 0) { return 0 - EFAULT; }
+        // Pipe::create で読み書きのFDペアを作成
+        long pipe_id = 0;
+        Result<ulong, long> cr = Pipe::create();
+        match (cr) {
+            Result::Ok(id) => { pipe_id = id as long; }
+            Result::Err(e) => { return 0 - e; }
+        }
+
+        // 読み取り側FD
+        long read_fd = 0;
+        Result<Fd, long> rr = FdTable::alloc(pipe_id, 0, FS_PIPE);
+        match (rr) {
+            Result::Ok(fd) => { read_fd = fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+
+        // 書き込み側FD
+        long write_fd = 0;
+        Result<Fd, long> wr = FdTable::alloc(pipe_id, 1, FS_PIPE);
+        match (wr) {
+            Result::Ok(fd) => { write_fd = fd; }
+            Result::Err(e) => {
+                FdTable::free(read_fd);
+                return 0 - e;
+            }
+        }
+
+        // ユーザー空間にFDペアを書き込み (int[2] = 4バイト×2)
+        ulong read_val = read_fd as ulong;
+        ulong write_val = write_fd as ulong;
+        ulong addr0 = pipefd_addr;
+        ulong addr1 = pipefd_addr + 4;
+        // 32ビット書き込み: movl は %eXX レジスタを要求
+        __asm__(`movq ${r:addr0}, %rdi; movq ${r:read_val}, %rax; movl %eax, (%rdi)`);
+        __asm__(`movq ${r:addr1}, %rdi; movq ${r:write_val}, %rax; movl %eax, (%rdi)`);
+        return 0;
+    }
+
+    // ============================================================
+    // Milestone 7: Homebrew依存ツール対応 FS syscall
+    // ============================================================
+
+    /// sys_symlinkat: シンボリックリンク作成
+    /// symlink(target, linkpath) → symlinkat(target, AT_FDCWD, linkpath)
+    /// 現状: stub (常に成功を返す、実際のリンクは作成しない)
+    static long symlinkat(ulong target, long newdirfd, ulong linkpath) {
+        if (target == 0 || linkpath == 0) { return 0 - EFAULT; }
+        // stub: シンボリックリンク未サポート→成功して無視
+        return 0;
+    }
+
+    /// sys_linkat: ハードリンク作成
+    /// 現状: stub (常に成功を返す)
+    static long linkat(long olddirfd, ulong oldpath, long newdirfd, ulong newpath, ulong flags) {
+        if (oldpath == 0 || newpath == 0) { return 0 - EFAULT; }
+        // stub: ハードリンク未サポート→成功して無視
+        return 0;
+    }
+
+    /// sys_utimensat: ファイルタイムスタンプ更新
+    /// 現状: stub (タイムスタンプ管理なし→常に成功)
+    static long utimensat(long dirfd, ulong pathname, ulong times_addr, ulong flags) {
+        // タイムスタンプ管理未実装→常に成功
+        return 0;
+    }
+
+    /// sys_truncate: パス名でファイル切り詰め
+    static long truncate(ulong pathname, ulong length) {
+        if (pathname == 0) { return 0 - EFAULT; }
+        ulong search = pathname;
+        ulong ch = 0;
+        __asm__(`movq ${r:search}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:ch}`);
+        if (ch == 47) { search = pathname + 1; }
+        Ino ino = RamFs::lookup(search as void*);
+        if (ino == 0) { return 0 - ENOENT; }
+        RamFs::truncate(ino);
+        return 0;
+    }
+
+    /// sys_fallocate: ファイル領域割り当て（stub）
+    static long fallocate(ulong fd, ulong mode, ulong offset, ulong len) {
+        return 0;  // stub: 常に成功
+    }
+}

@@ -1,0 +1,230 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::shell_io - シェル出力ユーティリティ
+//
+// VGA + シリアル同時出力。GUIモード時はGUI出力コールバック経由でTerminalに出力。
+// 循環参照を避けるため、Terminal/Fb直接importなし。
+// 代わりにコールバック関数ポインタを使用。
+
+import ./defs;
+import ../mem;
+import ../vga;
+import ../../../drivers/serial;
+
+// ============================================================
+// GUI出力コールバックアドレス
+// ============================================================
+
+/// GUI putc コールバック関数ポインタ (void(*)(ulong slot, ulong ch))
+const PhysAddr GUI_PUTC_ADDR = 0x95040;
+/// GUI puts コールバック関数ポインタ (void(*)(ulong slot, void* str))
+const PhysAddr GUI_PUTS_ADDR = 0x95048;
+/// GUI flush コールバック関数ポインタ (void(*)())
+const PhysAddr GUI_FLUSH_ADDR = 0x95050;
+/// GUI clear コールバック関数ポインタ (void(*)(ulong slot))
+const PhysAddr GUI_CLEAR_ADDR = 0x95058;
+/// GUI clear_buf コールバック関数ポインタ
+const PhysAddr GUI_CLEARBUF_ADDR = 0x95060;
+
+/// Shell — シェル出力ユーティリティ
+export struct Shell {}
+
+impl Shell {
+    /// GUIモード判定
+    static ulong is_gui() {
+        ulong* gui = GUI_MODE_ADDR as ulong*;
+        return *gui;
+    }
+
+    /// GUI putcコールバック呼び出し
+    static void gui_putc(ulong ch) {
+        ulong* fp = GUI_PUTC_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            ulong slot = 0;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:ch}, %rsi;
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// GUI putsコールバック呼び出し
+    static void gui_puts(void* msg) {
+        ulong* fp = GUI_PUTS_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            ulong slot = 0;
+            ulong str = msg as ulong;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:str}, %rsi;
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// 画面更新（GUIモード時、バックバッファをVRAMに転送）
+    static void gui_flush() {
+        ulong* fp = GUI_FLUSH_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            __asm__(`
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// GUI画面クリア
+    static void gui_clear() {
+        ulong* fp = GUI_CLEAR_ADDR as ulong*;
+        ulong func = *fp;
+        if (func != 0) {
+            ulong slot = 0;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:func}, %rax;
+                call *%rax
+            `);
+        }
+        ulong* fp2 = GUI_CLEARBUF_ADDR as ulong*;
+        ulong func2 = *fp2;
+        if (func2 != 0) {
+            ulong slot = 0;
+            __asm__(`
+                movq ${r:slot}, %rdi;
+                movq ${r:func2}, %rax;
+                call *%rax
+            `);
+        }
+    }
+
+    /// 1文字出力
+    static void putc(ulong ch) {
+        if (Shell::is_gui() != 0) {
+            Shell::gui_putc(ch);
+        } else {
+            Vga::putc(ch);
+        }
+        // シリアル出力
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->putc(ch);
+    }
+
+    /// 文字列出力
+    static void write(void* msg) {
+        if (Shell::is_gui() != 0) {
+            Shell::gui_puts(msg);
+        } else {
+            Vga::puts(msg);
+        }
+        // シリアル出力
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        ser->puts(msg);
+    }
+
+    /// 文字列出力 + 改行
+    static void writeln(void* msg) {
+        Shell::write(msg);
+        Shell::newline();
+    }
+
+    /// 改行出力
+    static void newline() {
+        Shell::putc(Key::Enter as ulong);
+    }
+
+    /// VGA色設定（GUIモードでは無視）
+    static void set_color(ulong fg, ulong bg) {
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        *color_ptr = ((bg & MASK_4BIT) << 4) | (fg & MASK_4BIT);
+    }
+
+    /// 10進数出力
+    static void print_dec(ulong value) {
+        ulong* ser_ptr = SHELL_SERIAL_ADDR as ulong*;
+        SerialPort* ser = (*ser_ptr) as SerialPort*;
+        if (value == 0) {
+            if (Shell::is_gui() != 0) {
+                Shell::gui_putc(Ascii::Digit0 as ulong);
+            } else {
+                Vga::putc(Ascii::Digit0 as ulong);
+            }
+            ser->putc(Ascii::Digit0 as ulong);
+            return;
+        }
+        ulong buf0 = 0;
+        ulong buf1 = 0;
+        ulong buf2 = 0;
+        ulong buf3 = 0;
+        ulong buf4 = 0;
+        ulong buf5 = 0;
+        ulong buf6 = 0;
+        ulong buf7 = 0;
+        ulong buf8 = 0;
+        ulong buf9 = 0;
+        ulong count = 0;
+        ulong tmp = value;
+        while (tmp != 0) {
+            ulong digit = tmp % 10;
+            if (count == 0) { buf0 = digit; }
+            if (count == 1) { buf1 = digit; }
+            if (count == 2) { buf2 = digit; }
+            if (count == 3) { buf3 = digit; }
+            if (count == 4) { buf4 = digit; }
+            if (count == 5) { buf5 = digit; }
+            if (count == 6) { buf6 = digit; }
+            if (count == 7) { buf7 = digit; }
+            if (count == 8) { buf8 = digit; }
+            if (count == 9) { buf9 = digit; }
+            tmp = tmp / 10;
+            count = count + 1;
+        }
+        ulong i = count;
+        while (i != 0) {
+            i = i - 1;
+            ulong d = 0;
+            if (i == 0) { d = buf0; }
+            if (i == 1) { d = buf1; }
+            if (i == 2) { d = buf2; }
+            if (i == 3) { d = buf3; }
+            if (i == 4) { d = buf4; }
+            if (i == 5) { d = buf5; }
+            if (i == 6) { d = buf6; }
+            if (i == 7) { d = buf7; }
+            if (i == 8) { d = buf8; }
+            if (i == 9) { d = buf9; }
+            if (Shell::is_gui() != 0) {
+                Shell::gui_putc(d + Ascii::Digit0 as ulong);
+            } else {
+                Vga::putc(d + Ascii::Digit0 as ulong);
+            }
+            ser->putc(d + Ascii::Digit0 as ulong);
+        }
+    }
+
+    /// 1バイト16進表示 (2桁)
+    static void print_hex_byte(ulong val) {
+        ulong hi = (val >> 4) & 0xF;
+        ulong lo = val & 0xF;
+        if (hi < 10) { Shell::putc(Ascii::Digit0 as ulong + hi); } else { Shell::putc(Ascii::LowerA as ulong - 10 + hi); }
+        if (lo < 10) { Shell::putc(Ascii::Digit0 as ulong + lo); } else { Shell::putc(Ascii::LowerA as ulong - 10 + lo); }
+    }
+
+    /// 16進表示 (8桁)
+    static void print_hex(ulong val) {
+        ulong i = 0;
+        while (i < 8) {
+            ulong shift = (7 - i) * 4;
+            ulong nibble = (val >> shift) & 0xF;
+            if (nibble < 10) { Shell::putc(Ascii::Digit0 as ulong + nibble); } else { Shell::putc(Ascii::LowerA as ulong - 10 + nibble); }
+            i = i + 1;
+        }
+    }
+
+}

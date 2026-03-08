@@ -1,0 +1,76 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::pmm::test_pmm - PMM テスト
+//
+// 物理メモリマネージャのページ割当/解放を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/page_alloc;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../mm/pmm;
+import ../test_io;
+import ../ktest;
+
+/// PMM テストスイート
+export struct TestPmm {}
+
+impl TestPmm {
+    /// PMMが初期化済みか確認
+    static void test_init() {
+        ulong* pmm_ptr_addr = 0x93008 as ulong*;
+        ulong pmm_addr = *pmm_ptr_addr;
+        if (pmm_addr == 0) {
+            KTest::pass("PMM skipped (no PMM)" as void*);
+            return;
+        }
+        BuddyAllocator* pmm = pmm_addr as BuddyAllocator*;
+        KTest::assert_nonzero(pmm->total_pages, "PMM total_pages>0" as void*);
+    }
+
+    /// ページ数検証テスト
+    static void test_page_counts() {
+        ulong* pmm_ptr_addr = 0x93008 as ulong*;
+        ulong pmm_addr = *pmm_ptr_addr;
+        if (pmm_addr == 0) { return; }
+        BuddyAllocator* pmm = pmm_addr as BuddyAllocator*;
+
+        ulong free_count = pmm->free_pages;
+        KTest::assert_nonzero(free_count, "PMM free_pages>0" as void*);
+
+        ulong valid_free = 0;
+        if (free_count <= pmm->total_pages) { valid_free = 1; }
+        KTest::assert_eq(valid_free, 1, "PMM free<=total" as void*);
+    }
+
+    /// ページ割当・解放テスト
+    static void test_alloc_free() {
+        ulong* pmm_ptr_addr = 0x93008 as ulong*;
+        ulong pmm_addr = *pmm_ptr_addr;
+        if (pmm_addr == 0) { return; }
+        BuddyAllocator* pmm = pmm_addr as BuddyAllocator*;
+
+        ulong initial_free = pmm->free_pages;
+        PhysAddr page = pmm->alloc_pages(0);
+        KTest::assert_nonzero(page, "PMM alloc_pages nonzero" as void*);
+        KTest::assert_eq(page & 0xFFF, 0, "PMM page aligned 4KB" as void*);
+
+        ulong after_alloc = pmm->free_pages;
+        ulong decreased = 0;
+        if (after_alloc < initial_free) { decreased = 1; }
+        KTest::assert_eq(decreased, 1, "PMM free_pages decreased" as void*);
+
+        pmm->free_pages(page, 0);
+        ulong after_free = pmm->free_pages;
+        ulong restored = 0;
+        if (after_free >= initial_free) { restored = 1; }
+        KTest::assert_eq(restored, 1, "PMM free_pages restored" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestPmm::test_init();
+        TestPmm::test_page_counts();
+        TestPmm::test_alloc_free();
+    }
+}

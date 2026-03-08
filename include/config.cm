@@ -1,0 +1,137 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::config - カーネル設定定数
+//
+// 全カーネルモジュールが参照する定数を一元管理する。
+
+import ./types;
+
+// ============================================================
+// カーネルバージョン
+// ============================================================
+
+export const ulong VERSION_MAJOR = 0;
+export const ulong VERSION_MINOR = 1;
+export const ulong VERSION_PATCH = 0;
+
+// ============================================================
+// I/Oポート定数（ulong化 — Cm ABI互換）
+// ============================================================
+
+/// COM1 シリアルポート
+export const ulong COM1 = 0x3F8;
+
+/// QEMUデバッグコンソール
+export const ulong DEBUGCON = 0xE9;
+
+/// QEMU isa-debug-exit ポート
+export const ulong QEMU_EXIT_PORT = 0xF4;
+
+// ============================================================
+// PIC (8259A) 定数
+// ============================================================
+
+export const ulong PIC1_CMD  = 0x20;
+export const ulong PIC1_DATA = 0x21;
+export const ulong PIC2_CMD  = 0xA0;
+export const ulong PIC2_DATA = 0xA1;
+
+/// IRQリマップ先ベクタ
+export const Vector IRQ_BASE = 32;
+
+// ============================================================
+// PIT (8254) 定数
+// ============================================================
+
+export const ulong PIT_CH0 = 0x40;
+export const ulong PIT_CMD = 0x43;
+export const ulong PIT_FREQ = 1193182;
+export const ulong PIT_HZ   = 100;
+
+// ============================================================
+// メモリレイアウト定数
+// ============================================================
+
+/// GDTテーブル配置アドレス
+export const PhysAddr GDT_ADDR = 0x80000;
+
+/// IDTテーブル配置アドレス
+export const PhysAddr IDT_ADDR = 0x81000;
+
+/// IDTRアドレス（IDT直後: 0x81000 + 256*16 = 0x82000）
+export const PhysAddr IDTR_ADDR = 0x82000;
+
+/// カーネルスタックサイズ
+export const Size KERNEL_STACK_SIZE = 16384;
+
+/// カーネルスタックプール — 固定物理アドレス領域
+/// PMMの高アドレス割当によるユーザー空間仮想アドレスとの衝突を防止
+/// 範囲: 0xB00000 - 0xBFFFFF (1MiB, 64スロット × 16KiB)
+/// 注意: PMM_DATA_BASE=0x200000, FB backbuf=0xE00000と非衝突
+export const PhysAddr KSTACK_POOL_BASE = 0xB00000;
+export const ulong KSTACK_POOL_MAX_SLOTS = 64;
+
+/// カーネルスタックプール次スロットインデックス格納アドレス
+export const PhysAddr KSTACK_POOL_NEXT_ADDR = 0x91050;
+
+// ============================================================
+// GUI画面・ウィンドウ定数
+// ============================================================
+
+/// 画面解像度
+export const ulong SCREEN_WIDTH  = 1024;
+export const ulong SCREEN_HEIGHT = 768;
+
+/// デフォルトターミナルウィンドウサイズ（画面の50%）
+export const ulong DEFAULT_TERM_W = 512;
+export const ulong DEFAULT_TERM_H = 384;
+
+/// デフォルトターミナルウィンドウ位置（中央配置）
+export const ulong DEFAULT_TERM_X = 256;
+export const ulong DEFAULT_TERM_Y = 70;
+
+// ============================================================
+// 共通バッファアドレス
+// ============================================================
+
+/// FSコマンド用読み込みバッファ (CMD_BUFの後半)
+export const PhysAddr READ_BUF = 0x94100;
+
+/// 一時バッファ (misc用)
+export const PhysAddr TMP_BUF = 0x94200;
+
+/// 行インデックスバッファ (headコマンド用)
+export const PhysAddr LINE_INDEX_BUF = 0x96000;
+
+/// マウスボタン前回状態アドレス
+export const PhysAddr MOUSE_PREV_BTN_ADDR = 0xD80900;
+
+/// 時計の前回秒数 (リアルタイム更新用)
+export const PhysAddr CLOCK_PREV_SEC_ADDR = 0xD80908;
+
+// ============================================================
+// ネットワーク/ホストバッファアドレス
+// ============================================================
+
+/// ネットワークパケット送信バッファ
+export const PhysAddr NET_PKT_BUF = 0xA50000;
+
+/// ネットワークパケット受信バッファ
+export const PhysAddr NET_RX_TMP_BUF = 0xA51000;
+
+/// ARP応答バッファ
+export const PhysAddr ARP_REPLY_BUF = 0xA52000;
+
+/// 9pディレクトリ一覧バッファ
+export const PhysAddr HOST_DIR_BUF = 0xA55000;
+
+/// 9pファイル名一時バッファ
+export const PhysAddr HOST_NAME_BUF = 0xA56000;
+
+/// 9pファイル読み込みバッファ
+export const PhysAddr HOST_FILE_BUF = 0xA57000;
+
+/// 9p文字変換バッファ
+export const PhysAddr HOST_CHAR_BUF = 0xA58000;
+
+/// HTTP一時バッファ
+export const PhysAddr HTTP_TMP_BUF = 0x9FF00;

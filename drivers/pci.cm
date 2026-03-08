@@ -1,0 +1,169 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::pci - PCI Configuration Spaceアクセス
+//
+// I/Oポート方式 (0xCF8/0xCFC) でPCIデバイスを列挙・設定する。
+// 参照: PCI Local Bus Specification 3.0, linux/arch/x86/pci/
+
+import ../include/types;
+import ./serial;
+
+// ============================================================
+// PCI Configuration Space I/Oポート
+// ============================================================
+
+const ulong PCI_CONFIG_ADDR = 0xCF8;
+const ulong PCI_CONFIG_DATA = 0xCFC;
+
+// ============================================================
+// 32ビット I/O操作
+// ============================================================
+
+/// I/Oポートに32ビット値を出力
+export void outl(ulong port, ulong value) {
+    __asm__(`
+        movq ${r:value}, %rax;
+        movq ${r:port}, %rdx;
+        outl %eax, %dx
+    `);
+}
+
+/// I/Oポートから32ビット値を入力
+export ulong inl(ulong port) {
+    ulong result = 0;
+    __asm__(`
+        movq ${r:port}, %rdx;
+        xorq %rax, %rax;
+        inl %dx, %eax;
+        movq %rax, ${=r:result}
+    `);
+    return result;
+}
+
+/// I/Oポートに16ビット値を出力
+export void outw(ulong port, ulong value) {
+    __asm__(`
+        movq ${r:value}, %rax;
+        movq ${r:port}, %rdx;
+        outw %ax, %dx
+    `);
+}
+
+/// I/Oポートから16ビット値を入力
+export ulong inw(ulong port) {
+    ulong result = 0;
+    __asm__(`
+        movq ${r:port}, %rdx;
+        xorq %rax, %rax;
+        inw %dx, %ax;
+        movq %rax, ${=r:result}
+    `);
+    return result;
+}
+
+// ============================================================
+// PCI検索結果
+// ============================================================
+
+/// PCIデバイスの位置情報
+export struct PciDevice {
+    ulong bus;
+    ulong slot;
+    ulong func;
+    ulong vendor_id;
+    ulong device_id;
+    ulong bar0;
+    ulong irq;
+    ulong found;  // 1=見つかった, 0=見つからない
+}
+
+// ============================================================
+// Pci 構造体
+// ============================================================
+
+export struct Pci {}
+
+impl Pci {
+    /// PCI Configuration Spaceから32ビット値を読み取り
+    static ulong read_config(ulong bus, ulong slot, ulong func, ulong offset) {
+        // アドレス = 0x80000000 | (bus<<16) | (slot<<11) | (func<<8) | (offset & 0xFC)
+        ulong addr = PCI_CONFIG_ENABLE
+        | ((bus & 0xFF) << 16)
+        | ((slot & 0x1F) << 11)
+        | ((func & 0x07) << 8)
+        | (offset & 0xFC);
+        outl(PCI_CONFIG_ADDR, addr);
+        return inl(PCI_CONFIG_DATA);
+    }
+
+    /// PCI Configuration Spaceに32ビット値を書き込み
+    static void write_config(ulong bus, ulong slot, ulong func, ulong offset, ulong value) {
+        ulong addr = PCI_CONFIG_ENABLE
+        | ((bus & 0xFF) << 16)
+        | ((slot & 0x1F) << 11)
+        | ((func & 0x07) << 8)
+        | (offset & 0xFC);
+        outl(PCI_CONFIG_ADDR, addr);
+        outl(PCI_CONFIG_DATA, value);
+    }
+
+    /// PCI Vendor ID / Device ID を取得
+    static ulong read_vendor_device(ulong bus, ulong slot, ulong func) {
+        return Pci::read_config(bus, slot, func, 0);
+    }
+
+    /// BAR (Base Address Register) を取得
+    static ulong get_bar(ulong bus, ulong slot, ulong func, ulong bar_idx) {
+        // BAR0 = offset 0x10, BAR1 = 0x14, ...
+        ulong offset = 0x10 + bar_idx * 4;
+        return Pci::read_config(bus, slot, func, offset);
+    }
+
+    /// 割り込みライン(IRQ)を取得
+    static ulong get_irq(ulong bus, ulong slot, ulong func) {
+        ulong val = Pci::read_config(bus, slot, func, 0x3C);
+        return val & 0xFF;  // Interrupt Line (下位8ビット)
+    }
+
+    /// Vendor ID + Device ID でPCIデバイスを検索
+    /// 全バス(0-255)・スロット(0-31)・ファンクション(0-7)をスキャン
+    static void find_device(ulong vendor_id, ulong device_id, PciDevice* result) {
+        result->found = 0;
+
+        ulong bus = 0;
+        while (bus < 256) {
+            ulong slot = 0;
+            while (slot < 32) {
+                ulong func = 0;
+                while (func < 8) {
+                    ulong vd = Pci::read_vendor_device(bus, slot, func);
+                    ulong vid = vd & 0xFFFF;
+                    ulong did = (vd >> 16) & 0xFFFF;
+
+                    if (vid == vendor_id && did == device_id) {
+                        result->bus = bus;
+                        result->slot = slot;
+                        result->func = func;
+                        result->vendor_id = vid;
+                        result->device_id = did;
+                        result->bar0 = Pci::get_bar(bus, slot, func, 0);
+                        result->irq = Pci::get_irq(bus, slot, func);
+                        result->found = 1;
+                        return;
+                    }
+
+                    func = func + 1;
+                }
+                slot = slot + 1;
+            }
+            bus = bus + 1;
+        }
+    }
+
+    /// PCI Command レジスタを設定 (Bus Master + I/O Space + Memory Space 有効化)
+    static void enable_bus_master(ulong bus, ulong slot, ulong func) {
+        ulong cmd = Pci::read_config(bus, slot, func, 0x04);
+        // bit0=I/O Space, bit1=Memory Space, bit2=Bus Master
+        cmd = cmd | 0x07;
+        Pci::write_config(bus, slot, func, 0x04, cmd);
+    }
+}

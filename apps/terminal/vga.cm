@@ -1,0 +1,303 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::vga - VGAテキストモードドライバ
+//
+// VGAバッファ (0xB8000) への直接書き込み。
+// カーソル更新、スクロール、画面クリア、スクロールバックを提供。
+// GUIモード時は全操作をスキップ。
+
+import ./shell/defs;
+import ./mem;
+import ../../drivers/serial;
+import ../../include/interfaces;
+
+// ============================================================
+// スクロールバックバッファ定数
+// ============================================================
+
+/// スクロールバック最大行数
+const ulong SCROLLBACK_MAX_LINES = 200;
+/// 1行のバイト数 (VGA_COLS * 2 = 160)
+const ulong SCROLLBACK_LINE_SIZE = 160;
+/// スクロールバックバッファ基点アドレス (32KB, 0xC00000～)
+const PhysAddr SCROLLBACK_BUF_ADDR = 0xC00000;
+/// バッファに保存された総行数
+const PhysAddr SCROLLBACK_COUNT_ADDR = 0xC08000;
+/// リングバッファ書き込み位置
+const PhysAddr SCROLLBACK_HEAD_ADDR = 0xC08008;
+/// 現在のスクロールバック位置 (0=最新, >0で過去)
+const PhysAddr SCROLLBACK_POS_ADDR = 0xC08010;
+/// スクロールバック中フラグ (0=ライブ, 1=バックスクロール中)
+const PhysAddr SCROLLBACK_ACTIVE_ADDR = 0xC08018;
+/// ライブ画面退避バッファ (VGAバッファのコピー, 4000バイト)
+const PhysAddr SCROLLBACK_LIVE_ADDR = 0xC08100;
+
+/// Vga — VGAテキストモードドライバ
+export struct Vga {}
+
+impl Vga {
+    /// GUIモード判定 (1=GUI, 0=テキスト)
+    static ulong is_gui_mode() {
+        ulong* gui = GUI_MODE_ADDR as ulong*;
+        return *gui;
+    }
+
+    /// 指定位置に文字を書き込み
+    static void write_at(ulong row, ulong col, ulong ch, ulong color) {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong offset = (row * VGA_COLS + col) * 2;
+        Mem::write_byte(VGA_BUF + offset, ch & MASK_8BIT);
+        Mem::write_byte(VGA_BUF + offset + 1, color & MASK_8BIT);
+    }
+
+    /// カーソル更新
+    static void update_cursor() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        ulong pos = (*row_ptr) * VGA_COLS + (*col_ptr);
+        outb(VGA_CRTC_INDEX, VGA_CURSOR_HIGH);
+        outb(VGA_CRTC_DATA, (pos >> 8) & MASK_8BIT);
+        outb(VGA_CRTC_INDEX, VGA_CURSOR_LOW);
+        outb(VGA_CRTC_DATA, pos & MASK_8BIT);
+    }
+
+    /// スクロールバック初期化
+    static void scrollback_init() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong* head = SCROLLBACK_HEAD_ADDR as ulong*;
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+        ulong* active = SCROLLBACK_ACTIVE_ADDR as ulong*;
+        *count = 0;
+        *head = 0;
+        *pos = 0;
+        *active = 0;
+    }
+
+    /// 最上行をスクロールバックバッファに退避
+    static void scrollback_save_line() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* head = SCROLLBACK_HEAD_ADDR as ulong*;
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong dest = SCROLLBACK_BUF_ADDR + (*head) * SCROLLBACK_LINE_SIZE;
+        ulong c = 0;
+        while (c < VGA_COLS) {
+            ulong src_off = c * 2;
+            Mem::write_byte(dest + src_off, Mem::read_byte(VGA_BUF + src_off));
+            Mem::write_byte(dest + src_off + 1, Mem::read_byte(VGA_BUF + src_off + 1));
+            c = c + 1;
+        }
+        *head = (*head + 1) % SCROLLBACK_MAX_LINES;
+        if (*count < SCROLLBACK_MAX_LINES) {
+            *count = *count + 1;
+        }
+    }
+
+    /// 1行スクロール (最上行をバッファに退避)
+    static void scroll() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        Vga::scrollback_save_line();
+
+        ulong r = 1;
+        while (r < VGA_ROWS) {
+            ulong c = 0;
+            while (c < VGA_COLS) {
+                ulong src_off = (r * VGA_COLS + c) * 2;
+                ulong dst_off = ((r - 1) * VGA_COLS + c) * 2;
+                ulong ch_val = Mem::read_byte(VGA_BUF + src_off);
+                ulong at_val = Mem::read_byte(VGA_BUF + src_off + 1);
+                Mem::write_byte(VGA_BUF + dst_off, ch_val);
+                Mem::write_byte(VGA_BUF + dst_off + 1, at_val);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        ulong c = 0;
+        while (c < VGA_COLS) {
+            Vga::write_at(VGA_ROWS - 1, c, 32, *color_ptr);
+            c = c + 1;
+        }
+    }
+
+    /// 上スクロール (過去の内容を表示)
+    static void scroll_up() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+        ulong* active = SCROLLBACK_ACTIVE_ADDR as ulong*;
+        if (*count == 0) { return; }
+        if (*pos >= *count) { return; }
+
+        if (*active == 0) {
+            *active = 1;
+            ulong i = 0;
+            while (i < VGA_ROWS * VGA_COLS * 2) {
+                Mem::write_byte(SCROLLBACK_LIVE_ADDR + i, Mem::read_byte(VGA_BUF + i));
+                i = i + 1;
+            }
+        }
+
+        *pos = *pos + 1;
+        Vga::render_scrollback();
+    }
+
+    /// 下スクロール (最新に向かって戻る)
+    static void scroll_down() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+        ulong* active = SCROLLBACK_ACTIVE_ADDR as ulong*;
+        if (*active == 0) { return; }
+        if (*pos == 0) { return; }
+
+        *pos = *pos - 1;
+
+        if (*pos == 0) {
+            *active = 0;
+            ulong i = 0;
+            while (i < VGA_ROWS * VGA_COLS * 2) {
+                Mem::write_byte(VGA_BUF + i, Mem::read_byte(SCROLLBACK_LIVE_ADDR + i));
+                i = i + 1;
+            }
+        } else {
+            Vga::render_scrollback();
+        }
+    }
+
+    /// スクロールバック位置の内容をVGAに描画
+    static void render_scrollback() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* head = SCROLLBACK_HEAD_ADDR as ulong*;
+        ulong* count = SCROLLBACK_COUNT_ADDR as ulong*;
+        ulong* pos = SCROLLBACK_POS_ADDR as ulong*;
+
+        ulong sb_lines = *pos;
+        ulong avail = *count;
+
+        if (sb_lines > avail) { sb_lines = avail; }
+        if (sb_lines > VGA_ROWS) { sb_lines = VGA_ROWS; }
+
+        ulong r = 0;
+        while (r < sb_lines) {
+            ulong back_idx = *pos - r;
+            ulong buf_idx = (*head + SCROLLBACK_MAX_LINES - back_idx) % SCROLLBACK_MAX_LINES;
+            ulong src = SCROLLBACK_BUF_ADDR + buf_idx * SCROLLBACK_LINE_SIZE;
+            ulong c = 0;
+            while (c < VGA_COLS) {
+                ulong off = c * 2;
+                Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2, Mem::read_byte(src + off));
+                Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2 + 1, Mem::read_byte(src + off + 1));
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+
+        while (r < VGA_ROWS) {
+            ulong live_row = r - sb_lines;
+            if (live_row < VGA_ROWS) {
+                ulong c = 0;
+                while (c < VGA_COLS) {
+                    ulong live_off = (live_row * VGA_COLS + c) * 2;
+                    Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2,
+                        Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off));
+                    Mem::write_byte(VGA_BUF + (r * VGA_COLS + c) * 2 + 1,
+                        Mem::read_byte(SCROLLBACK_LIVE_ADDR + live_off + 1));
+                    c = c + 1;
+                }
+            } else {
+                ulong c = 0;
+                while (c < VGA_COLS) {
+                    Vga::write_at(r, c, 32, VGA_DEFAULT_COLOR);
+                    c = c + 1;
+                }
+            }
+            r = r + 1;
+        }
+    }
+
+    /// 改行
+    static void newline() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        *col_ptr = 0;
+        ulong row = *row_ptr + 1;
+        if (row >= VGA_ROWS) {
+            Vga::scroll();
+            row = VGA_ROWS - 1;
+        }
+        *row_ptr = row;
+    }
+
+    // ============================================================
+    // ConsoleOutput インターフェースメソッド
+    // ============================================================
+
+    /// 1文字出力 (switch/caseで制御文字分岐)
+    static void putc(ulong ch) {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+
+        switch(ch) {
+            case(10) {
+                // 改行
+                Vga::newline();
+            }
+            case(8) {
+                // バックスペース: カーソル左移動
+                ulong col = *col_ptr;
+                if (col > 0) {
+                    *col_ptr = col - 1;
+                }
+            }
+            else {
+                // 通常文字 (>= 32)
+                if (ch >= 32) {
+                    Vga::write_at(*row_ptr, *col_ptr, ch, *color_ptr);
+                    ulong col = *col_ptr + 1;
+                    if (col >= VGA_COLS) {
+                        Vga::newline();
+                    } else {
+                        *col_ptr = col;
+                    }
+                }
+            }
+        }
+        Vga::update_cursor();
+    }
+
+    /// 文字列出力
+    static void puts(void* msg) {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong addr = msg as ulong;
+        ulong i = 0;
+        while (true) {
+            ulong byte_val = Mem::read_byte(addr + i);
+            if (byte_val == 0) { return; }
+            Vga::putc(byte_val);
+            i = i + 1;
+        }
+    }
+
+    /// 画面クリア
+    static void clear() {
+        if (Vga::is_gui_mode() != 0) { return; }
+        ulong* color_ptr = SH_VGA_COLOR_ADDR as ulong*;
+        ulong r = 0;
+        while (r < VGA_ROWS) {
+            ulong c = 0;
+            while (c < VGA_COLS) {
+                Vga::write_at(r, c, 32, *color_ptr);
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        ulong* col_ptr = SH_VGA_COL_ADDR as ulong*;
+        ulong* row_ptr = SH_VGA_ROW_ADDR as ulong*;
+        *col_ptr = 0;
+        *row_ptr = 0;
+        Vga::update_cursor();
+    }
+}

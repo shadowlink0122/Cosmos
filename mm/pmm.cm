@@ -1,0 +1,377 @@
+//! platform: baremetal-x86
+// cosmo-linux::mm::pmm - 物理メモリマネージャ (Buddy System)
+//
+// Multiboot2から受け取ったメモリマップに基づき、
+// 4KiBページ単位でBuddy Systemによる物理メモリ管理を行う。
+//
+// impl BuddyAllocator for PageAllocator
+//
+// 参照: linux/mm/page_alloc.c
+
+import ../include/types;
+import ../include/config;
+import ../include/page_alloc;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+
+// ============================================================
+// Buddy System 定数
+// ============================================================
+
+/// 最大オーダー (2^10 = 1024ページ = 4MiB)
+const ulong MAX_ORDER = 11;
+
+/// 管理可能最大物理ページ数 (256MiB / 4KiB = 65536ページ)
+const ulong MAX_PAGES = 65536;
+
+/// フリーリスト・ビットマップ配置先
+const PhysAddr PMM_DATA_BASE = 0x200000;
+
+// ============================================================
+// ページ状態
+// ============================================================
+
+const ulong PAGE_FREE = 0;
+const ulong PAGE_USED = 1;
+
+// ============================================================
+// BuddyAllocator 構造体
+// ============================================================
+
+/// Buddy System 物理ページアロケータ
+export struct BuddyAllocator {
+    // 各オーダーのフリーリストヘッド（PhysAddr、0=空）
+    // free_list[order] → 最初の空きブロックの物理アドレス
+    PhysAddr free_head_0;
+    PhysAddr free_head_1;
+    PhysAddr free_head_2;
+    PhysAddr free_head_3;
+    PhysAddr free_head_4;
+    PhysAddr free_head_5;
+    PhysAddr free_head_6;
+    PhysAddr free_head_7;
+    PhysAddr free_head_8;
+    PhysAddr free_head_9;
+    PhysAddr free_head_10;
+
+    // メモリ管理域
+    PhysAddr bitmap_base;  // ページ状態ビットマップ先頭
+    ulong total_pages;     // 総ページ数
+    ulong free_pages;      // 空きページ数
+}
+
+// ============================================================
+// impl BuddyAllocator — 固有メソッド
+// ============================================================
+
+impl BuddyAllocator {
+    /// コンストラクタ: 全フリーリスト空で初期化
+    overload self() {
+        self.free_head_0 = 0;
+        self.free_head_1 = 0;
+        self.free_head_2 = 0;
+        self.free_head_3 = 0;
+        self.free_head_4 = 0;
+        self.free_head_5 = 0;
+        self.free_head_6 = 0;
+        self.free_head_7 = 0;
+        self.free_head_8 = 0;
+        self.free_head_9 = 0;
+        self.free_head_10 = 0;
+        self.bitmap_base = PMM_DATA_BASE;
+        self.total_pages = 0;
+        self.free_pages = 0;
+    }
+
+    /// フリーリストのヘッドを取得
+    PhysAddr get_free_head(ulong order) {
+        if (order == 0) { return self.free_head_0; }
+        if (order == 1) { return self.free_head_1; }
+        if (order == 2) { return self.free_head_2; }
+        if (order == 3) { return self.free_head_3; }
+        if (order == 4) { return self.free_head_4; }
+        if (order == 5) { return self.free_head_5; }
+        if (order == 6) { return self.free_head_6; }
+        if (order == 7) { return self.free_head_7; }
+        if (order == 8) { return self.free_head_8; }
+        if (order == 9) { return self.free_head_9; }
+        if (order == 10) { return self.free_head_10; }
+        return 0;
+    }
+
+    /// フリーリストのヘッドを設定
+    void set_free_head(ulong order, PhysAddr addr) {
+        if (order == 0) { self.free_head_0 = addr; }
+        if (order == 1) { self.free_head_1 = addr; }
+        if (order == 2) { self.free_head_2 = addr; }
+        if (order == 3) { self.free_head_3 = addr; }
+        if (order == 4) { self.free_head_4 = addr; }
+        if (order == 5) { self.free_head_5 = addr; }
+        if (order == 6) { self.free_head_6 = addr; }
+        if (order == 7) { self.free_head_7 = addr; }
+        if (order == 8) { self.free_head_8 = addr; }
+        if (order == 9) { self.free_head_9 = addr; }
+        if (order == 10) { self.free_head_10 = addr; }
+    }
+
+    /// ページ番号からページ状態を取得
+    ulong get_page_state(ulong pfn) {
+        ulong addr = self.bitmap_base + pfn;
+        ulong state = 0;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:state}
+        `);
+        return state;
+    }
+
+    /// ページ番号のページ状態を設定
+    void set_page_state(ulong pfn, ulong state) {
+        ulong addr = self.bitmap_base + pfn;
+        ulong val = state as ulong;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            movq ${r:val}, %rax;
+            movb %al, (%rdi)
+        `);
+    }
+
+    /// メモリ領域をPMMに登録
+    void add_region(PhysAddr base, Size length, SerialPort* w) {
+        // ページアラインメント
+        PhysAddr aligned_base = (base + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        PhysAddr aligned_end = (base + length) & ~(PAGE_SIZE - 1);
+
+        if (aligned_end <= aligned_base) { return; }
+
+        // カーネル領域・PMM管理領域・固定データ構造を保護
+        // 保護対象 (0 - 52MB):
+        //   0x000000-0x200000  カーネルコード・スタック・ページテーブル
+        //   0x200000-0x212000  PMMビットマップ
+        //   0x300000-0x304000  プロセステーブル
+        //   0xB00000-0xC00000  カーネルスタックプール (64スロット×16KiB)
+        //   0xD00000-0xD10000  フレームバッファ情報
+        //   0xD80000-0xDA0000  カーソル/ウィンドウ/マウス状態
+        //   0xE00000-0x1100000 バックバッファ (1024*768*4 = 3MB)
+        //   0x1200000-0x1210000 RamFS構造体 (inode/dir/name)
+        //   0x1300000-0x3300000 RamFSデータプール (32MB)
+        PhysAddr safe_start = 0x3400000;  // 52MB (全固定領域の上位)
+        if (aligned_base < safe_start) { aligned_base = safe_start; }
+        if (aligned_end <= aligned_base) { return; }
+
+        ulong start_pfn = aligned_base / PAGE_SIZE;
+        ulong end_pfn = aligned_end / PAGE_SIZE;
+        ulong count = end_pfn - start_pfn;
+
+        // ページフレームを最大オーダーの塊で追加
+        ulong pfn = start_pfn;
+        while (pfn < end_pfn) {
+            // このPFNに対する最大オーダーを決定
+            ulong order = 0;
+            while (order < MAX_ORDER - 1) {
+                ulong block_pages = 1 << (order + 1);
+                ulong aligned = pfn & (block_pages - 1);
+                if (aligned != 0) { break; }
+                if (pfn + block_pages > end_pfn) { break; }
+                order = order + 1;
+            }
+
+            // フリーリストに追加
+            ulong block_pages = 1 << order;
+            PhysAddr block_addr = pfn * PAGE_SIZE;
+
+            // 先頭ページにnextポインタを書く
+            PhysAddr old_head = self.get_free_head(order);
+            ulong* next_ptr = block_addr as ulong*;
+            *next_ptr = old_head;
+            self.set_free_head(order, block_addr);
+
+            // ページ状態マーク
+            ulong i = 0;
+            while (i < block_pages) {
+                self.set_page_state(pfn + i, PAGE_FREE);
+                i = i + 1;
+            }
+
+            self.total_pages = self.total_pages + block_pages;
+            self.free_pages = self.free_pages + block_pages;
+            pfn = pfn + block_pages;
+        }
+
+        w->puts("  PMM: added " as void*);
+        print_dec(w, count);
+        w->puts(" pages (" as void*);
+        print_dec(w, count * 4);
+        w->puts(" KiB)" as void*);
+        w->println("" as void*);
+    }
+}
+
+// ============================================================
+// impl BuddyAllocator for PageAllocator
+// ============================================================
+
+impl BuddyAllocator for PageAllocator {
+    /// 2^order ページを連続確保
+    PhysAddr alloc_pages(ulong order) {
+        if (order >= MAX_ORDER) { return 0; }
+
+        // 要求オーダー以上で空きを探す
+        ulong cur_order = order;
+        while (cur_order < MAX_ORDER) {
+            PhysAddr head = self.get_free_head(cur_order);
+            if (head != 0) {
+                // フリーリストから取り出し
+                ulong* next_ptr = head as ulong*;
+                PhysAddr next = *next_ptr;
+                self.set_free_head(cur_order, next);
+
+                // 余ったページを下位オーダーに分割
+                while (cur_order > order) {
+                    cur_order = cur_order - 1;
+                    ulong buddy_pages = 1 << cur_order;
+                    PhysAddr buddy_addr = head + buddy_pages * PAGE_SIZE;
+
+                    // バディをフリーリストに追加
+                    PhysAddr old_head = self.get_free_head(cur_order);
+                    ulong* bp = buddy_addr as ulong*;
+                    *bp = old_head;
+                    self.set_free_head(cur_order, buddy_addr);
+                }
+
+                // ページ状態を使用中にマーク
+                ulong alloc_pages_count = 1 << order;
+                ulong pfn = head / PAGE_SIZE;
+                ulong i = 0;
+                while (i < alloc_pages_count) {
+                    self.set_page_state(pfn + i, PAGE_USED);
+                    i = i + 1;
+                }
+
+                self.free_pages = self.free_pages - alloc_pages_count;
+                return head;
+            }
+            cur_order = cur_order + 1;
+        }
+
+        // メモリ不足
+        return 0;
+    }
+
+    /// 2^order ページを解放
+    void free_pages(PhysAddr addr, ulong order) {
+        if (order >= MAX_ORDER) { return; }
+        if (addr == 0) { return; }
+
+        ulong pfn = addr / PAGE_SIZE;
+        ulong block_pages = 1 << order;
+
+        // ページ状態を空きにマーク
+        ulong i = 0;
+        while (i < block_pages) {
+            self.set_page_state(pfn + i, PAGE_FREE);
+            i = i + 1;
+        }
+        self.free_pages = self.free_pages + block_pages;
+
+        // バディ結合: 上位オーダーに昇格を試行
+        PhysAddr block = addr;
+        ulong cur_order = order;
+        while (cur_order < MAX_ORDER - 1) {
+            ulong buddy_size = (1 << cur_order) * PAGE_SIZE;
+            PhysAddr buddy_addr = block ^ buddy_size;
+            ulong buddy_pfn = buddy_addr / PAGE_SIZE;
+
+            // バディが空きかチェック
+            ulong buddy_state = self.get_page_state(buddy_pfn);
+            if (buddy_state != PAGE_FREE) { break; }
+
+            // バディをフリーリストから除去し結合
+            // 簡易版: フリーリストのヘッドのみチェック
+            PhysAddr head = self.get_free_head(cur_order);
+            if (head == buddy_addr) {
+                ulong* bp = buddy_addr as ulong*;
+                self.set_free_head(cur_order, *bp);
+            } else {
+                break;  // 簡易版: ヘッド以外は結合をスキップ
+            }
+
+            // 結合: 低いアドレスが新ブロックの先頭
+            if (buddy_addr < block) { block = buddy_addr; }
+            cur_order = cur_order + 1;
+        }
+
+        // 結合の結果のブロックをフリーリストに追加
+        PhysAddr old_head = self.get_free_head(cur_order);
+        ulong* bp = block as ulong*;
+        *bp = old_head;
+        self.set_free_head(cur_order, block);
+    }
+}
+
+/// Pmm — PMM初期化管理
+export struct Pmm {}
+
+impl Pmm {
+    /// PMMをMultiboot1メモリマップで初期化
+    /// Multiboot1 mmapエントリ形式:
+    ///   [size:u32][base_addr:u64][length:u64][type:u32]
+    ///   offset: 0      4              12          20
+    ///   各エントリの合計バイト = size + 4 (sizeフィールド自体を含まない)
+    static void setup(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size count, SerialPort* w) {
+        pr_info(w, "Initializing PMM (Buddy System)..." as void*);
+
+        // ビットマップをゼロクリア
+        memzero(pmm->bitmap_base as void*, MAX_PAGES);
+
+        // 利用可能メモリ領域を登録
+        // Multiboot1 mmapは可変長エントリ: 各エントリの先頭u32がサイズ
+        ulong e = mmap_addr;
+        ulong idx = 0;
+        while (idx < count) {
+            // Multiboot1 mmapエントリ読み取り
+            ulong entry_sz = 0;
+            ulong base = 0;
+            ulong length = 0;
+            ulong mtype = 0;
+            __asm__(`
+                movq ${r:e}, %rdi;
+                xorq %rax, %rax;
+                movl (%rdi), %eax;
+                movq %rax, ${=r:entry_sz};
+                movq 4(%rdi), %rax;
+                movq %rax, ${=r:base};
+                movq 12(%rdi), %rax;
+                movq %rax, ${=r:length};
+                xorq %rax, %rax;
+                movl 20(%rdi), %eax;
+                movq %rax, ${=r:mtype}
+            `);
+
+            // Type 1 = Available
+            if (mtype == 1) {
+                pmm->add_region(base, length, w);
+            }
+
+            // 次のエントリ: size + 4（sizeフィールド自体の4バイトを加算）
+            e = e + entry_sz + 4;
+            idx = idx + 1;
+        }
+
+        w->puts("  PMM: total " as void*);
+        print_dec(w, pmm->total_pages);
+        w->puts(" pages, " as void*);
+        print_dec(w, pmm->free_pages);
+        w->puts(" free" as void*);
+        w->println("" as void*);
+        pr_info(w, "PMM initialized" as void*);
+    }
+}
+
+// 互換ラッパー
+export void pmm_init(BuddyAllocator* pmm, ulong mmap_addr, Size entry_size, Size count, SerialPort* w) {
+    Pmm::setup(pmm, mmap_addr, entry_size, count, w);
+}

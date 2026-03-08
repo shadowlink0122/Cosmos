@@ -1,0 +1,49 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::mem - メモリ読み書きユーティリティ
+//
+// バイト・QWORDアクセスのラッパー。
+// Cm言語の utiny* バグを回避するため __asm__ で実装。
+
+/// Mem — メモリ読み書きユーティリティ
+export struct Mem {}
+
+impl Mem {
+    static ulong read_byte(ulong addr) {
+        ulong val = 0;
+        __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:val}`);
+        return val;
+    }
+
+    static void write_byte(ulong addr, ulong val) {
+        __asm__(`movq ${r:addr}, %r10; movq ${r:val}, %rax; movb %al, (%r10)`);
+    }
+
+    static void write_qword(ulong addr, ulong val) {
+        __asm__(`movq ${r:addr}, %r10; movq ${r:val}, %rax; movq %rax, (%r10)`);
+    }
+
+    static ulong read_qword(ulong addr) {
+        ulong val = 0;
+        __asm__(`movq ${r:addr}, %r10; movq (%r10), %rax; movq %rax, ${=r:val}`);
+        return val;
+    }
+
+    /// 文字列比較 (辞書順): 負=s1<s2, 0=等しい, 正=s1>s2
+    static long strcmp(void* s1, void* s2) {
+        ulong a = s1 as ulong;
+        ulong b = s2 as ulong;
+        ulong i = 0;
+        while (true) {
+            ulong c1 = Mem::read_byte(a + i);
+            ulong c2 = Mem::read_byte(b + i);
+            if (c1 != c2) {
+                if (c1 < c2) { return 0 - 1; }
+                return 1;
+            }
+            if (c1 == 0) { return 0; }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+}

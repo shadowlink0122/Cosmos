@@ -1,0 +1,279 @@
+//! platform: baremetal-x86
+// cosmo-linux::fs::vfs - VFS コア API
+//
+// ファイルシステム抽象化レイヤ。
+// FDテーブルとramfsを統合し、open/read/write/close APIを提供。
+// 9pfsサポート追加: /mnt/host パスをvirtio-9pに委譲。
+// 参照: linux/fs/open.c, linux/fs/read_write.c
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../include/errno;
+import ../include/result;
+import ./fd_table;
+import ./ramfs;
+import ./ninepfs;
+import ../lib/kstring;
+import ../drivers/virtio/virtio_9p;
+import ../apps/terminal/mem;
+
+// 9pFS用パスバッファ (FDごとに相対パスを保存)
+// 最大8ファイル同時オープン × 128バイト/パス = 1KB
+const ulong VFS_9P_PATH_BASE = 0xBA0000;
+const ulong VFS_9P_PATH_SIZE = 128;
+const ulong VFS_9P_MAX_FDS   = 8;
+
+/// Vfs — 仮想ファイルシステムAPI
+export struct Vfs {}
+
+impl Vfs {
+    /// ファイルをオープンしFDを返す
+    /// 成功=Ok(fd)、失敗=Err(errno)
+    static Result<Fd, long> open(void* name, ulong flags) {
+        if (name as ulong == 0) { return Result::Err(EINVAL); }
+
+        // 9pfsパス判定: /mnt/host で始まるパス
+        if (NinePfs::is_9p_path(name as ulong) != 0) {
+            // 相対パス取得
+            ulong rel_path = NinePfs::strip_prefix(name as ulong);
+
+            // 空きパスバッファを検索
+            ulong slot = Vfs::alloc_9p_slot();
+            if (slot == 0xFFFFFFFF) { return Result::Err(EMFILE); }
+
+            // 相対パスをバッファにコピー
+            ulong path_buf = VFS_9P_PATH_BASE + slot * VFS_9P_PATH_SIZE;
+            ulong pi = 0;
+            while (pi < VFS_9P_PATH_SIZE - 1) {
+                ulong ch = Mem::read_byte(rel_path + pi);
+                Mem::write_byte(path_buf + pi, ch);
+                if (ch == 0) { break; }
+                pi = pi + 1;
+            }
+            Mem::write_byte(path_buf + pi, 0);
+
+            // O_CREATの場合: ファイルを作成
+            if ((flags & O_CREAT) != 0) {
+                ulong rch = Mem::read_byte(path_buf);
+                if (rch != 0) {
+                    NinePfs::create_file(path_buf);
+                }
+            }
+
+            // FD割り当て (inoフィールドにパスバッファアドレスを格納)
+            Result<Fd, long> alloc_r = FdTable::alloc(path_buf as long, flags, FS_9PFS);
+            match (alloc_r) {
+                Result::Ok(fd) => { return Result::Ok(fd); }
+                Result::Err(e) => {
+                    Vfs::free_9p_slot(slot);
+                    return Result::Err(e);
+                }
+            }
+        }
+
+        // ramfsで検索
+        Ino ino = RamFs::lookup(name);
+
+        if (ino == 0) {
+            if ((flags & O_CREAT) != 0) {
+                ino = RamFs::create(name, S_IFREG | 0x1B6, 0);
+                if (ino == 0) { return Result::Err(ENOSPC); }
+            } else {
+                // 9pFSフォールバック: /lib/ 等のパスを9pFS経由でロード
+                // パスの先頭 '/' をスキップしてファイル名として検索
+                ulong search_name = name as ulong;
+                ulong sch = 0;
+                __asm__(`movq ${r:search_name}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sch}`);
+                if (sch == 47) { search_name = search_name + 1; }
+
+                // 9pFSから読取を試行 → RamFSにキャッシュ
+                // 一時バッファとして0xB00000(11MB地点)を使用
+                ulong tmp_buf = 0xB00000;
+                ulong bytes = NinePfs::read_file(search_name, tmp_buf, MAX_FILE_SIZE);
+                if (bytes > 0) {
+                    // RamFSにキャッシュ: ファイル名の最後のコンポーネントを使用
+                    ulong fname = search_name;
+                    ulong fi = 0;
+                    while (fi < 256) {
+                        ulong fch = 0;
+                        ulong faddr = search_name + fi;
+                        __asm__(`movq ${r:faddr}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:fch}`);
+                        if (fch == 0) { break; }
+                        if (fch == 47) { fname = faddr + 1; }  // '/'
+                        fi = fi + 1;
+                    }
+                    ino = RamFs::create(fname as void*, S_IFREG | 0x1B6, bytes);
+                    if (ino != 0) {
+                        Result<long, long> wr2 = RamFs::write(ino, tmp_buf, 0, bytes);
+                        match (wr2) {
+                            Result::Ok(v2) => {}
+                            Result::Err(e2) => {}
+                        }
+                    }
+                }
+                if (ino == 0) {
+                    return Result::Err(ENOENT);
+                }
+            }
+        }
+
+        // FD割り当て
+        Result<Fd, long> alloc_r = FdTable::alloc(ino, flags, FS_RAMFS);
+        Fd fd = 0;
+        match (alloc_r) {
+            Result::Ok(v) => { fd = v; }
+            Result::Err(e) => { return Result::Err(e); }
+        }
+
+        // O_TRUNC: ファイル切り詰め
+        if ((flags & O_TRUNC) != 0) {
+            RamFs::truncate(ino);
+        }
+
+        // O_APPEND: オフセットをファイル末尾に設定
+        if ((flags & O_APPEND) != 0) {
+            ulong fsize = RamFs::file_size(ino);
+            FdTable::set_offset(fd, fsize);
+        }
+
+        return Result::Ok(fd);
+    }
+
+    /// FDからデータを読み出し
+    /// 成功=Ok(読み出しバイト数)、失敗=Err(errno)
+    static Result<long, long> read(Fd fd, ulong buf, ulong count) {
+        if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
+
+        ulong fs_type = FdTable::get_fs_type(fd);
+
+        // コンソール (stdin) — 未実装: 0を返す
+        if (fs_type == FS_CONSOLE) { return Result::Ok(0); }
+
+        // 9pfs
+        if (fs_type == FS_9PFS) {
+            Ino path_addr = FdTable::get_ino(fd);
+            ulong offset = FdTable::get_offset(fd);
+            ulong total = NinePfs::read_file(path_addr as ulong, buf, count);
+            if (total > 0) {
+                FdTable::set_offset(fd, offset + total);
+            }
+            return Result::Ok(total as long);
+        }
+
+        // ramfs
+        if (fs_type == FS_RAMFS) {
+            Ino ino = FdTable::get_ino(fd);
+            ulong offset = FdTable::get_offset(fd);
+            Result<long, long> rr = RamFs::read(ino, buf, offset, count);
+            match (rr) {
+                Result::Ok(bytes) => {
+                    if (bytes > 0) {
+                        FdTable::set_offset(fd, offset + (bytes as ulong));
+                    }
+                    return Result::Ok(bytes);
+                }
+                Result::Err(e) => { return Result::Err(e); }
+            }
+        }
+
+        return Result::Err(EBADF);
+    }
+
+    /// FDにデータを書き込み
+    /// 成功=Ok(書き込みバイト数)、失敗=Err(errno)
+    static Result<long, long> write(Fd fd, ulong buf, ulong count) {
+        if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
+
+        ulong fs_type = FdTable::get_fs_type(fd);
+
+        // コンソール (stdout/stderr) — シリアル出力
+        if (fs_type == FS_CONSOLE) {
+            return Result::Ok(count as long);
+        }
+
+        // 9pfs
+        if (fs_type == FS_9PFS) {
+            Ino path_addr = FdTable::get_ino(fd);
+            ulong written = NinePfs::write_file(path_addr as ulong, buf, count);
+            if (written > 0) {
+                ulong offset = FdTable::get_offset(fd);
+                FdTable::set_offset(fd, offset + written);
+            }
+            return Result::Ok(written as long);
+        }
+
+        // ramfs
+        if (fs_type == FS_RAMFS) {
+            Ino ino = FdTable::get_ino(fd);
+            ulong offset = FdTable::get_offset(fd);
+            Result<long, long> wr = RamFs::write(ino, buf, offset, count);
+            match (wr) {
+                Result::Ok(bytes) => {
+                    if (bytes > 0) {
+                        FdTable::set_offset(fd, offset + (bytes as ulong));
+                    }
+                    return Result::Ok(bytes);
+                }
+                Result::Err(e) => { return Result::Err(e); }
+            }
+        }
+
+        return Result::Err(EBADF);
+    }
+
+    /// FDを閉じる
+    /// 成功=Ok(0)、失敗=Err(errno)
+    static Result<long, long> close(Fd fd) {
+        if (FdTable::is_valid(fd) == 0) { return Result::Err(EBADF); }
+
+        ulong fs_type = FdTable::get_fs_type(fd);
+
+        // 9pFSの場合、パスバッファスロットを解放
+        if (fs_type == FS_9PFS) {
+            Ino path_addr = FdTable::get_ino(fd);
+            ulong slot = ((path_addr as ulong) - VFS_9P_PATH_BASE) / VFS_9P_PATH_SIZE;
+            if (slot < VFS_9P_MAX_FDS) {
+                Vfs::free_9p_slot(slot);
+            }
+        }
+
+        FdTable::free(fd);
+        return Result::Ok(0);
+    }
+
+    /// ディレクトリエントリを読み出し（簡易版）
+    static ulong readdir(ulong idx) {
+        return RamFs::dir_name(idx);
+    }
+
+    // ============================================================
+    // 9pFS パスバッファ管理
+    // ============================================================
+
+    /// 空き9pFSパスバッファスロットを割り当て
+    /// 返り値: スロット番号 (0xFFFFFFFF=空きなし)
+    static ulong alloc_9p_slot() {
+        ulong i = 0;
+        while (i < VFS_9P_MAX_FDS) {
+            ulong addr = VFS_9P_PATH_BASE + i * VFS_9P_PATH_SIZE;
+            ulong first = Mem::read_byte(addr);
+            // 未使用チェック: 最初のバイトが0xFFなら空き
+            ulong marker_addr = VFS_9P_PATH_BASE + VFS_9P_MAX_FDS * VFS_9P_PATH_SIZE + i;
+            ulong marker = Mem::read_byte(marker_addr);
+            if (marker == 0) {
+                Mem::write_byte(marker_addr, 1);
+                return i;
+            }
+            i = i + 1;
+        }
+        return 0xFFFFFFFF;
+    }
+
+    /// 9pFSパスバッファスロットを解放
+    static void free_9p_slot(ulong slot) {
+        if (slot >= VFS_9P_MAX_FDS) { return; }
+        ulong marker_addr = VFS_9P_PATH_BASE + VFS_9P_MAX_FDS * VFS_9P_PATH_SIZE + slot;
+        Mem::write_byte(marker_addr, 0);
+    }
+}

@@ -1,0 +1,138 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd::host - ホストFS操作コマンド
+//
+// CmdHost struct/impl — hostls, hostcat (9pfs経由)。
+
+import ../../../include/types;
+import ../../../include/config;
+import ../shell/defs;
+import ../mem;
+import ../shell/io;
+import ../../../drivers/virtio/virtio_9p;
+
+/// CmdHost — ホストFSコマンド群
+export struct CmdHost {}
+
+impl CmdHost {
+
+    /// hostls コマンド: ホストFSディレクトリ一覧
+    static void hostls(ulong path) {
+        if (Virtio9p::is_ready() == 0) {
+            Shell::writeln("hostls: 9p filesystem not available" as void*);
+            return;
+        }
+
+        // walk: root(fid=0) → target(fid=10)
+        ulong fid = 10;
+        ulong walk_ok = 0;
+        if (path == 0) {
+            // ルートディレクトリ: walk with 0 components
+            walk_ok = Virtio9p::walk(0, fid, "" as ulong);
+        } else {
+            walk_ok = Virtio9p::walk(0, fid, path);
+        }
+        if (walk_ok == 0) {
+            Shell::writeln("hostls: path not found" as void*);
+            return;
+        }
+
+        // lopen
+        ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
+        if (open_ok == 0) {
+            Shell::writeln("hostls: cannot open directory" as void*);
+            Virtio9p::clunk(fid);
+            return;
+        }
+
+        // readdir
+        ulong dir_buf = HOST_DIR_BUF;
+        ulong dir_len = Virtio9p::readdir(fid, dir_buf, 0, 4096);
+
+        // readdirデータ解析: qid(13) + offset(8) + type(1) + name_len(2) + name
+        ulong dpos = 0;
+        while (dpos < dir_len) {
+            // qid(13)をスキップ
+            dpos = dpos + 13;
+            // offset(8)をスキップ
+            dpos = dpos + 8;
+            // type(1)
+            ulong dtype = Mem::read_byte(dir_buf + dpos);
+            dpos = dpos + 1;
+            // name_len(2)
+            ulong nlen = Virtio9p::read_le16(dir_buf + dpos);
+            dpos = dpos + 2;
+
+            // 名前を表示
+            if (dtype == 4) {
+                Shell::write("d " as void*);
+            } else {
+                Shell::write("- " as void*);
+            }
+            // 名前を一時バッファにコピーしてnull終端
+            ulong name_tmp = HOST_NAME_BUF;
+            ulong ni = 0;
+            while (ni < nlen && ni < 255) {
+                Mem::write_byte(name_tmp + ni, Mem::read_byte(dir_buf + dpos + ni));
+                ni = ni + 1;
+            }
+            Mem::write_byte(name_tmp + ni, 0);
+            Shell::writeln(name_tmp as void*);
+
+            dpos = dpos + nlen;
+        }
+
+        Virtio9p::clunk(fid);
+    }
+
+    /// hostcat コマンド: ホストFSファイル内容表示
+    static void hostcat(ulong path) {
+        if (path == 0) {
+            Shell::writeln("Usage: hostcat <path>" as void*);
+            return;
+        }
+        if (Virtio9p::is_ready() == 0) {
+            Shell::writeln("hostcat: 9p filesystem not available" as void*);
+            return;
+        }
+
+        // walk: root(fid=0) → file(fid=11)
+        ulong fid = 11;
+        ulong walk_ok = Virtio9p::walk(0, fid, path);
+        if (walk_ok == 0) {
+            Shell::writeln("hostcat: file not found" as void*);
+            return;
+        }
+
+        // lopen (read-only)
+        ulong open_ok = Virtio9p::lopen(fid, P9_O_RDONLY);
+        if (open_ok == 0) {
+            Shell::writeln("hostcat: cannot open file" as void*);
+            Virtio9p::clunk(fid);
+            return;
+        }
+
+        // read loop
+        ulong file_buf = HOST_FILE_BUF;
+        ulong offset = 0;
+        while (true) {
+            ulong rlen = Virtio9p::read(fid, file_buf, offset, 4096);
+            if (rlen == 0) { break; }  // EOF
+
+            // 表示
+            ulong fi = 0;
+            while (fi < rlen) {
+                ulong ch = Mem::read_byte(file_buf + fi);
+                // 1文字ずつ出力
+                ulong char_buf = HOST_CHAR_BUF;
+                Mem::write_byte(char_buf, ch);
+                Mem::write_byte(char_buf + 1, 0);
+                Shell::write(char_buf as void*);
+                fi = fi + 1;
+            }
+            offset = offset + rlen;
+        }
+
+        Virtio9p::clunk(fid);
+    }
+
+}

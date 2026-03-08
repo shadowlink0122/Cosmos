@@ -1,0 +1,73 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::fd_table::test_fd_table - FDテーブル テスト
+//
+// ファイルディスクリプタテーブルの alloc/free/dup2 を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/vfs;
+import ../../include/result;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../fs/fd_table;
+import ../test_io;
+import ../ktest;
+
+/// FDテーブル テストスイート
+export struct TestFdTable {}
+
+impl TestFdTable {
+    /// 標準FD検証テスト
+    static void test_stdio() {
+        KTest::assert_eq(FdTable::is_valid(0), 1, "fd 0 (stdin) valid" as void*);
+        KTest::assert_eq(FdTable::is_valid(1), 1, "fd 1 (stdout) valid" as void*);
+        KTest::assert_eq(FdTable::is_valid(2), 1, "fd 2 (stderr) valid" as void*);
+        KTest::assert_eq(FdTable::is_valid(15), 0, "fd 15 invalid" as void*);
+    }
+
+    /// alloc/freeテスト
+    static void test_alloc_free() {
+        Fd fd = 0;
+        Result<Fd, long> alloc_r = FdTable::alloc(42, O_RDWR, FS_DEVFS);
+        match (alloc_r) {
+            Result::Ok(v) => { fd = v; }
+            Result::Err(e) => { fd = 0 - e; }
+        }
+        if (fd >= 3) {
+            KTest::assert_true(1, "alloc returns fd >= 3" as void*);
+        } else {
+            KTest::assert_true(0, "alloc returns fd >= 3" as void*);
+        }
+        KTest::assert_eq(FdTable::is_valid(fd), 1, "allocated fd valid" as void*);
+        KTest::assert_eq(FdTable::get_fs_type(fd), FS_DEVFS, "fs_type = FS_DEVFS" as void*);
+        FdTable::free(fd);
+    }
+
+    /// dup2テスト
+    static void test_dup2() {
+        Fd fd = 0;
+        Result<Fd, long> alloc_r = FdTable::alloc(42, O_RDWR, FS_DEVFS);
+        match (alloc_r) {
+            Result::Ok(v) => { fd = v; }
+            Result::Err(e) => { fd = 0 - e; }
+        }
+        Fd dup_fd = 0;
+        Result<Fd, long> dup_r = FdTable::dup2(fd, 10);
+        match (dup_r) {
+            Result::Ok(v) => { dup_fd = v; }
+            Result::Err(e) => { dup_fd = 0 - e; }
+        }
+        KTest::assert_eq(dup_fd as ulong, 10, "dup2 returns newfd" as void*);
+        KTest::assert_eq(FdTable::is_valid(10), 1, "dup2 target valid" as void*);
+        KTest::assert_eq(FdTable::get_fs_type(10), FS_DEVFS, "dup2 target fs_type" as void*);
+        FdTable::free(fd);
+        FdTable::free(10);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestFdTable::test_stdio();
+        TestFdTable::test_alloc_free();
+        TestFdTable::test_dup2();
+    }
+}

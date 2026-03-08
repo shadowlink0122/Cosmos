@@ -1,0 +1,329 @@
+//! platform: baremetal-x86
+// cosmo-linux::sched::scheduler - ラウンドロビンスケジューラ
+//
+// impl RoundRobinScheduler for Scheduler
+// Sched struct/impl パターンで実装。
+//
+// 参照: linux/kernel/sched/fair.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../arch/x86_64/context;
+import ../drivers/serial;
+import ../lib/printk;
+
+// ============================================================
+// RoundRobinScheduler 構造体
+// ============================================================
+
+/// ラウンドロビンスケジューラ
+export struct RoundRobinScheduler {
+    // プロセスポインタ配列（固定サイズ）
+    ulong proc_0;
+    ulong proc_1;
+    ulong proc_2;
+    ulong proc_3;
+    ulong proc_4;
+    ulong proc_5;
+    ulong proc_6;
+    ulong proc_7;
+    ulong proc_8;
+    ulong proc_9;
+    ulong proc_10;
+    ulong proc_11;
+    ulong proc_12;
+    ulong proc_13;
+    ulong proc_14;
+    ulong proc_15;
+
+    ulong count;        // 登録プロセス数
+    ulong current_idx;  // 現在実行中インデックス
+    Pid   current_pid;  // 現在実行中PID
+}
+
+// ============================================================
+// impl RoundRobinScheduler — 固有メソッド
+// ============================================================
+
+impl RoundRobinScheduler {
+    /// コンストラクタ
+    overload self() {
+        self.proc_0  = 0;
+        self.proc_1  = 0;
+        self.proc_2  = 0;
+        self.proc_3  = 0;
+        self.proc_4  = 0;
+        self.proc_5  = 0;
+        self.proc_6  = 0;
+        self.proc_7  = 0;
+        self.proc_8  = 0;
+        self.proc_9  = 0;
+        self.proc_10 = 0;
+        self.proc_11 = 0;
+        self.proc_12 = 0;
+        self.proc_13 = 0;
+        self.proc_14 = 0;
+        self.proc_15 = 0;
+        self.count = 0;
+        self.current_idx = 0;
+        self.current_pid = 0;
+    }
+
+    /// インデックスからプロセスポインタ取得
+    ulong get_proc(ulong idx) {
+        if (idx == 0)  { return self.proc_0; }
+        if (idx == 1)  { return self.proc_1; }
+        if (idx == 2)  { return self.proc_2; }
+        if (idx == 3)  { return self.proc_3; }
+        if (idx == 4)  { return self.proc_4; }
+        if (idx == 5)  { return self.proc_5; }
+        if (idx == 6)  { return self.proc_6; }
+        if (idx == 7)  { return self.proc_7; }
+        if (idx == 8)  { return self.proc_8; }
+        if (idx == 9)  { return self.proc_9; }
+        if (idx == 10) { return self.proc_10; }
+        if (idx == 11) { return self.proc_11; }
+        if (idx == 12) { return self.proc_12; }
+        if (idx == 13) { return self.proc_13; }
+        if (idx == 14) { return self.proc_14; }
+        if (idx == 15) { return self.proc_15; }
+        return 0;
+    }
+
+    /// インデックスにプロセスポインタ設定
+    void set_proc(ulong idx, ulong proc_addr) {
+        if (idx == 0)  { self.proc_0  = proc_addr; }
+        if (idx == 1)  { self.proc_1  = proc_addr; }
+        if (idx == 2)  { self.proc_2  = proc_addr; }
+        if (idx == 3)  { self.proc_3  = proc_addr; }
+        if (idx == 4)  { self.proc_4  = proc_addr; }
+        if (idx == 5)  { self.proc_5  = proc_addr; }
+        if (idx == 6)  { self.proc_6  = proc_addr; }
+        if (idx == 7)  { self.proc_7  = proc_addr; }
+        if (idx == 8)  { self.proc_8  = proc_addr; }
+        if (idx == 9)  { self.proc_9  = proc_addr; }
+        if (idx == 10) { self.proc_10 = proc_addr; }
+        if (idx == 11) { self.proc_11 = proc_addr; }
+        if (idx == 12) { self.proc_12 = proc_addr; }
+        if (idx == 13) { self.proc_13 = proc_addr; }
+        if (idx == 14) { self.proc_14 = proc_addr; }
+        if (idx == 15) { self.proc_15 = proc_addr; }
+    }
+}
+
+// ============================================================
+// impl RoundRobinScheduler for Scheduler
+// ============================================================
+
+impl RoundRobinScheduler for Scheduler {
+    /// プロセスを登録
+    void add_process(Process* proc) {
+        if (self.count >= 16) { return; }
+        self.set_proc(self.count, proc as ulong);
+        self.count = self.count + 1;
+    }
+
+    /// プロセスをキューから除外 (PIDで検索)
+    void remove_process(Pid pid) {
+        // PIDに対応するインデックスを検索
+        ulong found_idx = 0xFFFF;
+        ulong i = 0;
+        while (i < self.count) {
+            ulong addr = self.get_proc(i);
+            if (addr != 0) {
+                Process* p = addr as Process*;
+                if (p->pid == pid) {
+                    found_idx = i;
+                }
+            }
+            i = i + 1;
+        }
+        if (found_idx == 0xFFFF) { return; }
+
+        // found_idx以降を前詰め
+        ulong j = found_idx;
+        while (j + 1 < self.count) {
+            ulong next_addr = self.get_proc(j + 1);
+            self.set_proc(j, next_addr);
+            j = j + 1;
+        }
+        // 最後のスロットをクリア
+        self.set_proc(self.count - 1, 0);
+        self.count = self.count - 1;
+
+        // current_idxがずれた場合の調整
+        if (self.current_idx >= self.count && self.count > 0) {
+            self.current_idx = 0;
+        }
+    }
+
+    /// 次に実行するプロセスのPIDを選択
+    Pid pick_next() {
+        if (self.count == 0) { return IDLE_PID; }
+
+        // ラウンドロビン: 次のインデックスへ
+        ulong next = (self.current_idx + 1) % self.count;
+        ulong checked = 0;
+        while (checked < self.count) {
+            ulong proc_addr = self.get_proc(next);
+            if (proc_addr != 0) {
+                Process* proc = proc_addr as Process*;
+                if (proc->is_runnable() != 0) {
+                    self.current_idx = next;
+                    self.current_pid = proc->pid;
+                    return proc->pid;
+                }
+            }
+            next = (next + 1) % self.count;
+            checked = checked + 1;
+        }
+        return IDLE_PID;
+    }
+
+    /// タイマーtick処理
+    void tick() {
+        // 現在のプロセスのタイムスライスを消費
+        ulong proc_addr = self.get_proc(self.current_idx);
+        if (proc_addr != 0) {
+            Process* proc = proc_addr as Process*;
+            if (proc->time_slice > 0) {
+                proc->time_slice = proc->time_slice - 1;
+            }
+        }
+    }
+}
+
+// ============================================================
+// グローバルスケジューラ固定メモリ
+// ============================================================
+
+/// スケジューラポインタ配置アドレス
+const PhysAddr SCHED_PTR_ADDR = 0x91000;
+
+/// 現在プロセスポインタ配置アドレス
+const PhysAddr CURRENT_PROC_ADDR = 0x91008;
+
+/// Sched — グローバルスケジューラ操作
+export struct Sched {}
+
+impl Sched {
+    /// スケジューラ初期化
+    static void setup(RoundRobinScheduler* sched, Process* idle, SerialPort* w) {
+        sched->add_process(idle);
+        sched->current_pid = idle->pid;
+
+        // グローバルスケジューラポインタを固定メモリに保存
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        *sched_ptr_addr = sched as ulong;
+
+        // 現在プロセスポインタを保存
+        ulong* cur_proc_addr = CURRENT_PROC_ADDR as ulong*;
+        *cur_proc_addr = idle as ulong;
+
+        pr_info(w, "Scheduler initialized (Round-Robin)" as void*);
+    }
+
+    /// 現在のプロセスポインタを取得
+    static Process* current() {
+        ulong* addr = CURRENT_PROC_ADDR as ulong*;
+        return (*addr) as Process*;
+    }
+
+    /// プロセスをスケジューラに登録
+    static void add(Process* proc) {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        sched->add_process(proc);
+    }
+
+    /// プロセスをスケジューラから除外
+    static void remove(Pid pid) {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        sched->remove_process(pid);
+    }
+
+    /// 指定PIDがスケジューラに存在するか（フォアグラウンド待機用）
+    static ulong is_alive(Pid pid) {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        ulong i = 0;
+        while (i < sched->count) {
+            ulong addr = sched->get_proc(i);
+            if (addr != 0) {
+                Process* p = addr as Process*;
+                if (p->pid == pid) { return 1; }
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    /// スケジュール実行（コンテキストスイッチ含む）
+    static void run() {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+
+        // cur_pidをpick_next()の前に保存（pick_nextがcurrent_pidを更新するため）
+        Pid cur_pid = sched->current_pid;
+
+        // 次のプロセスを選択
+        Pid next_pid = sched->pick_next();
+
+        // 同じプロセスなら何もしない
+        if (next_pid == cur_pid) { return; }
+
+        // IDLE_PIDが選ばれた場合、アイドルプロセス(idx=0)に戻る
+        if (next_pid == IDLE_PID) {
+            sched->current_idx = 0;
+            sched->current_pid = IDLE_PID;
+        }
+
+        // 次のプロセスのポインタを取得
+        ulong next_proc_addr = sched->get_proc(sched->current_idx);
+        if (next_proc_addr == 0) { return; }
+
+        Process* prev = Sched::current();
+        Process* next = next_proc_addr as Process*;
+
+        // ZOMBIE/BLOCKEDプロセスへのスイッチを防止
+        if (next->is_runnable() == 0) { return; }
+
+        // プロセス状態を更新
+        if (prev->state == TASK_RUNNING) {
+            prev->state = TASK_READY;
+        }
+        next->state = TASK_RUNNING;
+
+        // タイムスライスをリセット
+        next->time_slice = 10;
+
+        // 現在プロセスを更新
+        ulong* cur_proc = CURRENT_PROC_ADDR as ulong*;
+        *cur_proc = next as ulong;
+
+        // コンテキストスイッチ実行
+        Context::switch_to(prev, next);
+    }
+
+    /// タイマーtick処理
+    static void tick() {
+        ulong* sched_ptr_addr = SCHED_PTR_ADDR as ulong*;
+        RoundRobinScheduler* sched = (*sched_ptr_addr) as RoundRobinScheduler*;
+        sched->tick();
+
+        // タイムスライスが0になったらスケジュール要求
+        Process* cur = Sched::current();
+        if (cur->time_slice == 0) {
+            Sched::run();
+        }
+    }
+}
+
+// 互換ラッパー
+export void scheduler_init(RoundRobinScheduler* sched, Process* idle, SerialPort* w) { Sched::setup(sched, idle, w); }
+export Process* current_process() { return Sched::current(); }
+export void sched_add(Process* proc) { Sched::add(proc); }
+export void schedule() { Sched::run(); }
+export void sched_tick() { Sched::tick(); }

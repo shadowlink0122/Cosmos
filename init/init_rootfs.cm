@@ -1,0 +1,211 @@
+//! platform: baremetal-x86
+// cosmo-linux::init::init_rootfs - 初期rootfs構築
+//
+// ブート時にRamFSに基本バイナリを登録する。
+// rootfs/packages/ のバイナリをメモリに配置。
+
+import ../include/types;
+import ../include/config;
+import ../include/vfs;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ../fs/ramfs;
+import ../mm/pmm;
+import ../include/result;
+import ../apps/terminal/mem;
+
+// ============================================================
+// hello バイナリデータ
+// ============================================================
+// rootfs/packages/hello: 静的リンクx86_64 ELF (write+exit syscall)
+// エントリ: 0x400078
+// サイズ: テキストセグメントのみ 186バイト (0xBA)
+
+/// hello ELF の必要最小限データをメモリに構築
+/// ELFヘッダ(64B) + PHDR(56B) + コード(42B) + データ(26B) = 188B
+void build_hello_elf(ulong buf) {
+    // ELFヘッダ (64バイト)
+    // マジック: 7F 45 4C 46
+    Mem::write_byte(buf + 0, 0x7F);
+    Mem::write_byte(buf + 1, 0x45);  // 'E'
+    Mem::write_byte(buf + 2, 0x4C);  // 'L'
+    Mem::write_byte(buf + 3, 0x46);  // 'F'
+    Mem::write_byte(buf + 4, 2);     // EI_CLASS: ELFCLASS64
+    Mem::write_byte(buf + 5, 1);     // EI_DATA: ELFDATA2LSB
+    Mem::write_byte(buf + 6, 1);     // EI_VERSION: EV_CURRENT
+    // 7-15: ゼロ (padding)
+
+    // e_type = ET_EXEC (2)
+    Mem::write_byte(buf + 0x10, 2);
+    Mem::write_byte(buf + 0x11, 0);
+    // e_machine = EM_X86_64 (0x3E)
+    Mem::write_byte(buf + 0x12, 0x3E);
+    Mem::write_byte(buf + 0x13, 0);
+    // e_version = 1
+    Mem::write_byte(buf + 0x14, 1);
+    // e_entry = 0x400078 (コード開始 = ELFヘッダ 64 + PHDR56 = 120)
+    ulong* entry_ptr = (buf + 0x18) as ulong*;
+    *entry_ptr = ELF_BASE_VADDR + ELF_ENTRY_OFFSET;
+    // e_phoff = 64 (ELFヘッダ直後)
+    ulong* phoff_ptr = (buf + 0x20) as ulong*;
+    *phoff_ptr = 64;
+    // e_shoff = 0 (セクションヘッダなし)
+    // e_flags = 0
+    // e_ehsize = 64
+    Mem::write_byte(buf + 0x34, 64);
+    Mem::write_byte(buf + 0x35, 0);
+    // e_phentsize = 56
+    Mem::write_byte(buf + 0x36, 56);
+    Mem::write_byte(buf + 0x37, 0);
+    // e_phnum = 1
+    Mem::write_byte(buf + 0x38, 1);
+
+    // PHDR (56バイト, offset 64)
+    ulong ph = buf + 64;
+    // p_type = PT_LOAD (1)
+    ulong* ptype = ph as ulong*;
+    *ptype = 1;
+    // p_flags = PF_R | PF_X (5)
+    Mem::write_byte(ph + 4, 5);
+    // p_offset = 0
+    ulong* poff = (ph + 8) as ulong*;
+    *poff = 0;
+    // p_vaddr = 0x400000
+    ulong* pvaddr = (ph + 0x10) as ulong*;
+    *pvaddr = ELF_BASE_VADDR;
+    // p_paddr = 0x400000
+    ulong* ppaddr = (ph + 0x18) as ulong*;
+    *ppaddr = ELF_BASE_VADDR;
+    // p_filesz = 188 (全データサイズ)
+    ulong* pfilesz = (ph + 0x20) as ulong*;
+    *pfilesz = 188;
+    // p_memsz = 188
+    ulong* pmemsz = (ph + 0x28) as ulong*;
+    *pmemsz = 188;
+    // p_align = 0x1000
+    ulong* palign = (ph + 0x30) as ulong*;
+    *palign = PAGE_SIZE;
+
+    // コード (42バイト, offset 120 = 0x78)
+    ulong code = buf + 120;
+    // mov $1, %rax  — sys_write
+    Mem::write_byte(code + 0, 0x48);
+    Mem::write_byte(code + 1, 0xC7);
+    Mem::write_byte(code + 2, 0xC0);
+    Mem::write_byte(code + 3, 0x01);
+    Mem::write_byte(code + 4, 0x00);
+    Mem::write_byte(code + 5, 0x00);
+    Mem::write_byte(code + 6, 0x00);
+    // mov $1, %rdi  — fd=stdout
+    Mem::write_byte(code + 7, 0x48);
+    Mem::write_byte(code + 8, 0xC7);
+    Mem::write_byte(code + 9, 0xC7);
+    Mem::write_byte(code + 10, 0x01);
+    Mem::write_byte(code + 11, 0x00);
+    Mem::write_byte(code + 12, 0x00);
+    Mem::write_byte(code + 13, 0x00);
+    // lea 0x15(%rip), %rsi — msg pointer (relative to next instr)
+    Mem::write_byte(code + 14, 0x48);
+    Mem::write_byte(code + 15, 0x8D);
+    Mem::write_byte(code + 16, 0x35);
+    Mem::write_byte(code + 17, 0x15);
+    Mem::write_byte(code + 18, 0x00);
+    Mem::write_byte(code + 19, 0x00);
+    Mem::write_byte(code + 20, 0x00);
+    // mov $0x1a, %rdx — count=26
+    Mem::write_byte(code + 21, 0x48);
+    Mem::write_byte(code + 22, 0xC7);
+    Mem::write_byte(code + 23, 0xC2);
+    Mem::write_byte(code + 24, 0x1A);
+    Mem::write_byte(code + 25, 0x00);
+    Mem::write_byte(code + 26, 0x00);
+    Mem::write_byte(code + 27, 0x00);
+    // syscall
+    Mem::write_byte(code + 28, 0x0F);
+    Mem::write_byte(code + 29, 0x05);
+    // mov $60, %rax — sys_exit
+    Mem::write_byte(code + 30, 0x48);
+    Mem::write_byte(code + 31, 0xC7);
+    Mem::write_byte(code + 32, 0xC0);
+    Mem::write_byte(code + 33, 0x3C);
+    Mem::write_byte(code + 34, 0x00);
+    Mem::write_byte(code + 35, 0x00);
+    Mem::write_byte(code + 36, 0x00);
+    // xor %rdi, %rdi — exit_code=0
+    Mem::write_byte(code + 37, 0x48);
+    Mem::write_byte(code + 38, 0x31);
+    Mem::write_byte(code + 39, 0xFF);
+    // syscall
+    Mem::write_byte(code + 40, 0x0F);
+    Mem::write_byte(code + 41, 0x05);
+
+    // メッセージデータ (26バイト, offset 162)
+    // "Hello from Cosmo Linux!\n\n"
+    ulong msg = code + 42;           // offset 162
+    Mem::write_byte(msg + 0, 72);    // 'H'
+    Mem::write_byte(msg + 1, 101);   // 'e'
+    Mem::write_byte(msg + 2, 108);   // 'l'
+    Mem::write_byte(msg + 3, 108);   // 'l'
+    Mem::write_byte(msg + 4, 111);   // 'o'
+    Mem::write_byte(msg + 5, 32);    // ' '
+    Mem::write_byte(msg + 6, 102);   // 'f'
+    Mem::write_byte(msg + 7, 114);   // 'r'
+    Mem::write_byte(msg + 8, 111);   // 'o'
+    Mem::write_byte(msg + 9, 109);   // 'm'
+    Mem::write_byte(msg + 10, 32);   // ' '
+    Mem::write_byte(msg + 11, 67);   // 'C'
+    Mem::write_byte(msg + 12, 111);  // 'o'
+    Mem::write_byte(msg + 13, 115);  // 's'
+    Mem::write_byte(msg + 14, 109);  // 'm'
+    Mem::write_byte(msg + 15, 111);  // 'o'
+    Mem::write_byte(msg + 16, 32);   // ' '
+    Mem::write_byte(msg + 17, 76);   // 'L'
+    Mem::write_byte(msg + 18, 105);  // 'i'
+    Mem::write_byte(msg + 19, 110);  // 'n'
+    Mem::write_byte(msg + 20, 117);  // 'u'
+    Mem::write_byte(msg + 21, 120);  // 'x'
+    Mem::write_byte(msg + 22, 33);   // '!'
+    Mem::write_byte(msg + 23, 10);   // '\n'
+    Mem::write_byte(msg + 24, 10);   // '\n'
+    Mem::write_byte(msg + 25, 0);    // NUL
+}
+
+// ============================================================
+// InitRootfs — 初期rootfs構築
+// ============================================================
+
+/// InitRootfs — ブート時rootfs構築
+export struct InitRootfs {}
+
+impl InitRootfs {
+    /// 初期バイナリをRamFSに登録
+    static void setup(BuddyAllocator* pmm, SerialPort* w) {
+        // helloバイナリ用メモリ確保 (1ページ = 4KiB)
+        PhysAddr data_page = pmm->alloc_pages(0);
+        if (data_page == 0) {
+            pr_err(w, "init_rootfs: failed to alloc page for hello" as void*);
+            return;
+        }
+        memzero(data_page as void*, PAGE_SIZE);
+
+        // helloバイナリを構築
+        build_hello_elf(data_page);
+
+        // RamFSにファイル登録
+        Ino ino = RamFs::create("hello" as void*, S_IFREG | PERM_ALL, data_page);
+        if (ino == 0) {
+            pr_err(w, "init_rootfs: failed to create hello in ramfs" as void*);
+            return;
+        }
+
+        // ファイルサイズ設定 (188バイト)
+        Result<long, long> wr = RamFs::write(ino, data_page, 0, 188);
+        match (wr) {
+            Result::Ok(v) => {}
+            Result::Err(e) => {}
+        }
+
+        pr_info(w, "init_rootfs: /hello registered (188B, ELF64 static)" as void*);
+    }
+}

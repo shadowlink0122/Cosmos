@@ -1,0 +1,76 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::history - コマンド履歴管理
+//
+// History struct/impl — リングバッファによるコマンド履歴。
+
+import ./shell/defs;
+import ./mem;
+import ./vga;
+import ./shell/io;
+import ../../lib/kstring;
+
+/// History — コマンド履歴管理
+export struct History {}
+
+impl History {
+    /// 履歴初期化
+    static void setup() {
+        memzero(HIST_BASE as void*, HIST_MAX * HIST_ENTRY_SIZE);
+        ulong* count = HIST_COUNT as ulong*;
+        *count = 0;
+        ulong* index = HIST_INDEX as ulong*;
+        *index = 0;
+    }
+
+    /// コマンドを履歴に追加
+    static void add(ulong cmd_addr, ulong len) {
+        if (len == 0) { return; }
+        ulong* count = HIST_COUNT as ulong*;
+        ulong idx = *count % HIST_MAX;
+        ulong dest = HIST_BASE + idx * HIST_ENTRY_SIZE;
+        // コピー
+        ulong i = 0;
+        while (i < len) {
+            if (i < HIST_ENTRY_SIZE - 1) {
+                ulong ch = Mem::read_byte(cmd_addr + i);
+                Mem::write_byte(dest + i, ch);
+            }
+            i = i + 1;
+        }
+        Mem::write_byte(dest + len, 0);
+        *count = *count + 1;
+    }
+
+    /// 履歴から取得（最新からoffset番目: 0=最新）
+    static ulong get(ulong offset) {
+        ulong* count = HIST_COUNT as ulong*;
+        if (*count == 0) { return 0; }
+        if (offset >= *count) { return 0; }
+        if (offset >= HIST_MAX) { return 0; }
+        ulong actual = (*count - 1 - offset) % HIST_MAX;
+        return HIST_BASE + actual * HIST_ENTRY_SIZE;
+    }
+
+    /// 履歴エントリをコマンドバッファにコピーして表示
+    static void restore(ulong hist_addr) {
+        ulong* len_ptr = CMD_LEN_ADDR as ulong*;
+        ulong old_len = *len_ptr;
+        // バックスペースで消去
+        ulong k = 0;
+        while (k < old_len) {
+            Shell::putc(Key::Backspace as ulong);
+            k = k + 1;
+        }
+        // 履歴コピー
+        ulong i = 0;
+        while (true) {
+            ulong ch = Mem::read_byte(hist_addr + i);
+            if (ch == 0) { break; }
+            Mem::write_byte(CMD_BUF_ADDR + i, ch);
+            Shell::putc(ch);
+            i = i + 1;
+        }
+        *len_ptr = i;
+    }
+
+}

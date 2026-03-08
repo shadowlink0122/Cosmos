@@ -1,0 +1,173 @@
+//! platform: baremetal-x86
+// cosmo-linux::arch::x86_64::gdt - GDT設定
+//
+// 64ビットLong Mode用GDT。5セグメント + TSSスロット。
+// Gdt struct/impl パターンで実装。
+// 参照: linux/arch/x86/kernel/cpu/common.c
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+
+// セグメントセレクタ定数（sysret互換配置）
+export const ulong KERNEL_CS = 0x08;
+export const ulong KERNEL_DS = 0x10;
+export const ulong USER_DS   = 0x18;  // STAR sysret base + 8
+export const ulong USER_CS   = 0x20;  // STAR sysret base + 16
+export const ulong TSS_SEL   = 0x28;
+
+// GDTエントリ数（TSS用2スロット含む）
+const ulong GDT_ENTRIES = 7;
+
+/// Gdt — GDT管理
+export struct Gdt {}
+
+impl Gdt {
+    /// 64ビットGDTディスクリプタを構築
+    static ulong make_entry(ulong type_attr, ulong flags) {
+        ulong entry = 0;
+        entry = entry | (type_attr << 40);
+        entry = entry | (flags << 52);
+        return entry;
+    }
+
+    /// GDTを初期化してロード
+    static void setup(SerialPort* w) {
+        PhysAddr base = GDT_ADDR;
+        ulong* gdt = base as ulong*;
+
+        // エントリ 0: NULL
+        ulong* e0 = base as ulong*;
+        *e0 = 0;
+
+        // エントリ 1: カーネルコード (0x08)
+        ulong* e1 = (base + 8) as ulong*;
+        *e1 = Gdt::make_entry(0x9A, 0x2);
+
+        // エントリ 2: カーネルデータ (0x10)
+        ulong* e2 = (base + 16) as ulong*;
+        *e2 = Gdt::make_entry(0x92, 0x0);
+
+        // エントリ 3: ユーザーデータ (0x18) — sysret base + 8
+        ulong* e3 = (base + 24) as ulong*;
+        *e3 = Gdt::make_entry(0xF2, 0x0);
+
+        // エントリ 4: ユーザーコード (0x20) — sysret base + 16
+        ulong* e4 = (base + 32) as ulong*;
+        *e4 = Gdt::make_entry(0xFA, 0x2);
+
+        // エントリ 5-6: TSS（後でtss_init()で設定）
+        ulong* e5 = (base + 40) as ulong*;
+        *e5 = 0;
+        ulong* e6 = (base + 48) as ulong*;
+        *e6 = 0;
+
+        // GDTR構築: [limit:16][base:64]
+        PhysAddr gdtr = base + GDT_ENTRIES * 8;
+        ulong* gdtr_lim = gdtr as ulong*;
+        *gdtr_lim = GDT_ENTRIES * 8 - 1;
+        ulong* gdtr_base = (gdtr + 2) as ulong*;
+        *gdtr_base = base;
+
+        // lgdt + セグメントレジスタ更新
+        ulong gdtr_addr = gdtr;
+        __asm__(`
+            movq ${r:gdtr_addr}, %rax;
+            lgdt (%rax);
+            movw $$0x10, %ax;
+            movw %ax, %ds;
+            movw %ax, %es;
+            movw %ax, %fs;
+            movw %ax, %gs;
+            movw %ax, %ss;
+            pushq $$0x08;
+            leaq 1f(%rip), %rax;
+            pushq %rax;
+            lretq;
+            1:
+        `);
+
+        pr_info(w, "GDT initialized (5 segments + TSS)" as void*);
+    }
+
+    /// TSS (Task State Segment) を初期化
+    static void setup_tss(ulong kernel_stack_top, SerialPort* w) {
+        // TSS配置アドレス
+        PhysAddr tss_addr = TSS_BASE_ADDR;
+
+        // TSS構造をゼロクリア (104バイト)
+        memzero(tss_addr as void*, 104);
+
+        // RSP0 (Ring 0スタック) を設定 — offset 4
+        ulong* rsp0 = (tss_addr + 4) as ulong*;
+        *rsp0 = kernel_stack_top;
+
+        // IOPB offset — offset 102 (2バイト = 104)
+        ulong iopb_addr = tss_addr + 102;
+        ulong iopb_val = 104;
+        __asm__(`
+            movq ${r:iopb_addr}, %rdi;
+            movq ${r:iopb_val}, %rax;
+            movw %ax, (%rdi)
+        `);
+
+        // GDT TSSディスクリプタ (エントリ5-6, 計16バイト)
+        // バイト単位で直接書き込み（ビットシフトOR回避）
+        PhysAddr gdt_tss = GDT_ADDR + 40;  // エントリ5の先頭
+
+        // Byte 0-1: limit[15:0] = 103 (0x0067)
+        __asm__(`
+            movq ${r:gdt_tss}, %rdi;
+            movw $$0x0067, (%rdi)
+        `);
+
+        // Byte 2-3: base[15:0] = 0x3000
+        ulong b2 = gdt_tss + 2;
+        __asm__(`
+            movq ${r:b2}, %rdi;
+            movw $$0x3000, (%rdi)
+        `);
+
+        // Byte 4: base[23:16] = 0x08
+        ulong b4 = gdt_tss + 4;
+        __asm__(`
+            movq ${r:b4}, %rdi;
+            movb $$0x08, (%rdi)
+        `);
+
+        // Byte 5: access = 0x89 (Present, Available 64-bit TSS)
+        ulong b5 = gdt_tss + 5;
+        __asm__(`
+            movq ${r:b5}, %rdi;
+            movb $$0x89, (%rdi)
+        `);
+
+        // Byte 6: flags(4) + limit[19:16](4) = 0x00
+        ulong b6 = gdt_tss + 6;
+        __asm__(`
+            movq ${r:b6}, %rdi;
+            movb $$0x00, (%rdi)
+        `);
+
+        // Byte 7: base[31:24] = 0x00
+        ulong b7 = gdt_tss + 7;
+        __asm__(`
+            movq ${r:b7}, %rdi;
+            movb $$0x00, (%rdi)
+        `);
+
+        // エントリ6 (上位8バイト): base[63:32] = 0x00000000
+        ulong* e6 = (gdt_tss + 8) as ulong*;
+        *e6 = 0;
+
+        // ltr (Load Task Register)
+        ulong tss_sel = TSS_SEL;
+        __asm__(`
+            movq ${r:tss_sel}, %rax;
+            ltr %ax
+        `);
+
+        pr_info(w, "TSS initialized (RSP0 set)" as void*);
+    }
+}

@@ -1,0 +1,28 @@
+# 一時ファイル
+.tmp/
+
+# ビルド成果物
+build/
+*.o
+*.out
+*.efi
+
+# OS固有
+.DS_Store
+Thumbs.db
+
+# エディタ
+*.swp
+*.swo
+*~
+
+# Cosmo Linux ビルド成果物
+*.elf
+*.iso
+
+# QEMU virtfs 共有ディレクトリ
+rootfs/
+
+# シリアルログ
+serial*.log
+.vscode/

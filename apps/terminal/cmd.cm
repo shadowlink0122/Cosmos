@@ -1,0 +1,353 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd - シェルコマンド ディスパッチャ（ファサード）
+//
+// Cmd struct/impl — コマンドディスパッチのみ。
+// 各コマンドの実装は ui/cmd/ サブディレクトリに分割済み:
+//   cmd/args.cm — CmdArgs (引数パース)
+//   cmd/fs.cm   — CmdFs   (ファイル操作)
+//   cmd/proc.cm — CmdProc (プロセス管理)
+//   cmd/sys.cm  — CmdSys  (システム情報)
+//   cmd/net.cm  — CmdNet  (ネットワーク)
+//   cmd/host.cm — CmdHost (ホストFS)
+//   cmd/misc.cm — CmdMisc (汎用ユーティリティ)
+
+import ../../include/types;
+import ../../include/keycode;
+import ../../include/config;
+import ../../include/color;
+import ./shell/defs;
+import ./mem;
+import ./vga;
+import ./shell/io;
+import ./shell/util;
+import ../../drivers/serial;
+import ../../sched/scheduler;
+import ../../exec/loader;
+import ../../include/result;
+import ../../lib/kstring;
+import ../../pkg/gen;
+import ./cmd/args;
+import ./cmd/fs;
+import ./cmd/proc;
+import ./cmd/sys;
+import ./cmd/net;
+import ./cmd/host;
+import ./cmd/misc;
+
+/// Cmd — シェルコマンド ディスパッチャ
+export struct Cmd {}
+
+impl Cmd {
+
+    /// コマンドディスパッチ（早期return方式）
+    static void dispatch() {
+        if (streq(CMD_BUF_ADDR as void*, "help" as void*) != 0) {
+            CmdMisc::help();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "ps" as void*) != 0) {
+            CmdProc::ps();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "free" as void*) != 0) {
+            CmdSys::free_mem();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "uptime" as void*) != 0) {
+            CmdSys::uptime();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "clear" as void*) != 0) {
+            CmdSys::clear();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "reboot" as void*) != 0) {
+            CmdSys::reboot();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "uname" as void*) != 0) {
+            CmdSys::uname(0);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "uname " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdSys::uname(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "date" as void*) != 0) {
+            CmdSys::date();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "ls" as void*) != 0) {
+            CmdFs::ls(0);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "ls " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::ls(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "hostls" as void*) != 0) {
+            CmdHost::hostls(0);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "hostls " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdHost::hostls(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "hostcat " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdHost::hostcat(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "cat " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::cat(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "touch " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::touch(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "write " as void*) != 0) {
+            CmdFs::dispatch_write();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "cp " as void*) != 0) {
+            CmdFs::dispatch_cp();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "mv " as void*) != 0) {
+            CmdFs::dispatch_mv();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "head " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::head(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "echo " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdMisc::echo(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "echo" as void*) != 0) {
+            CmdMisc::echo(0);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "rm " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::rm(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "mkdir " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::mkdir(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "wc " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::wc(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "hexdump " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::hexdump(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "cd" as void*) != 0) {
+            CmdMisc::cd(0);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "cd " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdMisc::cd(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "pwd" as void*) != 0) {
+            CmdMisc::pwd();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "env" as void*) != 0) {
+            CmdMisc::env();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "export " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdMisc::export_var(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "export" as void*) != 0) {
+            CmdMisc::env();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "grep " as void*) != 0) {
+            ulong arg1 = CmdArgs::arg(CMD_BUF_ADDR);
+            ulong arg2 = CmdArgs::arg2(CMD_BUF_ADDR);
+            CmdFs::grep(arg1, arg2);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "sort " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::sort(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "tail " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdFs::tail(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "history" as void*) != 0) {
+            CmdMisc::show_history();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "kill " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdProc::kill(arg);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "vmstat" as void*) != 0) {
+            CmdSys::vmstat();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "exec " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdProc::exec_cmd(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "ping " as void*) != 0) {
+            ulong arg = CmdArgs::arg(CMD_BUF_ADDR);
+            CmdNet::ping(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "curl " as void*) != 0 ||
+            streq(CMD_BUF_ADDR as void*, "curl" as void*) != 0) {
+            // 外部curlバイナリに委譲
+            SerialPort serial(COM1);
+            long pid = 0;
+            Result<long, long> er = Loader::exec(CMD_BUF_ADDR as void*, &serial);
+            match (er) {
+                Result::Ok(p) => { pid = p; }
+                Result::Err(e) => { pid = 0 - e; }
+            }
+            if (pid >= 0) {
+                while (Sched::is_alive(pid as long) != 0) {
+                    Sched::run();
+                }
+                return;
+            }
+            Shell::writeln("curl: binary not found" as void*);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "test" as void*) != 0) {
+            Shell::writeln("Run 'make test' to execute kernel tests." as void*);
+            return;
+        }
+        // cm コマンド（Cmコンパイラ情報）
+        if (streq(CMD_BUF_ADDR as void*, "cm" as void*) != 0 ||
+            streq(CMD_BUF_ADDR as void*, "cm version" as void*) != 0) {
+            Shell::set_color(VGA_IDX_YELLOW, 0);
+            Shell::writeln("Cm Compiler v0.14.2" as void*);
+            Shell::set_color(VGA_IDX_LIGHT_GRAY, 0);
+            Shell::writeln("  Sea Minor - A systems programming language" as void*);
+            Shell::writeln("  Target: x86_64-cosmo-linux" as void*);
+            Shell::writeln("  Homepage: https://github.com/Exaloop/Cm" as void*);
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "cm help" as void*) != 0) {
+            Shell::writeln("Cm Compiler - Usage:" as void*);
+            Shell::writeln("  cm              Show version" as void*);
+            Shell::writeln("  cm version      Show version" as void*);
+            Shell::writeln("  cm help         Show this help" as void*);
+            return;
+        }
+        // apt コマンド（ホストFSパッケージマネージャ）
+        if (streq(CMD_BUF_ADDR as void*, "apt" as void*) != 0) {
+            Gen::help();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "apt help" as void*) != 0) {
+            Gen::help();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "apt list" as void*) != 0) {
+            Gen::list();
+            return;
+        }
+        if (streq(CMD_BUF_ADDR as void*, "apt search" as void*) != 0) {
+            Gen::search();
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "apt install " as void*) != 0) {
+            ulong arg = CmdArgs::arg2(CMD_BUF_ADDR);
+            Gen::install(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "apt uninstall " as void*) != 0) {
+            ulong arg = CmdArgs::arg2(CMD_BUF_ADDR);
+            Gen::uninstall(arg);
+            return;
+        }
+        if (startswith(CMD_BUF_ADDR as void*, "apt run " as void*) != 0) {
+            ulong arg = CmdArgs::arg2(CMD_BUF_ADDR);
+            Gen::run(arg);
+            return;
+        }
+
+        // 未知のコマンド → RamFSにバイナリがあれば自動実行
+        // "./hello" → "hello" に正規化
+        ulong exec_name = CMD_BUF_ADDR;
+        ulong c0 = Mem::read_byte(exec_name);
+        ulong c1 = Mem::read_byte(exec_name + 1);
+        if (c0 == Ascii::Period as ulong && c1 == Ascii::Slash as ulong) {  // "./"
+            exec_name = exec_name + 2;
+        }
+        // "/" プレフィックスもスキップ
+        c0 = Mem::read_byte(exec_name);
+        if (c0 == Ascii::Slash as ulong) {  // "/"
+            exec_name = exec_name + 1;
+        }
+
+        // バイナリ名を抽出（先頭ワードのみ: "busybox echo hello" → "busybox"）
+        ulong fname_tmp = 0x95100 as ulong;  // 一時バッファ（loaderと重ならないアドレス）
+        ulong fi = 0;
+        while (fi < 255) {
+            ulong fch = Mem::read_byte(exec_name + fi);
+            if (fch == 0 || fch == 32) { break; }  // NULLまたはスペースで終端
+            Mem::write_byte(fname_tmp + fi, fch);
+            fi = fi + 1;
+        }
+        Mem::write_byte(fname_tmp + fi, 0);  // NULL終端
+
+        // ファイル存在チェック: RamFSのみ（9pのI/O操作はGP例外リスクあり）
+        Ino lookup_ino = RamFs::lookup(fname_tmp as void*);
+        if (lookup_ino == 0) {
+            // RamFSに存在しない → command not found
+            Shell::write(CMD_BUF_ADDR as void*);
+            Shell::writeln(": command not found" as void*);
+            return;
+        }
+
+        // バイナリが存在する → Loader::exec で実行
+        SerialPort serial(COM1);
+        long pid = 0;
+        Result<long, long> er = Loader::exec(exec_name as void*, &serial);
+        match (er) {
+            Result::Ok(p) => { pid = p; }
+            Result::Err(e) => { pid = 0 - e; }
+        }
+        if (pid >= 0) {
+            // フォアグラウンド待機: 子プロセス完了まで待つ
+            while (Sched::is_alive(pid as long) != 0) {
+                Sched::run();
+            }
+            return;
+        }
+
+        Shell::write(CMD_BUF_ADDR as void*);
+        Shell::writeln(": command not found" as void*);
+    }
+
+}

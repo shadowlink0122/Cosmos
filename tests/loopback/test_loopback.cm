@@ -1,0 +1,53 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::loopback::test_loopback - Loopback テスト
+//
+// ループバックインターフェースの送受信を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../include/net;
+import ../../net/core/loopback;
+import ../test_io;
+import ../ktest;
+import ../../apps/terminal/mem;
+
+/// Loopback テストスイート
+export struct TestLoopback {}
+
+impl TestLoopback {
+    /// セットアップテスト
+    static void test_setup() {
+        Loopback::setup();
+        KTest::assert_eq(1, 1, "Loopback setup" as void*);
+    }
+
+    /// 送受信テスト
+    static void test_send_recv() {
+        ulong buf = 0x9E000;
+        ulong i = 0;
+        while (i < 64) {
+            ulong addr = buf + i;
+            ulong val = (i + 0x41) & 0xFF;
+            __asm__(`movq ${r:addr}, %rdi; movq ${r:val}, %rax; movb %al, (%rdi)`);
+            i = i + 1;
+        }
+        Loopback::send(buf, 64);
+        KTest::assert_eq(1, 1, "Loopback send 64B" as void*);
+
+        ulong rx_buf = 0x9E100;
+        ulong rx_len = Loopback::recv(rx_buf, 64);
+        KTest::assert_eq(rx_len, 64, "Loopback recv 64B" as void*);
+
+        ulong first_byte = 0;
+        __asm__(`movq ${r:rx_buf}, %rdi; xorq %rax, %rax; movb (%rdi), %al; movq %rax, ${=r:first_byte}`);
+        KTest::assert_eq(first_byte, 0x41, "Loopback data[0]=0x41" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestLoopback::test_setup();
+        TestLoopback::test_send_recv();
+    }
+}

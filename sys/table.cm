@@ -1,0 +1,178 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::syscall_table - Linux x86_64 syscall 番号定義
+//
+// Linux互換のsyscall番号テーブル。
+// 参照: linux/arch/x86/entry/syscalls/syscall_64.tbl
+
+import ../include/types;
+
+// ============================================================
+// Linux x86_64 Syscall 番号
+// ============================================================
+
+// --- ファイルシステム ---
+export const ulong SYS_READ       = 0;
+export const ulong SYS_WRITE      = 1;
+export const ulong SYS_OPEN       = 2;
+export const ulong SYS_CLOSE      = 3;
+export const ulong SYS_STAT       = 4;
+export const ulong SYS_FSTAT      = 5;
+export const ulong SYS_LSTAT      = 6;
+export const ulong SYS_POLL       = 7;
+export const ulong SYS_LSEEK      = 8;
+export const ulong SYS_MMAP       = 9;
+export const ulong SYS_MPROTECT   = 10;
+export const ulong SYS_MUNMAP     = 11;
+export const ulong SYS_BRK        = 12;
+export const ulong SYS_IOCTL      = 16;
+export const ulong SYS_PREAD64    = 17;
+export const ulong SYS_PWRITE64   = 18;
+export const ulong SYS_READV      = 19;
+export const ulong SYS_WRITEV     = 20;
+export const ulong SYS_ACCESS     = 21;
+export const ulong SYS_PIPE       = 22;
+export const ulong SYS_DUP        = 32;
+export const ulong SYS_DUP2       = 33;
+
+// --- シグナル ---
+export const ulong SYS_RT_SIGACTION   = 13;
+export const ulong SYS_RT_SIGPROCMASK = 14;
+
+// --- タイマー ---
+export const ulong SYS_NANOSLEEP  = 35;
+
+// --- プロセス ---
+export const ulong SYS_GETPID     = 39;
+export const ulong SYS_SOCKET     = 41;
+export const ulong SYS_CONNECT    = 42;
+export const ulong SYS_ACCEPT     = 43;
+export const ulong SYS_SENDTO     = 44;
+export const ulong SYS_RECVFROM   = 45;
+export const ulong SYS_BIND       = 49;
+export const ulong SYS_LISTEN     = 50;
+export const ulong SYS_SETSOCKOPT = 54;
+export const ulong SYS_GETSOCKOPT = 55;
+export const ulong SYS_CLONE      = 56;
+export const ulong SYS_FORK       = 57;
+export const ulong SYS_VFORK      = 58;
+export const ulong SYS_EXECVE     = 59;
+export const ulong SYS_EXIT       = 60;
+export const ulong SYS_WAIT4      = 61;
+export const ulong SYS_KILL       = 62;
+export const ulong SYS_UNAME      = 63;
+export const ulong SYS_FCNTL      = 72;
+export const ulong SYS_GETCWD     = 79;
+export const ulong SYS_CHDIR      = 80;
+export const ulong SYS_MKDIR      = 83;
+export const ulong SYS_RMDIR      = 84;
+export const ulong SYS_UNLINK     = 87;
+
+// --- ユーザー/グループ ---
+export const ulong SYS_GETUID     = 102;
+export const ulong SYS_GETGID     = 104;
+export const ulong SYS_GETEUID    = 107;
+export const ulong SYS_GETEGID    = 108;
+export const ulong SYS_GETPPID    = 110;
+
+// --- アーキテクチャ固有 ---
+export const ulong SYS_ARCH_PRCTL = 158;
+
+// --- 拡張 ---
+export const ulong SYS_GETDENTS64 = 217;
+export const ulong SYS_SET_TID_ADDRESS = 218;
+export const ulong SYS_CLOCK_GETTIME = 228;
+export const ulong SYS_EXIT_GROUP = 231;
+export const ulong SYS_OPENAT     = 257;
+export const ulong SYS_MKDIRAT    = 258;
+export const ulong SYS_NEWFSTATAT = 262;
+export const ulong SYS_UNLINKAT   = 263;
+export const ulong SYS_RENAMEAT   = 264;
+export const ulong SYS_READLINKAT = 267;
+export const ulong SYS_FACCESSAT  = 269;
+export const ulong SYS_SET_ROBUST_LIST = 273;
+export const ulong SYS_PRLIMIT64       = 302;
+export const ulong SYS_RENAMEAT2       = 316;
+export const ulong SYS_GETRANDOM       = 318;
+export const ulong SYS_RSEQ            = 334;
+
+// --- 追加syscall (Phase 1: musl静的バイナリ完全対応) ---
+export const ulong SYS_SIGALTSTACK    = 131;
+export const ulong SYS_GETTID         = 186;
+export const ulong SYS_FUTEX          = 202;
+export const ulong SYS_GETRUSAGE      = 98;
+export const ulong SYS_SYSINFO        = 99;
+export const ulong SYS_PIPE2          = 293;
+export const ulong SYS_DUP3           = 292;
+export const ulong SYS_MADVISE        = 28;
+export const ulong SYS_UMASK          = 95;
+export const ulong SYS_FCHMOD         = 91;
+export const ulong SYS_FCHOWN         = 93;
+export const ulong SYS_FCHMODAT       = 268;
+export const ulong SYS_FCHOWNAT       = 260;
+export const ulong SYS_FACCESSAT2     = 439;
+export const ulong SYS_STATX          = 332;
+export const ulong SYS_CLOSE_RANGE    = 436;
+export const ulong SYS_CLONE3         = 435;
+export const ulong SYS_SCHED_GETAFFINITY = 204;
+export const ulong SYS_SCHED_YIELD    = 24;
+export const ulong SYS_GETTIMEOFDAY   = 96;
+
+// --- epoll ---
+export const ulong SYS_EPOLL_CREATE    = 213;
+export const ulong SYS_EPOLL_CTL       = 233;
+export const ulong SYS_EPOLL_WAIT      = 232;
+export const ulong SYS_EPOLL_PWAIT     = 281;
+export const ulong SYS_EPOLL_CREATE1   = 291;
+export const ulong SYS_EPOLL_PWAIT2    = 290;
+
+// --- ソケット追加 ---
+export const ulong SYS_GETSOCKNAME    = 51;
+export const ulong SYS_GETPEERNAME    = 52;
+export const ulong SYS_SOCKETPAIR     = 53;
+export const ulong SYS_SHUTDOWN       = 48;
+
+/// 最大syscall番号
+export const ulong NR_SYSCALLS = 512;
+
+// --- Milestone 5: マルチプロセス ---
+export const ulong SYS_SELECT     = 23;
+export const ulong SYS_SETPGID    = 109;
+export const ulong SYS_GETPGID    = 121;
+export const ulong SYS_GETPGRP    = 111;
+export const ulong SYS_SETSID     = 112;
+export const ulong SYS_FTRUNCATE  = 77;
+
+// --- Milestone 7: Homebrew依存ツール対応 ---
+export const ulong SYS_SYMLINK     = 88;
+export const ulong SYS_SYMLINKAT   = 266;
+export const ulong SYS_LINK        = 86;
+export const ulong SYS_LINKAT      = 265;
+export const ulong SYS_UTIMENSAT   = 280;
+export const ulong SYS_TRUNCATE    = 76;
+export const ulong SYS_FALLOCATE   = 285;
+export const ulong SYS_TGKILL      = 234;
+export const ulong SYS_GETRLIMIT   = 97;
+export const ulong SYS_SETRLIMIT   = 160;
+export const ulong SYS_TIMES       = 100;
+export const ulong SYS_MREMAP      = 25;
+
+// --- Milestone 9: Homebrew — bash/Git/Ruby対応 ---
+export const ulong SYS_RT_SIGRETURN  = 15;
+export const ulong SYS_GETDENTS     = 78;
+export const ulong SYS_SETITIMER    = 38;
+export const ulong SYS_GETITIMER    = 36;
+export const ulong SYS_ALARM        = 37;
+export const ulong SYS_FLOCK        = 73;
+export const ulong SYS_CHMOD        = 90;
+export const ulong SYS_CHOWN        = 92;
+export const ulong SYS_LCHOWN       = 94;
+export const ulong SYS_SENDMSG      = 46;
+export const ulong SYS_RECVMSG      = 47;
+export const ulong SYS_RENAME       = 82;
+export const ulong SYS_GETGROUPS    = 115;
+export const ulong SYS_SETGROUPS    = 116;
+export const ulong SYS_SETUID       = 105;
+export const ulong SYS_SETGID       = 106;
+export const ulong SYS_GETSID       = 124;
+export const ulong SYS_MINCORE      = 27;
+export const ulong SYS_CLOCK_GETRES = 229;

@@ -1,0 +1,45 @@
+# musl静的リンク curl ビルド (最小構成)
+FROM alpine:3.20
+
+# 最小限の依存のみ
+RUN apk add --no-cache \
+    build-base perl file \
+    openssl-dev openssl-libs-static \
+    zlib-dev zlib-static
+
+# curlソースからビルド (最小構成・完全静的)
+RUN wget https://curl.se/download/curl-8.11.1.tar.gz && \
+    tar xzf curl-8.11.1.tar.gz && \
+    cd curl-8.11.1 && \
+    LDFLAGS="-static" CFLAGS="-Os" \
+    ./configure \
+    --disable-shared \
+    --enable-static \
+    --with-openssl \
+    --with-zlib \
+    --without-nghttp2 \
+    --without-brotli \
+    --without-libpsl \
+    --without-libidn2 \
+    --disable-ares \
+    --disable-ldap \
+    --disable-manual \
+    --disable-docs \
+    --disable-dict \
+    --disable-gopher \
+    --disable-imap \
+    --disable-mqtt \
+    --disable-pop3 \
+    --disable-rtsp \
+    --disable-smb \
+    --disable-smtp \
+    --disable-telnet \
+    --disable-tftp \
+    --prefix=/usr && \
+    make -j$(nproc) LDFLAGS="-static -all-static" && \
+    strip src/curl && \
+    cp src/curl /out-curl && \
+    file /out-curl && \
+    ls -lh /out-curl
+
+CMD ["cat", "/out-curl"]

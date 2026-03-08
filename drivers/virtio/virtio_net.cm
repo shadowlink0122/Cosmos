@@ -1,0 +1,462 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::virtio_net - virtio-net ネットワークドライバ
+//
+// QEMU virtio-net-pci デバイスを初期化し、パケット送受信を行う。
+// 参照: virtio-v1.0 5.1, linux/drivers/net/virtio_net.c
+
+import ../../include/types;
+import ../../include/net;
+import ../../include/keycode;
+import ../serial;
+import ../pci;
+import ./virtio;
+import ../../lib/kstring;
+
+// ============================================================
+// virtio-net PCI識別子
+// ============================================================
+
+// virtio legacy: Vendor=0x1AF4, Device=0x1000 (network)
+const ulong VIRTIO_VENDOR_ID = 0x1AF4;
+const ulong VIRTIO_NET_DEVICE_ID = 0x1000;
+
+// virtio-net ヘッダサイズ (legacy: 10バイト)
+export const ulong VIRTIO_NET_HDR_SIZE = 10;
+
+// ============================================================
+// NICステート (固定メモリ)
+// ============================================================
+
+const ulong NIC_STATE_BASE = 0x1700000;  // (ELFバッファ/RamFS/9p後)
+// offset 0: io_base (BAR0 I/Oポートベースアドレス)
+// offset 8: mac_addr (MACアドレス、下位48bit)
+// offset 16: initialized (1=初期化済み)
+
+// RXバッファプール: 各2048バイト, 64個
+const ulong RX_BUF_BASE = 0x1730000;
+const ulong RX_BUF_COUNT = 64;
+const ulong TX_BUF_BASE = 0x1770000;
+
+// ============================================================
+// VirtioNet
+// ============================================================
+
+export struct VirtioNet {}
+
+impl VirtioNet {
+    /// NIC初期化: PCI検索→virtio初期化→virtqueue設定→RXバッファ投入
+    static ulong init(SerialPort* serial) {
+        serial->println("[net] Scanning PCI for virtio-net..." as void*);
+
+        // 1. PCI検索
+        PciDevice dev = {
+            bus: 0, slot: 0, func: 0,
+            vendor_id: 0, device_id: 0,
+            bar0: 0, irq: 0, found: 0
+        };
+        Pci::find_device(VIRTIO_VENDOR_ID, VIRTIO_NET_DEVICE_ID, &dev);
+
+        if (dev.found == 0) {
+            serial->println("[net] virtio-net device not found" as void*);
+            return 0;
+        }
+
+        serial->puts("[net] Found virtio-net at PCI " as void*);
+        print_dec(serial, dev.bus);
+        serial->puts(":" as void*);
+        print_dec(serial, dev.slot);
+        serial->puts("." as void*);
+        print_dec(serial, dev.func);
+        serial->puts(" BAR0=" as void*);
+        serial->print_hex(dev.bar0);
+        serial->puts(" IRQ=" as void*);
+        print_dec(serial, dev.irq);
+        serial->println("" as void*);
+
+        // 2. Bus Master有効化
+        Pci::enable_bus_master(dev.bus, dev.slot, dev.func);
+
+        // 3. I/Oポートベースアドレスを取得 (BAR0の下位ビットを除去)
+        ulong io_base = dev.bar0 & PCI_IO_BASE_MASK;
+
+        // NICステートに保存
+        ulong* io_base_ptr = NIC_STATE_BASE as ulong*;
+        *io_base_ptr = io_base;
+
+        // 4. virtioデバイス初期化 (legacy PCI)
+        // ステータスリセット
+        outb(io_base + VIRTIO_PCI_STATUS, 0);
+
+        // ACKNOWLEDGE ステータス設定
+        outb(io_base + VIRTIO_PCI_STATUS, VIRTIO_STATUS_ACK);
+
+        // DRIVER ステータス設定
+        ulong status = inb(io_base + VIRTIO_PCI_STATUS);
+        outb(io_base + VIRTIO_PCI_STATUS, status | VIRTIO_STATUS_DRIVER);
+
+        // Feature Negotiation
+        ulong host_features = inl(io_base + VIRTIO_PCI_HOST_FEATURES);
+        // MAC機能のみ要求
+        ulong guest_features = host_features & VIRTIO_NET_F_MAC;
+        outl(io_base + VIRTIO_PCI_GUEST_FEATURES, guest_features);
+
+        // 5. MACアドレス読み取り (Config Space offset 20〜25)
+        ulong mac = 0;
+        ulong m0 = inb(io_base + VIRTIO_PCI_CONFIG);
+        ulong m1 = inb(io_base + VIRTIO_PCI_CONFIG + 1);
+        ulong m2 = inb(io_base + VIRTIO_PCI_CONFIG + 2);
+        ulong m3 = inb(io_base + VIRTIO_PCI_CONFIG + 3);
+        ulong m4 = inb(io_base + VIRTIO_PCI_CONFIG + 4);
+        ulong m5 = inb(io_base + VIRTIO_PCI_CONFIG + 5);
+        mac = (m0 << 40) | (m1 << 32) | (m2 << 24) | (m3 << 16) | (m4 << 8) | m5;
+
+        ulong* mac_ptr = (NIC_STATE_BASE + 8) as ulong*;
+        *mac_ptr = mac;
+
+        serial->puts("[net] MAC: " as void*);
+        VirtioNet::print_mac(serial, mac);
+        serial->println("" as void*);
+
+        // 6. Virtqueue 0 (RX) 初期化
+        outw(io_base + VIRTIO_PCI_QUEUE_SEL, 0);
+        ulong rx_qsize = inw(io_base + VIRTIO_PCI_QUEUE_SIZE);
+        if (rx_qsize == 0) {
+            serial->println("[net] RX queue size is 0, aborting" as void*);
+            return 0;
+        }
+        if (rx_qsize > VQ_SIZE) { rx_qsize = VQ_SIZE; }
+
+        serial->puts("[net] RX queue size: " as void*);
+        print_dec(serial, rx_qsize);
+        serial->println("" as void*);
+
+        // RXのvirtqueue初期化 — 固定メモリへ
+        Virtqueue rx_vq = {
+            desc_base: 0, avail_base: 0, used_base: 0,
+            size: 0, free_head: 0, num_free: 0,
+            avail_idx: 0, last_used_idx: 0
+        };
+        Vq::init(&rx_vq, VQ_RX_BASE, rx_qsize);
+
+        // PFN (Page Frame Number) を設定してキューを有効化
+        ulong rx_pfn = VQ_RX_BASE / 4096;
+        outl(io_base + VIRTIO_PCI_QUEUE_PFN, rx_pfn);
+
+        // 7. Virtqueue 1 (TX) 初期化
+        outw(io_base + VIRTIO_PCI_QUEUE_SEL, 1);
+        ulong tx_qsize = inw(io_base + VIRTIO_PCI_QUEUE_SIZE);
+        if (tx_qsize == 0) {
+            serial->println("[net] TX queue size is 0, aborting" as void*);
+            return 0;
+        }
+        if (tx_qsize > VQ_SIZE) { tx_qsize = VQ_SIZE; }
+
+        serial->puts("[net] TX queue size: " as void*);
+        print_dec(serial, tx_qsize);
+        serial->println("" as void*);
+
+        Virtqueue tx_vq = {
+            desc_base: 0, avail_base: 0, used_base: 0,
+            size: 0, free_head: 0, num_free: 0,
+            avail_idx: 0, last_used_idx: 0
+        };
+        Vq::init(&tx_vq, VQ_TX_BASE, tx_qsize);
+
+        ulong tx_pfn = VQ_TX_BASE / 4096;
+        outl(io_base + VIRTIO_PCI_QUEUE_PFN, tx_pfn);
+
+        // 8. RXバッファの投入
+        // 各RXバッファをdescriptorに設定しavailable ringに追加
+        ulong i = 0;
+        ulong max_rx = rx_qsize;
+        if (max_rx > RX_BUF_COUNT) { max_rx = RX_BUF_COUNT; }
+
+        // RXのvirtqueue状態を固定メモリにコピー
+        VirtioNet::save_rx_vq(&rx_vq);
+
+        while (i < max_rx) {
+            ulong buf_addr = RX_BUF_BASE + i * VQ_BUF_SIZE;
+            ulong desc_idx = Vq::alloc_desc(&rx_vq, buf_addr, VQ_BUF_SIZE, VRING_DESC_F_WRITE);
+            if (desc_idx != INVALID_U32) {
+                Vq::submit(&rx_vq, desc_idx);
+            }
+            i = i + 1;
+        }
+
+        // RX状態を保存
+        VirtioNet::save_rx_vq(&rx_vq);
+
+        // TX状態を保存
+        VirtioNet::save_tx_vq(&tx_vq);
+
+        // RXキュー通知 (デバイスにバッファ投入を通知)
+        outw(io_base + VIRTIO_PCI_QUEUE_NOTIFY, 0);
+
+        // 9. DRIVER_OK — デバイス稼働開始
+        status = inb(io_base + VIRTIO_PCI_STATUS);
+        outb(io_base + VIRTIO_PCI_STATUS, status | VIRTIO_STATUS_DRIVER_OK);
+
+        // 初期化完了フラグ
+        ulong* init_ptr = (NIC_STATE_BASE + 16) as ulong*;
+        *init_ptr = 1;
+
+        serial->println("[net] virtio-net initialized successfully" as void*);
+        return 1;
+    }
+
+    /// パケット送信
+    /// data: Ethernetフレームデータ(virtio-netヘッダなし)
+    /// len: データ長
+    static ulong send(ulong data, ulong len) {
+        ulong* init_ptr = (NIC_STATE_BASE + 16) as ulong*;
+        if (*init_ptr == 0) { return 0; }
+
+        ulong* io_base_ptr = NIC_STATE_BASE as ulong*;
+        ulong io_base = *io_base_ptr;
+
+        // TX virtqueue状態を復元
+        Virtqueue tx_vq = {
+            desc_base: 0, avail_base: 0, used_base: 0,
+            size: 0, free_head: 0, num_free: 0,
+            avail_idx: 0, last_used_idx: 0
+        };
+        VirtioNet::load_tx_vq(&tx_vq);
+
+        // 使用済みTXバッファを回収
+        ulong used_desc = Vq::poll_used(&tx_vq);
+        while (used_desc != INVALID_U32) {
+            Vq::free_desc(&tx_vq, used_desc);
+            used_desc = Vq::poll_used(&tx_vq);
+        }
+
+        // TXバッファにvirtio-netヘッダ + データをコピー
+        ulong buf_addr = TX_BUF_BASE + 0x10000;  // TX専用データ領域
+        ulong total = VIRTIO_NET_HDR_SIZE + len;
+
+        // virtio-net ヘッダをゼロクリア (10バイト)
+        ulong i = 0;
+        while (i < VIRTIO_NET_HDR_SIZE) {
+            Mem::write_byte(buf_addr + i, 0);
+            i = i + 1;
+        }
+
+        // Ethernetフレームデータをコピー
+        i = 0;
+        while (i < len) {
+            ulong b = Mem::read_byte(data + i);
+            Mem::write_byte(buf_addr + VIRTIO_NET_HDR_SIZE + i, b);
+            i = i + 1;
+        }
+
+        // Descriptorを確保
+        ulong desc_idx = Vq::alloc_desc(&tx_vq, buf_addr, total, 0);
+        if (desc_idx == INVALID_U32) {
+            VirtioNet::save_tx_vq(&tx_vq);
+            return 0;
+        }
+
+        // Available Ringに追加
+        Vq::submit(&tx_vq, desc_idx);
+
+        // TX状態を保存
+        VirtioNet::save_tx_vq(&tx_vq);
+
+        // TXキュー通知
+        outw(io_base + VIRTIO_PCI_QUEUE_NOTIFY, 1);
+
+        return len;
+    }
+
+    /// パケット受信
+    /// buf: 受信データ格納先 (Ethernetフレーム、virtio-netヘッダ除去済み)
+    /// buf_len: バッファ長
+    /// 返り値: 受信データ長 (0=データなし)
+    static ulong recv(ulong buf, ulong buf_len) {
+        ulong* init_ptr = (NIC_STATE_BASE + 16) as ulong*;
+        if (*init_ptr == 0) { return 0; }
+
+        ulong* io_base_ptr = NIC_STATE_BASE as ulong*;
+        ulong io_base = *io_base_ptr;
+
+        // RX virtqueue状態を復元
+        Virtqueue rx_vq = {
+            desc_base: 0, avail_base: 0, used_base: 0,
+            size: 0, free_head: 0, num_free: 0,
+            avail_idx: 0, last_used_idx: 0
+        };
+        VirtioNet::load_rx_vq(&rx_vq);
+
+        // Used Ringからパケットを取得
+        ulong saved_last = rx_vq.last_used_idx;
+        ulong desc_idx = Vq::poll_used(&rx_vq);
+        if (desc_idx == INVALID_U32) {
+            VirtioNet::save_rx_vq(&rx_vq);
+            return 0;
+        }
+
+        // Used Ringのlenフィールドからデータ長取得
+        ulong total_len = Vq::get_used_len(&rx_vq, saved_last);
+
+        // Descriptorからバッファアドレスを取得
+        ulong desc_addr = rx_vq.desc_base + desc_idx * 16;
+        ulong b0 = Mem::read_byte(desc_addr);
+        ulong b1 = Mem::read_byte(desc_addr + 1);
+        ulong b2 = Mem::read_byte(desc_addr + 2);
+        ulong b3 = Mem::read_byte(desc_addr + 3);
+        ulong b4 = Mem::read_byte(desc_addr + 4);
+        ulong b5 = Mem::read_byte(desc_addr + 5);
+        ulong b6 = Mem::read_byte(desc_addr + 6);
+        ulong b7 = Mem::read_byte(desc_addr + 7);
+        ulong rx_buf_addr = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+        | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
+
+        // virtio-netヘッダをスキップ
+        ulong payload_addr = rx_buf_addr + VIRTIO_NET_HDR_SIZE;
+        ulong payload_len = 0;
+        if (total_len > VIRTIO_NET_HDR_SIZE) {
+            payload_len = total_len - VIRTIO_NET_HDR_SIZE;
+        }
+
+        // データをコピー
+        ulong copy_len = payload_len;
+        if (copy_len > buf_len) { copy_len = buf_len; }
+
+        ulong i = 0;
+        while (i < copy_len) {
+            ulong byte_val = Mem::read_byte(payload_addr + i);
+            Mem::write_byte(buf + i, byte_val);
+            i = i + 1;
+        }
+
+        // バッファを再投入 (descriptorをリサイクル)
+        Vq::free_desc(&rx_vq, desc_idx);
+        ulong new_desc = Vq::alloc_desc(&rx_vq, rx_buf_addr, VQ_BUF_SIZE, VRING_DESC_F_WRITE);
+        if (new_desc != INVALID_U32) {
+            Vq::submit(&rx_vq, new_desc);
+        }
+
+        VirtioNet::save_rx_vq(&rx_vq);
+
+        // RXキュー通知 (新しいバッファを追加した)
+        outw(io_base + VIRTIO_PCI_QUEUE_NOTIFY, 0);
+
+        return copy_len;
+    }
+
+    /// MACアドレス取得
+    static ulong mac() {
+        ulong* mac_ptr = (NIC_STATE_BASE + 8) as ulong*;
+        return *mac_ptr;
+    }
+
+    /// 初期化済みか確認
+    static ulong is_ready() {
+        ulong* init_ptr = (NIC_STATE_BASE + 16) as ulong*;
+        return *init_ptr;
+    }
+
+    // ============================================================
+    // 内部ヘルパー: VirtqueueをNICステートメモリに保存/復元
+    // ============================================================
+
+    /// RX Virtqueue状態を固定メモリに保存
+    static void save_rx_vq(Virtqueue* vq) {
+        ulong base = NIC_STATE_BASE + 0x100;
+        ulong* p0 = base as ulong*;
+        *p0 = vq->desc_base;
+        ulong* p1 = (base + 8) as ulong*;
+        *p1 = vq->avail_base;
+        ulong* p2 = (base + 16) as ulong*;
+        *p2 = vq->used_base;
+        ulong* p3 = (base + 24) as ulong*;
+        *p3 = vq->size;
+        ulong* p4 = (base + 32) as ulong*;
+        *p4 = vq->free_head;
+        ulong* p5 = (base + 40) as ulong*;
+        *p5 = vq->num_free;
+        ulong* p6 = (base + 48) as ulong*;
+        *p6 = vq->avail_idx;
+        ulong* p7 = (base + 56) as ulong*;
+        *p7 = vq->last_used_idx;
+    }
+
+    /// RX Virtqueue状態を固定メモリから復元
+    static void load_rx_vq(Virtqueue* vq) {
+        ulong base = NIC_STATE_BASE + 0x100;
+        ulong* p0 = base as ulong*;
+        vq->desc_base = *p0;
+        ulong* p1 = (base + 8) as ulong*;
+        vq->avail_base = *p1;
+        ulong* p2 = (base + 16) as ulong*;
+        vq->used_base = *p2;
+        ulong* p3 = (base + 24) as ulong*;
+        vq->size = *p3;
+        ulong* p4 = (base + 32) as ulong*;
+        vq->free_head = *p4;
+        ulong* p5 = (base + 40) as ulong*;
+        vq->num_free = *p5;
+        ulong* p6 = (base + 48) as ulong*;
+        vq->avail_idx = *p6;
+        ulong* p7 = (base + 56) as ulong*;
+        vq->last_used_idx = *p7;
+    }
+
+    /// TX Virtqueue状態を固定メモリに保存
+    static void save_tx_vq(Virtqueue* vq) {
+        ulong base = NIC_STATE_BASE + 0x200;
+        ulong* p0 = base as ulong*;
+        *p0 = vq->desc_base;
+        ulong* p1 = (base + 8) as ulong*;
+        *p1 = vq->avail_base;
+        ulong* p2 = (base + 16) as ulong*;
+        *p2 = vq->used_base;
+        ulong* p3 = (base + 24) as ulong*;
+        *p3 = vq->size;
+        ulong* p4 = (base + 32) as ulong*;
+        *p4 = vq->free_head;
+        ulong* p5 = (base + 40) as ulong*;
+        *p5 = vq->num_free;
+        ulong* p6 = (base + 48) as ulong*;
+        *p6 = vq->avail_idx;
+        ulong* p7 = (base + 56) as ulong*;
+        *p7 = vq->last_used_idx;
+    }
+
+    /// TX Virtqueue状態を固定メモリから復元
+    static void load_tx_vq(Virtqueue* vq) {
+        ulong base = NIC_STATE_BASE + 0x200;
+        ulong* p0 = base as ulong*;
+        vq->desc_base = *p0;
+        ulong* p1 = (base + 8) as ulong*;
+        vq->avail_base = *p1;
+        ulong* p2 = (base + 16) as ulong*;
+        vq->used_base = *p2;
+        ulong* p3 = (base + 24) as ulong*;
+        vq->size = *p3;
+        ulong* p4 = (base + 32) as ulong*;
+        vq->free_head = *p4;
+        ulong* p5 = (base + 40) as ulong*;
+        vq->num_free = *p5;
+        ulong* p6 = (base + 48) as ulong*;
+        vq->avail_idx = *p6;
+        ulong* p7 = (base + 56) as ulong*;
+        vq->last_used_idx = *p7;
+    }
+
+    /// MACアドレス表示ヘルパー
+    static void print_mac(SerialPort* serial, ulong mac) {
+        ulong i = 0;
+        while (i < 6) {
+            ulong shift = (5 - i) * 8;
+            ulong byte_val = (mac >> shift) & 0xFF;
+            ulong hi = (byte_val >> 4) & 0x0F;
+            ulong lo = byte_val & 0x0F;
+            if (hi < 10) { serial->putc((Ascii::Digit0 as ulong + hi) as utiny); }
+            else { serial->putc((Ascii::LowerA as ulong - 10 + hi) as utiny); }
+            if (lo < 10) { serial->putc((Ascii::Digit0 as ulong + lo) as utiny); }
+            else { serial->putc((Ascii::LowerA as ulong - 10 + lo) as utiny); }
+            if (i < 5) { serial->putc(Ascii::Colon as ulong); }  // ':'
+            i = i + 1;
+        }
+    }
+}

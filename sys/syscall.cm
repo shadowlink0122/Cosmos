@@ -1,0 +1,1454 @@
+//! platform: baremetal-x86
+// cosmo-linux::sys::syscall - syscall エントリポイント
+//
+// x86_64 LSTAR MSR を設定し、syscall命令でカーネルに遷移する。
+// Syscall struct/impl パターンで実装。
+// Linux ABI: RAX=番号, RDI/RSI/RDX/R10/R8/R9=引数
+//
+// 参照: linux/arch/x86/entry/entry_64.S
+
+import ../include/types;
+import ../include/config;
+import ../include/phys_addr;
+import ../include/errno;
+import ../include/result;
+import ../include/signal;
+import ../drivers/serial;
+import ../lib/printk;
+import ../arch/x86_64/cpu;
+import ./table;
+import ./signal;
+import ../fs/vfs;
+import ../fs/fd_table;
+import ../init/init;
+import ../sched/process;
+import ../sched/scheduler;
+import ../mm/mmap;
+import ../fs/devfs;
+import ../apps/terminal/shell/io;
+import ../apps/terminal/vga;
+import ../fs/pipe;
+// ABI拡張: 分野別syscall
+import ./handlers/fs;
+import ./handlers/proc;
+import ./handlers/net;
+import ./handlers/fork;
+import ../drivers/input/keyboard;
+import ../fs/ramfs;
+
+// ============================================================
+// MSR定数
+// ============================================================
+
+/// STAR MSR: syscall/sysret セグメント設定
+const ulong MSR_STAR  = 0xC0000081;
+
+/// LSTAR MSR: syscall エントリアドレス
+const ulong MSR_LSTAR = 0xC0000082;
+
+/// SFMASK MSR: syscall時のRFLAGSマスク
+const ulong MSR_SFMASK = 0xC0000084;
+
+/// EFER MSR: syscall有効化ビット
+const ulong MSR_EFER = 0xC0000080;
+const ulong EFER_SCE = 1;
+
+// ============================================================
+// Syscall結果
+// ============================================================
+
+/// Syscallディスパッチ結果
+export struct SyscallResult {
+    long value;
+}
+
+/// Syscall — syscall管理
+export struct Syscall {}
+
+impl Syscall {
+    /// syscall/sysretを初期化
+    static void setup(SerialPort* w) {
+        // EFER.SCE (System Call Extension) を有効化
+        ulong efer = Cpu::rdmsr(MSR_EFER);
+        Cpu::wrmsr(MSR_EFER, efer | EFER_SCE);
+
+        // STAR: syscall時のCS/SS = 0x08/0x10, sysret時のCS/SS base = 0x10
+        // sysret: User DS = base+8 = 0x18|3, User CS(64) = base+16 = 0x20|3
+        ulong star = (0x0010 << 48) | (0x0008 << 32);
+        Cpu::wrmsr(MSR_STAR, star);
+
+        // LSTAR: syscallエントリアドレス
+        ulong entry = syscall_entry_stub as ulong;
+        Cpu::wrmsr(MSR_LSTAR, entry);
+
+        // SFMASK: syscall時にIFとDFをクリア
+        Cpu::wrmsr(MSR_SFMASK, 0x700);
+
+        pr_info(w, "Syscall initialized (LSTAR set)" as void*);
+    }
+
+    /// sys_write: fdに書き込み
+    static long write(ulong fd, ulong buf_addr, ulong count) {
+        // fd 1 (stdout) と fd 2 (stderr) → シリアル出力 + 画面出力
+        if (fd == 1 || fd == 2) {
+            SerialPort serial(COM1);
+            Process* cur = Sched::current();
+            ulong cur_addr = cur as ulong;
+            ulong is_user = 0;
+            if (cur_addr != 0) {
+                is_user = cur->is_user;
+            }
+            ulong i = 0;
+            while (i < count) {
+                ulong ch = 0;
+                ulong addr = buf_addr + i;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    xorq %rax, %rax;
+                    movb (%rdi), %al;
+                    movq %rax, ${=r:ch}
+                `);
+                serial.putc(ch as utiny);
+                // ユーザープロセスの場合のみ画面にも出力
+                if (is_user != 0) {
+                    if (ch == 10) {
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(10);
+                        } else {
+                            Vga::putc(10);
+                        }
+                    } else if (ch >= 32 && ch < 127) {
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(ch);
+                        } else {
+                            Vga::putc(ch);
+                        }
+                    }
+                }
+                i = i + 1;
+            }
+            // GUIモード時は画面更新
+            if (is_user != 0 && Shell::is_gui() != 0) {
+                Shell::gui_flush();
+            }
+            return count as long;
+        }
+        // DevFSチェック
+        ulong fs_type = FdTable::get_fs_type(fd as long);
+        if (fs_type == FS_DEVFS) {
+            ulong dev_id = FdTable::get_ino(fd as long) as ulong;
+            Result<long, long> dr = DevFs::write(dev_id, buf_addr, count);
+            match (dr) {
+                Result::Ok(n) => { return n; }
+                Result::Err(e) => { return 0 - e; }
+            }
+        }
+        if (fs_type == FS_PIPE) {
+            ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
+            Result<ulong, long> pr = Pipe::write(pipe_id, buf_addr, count);
+            match (pr) {
+                Result::Ok(n) => { return n as long; }
+                Result::Err(e) => { return 0 - e; }
+            }
+        }
+        // RamFS/9pFS→VFS経由
+        if (fs_type == FS_RAMFS || fs_type == FS_9PFS) {
+            Result<long, long> vr = Vfs::write(fd as long, buf_addr, count);
+            match (vr) {
+                Result::Ok(n) => { return n; }
+                Result::Err(e) => { return 0 - e; }
+            }
+        }
+        return (0 - EBADF);
+    }
+
+    /// sys_read: fdから読み出し
+    static long read(ulong fd, ulong buf_addr, ulong count) {
+        // stdin (fd=0): Kbd::getchar() からブロッキング読み取り
+        // Kbd::getchar() は PS/2 + シリアルRX のデュアル入力対応
+        if (fd == 0) {
+            if (count == 0) { return 0; }
+            SerialPort echo_port(COM1);
+            ulong bytes_read = 0;
+
+            while (bytes_read < count) {
+                ulong ch = Kbd::getchar();
+                if (ch == 0) {
+                    // 入力なし → pause + sti で低電力待機（ポーリング継続）
+                    __asm__(`sti; pause`);
+                    continue;
+                }
+
+                // Ctrl+D (EOF) → 0バイト返却
+                if (ch == 4) {
+                    if (bytes_read == 0) { return 0; }
+                    break;
+                }
+
+                // Backspace (0x08 or 0x7F) → 1文字削除
+                if (ch == 8 || ch == 127) {
+                    if (bytes_read > 0) {
+                        bytes_read = bytes_read - 1;
+                        echo_port.putc(8);
+                        echo_port.putc(32);
+                        echo_port.putc(8);
+                    }
+                    continue;
+                }
+
+                // ユーザーバッファに格納
+                ulong dst = buf_addr + bytes_read;
+                __asm__(`movq ${r:dst}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+                bytes_read = bytes_read + 1;
+
+                // エコーバック
+                echo_port.putc(ch as utiny);
+
+                // Enter (0x0A) → 行完了
+                if (ch == 10) {
+                    break;
+                }
+            }
+            return bytes_read as long;
+        }
+        // DevFSチェック
+        ulong fs_type = FdTable::get_fs_type(fd as long);
+        if (fs_type == FS_DEVFS) {
+            ulong dev_id = FdTable::get_ino(fd as long) as ulong;
+            Result<long, long> dr = DevFs::read(dev_id, buf_addr, count);
+            match (dr) {
+                Result::Ok(n) => { return n; }
+                Result::Err(e) => { return 0 - e; }
+            }
+        }
+        if (fs_type == FS_PIPE) {
+            ulong pipe_id = FdTable::get_ino(fd as long) as ulong;
+            // ブロッキングread: パイプ空ならSched::run()で子プロセスに実行権を渡してリトライ
+            ulong retry = 0;
+            while (retry < 500) {
+                Result<ulong, long> pr = Pipe::read(pipe_id, buf_addr, count);
+                match (pr) {
+                    Result::Ok(n) => {
+                        if (n != 0) { return n as long; }
+                    }
+                    Result::Err(e) => { return 0 - e; }
+                }
+                // パイプ空→コンテキストスイッチして他プロセス(子)を実行
+                Sched::run();
+                retry = retry + 1;
+            }
+            return 0;  // タイムアウト → EOF
+        }
+        // ramfsファイル → VFS経由
+        Result<long, long> vr = Vfs::read(fd as long, buf_addr, count);
+        match (vr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_open: ファイルをオープン
+    static long open(ulong name_addr, ulong flags) {
+        // ルートディレクトリ "/" → ディレクトリFDを返す
+        ulong is_root = 0;
+        ulong* first_byte = name_addr as ulong*;
+        ulong fb = 0;
+        __asm__(`movq ${r:name_addr}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:fb}`);
+        if (fb == 0x2F) {
+            // '/' の次が '\0' かチェック
+            ulong sb = 0;
+            ulong na1 = name_addr + 1;
+            __asm__(`movq ${r:na1}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:sb}`);
+            if (sb == 0) {
+                is_root = 1;
+            }
+        }
+        if (is_root != 0) {
+            Result<Fd, long> r = FdTable::alloc(ROOT_INO as long, flags, FS_DIR);
+            match (r) {
+                Result::Ok(fd) => { return fd; }
+                Result::Err(e) => { return 0 - e; }
+            }
+        }
+        // /dev/ プレフィックスチェック
+        if (startswith(name_addr as void*, "/dev/" as void*) != 0) {
+            ulong dev_name = name_addr + 5;
+            ulong dev_id = DevFs::lookup(dev_name as void*);
+            if (dev_id != 0) {
+                Result<Fd, long> r = FdTable::alloc(dev_id as long, flags, FS_DEVFS);
+                match (r) {
+                    Result::Ok(fd) => { return fd; }
+                    Result::Err(e) => { return 0 - e; }
+                }
+            }
+            return 0 - ENOENT;
+        }
+        Result<Fd, long> vr = Vfs::open(name_addr as void*, flags);
+        match (vr) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_close: FDを閉じる
+    static long close(ulong fd) {
+        if (FdTable::is_valid(fd as long) == 0) {
+            return 0 - EBADF;
+        }
+        ulong fs_type = FdTable::get_fs_type(fd as long);
+        if (fs_type == FS_DEVFS || fs_type == FS_PIPE) {
+            // DevFS / Pipe: FDエントリのみ解放
+            FdTable::free(fd as long);
+            return 0;
+        }
+        match (Vfs::close(fd as long)) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_exit: プロセス終了
+    static void exit(long code) {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0 && cur->pid != 0) {
+            Pid dying_pid = cur->pid;
+            ProcessTable::do_exit(cur, code);
+            // スケジューラキューから即座除外（二度とスケジュールされない）
+            Sched::remove(dying_pid);
+            // 他のプロセスに切り替え
+            Sched::run();
+        }
+        // idleプロセスまたはフォールバック
+        __asm__(`sti; 1: hlt; jmp 1b`);
+    }
+
+    /// sys_getpid: PID取得
+    static long getpid() {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) { return cur->pid; }
+        return 1;
+    }
+
+    /// sys_getppid: 親プロセスPID取得
+    static long getppid() {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) { return cur->parent_pid; }
+        return 0;
+    }
+
+    /// sys_kill: シグナル送信
+    static long kill(ulong pid, ulong sig) {
+        Result<long, long> sr = Signal::send(pid as long, sig);
+        match (sr) {
+            Result::Ok(v) => { return v; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_wait4: 子プロセス終了待ち (wstatus書き込み対応)
+    /// wait_pid: -1=任意の子, >0=指定 PID
+    /// wstatus_addr: WIFEXITED/WEXITSTATUS 互換の終了ステータスを書き込む
+    /// options/rusage: 現状stub
+    static long wait4(long wait_pid, ulong wstatus_addr, ulong options, ulong rusage_addr) {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr == 0) { return 0 - ECHILD; }
+        long result = 0;
+        Result<long, long> wr = ProcessTable::do_wait(cur, wait_pid, options);
+        match (wr) {
+            Result::Ok(v) => { result = v; }
+            Result::Err(e) => { return 0 - e; }
+        }
+
+        // 成功時: wstatusを書き込み
+        // Linux規約: WIFEXITED(s) = ((s) & 0x7f) == 0
+        //             WEXITSTATUS(s) = ((s) >> 8) & 0xff
+        // exit_code << 8 で正常終了を表現
+        if (wstatus_addr != 0) {
+            ulong exit_status = (result as ulong) << 8;
+            ulong* wstatus = wstatus_addr as ulong*;
+            *wstatus = exit_status;
+        }
+
+        // rusage: ゼロクリア
+        if (rusage_addr != 0) {
+            memzero(rusage_addr as void*, 144);
+        }
+
+        // 成功時は子プロセスのPIDを返すべきだが、
+        // 現状do_waitはexit_codeを返すので、簡易的に1を返す
+        // TODO: do_waitを修正して子PIDを返すようにする
+        return 1;  // 子PIDの代替値
+    }
+
+    /// sys_uname: システム情報取得 (Linux utsname構造体に書き込み)
+    static long uname(ulong buf_addr) {
+        if (buf_addr == 0) { return 0 - EFAULT; }
+        // Linux utsname: 5フィールド × 65バイト
+        Syscall::uname_write(buf_addr, "Cosmo Linux" as void*);
+        Syscall::uname_write(buf_addr + 65, "cosmo" as void*);
+        Syscall::uname_write(buf_addr + 130, "0.2.0" as void*);
+        Syscall::uname_write(buf_addr + 195, "Cm/LLVM" as void*);
+        Syscall::uname_write(buf_addr + 260, "x86_64" as void*);
+        return 0;
+    }
+
+    /// uname用文字列書き込みヘルパー
+    static void uname_write(ulong dst, void* src) {
+        ulong s = src as ulong;
+        ulong i = 0;
+        while (i < 64) {
+            ulong ch = 0;
+            ulong addr = s + i;
+            __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
+            __asm__(`movq ${r:dst}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
+            if (ch == 0) { return; }
+            i = i + 1;
+        }
+    }
+
+    /// sys_getcwd: カレントディレクトリ取得
+    static long getcwd(ulong buf_addr, ulong size) {
+        if (buf_addr == 0) { return 0 - EFAULT; }
+        ulong cwd = Cwd::get();
+        ulong i = 0;
+        while (i < size - 1) {
+            ulong ch = 0;
+            ulong addr = cwd + i;
+            __asm__(`movq ${r:addr}, %r10; xorq %rax,%rax; movzbl (%r10),%eax; movq %rax, ${=r:ch}`);
+            __asm__(`movq ${r:buf_addr}, %r10; addq ${r:i}, %r10; movq ${r:ch}, %rax; movb %al, (%r10)`);
+            if (ch == 0) { return (i + 1) as long; }
+            i = i + 1;
+        }
+        return i as long;
+    }
+
+    /// sys_chdir: カレントディレクトリ変更
+    static long chdir(ulong path_addr) {
+        if (path_addr == 0) { return 0 - EFAULT; }
+        Cwd::set(path_addr as void*);
+        return 0;
+    }
+
+    /// sys_brk: ヒープ上限変更
+    static long brk(ulong new_brk) {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr == 0) { return 0 - ENOMEM; }
+        ulong result = Mmap::do_brk(new_brk, cur);
+        return result as long;
+    }
+
+    /// sys_mmap: メモリマッピング
+    static long mmap(ulong addr, ulong length, ulong prot, ulong flags, long fd, ulong offset) {
+        // MAP_ANONYMOUS = 0x20
+        ulong MAP_ANONYMOUS = 0x20;
+
+        // まずページ割当（匿名/ファイルマッピング共通）
+        ulong result = Mmap::do_mmap(addr, length, prot, flags);
+        if (result == MAP_FAILED) { return 0 - ENOMEM; }
+
+        // FILE_BACKED: fd >= 0 かつ MAP_ANONYMOUS フラグなしの場合
+        // fdからoffset位置のデータを読み取り、マップされた領域にコピー
+        if (fd >= 0 && (flags & MAP_ANONYMOUS) == 0) {
+            // ファイルデータをページにコピー（pread64相当）
+            ulong copy_len = length;
+            ulong copied = 0;
+            while (copied < copy_len) {
+                ulong chunk = copy_len - copied;
+                if (chunk > 4096) { chunk = 4096; }  // 1ページずつ
+                // pread64(fd, result+copied, chunk, offset+copied)
+                long bytes = SyscallFs::pread64(fd as ulong, result + copied, chunk, offset + copied);
+                if (bytes <= 0) { break; }
+                copied = copied + bytes as ulong;
+            }
+        }
+
+        return result as long;
+    }
+
+    /// sys_munmap: メモリマッピング解除
+    static long munmap(ulong addr, ulong length) {
+        Result<long, long> mr = Mmap::do_munmap(addr, length);
+        match (mr) {
+            Result::Ok(n) => { return n; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    /// sys_pipe: パイプ作成
+    /// pipefd[0] = 読み取り端, pipefd[1] = 書き込み端
+    static long do_pipe(ulong pipefd_addr) {
+        if (pipefd_addr == 0) { return 0 - EFAULT; }
+        long pipe_id = 0;
+        Result<ulong, long> cr = Pipe::create();
+        match (cr) {
+            Result::Ok(id) => { pipe_id = id as long; }
+            Result::Err(e) => { return 0 - e; }
+        }
+        // 読み取り端FD
+        Fd read_fd = 0;
+        Result<Fd, long> rr = FdTable::alloc(pipe_id, O_RDONLY, FS_PIPE);
+        match (rr) {
+            Result::Ok(fd) => { read_fd = fd; }
+            Result::Err(e) => {
+                Pipe::destroy(pipe_id as ulong);
+                return 0 - e;
+            }
+        }
+        // 書き込み端FD
+        Fd write_fd = 0;
+        Result<Fd, long> wr = FdTable::alloc(pipe_id, O_WRONLY, FS_PIPE);
+        match (wr) {
+            Result::Ok(fd) => { write_fd = fd; }
+            Result::Err(e) => {
+                FdTable::free(read_fd);
+                Pipe::destroy(pipe_id as ulong);
+                return 0 - e;
+            }
+        }
+        // pipefd配列に書き込み
+        ulong* fd0 = pipefd_addr as ulong*;
+        ulong* fd1 = (pipefd_addr + 8) as ulong*;
+        *fd0 = read_fd as ulong;
+        *fd1 = write_fd as ulong;
+        return 0;
+    }
+
+    /// sys_dup2: FDコピー
+    static long do_dup2(ulong oldfd, ulong newfd) {
+        Result<Fd, long> r = FdTable::dup2(oldfd as long, newfd as long);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    // ================================================================
+    // MS2: Linux ABI拡張 — musl-libc対応syscall
+    // ================================================================
+
+    /// sys_arch_prctl: アーキテクチャ固有制御
+    /// 参照: linux/arch/x86/kernel/process_64.c
+    /// musl-libcはTLS(Thread Local Storage)セットアップに使用
+    static long arch_prctl(ulong code, ulong addr) {
+        SerialPort dbg_ap(COM1);
+        dbg_ap.puts("[arch_prctl] code=0x" as void*);
+        dbg_ap.print_hex(code);
+        dbg_ap.puts(" addr=0x" as void*);
+        dbg_ap.print_hex(addr);
+        dbg_ap.println("" as void*);
+
+        // ARCH_SET_FS = 0x1002: FSベースレジスタ設定 (TLS用)
+        if (code == 0x1002) {
+            Cpu::wrmsr(0xC0000100, addr);  // IA32_FS_BASE
+
+            // TLS_BASEストアも更新（トランポリンのiretq直前wrmsrで使用）
+            ulong* tls_store = TLS_STORE_ADDR as ulong*;
+            *tls_store = addr;
+
+            // 設定確認
+            ulong verify = Cpu::rdmsr(0xC0000100);
+            dbg_ap.puts("[arch_prctl] FS_BASE set=0x" as void*);
+            dbg_ap.print_hex(verify);
+            dbg_ap.println("" as void*);
+            return 0;
+        }
+        // ARCH_GET_FS = 0x1003: FSベースレジスタ取得
+        if (code == 0x1003) {
+            ulong fs = Cpu::rdmsr(0xC0000100);
+            ulong* out = addr as ulong*;
+            *out = fs;
+            return 0;
+        }
+        // ARCH_SET_GS = 0x1001
+        if (code == 0x1001) {
+            Cpu::wrmsr(0xC0000101, addr);  // IA32_GS_BASE
+            return 0;
+        }
+        return 0 - EINVAL;
+    }
+
+    /// sys_set_tid_address: スレッドID設定
+    static long set_tid_address(ulong tidptr) {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            return cur->pid;
+        }
+        return 1;
+    }
+
+    /// sys_mprotect: メモリ保護属性変更
+    static long do_mprotect(ulong addr, ulong len, ulong prot) {
+        return 0;
+    }
+
+    /// sys_writev: scatter write (iovec配列による書き込み)
+    static long writev(ulong fd, ulong iov_addr, ulong iovcnt) {
+        if (fd != 1 && fd != 2) {
+            // 非stdout/stderr: 個別のwrite呼び出しに分解
+            long total = 0;
+            ulong i = 0;
+            while (i < iovcnt) {
+                ulong* base_ptr = (iov_addr + i * 16) as ulong*;
+                ulong* len_ptr = (iov_addr + i * 16 + 8) as ulong*;
+                ulong base = *base_ptr;
+                ulong len = *len_ptr;
+                if (len > 0) {
+                    long ret = Syscall::write(fd, base, len);
+                    if (ret < 0) { return ret; }
+                    total = total + ret;
+                }
+                i = i + 1;
+            }
+            return total;
+        }
+        // stdout/stderr: シリアル出力 + 画面出力
+        SerialPort serial(COM1);
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        ulong is_user = 0;
+        if (cur_addr != 0) {
+            is_user = cur->is_user;
+        }
+        long total = 0;
+        ulong i = 0;
+        while (i < iovcnt) {
+            ulong* base_ptr = (iov_addr + i * 16) as ulong*;
+            ulong* len_ptr = (iov_addr + i * 16 + 8) as ulong*;
+            ulong base = *base_ptr;
+            ulong len = *len_ptr;
+            ulong j = 0;
+            while (j < len) {
+                ulong ch = 0;
+                ulong addr = base + j;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    xorq %rax, %rax;
+                    movb (%rdi), %al;
+                    movq %rax, ${=r:ch}
+                `);
+                serial.putc(ch as utiny);
+                // ユーザープロセスの場合画面にも出力
+                if (is_user != 0) {
+                    if (ch == 10) {
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(10);
+                        } else {
+                            Vga::putc(10);
+                        }
+                    } else if (ch >= 32 && ch < 127) {
+                        if (Shell::is_gui() != 0) {
+                            Shell::gui_putc(ch);
+                        } else {
+                            Vga::putc(ch);
+                        }
+                    }
+                }
+                j = j + 1;
+            }
+            total = total + (len as long);
+            i = i + 1;
+        }
+        // GUIモード時は画面更新
+        if (is_user != 0 && Shell::is_gui() != 0) {
+            Shell::gui_flush();
+        }
+        return total;
+    }
+
+    /// sys_exit_group: プロセスグループ終了
+    static void exit_group(long code) {
+        Syscall::exit(code);
+    }
+
+    /// sys_ioctl: デバイス制御
+    static long do_ioctl(ulong fd, ulong cmd, ulong arg) {
+        // TIOCGWINSZ = 0x5413: ウィンドウサイズ取得
+        // struct winsize { u16 ws_row, ws_col, ws_xpixel, ws_ypixel } = 8バイト
+        if (cmd == 0x5413) {
+            if (arg != 0) {
+                // ws_row = 25 (offset 0, 2バイト)
+                ulong a0 = arg;
+                ulong v_row = 25;
+                __asm__(`movq ${r:a0}, %rdi; movq ${r:v_row}, %rax; movw %ax, (%rdi)`);
+                // ws_col = 80 (offset 2, 2バイト)
+                ulong a2 = arg + 2;
+                ulong v_col = 80;
+                __asm__(`movq ${r:a2}, %rdi; movq ${r:v_col}, %rax; movw %ax, (%rdi)`);
+                // ws_xpixel = 640 (offset 4)
+                ulong a4 = arg + 4;
+                ulong v_xp = 640;
+                __asm__(`movq ${r:a4}, %rdi; movq ${r:v_xp}, %rax; movw %ax, (%rdi)`);
+                // ws_ypixel = 400 (offset 6)
+                ulong a6 = arg + 6;
+                ulong v_yp = 400;
+                __asm__(`movq ${r:a6}, %rdi; movq ${r:v_yp}, %rax; movw %ax, (%rdi)`);
+            }
+            return 0;
+        }
+        // TCGETS = 0x5401: termios取得
+        if (cmd == 0x5401) {
+            if (arg != 0) {
+                // struct termios をゼロクリアして基本値を設定
+                memzero(arg as void*, 60);
+                // c_lflag (offset 12): ECHO|ICANON|ISIG
+                ulong* lflag = (arg + 12) as ulong*;
+                *lflag = 0x8A3B;  // ECHO=8, ICANON=2, ISIG=1 etc.
+            }
+            return 0;
+        }
+        // TCSETS/TCSETSW/TCSETSF = 0x5402/0x5403/0x5404
+        if (cmd == 0x5402 || cmd == 0x5403 || cmd == 0x5404) {
+            return 0;  // 設定を受け付けるが無視
+        }
+        // FIONREAD = 0x541B: 読み取り可能バイト数
+        if (cmd == 0x541B) {
+            if (arg != 0) {
+                ulong* bytes_avail = arg as ulong*;
+                *bytes_avail = 0;  // stub: 0バイト
+            }
+            return 0;
+        }
+        return 0 - ENOTTY;
+    }
+
+    /// sys_poll: FDレディネスチェック
+    /// struct pollfd { int fd; short events; short revents; }
+    static long do_poll(ulong fds, ulong nfds, long timeout) {
+        ulong ready = 0;
+        ulong i = 0;
+        while (i < nfds) {
+            ulong entry = fds + i * 8;  // sizeof(struct pollfd) = 8
+            // fd (4バイト)
+            ulong poll_fd = 0;
+            __asm__(`movq ${r:entry}, %rdi; movslq (%rdi), %rax; movq %rax, ${=r:poll_fd}`);
+            // events (2バイト, offset 4)
+            ulong events = 0;
+            ulong ev_addr = entry + 4;
+            __asm__(`movq ${r:ev_addr}, %rdi; xorq %rax,%rax; movzwl (%rdi),%eax; movq %rax, ${=r:events}`);
+
+            // reventsを計算
+            ulong revents = 0;
+            // stdin(fd=0): 常に読み取り可能としない
+            // stdout/stderr(fd=1,2): 常に書き込み可能
+            if (poll_fd == 1 || poll_fd == 2) {
+                revents = events & 4;  // POLLOUT = 4
+            } else if (FdTable::is_valid(poll_fd as long) != 0) {
+                // 有効なFD: 書き込み可能 + 読み取り可能(pipe/ファイル)
+                ulong fs = FdTable::get_fs_type(poll_fd as long);
+                if (fs == FS_PIPE || fs == FS_RAMFS || fs == FS_9PFS) {
+                    revents = events & 5;  // POLLIN|POLLOUT = 1|4
+                } else {
+                    revents = events & 4;  // POLLOUT
+                }
+            } else if (poll_fd as long < 0) {
+                // 無効なFD: 無視
+                revents = 0;
+            } else {
+                revents = 0x20;  // POLLNVAL
+            }
+
+            // reventsを書き込み (offset 6, 2バイト)
+            ulong rev_addr = entry + 6;
+            __asm__(`movq ${r:rev_addr}, %rdi; movq ${r:revents}, %rax; movw %ax, (%rdi)`);
+            if (revents != 0) { ready = ready + 1; }
+            i = i + 1;
+        }
+        return ready as long;
+    }
+}
+
+// ============================================================
+// Syscallハンドラ（関数ポインタとして使われるためモジュールレベル）
+// ============================================================
+
+/// syscall エントリ（ASMスタブから呼ばれる）
+export long syscall_handler(ulong nr, ulong arg0, ulong arg1, ulong arg2,
+    ulong arg3, ulong arg4, ulong arg5) {
+
+    // --- ファイルシステム基本 ---
+    if (nr == SYS_READ) {
+        return Syscall::read(arg0, arg1, arg2);
+    }
+    if (nr == SYS_WRITE) {
+        return Syscall::write(arg0, arg1, arg2);
+    }
+    if (nr == SYS_OPEN) {
+        return Syscall::open(arg0, arg1);
+    }
+    if (nr == SYS_CLOSE) {
+        return Syscall::close(arg0);
+    }
+    if (nr == SYS_STAT) {
+        // stat(path, buf) → newfstatat(AT_FDCWD, path, buf, 0)
+        return SyscallFs::newfstatat(0 - 100, arg0, arg1, 0);
+    }
+    if (nr == SYS_LSTAT) {
+        // lstat(path, buf) → newfstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW)
+        return SyscallFs::newfstatat(0 - 100, arg0, arg1, 0x100);
+    }
+    if (nr == SYS_FSTAT) {
+        return SyscallFs::fstat(arg0, arg1);
+    }
+    if (nr == SYS_LSEEK) {
+        return SyscallFs::lseek(arg0, arg1 as long, arg2);
+    }
+    if (nr == SYS_MMAP) {
+        return Syscall::mmap(arg0, arg1, arg2, arg3, arg4 as long, arg5);
+    }
+    if (nr == SYS_MPROTECT) {
+        return Syscall::do_mprotect(arg0, arg1, arg2);
+    }
+    if (nr == SYS_MUNMAP) {
+        return Syscall::munmap(arg0, arg1);
+    }
+    if (nr == SYS_BRK) {
+        return Syscall::brk(arg0);
+    }
+
+    // --- シグナル ---
+    if (nr == SYS_RT_SIGACTION) {
+        return SyscallProc::rt_sigaction(arg0, arg1, arg2, arg3);
+    }
+    if (nr == SYS_RT_SIGPROCMASK) {
+        return SyscallProc::rt_sigprocmask(arg0, arg1, arg2, arg3);
+    }
+
+    // --- ファイルシステム拡張 ---
+    if (nr == SYS_IOCTL) {
+        return Syscall::do_ioctl(arg0, arg1, arg2);
+    }
+    if (nr == SYS_PREAD64) {
+        return SyscallFs::pread64(arg0, arg1, arg2, arg3);
+    }
+    if (nr == SYS_PWRITE64) {
+        return SyscallFs::pwrite64(arg0, arg1, arg2, arg3);
+    }
+    if (nr == SYS_READV) {
+        return SyscallFs::readv(arg0, arg1, arg2);
+    }
+    if (nr == SYS_WRITEV) {
+        return Syscall::writev(arg0, arg1, arg2);
+    }
+    if (nr == SYS_ACCESS) {
+        return 0 - ENOENT;
+    }
+    if (nr == SYS_PIPE) {
+        return Syscall::do_pipe(arg0);
+    }
+    if (nr == SYS_DUP) {
+        return SyscallFs::dup(arg0);
+    }
+    if (nr == SYS_DUP2) {
+        return Syscall::do_dup2(arg0, arg1);
+    }
+
+    // --- タイマー ---
+    if (nr == SYS_NANOSLEEP) {
+        return SyscallProc::nanosleep(arg0, arg1);
+    }
+
+    // --- プロセス ---
+    if (nr == SYS_GETPID) {
+        return Syscall::getpid();
+    }
+    if (nr == SYS_GETPPID) {
+        return Syscall::getppid();
+    }
+    if (nr == SYS_EXIT) {
+        Syscall::exit(arg0 as long);
+        return 0;
+    }
+    if (nr == SYS_WAIT4) {
+        return Syscall::wait4(arg0 as long, arg1, arg2, arg3);
+    }
+    if (nr == SYS_KILL) {
+        return Syscall::kill(arg0, arg1);
+    }
+    if (nr == SYS_UNAME) {
+        return Syscall::uname(arg0);
+    }
+    if (nr == SYS_GETCWD) {
+        return Syscall::getcwd(arg0, arg1);
+    }
+    if (nr == SYS_CHDIR) {
+        return Syscall::chdir(arg0);
+    }
+    if (nr == SYS_FCNTL) {
+        return SyscallFs::fcntl(arg0, arg1, arg2);
+    }
+
+    // --- fork/clone/execve (Milestone 5) ---
+    if (nr == SYS_FORK || nr == SYS_VFORK) {
+        return SyscallFork::do_fork(0);
+    }
+    if (nr == SYS_CLONE) {
+        return SyscallFork::do_clone(arg0, arg1, arg2, arg3, arg4);
+    }
+    if (nr == SYS_EXECVE) {
+        return SyscallFork::do_execve(arg0, arg1, arg2);
+    }
+
+    // --- ネットワーク ---
+    if (nr == SYS_SOCKET) {
+        return SyscallNet::do_socket(arg0, arg1, arg2);
+    }
+    if (nr == SYS_CONNECT) {
+        return SyscallNet::do_connect(arg0, arg1, arg2);
+    }
+    if (nr == SYS_ACCEPT) {
+        return SyscallNet::do_accept(arg0, arg1, arg2);
+    }
+    if (nr == SYS_SENDTO) {
+        return SyscallNet::do_sendto(arg0, arg1, arg2, arg3, arg4, arg5);
+    }
+    if (nr == SYS_RECVFROM) {
+        return SyscallNet::do_recvfrom(arg0, arg1, arg2, arg3, arg4, arg5);
+    }
+    if (nr == SYS_BIND) {
+        return SyscallNet::do_bind(arg0, arg1, arg2);
+    }
+    if (nr == SYS_LISTEN) {
+        return SyscallNet::do_listen(arg0, arg1);
+    }
+    if (nr == SYS_SETSOCKOPT) {
+        return SyscallNet::do_setsockopt(arg0, arg1, arg2, arg3, arg4);
+    }
+    if (nr == SYS_GETSOCKOPT) {
+        return SyscallNet::do_getsockopt(arg0, arg1, arg2, arg3, arg4);
+    }
+    // getsockname / getpeername / shutdown / socketpair
+    if (nr == SYS_GETSOCKNAME) {
+        // stub: 最小限のsockaddr_inを返す
+        if (arg1 != 0 && arg2 != 0) {
+            ulong* len_ptr = arg2 as ulong*;
+            // AF_INET (2) + port 0 + addr 0.0.0.0
+            Mem::write_byte(arg1, 2);      // sin_family low
+            Mem::write_byte(arg1 + 1, 0);  // sin_family high
+            Mem::write_byte(arg1 + 2, 0);  // port high
+            Mem::write_byte(arg1 + 3, 0);  // port low
+            ulong k = 4;
+            while (k < 16) {
+                Mem::write_byte(arg1 + k, 0);
+                k = k + 1;
+            }
+            *len_ptr = 16;
+        }
+        return 0;
+    }
+    if (nr == SYS_GETPEERNAME) {
+        return 0 - ENOTCONN;
+    }
+    if (nr == SYS_SHUTDOWN) {
+        return 0;  // stub: 成功
+    }
+    if (nr == SYS_SOCKETPAIR) {
+        return 0 - EOPNOTSUPP;
+    }
+
+    // --- epoll ---
+    if (nr == SYS_EPOLL_CREATE || nr == SYS_EPOLL_CREATE1) {
+        // epollインスタンス作成 → FDを返す (実際には使わないのでダミーFD)
+        Result<Fd, long> r = FdTable::alloc(0, 0, FS_EPOLL);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+    if (nr == SYS_EPOLL_CTL) {
+        // epoll_ctl: 常に成功
+        return 0;
+    }
+    if (nr == SYS_EPOLL_WAIT || nr == SYS_EPOLL_PWAIT || nr == SYS_EPOLL_PWAIT2) {
+        // epoll_wait: イベント0個を返す (タイムアウト)
+        return 0;
+    }
+    if (nr == SYS_POLL) {
+        return Syscall::do_poll(arg0, arg1, arg2 as long);
+    }
+    // ppoll (SYS_PPOLL = 271)
+    if (nr == 271) {
+        // ppoll(fds, nfds, timeout, sigmask) → pollに委譲
+        return Syscall::do_poll(arg0, arg1, 0 - 1);
+    }
+    // eventfd2 (SYS_EVENTFD2 = 290)
+    if (nr == 290) {
+        // stub: ダミーFDを返す
+        Result<Fd, long> r = FdTable::alloc(0, 0, FS_DEVFS);
+        match (r) {
+            Result::Ok(fd) => { return fd; }
+            Result::Err(e) => { return 0 - e; }
+        }
+    }
+
+    // --- ユーザー/グループ ---
+    if (nr == SYS_GETUID) {
+        return SyscallProc::getuid();
+    }
+    if (nr == SYS_GETGID) {
+        return SyscallProc::getgid();
+    }
+    if (nr == SYS_GETEUID) {
+        return SyscallProc::geteuid();
+    }
+    if (nr == SYS_GETEGID) {
+        return SyscallProc::getegid();
+    }
+
+    // --- アーキテクチャ固有 ---
+    if (nr == SYS_ARCH_PRCTL) {
+        return Syscall::arch_prctl(arg0, arg1);
+    }
+    if (nr == SYS_SET_TID_ADDRESS) {
+        return Syscall::set_tid_address(arg0);
+    }
+
+    // --- 拡張syscall ---
+    if (nr == SYS_GETDENTS64) {
+        return SyscallFs::getdents64(arg0, arg1, arg2);
+    }
+    if (nr == SYS_CLOCK_GETTIME) {
+        return SyscallProc::clock_gettime(arg0, arg1);
+    }
+    if (nr == SYS_EXIT_GROUP) {
+        Syscall::exit_group(arg0 as long);
+        return 0;
+    }
+    if (nr == SYS_OPENAT) {
+        return SyscallFs::openat(arg0 as long, arg1, arg2, arg3);
+    }
+    if (nr == SYS_NEWFSTATAT) {
+        return SyscallFs::newfstatat(arg0 as long, arg1, arg2, arg3);
+    }
+    if (nr == SYS_READLINKAT) {
+        return SyscallFs::readlinkat(arg0 as long, arg1, arg2, arg3);
+    }
+    if (nr == SYS_FACCESSAT) {
+        return SyscallFs::faccessat(arg0 as long, arg1, arg2, arg3);
+    }
+    if (nr == SYS_PRLIMIT64) {
+        return SyscallProc::prlimit64(arg0, arg1, arg2, arg3);
+    }
+    if (nr == SYS_GETRANDOM) {
+        return SyscallProc::getrandom(arg0, arg1, arg2);
+    }
+
+    // --- Phase 1: 追加syscall ---
+
+    // stat / lstat
+    if (nr == SYS_STAT) {
+        return SyscallFs::stat(arg0, arg1);
+    }
+    if (nr == SYS_LSTAT) {
+        return SyscallFs::lstat(arg0, arg1);
+    }
+
+    // dup3 / pipe2
+    if (nr == SYS_DUP3) {
+        return SyscallFs::dup3(arg0, arg1, arg2);
+    }
+    if (nr == SYS_PIPE2) {
+        return SyscallFs::pipe2(arg0, arg1);
+    }
+
+    // unlinkat / mkdirat / renameat / renameat2
+    if (nr == SYS_UNLINKAT) {
+        return SyscallFs::unlinkat(arg0 as long, arg1, arg2);
+    }
+    if (nr == SYS_MKDIRAT) {
+        return SyscallFs::mkdirat(arg0 as long, arg1, arg2);
+    }
+    if (nr == SYS_RENAMEAT) {
+        return SyscallFs::renameat(arg0 as long, arg1, arg2 as long, arg3);
+    }
+    if (nr == SYS_RENAMEAT2) {
+        return SyscallFs::renameat(arg0 as long, arg1, arg2 as long, arg3);
+    }
+
+    // プロセス系
+    if (nr == SYS_GETTID) {
+        return SyscallProc::gettid();
+    }
+    if (nr == SYS_SIGALTSTACK) {
+        return SyscallProc::sigaltstack(arg0, arg1);
+    }
+    if (nr == SYS_FUTEX) {
+        return SyscallProc::futex(arg0, arg1, arg2, arg3, arg4, arg5);
+    }
+    if (nr == SYS_GETRUSAGE) {
+        return SyscallProc::getrusage(arg0, arg1);
+    }
+    if (nr == SYS_SYSINFO) {
+        return SyscallProc::sysinfo(arg0);
+    }
+    if (nr == SYS_GETTIMEOFDAY) {
+        return SyscallProc::gettimeofday(arg0, arg1);
+    }
+    if (nr == SYS_MADVISE) {
+        return SyscallProc::madvise(arg0, arg1, arg2);
+    }
+    if (nr == SYS_UMASK) {
+        return SyscallProc::umask(arg0);
+    }
+    if (nr == SYS_SCHED_YIELD) {
+        return SyscallProc::sched_yield();
+    }
+    if (nr == SYS_SCHED_GETAFFINITY) {
+        return SyscallProc::sched_getaffinity(arg0, arg1, arg2);
+    }
+
+    // --- stub syscall（動作に影響なし、0を返却）---
+    if (nr == SYS_SET_ROBUST_LIST) {
+        return 0;  // futex robust list（スレッド未対応のため無視）
+    }
+    if (nr == SYS_RSEQ) {
+        return 0;  // restartable sequences（未対応のため無視）
+    }
+    // fchmod/fchown/fchmodat/fchownat: パーミッション操作 (常に成功)
+    if (nr == SYS_FCHMOD || nr == SYS_FCHOWN || nr == SYS_FCHMODAT || nr == SYS_FCHOWNAT) {
+        return 0;
+    }
+    // faccessat2: faccessatに委譲
+    if (nr == SYS_FACCESSAT2) {
+        return SyscallFs::faccessat(arg0 as long, arg1, arg2, arg3);
+    }
+    // statx: newfstatat互換
+    if (nr == SYS_STATX) {
+        return SyscallFs::newfstatat(arg0 as long, arg1, arg3, arg2);
+    }
+    // close_range: FDクローズ（簡易: 無視）
+    if (nr == SYS_CLOSE_RANGE) {
+        return 0;
+    }
+    // clone3: clone委譲
+    if (nr == SYS_CLONE3) {
+        return SyscallFork::do_fork(0);
+    }
+
+    // --- Milestone 5: stub syscall ---
+    if (nr == SYS_SELECT) {
+        return 0;  // stub: 即座に0イベントを返す
+    }
+    if (nr == SYS_SETPGID) {
+        return 0;  // stub: 常に成功
+    }
+    if (nr == SYS_GETPGID || nr == SYS_GETPGRP) {
+        return Syscall::getpid();  // stub: PIDをPGIDとして返す
+    }
+    if (nr == SYS_SETSID) {
+        return Syscall::getpid();  // stub: PIDをSIDとして返す
+    }
+    if (nr == SYS_FTRUNCATE) {
+        // ftruncate(fd, length) — length=0の場合はtruncate
+        ulong ft_fs = FdTable::get_fs_type(arg0 as long);
+        if (ft_fs == FS_RAMFS) {
+            Ino ft_ino = FdTable::get_ino(arg0 as long);
+            RamFs::truncate(ft_ino);
+            return 0;
+        }
+        return 0;  // 9pFS等は成功として返す
+    }
+
+    // --- Milestone 7: Homebrew依存ツール対応 ---
+    if (nr == SYS_SYMLINK) {
+        return SyscallFs::symlinkat(arg0, AT_FDCWD, arg1);
+    }
+    if (nr == SYS_SYMLINKAT) {
+        return SyscallFs::symlinkat(arg0, arg1 as long, arg2);
+    }
+    if (nr == SYS_LINK) {
+        return SyscallFs::linkat(AT_FDCWD, arg0, AT_FDCWD, arg1, 0);
+    }
+    if (nr == SYS_LINKAT) {
+        return SyscallFs::linkat(arg0 as long, arg1, arg2 as long, arg3, arg4);
+    }
+    if (nr == SYS_UTIMENSAT) {
+        return SyscallFs::utimensat(arg0 as long, arg1, arg2, arg3);
+    }
+    if (nr == SYS_TRUNCATE) {
+        return SyscallFs::truncate(arg0, arg1);
+    }
+    if (nr == SYS_FALLOCATE) {
+        return SyscallFs::fallocate(arg0, arg1, arg2, arg3);
+    }
+    if (nr == SYS_TGKILL) {
+        // tgkill(tgid, tid, sig) → kill(tid, sig)
+        return Syscall::kill(arg1, arg2);
+    }
+    if (nr == SYS_GETRLIMIT) {
+        return SyscallProc::prlimit64(0, arg0, 0, arg1);
+    }
+    if (nr == SYS_SETRLIMIT) {
+        return SyscallProc::prlimit64(0, arg0, arg1, 0);
+    }
+    if (nr == SYS_TIMES) {
+        // struct tms をゼロクリア
+        if (arg0 != 0) {
+            memzero(arg0 as void*, 32);
+        }
+        return 0;  // clock ticks
+    }
+    if (nr == SYS_MREMAP) {
+        // mremap(old_addr, old_size, new_size, flags, [new_addr])
+        // arg0=old_addr, arg1=old_size, arg2=new_size, arg3=flags
+        ulong old_addr = arg0;
+        ulong old_size = arg1;
+        ulong new_size = arg2;
+        ulong flags = arg3;
+
+        // サイズ縮小: 旧アドレスをそのまま返す
+        if (new_size <= old_size) {
+            return old_addr as long;
+        }
+
+        // MREMAP_MAYMOVE(1): 新領域をmmap→データコピー→旧領域munmap
+        ulong new_addr = Mmap::do_mmap(0, new_size, 7, 0x22);  // PROT_RWX, MAP_ANON|MAP_PRIVATE
+        if (new_addr == MAP_FAILED) { return 0 - ENOMEM; }
+
+        // データコピー (old_size バイト)
+        ulong ci = 0;
+        while (ci < old_size) {
+            ulong byte = 0;
+            ulong src = old_addr + ci;
+            __asm__(`movq ${r:src}, %rdi; xorq %rax,%rax; movb (%rdi),%al; movq %rax, ${=r:byte}`);
+            ulong dst = new_addr + ci;
+            __asm__(`movq ${r:dst}, %rdi; movq ${r:byte}, %rax; movb %al, (%rdi)`);
+            ci = ci + 1;
+        }
+
+        // 旧領域を解放
+        Result<long, long> umr = Mmap::do_munmap(old_addr, old_size);
+        match (umr) {
+            Result::Ok(n) => {}
+            Result::Err(e) => {}
+        }
+
+        return new_addr as long;
+    }
+    // mkdir / rmdir / unlink (古いsyscall)
+    if (nr == SYS_MKDIR) {
+        return SyscallFs::mkdirat(AT_FDCWD, arg0, arg1);
+    }
+    if (nr == SYS_RMDIR) {
+        return SyscallFs::unlinkat(AT_FDCWD, arg0, 0x200);
+    }
+    if (nr == SYS_UNLINK) {
+        return SyscallFs::unlinkat(AT_FDCWD, arg0, 0);
+    }
+
+    // --- Milestone 9: Homebrew — bash/Git/Ruby対応 ---
+
+    // rt_sigreturn: シグナルハンドラからの復帰
+    // 現状シグナルハンドラを実際にディスパッチしないためno-op
+    if (nr == SYS_RT_SIGRETURN) {
+        return 0;
+    }
+    // getdents: 旧式ディレクトリ読み取り → getdents64に委譲
+    if (nr == SYS_GETDENTS) {
+        return SyscallFs::getdents64(arg0, arg1, arg2);
+    }
+    // setitimer: インターバルタイマー設定 (stub)
+    if (nr == SYS_SETITIMER) {
+        // old_valueに現在のタイマー値を返す（ゼロクリア）
+        if (arg2 != 0) {
+            memzero(arg2 as void*, 32);  // struct itimerval = 32バイト
+        }
+        return 0;
+    }
+    // getitimer: インターバルタイマー取得 (stub)
+    if (nr == SYS_GETITIMER) {
+        if (arg1 != 0) {
+            memzero(arg1 as void*, 32);
+        }
+        return 0;
+    }
+    // alarm: シグナルアラーム (stub: 残り0秒を返す)
+    if (nr == SYS_ALARM) {
+        return 0;
+    }
+    // flock: ファイルロック (stub: 常に成功)
+    if (nr == SYS_FLOCK) {
+        return 0;
+    }
+    // chmod / chown / lchown (古いsyscall)
+    if (nr == SYS_CHMOD) {
+        return 0;  // 常に成功
+    }
+    if (nr == SYS_CHOWN || nr == SYS_LCHOWN) {
+        return 0;  // 常に成功
+    }
+    // rename (古いsyscall) → renameat委譲
+    if (nr == SYS_RENAME) {
+        return SyscallFs::renameat(AT_FDCWD, arg0, AT_FDCWD, arg1);
+    }
+    // sendmsg / recvmsg (stub: 未サポート → EOPNOTSUPP)
+    if (nr == SYS_SENDMSG) {
+        return 0 - EOPNOTSUPP;
+    }
+    if (nr == SYS_RECVMSG) {
+        return 0 - EOPNOTSUPP;
+    }
+    // getgroups / setgroups (stub)
+    if (nr == SYS_GETGROUPS) {
+        return 0;  // 0グループ
+    }
+    if (nr == SYS_SETGROUPS) {
+        return 0;
+    }
+    // setuid / setgid (root固定なので常に成功)
+    if (nr == SYS_SETUID || nr == SYS_SETGID) {
+        return 0;
+    }
+    // getsid: セッションID取得
+    if (nr == SYS_GETSID) {
+        return Syscall::getpid();  // PIDをSIDとして返す
+    }
+    // mincore: メモリページ状態 (stub: 全てレジデント)
+    if (nr == SYS_MINCORE) {
+        if (arg2 != 0) {
+            ulong pages = (arg1 + 4095) / 4096;
+            ulong mi = 0;
+            while (mi < pages) {
+                Mem::write_byte(arg2 + mi, 1);  // レジデントフラグ
+                mi = mi + 1;
+            }
+        }
+        return 0;
+    }
+    // clock_getres: クロック解像度
+    if (nr == SYS_CLOCK_GETRES) {
+        if (arg1 != 0) {
+            ulong* res_sec = arg1 as ulong*;
+            ulong* res_nsec = (arg1 + 8) as ulong*;
+            *res_sec = 0;
+            *res_nsec = 10000000;  // 10ms解像度 (100Hz PIT)
+        }
+        return 0;
+    }
+
+    // readlink / readlinkat: シンボリックリンク読み取り
+    if (nr == 89 || nr == SYS_READLINKAT) {
+        // stub: /proc/self/exe → "gcc" (実行パス名を返す)
+        ulong path_addr = arg0;
+        if (nr == SYS_READLINKAT) { path_addr = arg1; }
+        ulong out_buf = arg1;
+        ulong out_size = arg2;
+        if (nr == SYS_READLINKAT) { out_buf = arg2; out_size = arg3; }
+        // "gcc" を返却 (4バイト)
+        if (out_size >= 3) {
+            Mem::write_byte(out_buf, 103);     // 'g'
+            Mem::write_byte(out_buf + 1, 99);  // 'c'
+            Mem::write_byte(out_buf + 2, 99);  // 'c'
+            return 3;                          // 書き込んだバイト数
+        }
+        return 0 - EINVAL;
+    }
+
+    // 未実装syscall（デバッグログ出力）
+    SerialPort serial_dbg(COM1);
+    serial_dbg.puts("[WARN] unimplemented syscall: nr=" as void*);
+    print_dec(&serial_dbg, nr);
+    serial_dbg.puts(" arg0=0x" as void*);
+    serial_dbg.print_hex(arg0);
+    serial_dbg.puts(" arg1=0x" as void*);
+    serial_dbg.print_hex(arg1);
+    serial_dbg.println("" as void*);
+    return (0 - ENOSYS);
+}
+
+/// syscall ASMスタブ（Linux entry_SYSCALL_64 準拠）
+/// 参照: linux/arch/x86/entry/entry_64.S
+///
+/// syscall命令実行時:
+///   RCX = ユーザーRIP（戻りアドレス）
+///   R11 = ユーザーRFLAGS
+///   RAX = syscall番号
+///   RDI, RSI, RDX, R10, R8, R9 = 引数0-5
+///
+/// Cm ABI (x86_64 SysV): RDI, RSI, RDX, RCX, R8, R9
+export void syscall_entry_stub() {
+    __asm__(`
+        // === RSP切り替え: ユーザーRSP → カーネルRSP ===
+        movq %rsp, 0x96008;  // SYSCALL_USER_RSP = user RSP
+        movq 0x96000, %rsp;  // カーネルRSP → RSP
+
+        // === ユーザーレジスタ全保存 ===
+        // sysretqで復帰するもの: RCX(RIP), R11(RFLAGS)
+        // カーネルが保存・復帰する義務があるもの: RDI,RSI,RDX,R10,R8,R9,RBX,RBP,R12-R15
+        pushq %rcx;  // [0] RIP
+        pushq %r11;  // [1] RFLAGS
+        pushq %rdi;  // [2] ユーザーRDI
+        pushq %rsi;  // [3] ユーザーRSI
+        pushq %rdx;  // [4] ユーザーRDX
+        pushq %r10;  // [5] ユーザーR10
+        pushq %r8;   // [6] ユーザーR8
+        pushq %r9;   // [7] ユーザーR9
+        pushq %rbx;  // [8] ユーザーRBX
+        pushq %rbp;  // [9] ユーザーRBP
+        pushq %r12;  // [10] ユーザーR12
+        pushq %r13;  // [11] ユーザーR13
+        pushq %r14;  // [12] ユーザーR14
+        pushq %r15;  // [13] ユーザーR15
+        pushq %rax;  // [14] syscall番号
+
+        // === syscall_handler呼び出し準備 ===
+        // Cm ABI: syscall_handler(nr, arg0, arg1, arg2, arg3, arg4, arg5)
+        //   RDI=nr, RSI=arg0, RDX=arg1, RCX=arg2, R8=arg3, R9=arg4, stack=arg5
+        // Linux ABI: RAX=nr, RDI=a0, RSI=a1, RDX=a2, R10=a3, R8=a4, R9=a5
+
+        // スタック上の保存値を参照してCm ABI引数を構築
+        // RSP+0 = RAX(nr), RSP+8 = R15, RSP+16 = R14, ...
+        // pushq順序: RCX, R11, RDI, RSI, RDX, R10, R8, R9, RBX, RBP, R12, R13, R14, R15, RAX
+        // → RSP+0=RAX, RSP+8=R15, RSP+16=R14, RSP+24=R13, RSP+32=R12,
+        //   RSP+40=RBP, RSP+48=RBX, RSP+56=R9, RSP+64=R8, RSP+72=R10,
+        //   RSP+80=RDX, RSP+88=RSI, RSP+96=RDI, RSP+104=R11, RSP+112=RCX
+
+        movq (%rsp), %rdi;    // nr = RAX (syscall番号)
+        movq 96(%rsp), %rsi;  // arg0 = ユーザーRDI
+        movq 88(%rsp), %rdx;  // arg1 = ユーザーRSI
+        movq 80(%rsp), %rcx;  // arg2 = ユーザーRDX
+        movq 72(%rsp), %r8;   // arg3 = ユーザーR10
+        movq 64(%rsp), %r9;   // arg4 = ユーザーR8
+        pushq 56(%rsp);       // arg5 = ユーザーR9 → スタック
+
+        // 16バイトアラインメント（arg5 push後、合計16push = 128バイト = 16の倍数）
+        // push arg5で+8 → 合計15*8+8 = 128 → aligned
+
+        call syscall_handler;
+
+        addq $$8, %rsp;  // arg5 pop
+
+        // === RAX = 戻り値（保持） ===
+
+        // === ユーザーレジスタ全復帰 ===
+        addq $$8, %rsp;  // RAX(syscall番号)をスキップ
+        popq %r15;
+        popq %r14;
+        popq %r13;
+        popq %r12;
+        popq %rbp;
+        popq %rbx;
+        popq %r9;
+        popq %r8;
+        popq %r10;
+        popq %rdx;
+        popq %rsi;
+        popq %rdi;
+        popq %r11;  // RFLAGS
+        popq %rcx;  // RIP
+
+        // === RSP復帰 ===
+        movq %rsp, 0x96000;  // カーネルRSPを保存
+        movq 0x96008, %rsp;  // ユーザーRSPを復元
+
+        sysretq
+    `);
+}
+
+// 互換ラッパー
+export void syscall_init(SerialPort* w) { Syscall::setup(w); }

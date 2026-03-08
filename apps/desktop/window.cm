@@ -1,0 +1,257 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::window - macOS風ウィンドウ
+//
+// タイトルバー + 信号機ボタン + コンテンツ領域。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ./menubar;
+import ../../include/color;
+
+// ============================================================
+// ウィンドウ定数
+// ============================================================
+
+/// タイトルバー高さ
+export const ulong TITLEBAR_HEIGHT = 28;
+/// ボタン半径
+const ulong BTN_RADIUS = 6;
+/// ボタン間隔
+const ulong BTN_SPACING = 20;
+/// 最大ウィンドウ数
+export const ulong MAX_WINDOWS = 8;
+
+/// ボタンヒットテスト結果
+export const ulong WIN_BTN_NONE     = 0;
+export const ulong WIN_BTN_CLOSE    = 1;
+export const ulong WIN_BTN_MINIMIZE = 2;
+export const ulong WIN_BTN_MAXIMIZE = 3;
+
+/// コンテンツタイプ
+export const ulong CONTENT_EMPTY    = 0;
+export const ulong CONTENT_TERMINAL = 1;
+
+/// ウィンドウ状態格納アドレス
+const PhysAddr WIN_STATE_ADDR = 0xD81000;
+
+/// ウィンドウ状態オフセット定数
+const ulong WIN_OFF_X         = 0x00;
+const ulong WIN_OFF_Y         = 0x08;
+const ulong WIN_OFF_W         = 0x10;
+const ulong WIN_OFF_H         = 0x18;
+const ulong WIN_OFF_VISIBLE   = 0x20;
+const ulong WIN_OFF_TITLE     = 0x28;
+const ulong WIN_OFF_CONTENT   = 0x30;
+const ulong WIN_OFF_Z         = 0x38;
+const ulong WIN_OFF_PREV_X    = 0x40;
+const ulong WIN_OFF_PREV_Y    = 0x48;
+const ulong WIN_OFF_PREV_W    = 0x50;
+const ulong WIN_OFF_PREV_H    = 0x58;
+const ulong WIN_OFF_MAXIMIZED = 0x60;
+/// Window — ウィンドウ構造体アクセサ
+export struct Window {}
+
+impl Window {
+    /// ウィンドウ取得（インデックス）
+    static ulong base(ulong idx) {
+        return WIN_STATE_ADDR + idx * 128;
+    }
+
+    /// ウィンドウ作成
+    static ulong create(ulong x, ulong y, ulong w, ulong h, void* title, ulong content_type) {
+        // 空きスロット検索
+        ulong i = 0;
+        while (i < MAX_WINDOWS) {
+            ulong b = Window::base(i);
+            ulong* vis = (b + WIN_OFF_VISIBLE) as ulong*;
+            if (*vis == 0) {
+                ulong* wx = (b + WIN_OFF_X) as ulong*;
+                ulong* wy = (b + WIN_OFF_Y) as ulong*;
+                ulong* ww = (b + WIN_OFF_W) as ulong*;
+                ulong* wh = (b + WIN_OFF_H) as ulong*;
+                ulong* wt = (b + WIN_OFF_TITLE) as ulong*;
+                ulong* wc = (b + WIN_OFF_CONTENT) as ulong*;
+                ulong* wz = (b + WIN_OFF_Z) as ulong*;
+
+                *wx = x;
+                *wy = y;
+                *ww = w;
+                *wh = h;
+                *vis = 1;
+                *wt = title as ulong;
+                *wc = content_type;
+                *wz = i;
+
+                return i;
+            }
+            i = i + 1;
+        }
+        return 0xFFFFFFFF;  // 空きなし
+    }
+
+    /// ウィンドウ描画
+    static void draw(ulong idx) {
+        ulong b = Window::base(idx);
+        ulong* vis = (b + WIN_OFF_VISIBLE) as ulong*;
+        if (*vis == 0) { return; }
+
+        ulong* wx = (b + WIN_OFF_X) as ulong*;
+        ulong* wy = (b + WIN_OFF_Y) as ulong*;
+        ulong* ww = (b + WIN_OFF_W) as ulong*;
+        ulong* wh = (b + WIN_OFF_H) as ulong*;
+        ulong* wt = (b + WIN_OFF_TITLE) as ulong*;
+
+        ulong x = *wx;
+        ulong y = *wy;
+        ulong w = *ww;
+        ulong h = *wh;
+
+        // 影 (右下に2pxオフセット)
+        Fb::fill_rect(x + 3, y + 3, w, h, WINDOW_SHADOW_COLOR);
+
+        // ウィンドウ枠
+        Fb::fill_rect(x, y, w, h, WINDOW_BORDER_COLOR);
+
+        // タイトルバー
+        Fb::fill_rect(x + 1, y + 1, w - 2, TITLEBAR_HEIGHT, TITLEBAR_BG_COLOR);
+
+        // 信号機ボタン (赤・黄・緑)
+        ulong btn_y = y + TITLEBAR_HEIGHT / 2;
+        Fb::fill_circle(x + 16, btn_y, BTN_RADIUS, BTN_CLOSE_COLOR);
+        Fb::fill_circle(x + 16 + BTN_SPACING, btn_y, BTN_RADIUS, BTN_MIN_COLOR);
+        Fb::fill_circle(x + 16 + BTN_SPACING * 2, btn_y, BTN_RADIUS, BTN_MAX_COLOR);
+
+        // タイトル (中央寄せ)
+        ulong title_addr = *wt;
+        if (title_addr != 0) {
+            // タイトル文字列長を計算
+            ulong len = 0;
+            ulong check = title_addr;
+            while (true) {
+                ulong ch = 0;
+                __asm__(`
+                    movq ${r:check}, %rdi;
+                    xorq %rax, %rax;
+                    movb (%rdi), %al;
+                    movq %rax, ${=r:ch}
+                `);
+                if (ch == 0) { break; }
+                len = len + 1;
+                check = check + 1;
+            }
+            ulong title_pixel_w = len * FONT_W;
+            ulong title_x = x + (w - title_pixel_w) / 2;
+            Font::draw_string(title_x, y + 6, title_addr as void*, TITLEBAR_FG_COLOR, TITLEBAR_BG_COLOR);
+        }
+
+        // コンテンツ領域
+        ulong* wc = (b + WIN_OFF_CONTENT) as ulong*;
+        ulong content_bg = WINDOW_BG_COLOR;
+        if (*wc == CONTENT_TERMINAL) { content_bg = COLOR_BLACK; }
+        Fb::fill_rect(x + 1, y + TITLEBAR_HEIGHT + 1, w - 2, h - TITLEBAR_HEIGHT - 2, content_bg);
+    }
+
+    /// ウィンドウ移動
+    static void move_to(ulong idx, ulong x, ulong y) {
+        ulong b = Window::base(idx);
+        ulong* wx = (b + WIN_OFF_X) as ulong*;
+        ulong* wy = (b + WIN_OFF_Y) as ulong*;
+        *wx = x;
+        *wy = y;
+    }
+
+    /// ウィンドウ閉じる
+    static void close(ulong idx) {
+        ulong b = Window::base(idx);
+        ulong* vis = (b + WIN_OFF_VISIBLE) as ulong*;
+        *vis = 0;
+    }
+
+    /// ウィンドウ情報取得
+    static ulong get_x(ulong idx) { ulong* p = (Window::base(idx) + WIN_OFF_X) as ulong*; return *p; }
+    static ulong get_y(ulong idx) { ulong* p = (Window::base(idx) + WIN_OFF_Y) as ulong*; return *p; }
+    static ulong get_w(ulong idx) { ulong* p = (Window::base(idx) + WIN_OFF_W) as ulong*; return *p; }
+    static ulong get_h(ulong idx) { ulong* p = (Window::base(idx) + WIN_OFF_H) as ulong*; return *p; }
+    static ulong is_visible(ulong idx) { ulong* p = (Window::base(idx) + WIN_OFF_VISIBLE) as ulong*; return *p; }
+    static ulong get_content_type(ulong idx) { ulong* p = (Window::base(idx) + WIN_OFF_CONTENT) as ulong*; return *p; }
+    static ulong is_maximized(ulong idx) { ulong* p = (Window::base(idx) + WIN_OFF_MAXIMIZED) as ulong*; return *p; }
+
+    /// ウィンドウ内のボタンクリック判定
+    /// 戻り値: 0=なし, 1=閉じる, 2=縮小, 3=全画面
+    static ulong hit_button(ulong idx, ulong mx, ulong my) {
+        ulong x = Window::get_x(idx);
+        ulong y = Window::get_y(idx);
+        ulong w = Window::get_w(idx);
+        ulong btn_y = y + TITLEBAR_HEIGHT / 2;
+
+        // タイトルバー内かチェック
+        if (my < y || my > y + TITLEBAR_HEIGHT) { return WIN_BTN_NONE; }
+        if (mx < x || mx > x + w) { return WIN_BTN_NONE; }
+
+        // 赤ボタン (閉じる) — x+16
+        ulong bx1 = x + 16;
+        if (mx >= bx1 - BTN_RADIUS && mx <= bx1 + BTN_RADIUS &&
+            my >= btn_y - BTN_RADIUS && my <= btn_y + BTN_RADIUS) {
+            return WIN_BTN_CLOSE;
+        }
+        // 黄ボタン (縮小) — x+36
+        ulong bx2 = x + 16 + BTN_SPACING;
+        if (mx >= bx2 - BTN_RADIUS && mx <= bx2 + BTN_RADIUS &&
+            my >= btn_y - BTN_RADIUS && my <= btn_y + BTN_RADIUS) {
+            return WIN_BTN_MINIMIZE;
+        }
+        // 緑ボタン (全画面) — x+56
+        ulong bx3 = x + 16 + BTN_SPACING * 2;
+        if (mx >= bx3 - BTN_RADIUS && mx <= bx3 + BTN_RADIUS &&
+            my >= btn_y - BTN_RADIUS && my <= btn_y + BTN_RADIUS) {
+            return WIN_BTN_MAXIMIZE;
+        }
+        return WIN_BTN_NONE;
+    }
+
+    /// 全画面切り替え
+    static void toggle_maximize(ulong idx) {
+        ulong b = Window::base(idx);
+        ulong* maximized = (b + WIN_OFF_MAXIMIZED) as ulong*;
+
+        if (*maximized == 0) {
+            // 現在の位置/サイズを保存
+            ulong* px = (b + WIN_OFF_PREV_X) as ulong*;
+            ulong* py = (b + WIN_OFF_PREV_Y) as ulong*;
+            ulong* pw = (b + WIN_OFF_PREV_W) as ulong*;
+            ulong* ph = (b + WIN_OFF_PREV_H) as ulong*;
+            *px = Window::get_x(idx);
+            *py = Window::get_y(idx);
+            *pw = Window::get_w(idx);
+            *ph = Window::get_h(idx);
+
+            // 全画面化（メニューバーの下から）
+            ulong* wx = (b + WIN_OFF_X) as ulong*;
+            ulong* wy = (b + WIN_OFF_Y) as ulong*;
+            ulong* ww = (b + WIN_OFF_W) as ulong*;
+            ulong* wh = (b + WIN_OFF_H) as ulong*;
+            *wx = 0;
+            *wy = MENUBAR_HEIGHT;
+            *ww = Fb::width();
+            *wh = Fb::height() - MENUBAR_HEIGHT;
+            *maximized = 1;
+        } else {
+            // 元の位置/サイズに復元
+            ulong* px = (b + WIN_OFF_PREV_X) as ulong*;
+            ulong* py = (b + WIN_OFF_PREV_Y) as ulong*;
+            ulong* pw = (b + WIN_OFF_PREV_W) as ulong*;
+            ulong* ph = (b + WIN_OFF_PREV_H) as ulong*;
+            ulong* wx = (b + WIN_OFF_X) as ulong*;
+            ulong* wy = (b + WIN_OFF_Y) as ulong*;
+            ulong* ww = (b + WIN_OFF_W) as ulong*;
+            ulong* wh = (b + WIN_OFF_H) as ulong*;
+            *wx = *px;
+            *wy = *py;
+            *ww = *pw;
+            *wh = *ph;
+            *maximized = 0;
+        }
+    }
+}

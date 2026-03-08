@@ -1,0 +1,277 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::http - HTTP/1.1 プロトコル
+//
+// HTTPリクエスト/レスポンスの解析と構築。
+// 参照: RFC 2616
+
+import ../../include/types;
+import ../../include/keycode;
+import ../../lib/kstring;
+import ../../apps/terminal/shell/util;
+
+// ============================================================
+// HTTP 定数
+// ============================================================
+
+// HTTPメソッド
+export enum HttpMethod {
+    Unknown = 0,
+    Get,
+    Post,
+    Put,
+    Delete,
+    Head
+}
+
+// HTTPステータスコード
+export enum HttpStatus {
+    OK              = 200,
+    Created         = 201,
+    NoContent       = 204,
+    MovedPermanently = 301,
+    BadRequest      = 400,
+    Forbidden       = 403,
+    NotFound        = 404,
+    MethodNotAllowed = 405,
+    InternalError   = 500
+}
+
+// Content-Type
+export enum ContentType {
+    TextPlain = 0,
+    TextHtml,
+    ApplicationJson
+}
+
+// 後方互換: 既存コードで使用されるconst定数
+export const ulong HTTP_GET    = 1;
+export const ulong HTTP_POST   = 2;
+export const ulong HTTP_PUT    = 3;
+export const ulong HTTP_DELETE = 4;
+export const ulong HTTP_HEAD   = 5;
+
+export const ulong HTTP_200_OK          = 200;
+export const ulong HTTP_201_CREATED     = 201;
+export const ulong HTTP_204_NO_CONTENT  = 204;
+export const ulong HTTP_301_MOVED       = 301;
+export const ulong HTTP_400_BAD_REQUEST = 400;
+export const ulong HTTP_403_FORBIDDEN   = 403;
+export const ulong HTTP_404_NOT_FOUND   = 404;
+export const ulong HTTP_405_NOT_ALLOWED = 405;
+export const ulong HTTP_500_SERVER_ERROR= 500;
+
+// ============================================================
+// HTTP リクエスト/レスポンス
+// ============================================================
+
+/// HTTPリクエスト構造体
+export struct HttpRequest {
+    ulong method;       // HTTP_GET 等
+    ulong path_addr;    // パス文字列アドレス
+    ulong path_len;     // パス長
+    ulong body_addr;    // ボディアドレス
+    ulong body_len;     // ボディ長
+    ulong content_len;  // Content-Length ヘッダ値
+    ulong valid;        // パース成功フラグ
+    ulong padding;
+}
+
+/// HTTPレスポンス構造体
+export struct HttpResponse {
+    ulong status;        // ステータスコード
+    ulong body_addr;     // ボディアドレス
+    ulong body_len;      // ボディ長
+    ulong content_type;  // ContentType enum値
+    ulong padding1;
+    ulong padding2;
+    ulong padding3;
+    ulong padding4;
+}
+
+// ============================================================
+// HTTP パーサ/ビルダ
+// ============================================================
+
+/// HTTPバッファ領域
+const ulong HTTP_PATH_BUF = 0x1960000;  // パス用256バイト
+const ulong HTTP_RESP_BUF = 0x1961000;  // レスポンス用4096バイト
+
+export struct Http {}
+
+impl Http {
+    /// HTTPリクエストを解析
+    static void parse_request(ulong data, ulong len, HttpRequest* req) {
+        *req = {
+            method: 0,
+            path_addr: HTTP_PATH_BUF,
+            path_len: 0,
+            body_addr: 0,
+            body_len: 0,
+            content_len: 0,
+            valid: 0,
+            padding: 0
+        };
+
+        if (data == 0) { return; }
+        if (len < 5) { return; }
+
+        // メソッド解析: 文字列比較
+        ulong method_len = 0;
+        if (startswith(data as void*, "GET " as void*) != 0) {
+            req->method = HTTP_GET;
+            method_len = 4;
+        } else if (startswith(data as void*, "POST " as void*) != 0) {
+            req->method = HTTP_POST;
+            method_len = 5;
+        } else if (startswith(data as void*, "PUT " as void*) != 0) {
+            req->method = HTTP_PUT;
+            method_len = 4;
+        } else if (startswith(data as void*, "DELETE " as void*) != 0) {
+            req->method = HTTP_DELETE;
+            method_len = 7;
+        } else if (startswith(data as void*, "HEAD " as void*) != 0) {
+            req->method = HTTP_HEAD;
+            method_len = 5;
+        }
+
+        if (method_len == 0) { return; }
+
+        // パス解析: スペース/CR/LFまで読む
+        ulong pi = method_len;
+        ulong path_start = pi;
+        while (pi < len) {
+            ulong ch = Mem::read_byte(data + pi);
+            if (ch == Key::Space as ulong ||
+                ch == Key::CR as ulong ||
+                ch == Key::Enter as ulong) {
+                break;
+            }
+            ulong idx = pi - path_start;
+            if (idx < 255) {
+                Mem::write_byte(HTTP_PATH_BUF + idx, ch);
+            }
+            pi = pi + 1;
+        }
+        req->path_len = pi - path_start;
+        Mem::write_byte(HTTP_PATH_BUF + req->path_len, 0);
+
+        // ボディを探す: \r\n\r\n の後
+        ulong i = pi;
+        while (i + 3 < len) {
+            if (Mem::read_byte(data + i) == Key::CR as ulong &&
+                Mem::read_byte(data + i + 1) == Key::Enter as ulong &&
+                Mem::read_byte(data + i + 2) == Key::CR as ulong &&
+                Mem::read_byte(data + i + 3) == Key::Enter as ulong) {
+                req->body_addr = data + i + 4;
+                req->body_len = len - (i + 4);
+                break;
+            }
+            i = i + 1;
+        }
+
+        req->valid = 1;
+    }
+
+    /// CRLFをバッファに書き込む
+    static ulong write_crlf(ulong buf, ulong pos) {
+        Mem::write_byte(buf + pos, Key::CR as ulong);
+        Mem::write_byte(buf + pos + 1, Key::Enter as ulong);
+        return pos + 2;
+    }
+
+    /// HTTPレスポンスを構築
+    static ulong build_response(ulong buf, HttpResponse* resp) {
+        if (buf == 0) { return 0; }
+
+        ulong pos = 0;
+
+        // ステータス行
+        pos = Http::write_str(buf, pos, "HTTP/1.1 " as void*, 9);
+
+        if (resp->status == HttpStatus::OK as ulong) {
+            pos = Http::write_str(buf, pos, "200 OK" as void*, 6);
+        } else if (resp->status == HttpStatus::Created as ulong) {
+            pos = Http::write_str(buf, pos, "201 Created" as void*, 11);
+        } else if (resp->status == HttpStatus::BadRequest as ulong) {
+            pos = Http::write_str(buf, pos, "400 Bad Request" as void*, 15);
+        } else if (resp->status == HttpStatus::NotFound as ulong) {
+            pos = Http::write_str(buf, pos, "404 Not Found" as void*, 13);
+        } else if (resp->status == HttpStatus::InternalError as ulong) {
+            pos = Http::write_str(buf, pos, "500 Internal Server Error" as void*, 25);
+        } else {
+            pos = Http::write_str(buf, pos, "200 OK" as void*, 6);
+        }
+        pos = Http::write_crlf(buf, pos);
+
+        // Content-Type
+        if (resp->content_type == ContentType::TextPlain as ulong) {
+            pos = Http::write_str(buf, pos, "Content-Type: text/plain" as void*, 24);
+        } else if (resp->content_type == ContentType::TextHtml as ulong) {
+            pos = Http::write_str(buf, pos, "Content-Type: text/html" as void*, 23);
+        } else if (resp->content_type == ContentType::ApplicationJson as ulong) {
+            pos = Http::write_str(buf, pos, "Content-Type: application/json" as void*, 30);
+        }
+        pos = Http::write_crlf(buf, pos);
+
+        // Content-Length
+        pos = Http::write_str(buf, pos, "Content-Length: " as void*, 16);
+        pos = Http::write_ulong(buf, pos, resp->body_len);
+        pos = Http::write_crlf(buf, pos);
+
+        // Connection: close
+        pos = Http::write_str(buf, pos, "Connection: close" as void*, 17);
+        pos = Http::write_crlf(buf, pos);
+
+        // 空行 (ヘッダ終了)
+        pos = Http::write_crlf(buf, pos);
+
+        // ボディ
+        if (resp->body_len > 0) {
+            ulong i = 0;
+            while (i < resp->body_len) {
+                Mem::write_byte(buf + pos, Mem::read_byte(resp->body_addr + i));
+                pos = pos + 1;
+                i = i + 1;
+            }
+        }
+
+        return pos;
+    }
+
+    /// 文字列をバッファに書き込む
+    static ulong write_str(ulong buf, ulong pos, void* str, ulong len) {
+        ulong src = str as ulong;
+        ulong i = 0;
+        while (i < len) {
+            Mem::write_byte(buf + pos + i, Mem::read_byte(src + i));
+            i = i + 1;
+        }
+        return pos + len;
+    }
+
+    /// 数値をASCII文字列として書き込む
+    static ulong write_ulong(ulong buf, ulong pos, ulong val) {
+        if (val == 0) {
+            Mem::write_byte(buf + pos, Ascii::Digit0 as ulong);
+            return pos + 1;
+        }
+
+        ulong tmp = HTTP_TMP_BUF;
+        ulong digits = 0;
+        ulong v = val;
+        while (v > 0) {
+            ulong d = v % 10;
+            Mem::write_byte(tmp + digits, Ascii::Digit0 as ulong + d);
+            digits = digits + 1;
+            v = v / 10;
+        }
+
+        ulong i = 0;
+        while (i < digits) {
+            Mem::write_byte(buf + pos + i, Mem::read_byte(tmp + (digits - 1 - i)));
+            i = i + 1;
+        }
+
+        return pos + digits;
+    }
+}

@@ -1,0 +1,131 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::input::test_input - Input (キーボード・マウス) テスト
+//
+// キーボードバッファ、PS/2コントローラCCB、PICマスク、マウスパケット状態を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../drivers/input/keyboard;
+import ../../drivers/input/mouse;
+import ../../lib/printk;
+import ../test_io;
+import ../ktest;
+import ../../apps/terminal/mem;
+
+/// Input テストスイート
+export struct TestInput {}
+
+impl TestInput {
+    /// キーボードバッファテスト
+    static void test_keyboard_buffer() {
+        ulong* head_ptr = 0x93040 as ulong*;
+        ulong* tail_ptr = 0x93048 as ulong*;
+        ulong old_head = *head_ptr;
+        ulong old_tail = *tail_ptr;
+
+        *head_ptr = 0;
+        *tail_ptr = 0;
+
+        ulong ch = Kbd::getchar();
+        KTest::assert_eq(ch, 0, "KBD empty buffer returns 0" as void*);
+
+        Mem::write_byte(0x93000, 65);
+        *tail_ptr = 1;
+        ch = Kbd::getchar();
+        KTest::assert_eq(ch, 65, "KBD read 'A' from buffer" as void*);
+
+        KTest::assert_eq(*head_ptr, *tail_ptr, "KBD buffer empty after read" as void*);
+
+        Mem::write_byte(0x93000, 72);
+        Mem::write_byte(0x93001, 105);
+        *head_ptr = 0;
+        *tail_ptr = 2;
+        ulong c1 = Kbd::getchar();
+        ulong c2 = Kbd::getchar();
+        KTest::assert_eq(c1, 72, "KBD multi-byte read[0]='H'" as void*);
+        KTest::assert_eq(c2, 105, "KBD multi-byte read[1]='i'" as void*);
+
+        *head_ptr = old_head;
+        *tail_ptr = old_tail;
+    }
+
+    /// PS/2コントローラCCBテスト
+    static void test_ccb() {
+        __asm__(`cli`);
+
+        ulong fi = 0;
+        while (fi < 16) {
+            ulong st = 0;
+            __asm__(`inb $$0x64, %al; movzbq %al, %rax; movq %rax, ${=r:st}`);
+            if ((st & 1) == 0) { break; }
+            __asm__(`inb $$0x60, %al`);
+            fi = fi + 1;
+        }
+
+        mouse_wait_input();
+        __asm__(`movb $$0x20, %al; outb %al, $$0x64`);
+        ulong ccb = mouse_read_data();
+
+        __asm__(`sti`);
+
+        KTest::assert_eq(ccb & 1, 1, "CCB bit0 IRQ1 enabled" as void*);
+        KTest::assert_eq(ccb & 2, 2, "CCB bit1 IRQ12 enabled" as void*);
+        KTest::assert_eq(ccb & 0x10, 0, "CCB bit4 kbd clock enabled" as void*);
+        KTest::assert_eq(ccb & 0x20, 0, "CCB bit5 aux clock enabled" as void*);
+    }
+
+    /// PICマスクテスト
+    static void test_pic_mask() {
+        ulong pic1_mask = 0;
+        __asm__(`inb $$0x21, %al; movzbq %al, %rax; movq %rax, ${=r:pic1_mask}`);
+        KTest::assert_eq(pic1_mask & 2, 0, "PIC1 IRQ1 unmasked" as void*);
+        KTest::assert_eq(pic1_mask & 4, 0, "PIC1 IRQ2 cascade unmasked" as void*);
+
+        ulong pic2_mask = 0;
+        __asm__(`inb $$0xA1, %al; movzbq %al, %rax; movq %rax, ${=r:pic2_mask}`);
+        KTest::assert_eq(pic2_mask & 0x10, 0, "PIC2 IRQ12 unmasked" as void*);
+    }
+
+    /// マウスパケット状態テスト
+    static void test_mouse_state() {
+        ulong* mouse_phase = 0x93310 as ulong*;
+        ulong* mouse_scroll = 0x93318 as ulong*;
+        ulong* mouse_devid = 0x93320 as ulong*;
+        ulong* mouse_pktsz = 0x93328 as ulong*;
+
+        ulong phase_val = *mouse_phase;
+        ulong phase_ok = 0;
+        if (phase_val < 4) { phase_ok = 1; }
+        KTest::assert_eq(phase_ok, 1, "Mouse phase in valid range (0-3)" as void*);
+        KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll initialized to 0" as void*);
+
+        ulong devid_val = *mouse_devid;
+        ulong devid_ok = 0;
+        if (devid_val == 0 || devid_val == 3 || devid_val == 4) { devid_ok = 1; }
+        KTest::assert_eq(devid_ok, 1, "Mouse device ID valid (0/3/4)" as void*);
+
+        ulong pktsz_val = *mouse_pktsz;
+        if (devid_val == 3 || devid_val == 4) {
+            KTest::assert_eq(pktsz_val, 4, "Mouse pktsz=4 (IntelliMouse)" as void*);
+        } else {
+            KTest::assert_eq(pktsz_val, 3, "Mouse pktsz=3 (standard)" as void*);
+        }
+
+        *mouse_scroll = 1;
+        long sv0 = Mouse::get_scroll();
+        KTest::assert_eq(sv0 as ulong, 0, "Mouse get_scroll below threshold returns 0" as void*);
+        *mouse_scroll = 2;
+        long sv = Mouse::get_scroll();
+        KTest::assert_eq(sv as ulong, 2, "Mouse get_scroll at threshold returns value" as void*);
+        KTest::assert_eq(*mouse_scroll as ulong, 0, "Mouse scroll reset after threshold read" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestInput::test_keyboard_buffer();
+        TestInput::test_ccb();
+        TestInput::test_pic_mask();
+        TestInput::test_mouse_state();
+    }
+}

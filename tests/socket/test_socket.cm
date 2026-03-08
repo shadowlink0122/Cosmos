@@ -1,0 +1,45 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::socket::test_socket - Socket テスト
+//
+// ソケットの作成・検証・クローズを検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/result;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../include/net;
+import ../../net/transport/socket;
+import ../test_io;
+import ../ktest;
+
+/// Socket テストスイート
+export struct TestSocket {}
+
+impl TestSocket {
+    /// ソケット作成テスト
+    static void test_create() {
+        Socket::setup();
+        long fd = 0;
+        Result<long, long> cr = Socket::create(AF_INET, SOCK_STREAM, 0);
+        match (cr) {
+            Result::Ok(id) => { fd = id; }
+            Result::Err(e) => { fd = 0 - e; }
+        }
+        ulong fd_ok = 0;
+        if (fd >= 0) { fd_ok = 1; }
+        KTest::assert_eq(fd_ok, 1, "Socket create" as void*);
+
+        ulong valid = Socket::is_valid(fd as ulong);
+        KTest::assert_eq(valid, 1, "Socket is_valid" as void*);
+
+        Socket::close(fd as ulong);
+        ulong after_close = Socket::is_valid(fd as ulong);
+        KTest::assert_eq(after_close, 0, "Socket closed" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestSocket::test_create();
+    }
+}

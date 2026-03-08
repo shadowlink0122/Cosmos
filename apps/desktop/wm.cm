@@ -1,0 +1,312 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::wm - ウィンドウマネージャ
+//
+// ウィンドウの描画順序管理と全画面再描画。
+// ウィンドウドラッグ移動、Dockクリック→アプリ起動。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ../../drivers/input/mouse;
+import ./desktop;
+import ./menubar;
+import ./window;
+import ./dock;
+import ../terminal/terminal;
+
+// ============================================================
+// ドラッグ状態アドレス
+// ============================================================
+const PhysAddr DRAG_STATE_ADDR = 0xD80A00;
+// レイアウト:
+//   0x00: dragging (8B) — 0=なし, 1=ドラッグ中
+//   0x08: drag_win (8B) — ドラッグ中ウィンドウID
+//   0x10: drag_ox  (8B) — ウィンドウ内オフセットX
+//   0x18: drag_oy  (8B) — ウィンドウ内オフセットY
+
+/// アクティブウィンドウ (最前面に描画)
+const PhysAddr ACTIVE_WIN_ADDR = 0xD80A20;
+// 0xFFFFFFFF = アクティブなし
+
+/// Wm — ウィンドウマネージャ
+export struct Wm {}
+
+impl Wm {
+    /// GUI環境初期化
+    static void init() {
+        // ウィンドウ状態をゼロクリア
+        ulong i = 0;
+        while (i < MAX_WINDOWS) {
+            ulong b = Window::base(i);
+            ulong j = 0;
+            while (j < 128) {
+                ulong addr = b + j;
+                ulong zero = 0;
+                __asm__(`
+                    movq ${r:addr}, %rdi;
+                    movq ${r:zero}, %rax;
+                    movb %al, (%rdi)
+                `);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        // ドラッグ状態初期化
+        ulong* drag = DRAG_STATE_ADDR as ulong*;
+        *drag = 0;
+
+        // アクティブウィンドウ初期化
+        ulong* aw = ACTIVE_WIN_ADDR as ulong*;
+        *aw = 0;
+    }
+
+    /// アクティブウィンドウを設定 (最前面描画)
+    static void set_active(ulong win_idx) {
+        ulong* aw = ACTIVE_WIN_ADDR as ulong*;
+        *aw = win_idx;
+    }
+
+    /// アクティブウィンドウを取得
+    static ulong get_active() {
+        ulong* aw = ACTIVE_WIN_ADDR as ulong*;
+        return *aw;
+    }
+
+    /// 全画面を再描画
+    static void compose() {
+
+        // 1. デスクトップ背景
+        Desktop::draw_background();
+
+        // 2. ウィンドウ（アクティブ以外を先に描画）
+        ulong active = Wm::get_active();
+        ulong i = 0;
+        while (i < MAX_WINDOWS) {
+            if (i != active && Window::is_visible(i) != 0) {
+                Window::draw(i);
+            }
+            i = i + 1;
+        }
+
+        // 3. アクティブウィンドウを最後に描画 (最前面)
+        if (active < MAX_WINDOWS && Window::is_visible(active) != 0) {
+            Window::draw(active);
+        }
+
+        // 4. ターミナル内容を再描画（テキストバッファから）
+        Terminal::redraw_all();
+
+        // 5. Dock（画面下部）
+        Dock::draw();
+
+        // 6. メニューバー（常に最前面）
+        MenuBar::draw();
+
+        // 7. バックバッファ → VRAM
+        Fb::flip();
+
+        // 8. カーソルをVRAMに直接描画
+        Desktop::draw_cursor_direct();
+    }
+
+    /// ターミナルウィンドウを作成
+    static ulong create_terminal() {
+        // config.cmの定数を使用 (Cmコンパイラの除算バグ回避)
+        return Window::create(DEFAULT_TERM_X, DEFAULT_TERM_Y, DEFAULT_TERM_W, DEFAULT_TERM_H, "Terminal" as void*, 1);
+    }
+
+    /// マウスイベント処理
+    static void process_mouse() {
+        if (Mouse::has_event() == 0) { return; }
+
+        long dx = Mouse::get_dx();
+        long dy = Mouse::get_dy();
+        ulong buttons = Mouse::get_buttons();
+
+        // カーソルが動いたか
+        ulong moved = 0;
+        if (dx != 0 || dy != 0) { moved = 1; }
+
+        if (moved != 0) {
+            // 旧カーソル位置を保存
+            ulong old_x = Desktop::cursor_x();
+            ulong old_y = Desktop::cursor_y();
+
+            // カーソル位置更新（PS/2はYが上向き正なので反転）
+            Desktop::move_cursor(dx, 0 - dy);
+
+            // 旧カーソル位置をバックバッファからVRAMに復元
+            Desktop::restore_cursor(old_x, old_y);
+
+            // ドラッグ中ならウィンドウを移動
+            ulong* drag_flag = DRAG_STATE_ADDR as ulong*;
+            if (*drag_flag != 0) {
+                ulong* drag_win_p = (DRAG_STATE_ADDR + 8) as ulong*;
+                ulong* drag_ox_p = (DRAG_STATE_ADDR + 0x10) as ulong*;
+                ulong* drag_oy_p = (DRAG_STATE_ADDR + 0x18) as ulong*;
+
+                ulong new_cx = Desktop::cursor_x();
+                ulong new_cy = Desktop::cursor_y();
+                ulong win_idx = *drag_win_p;
+
+                // ウィンドウ位置 = カーソル位置 - オフセット
+                ulong new_wx = 0;
+                ulong new_wy = 0;
+                if (new_cx >= *drag_ox_p) {
+                    new_wx = new_cx - *drag_ox_p;
+                }
+                if (new_cy >= *drag_oy_p) {
+                    new_wy = new_cy - *drag_oy_p;
+                }
+
+                Window::move_to(win_idx, new_wx, new_wy);
+                Wm::compose();
+            } else {
+                // 新カーソル位置をVRAMに直接描画
+                Desktop::draw_cursor_direct();
+            }
+        }
+
+        // ボタン状態管理
+        ulong* prev_btn = MOUSE_PREV_BTN_ADDR as ulong*;
+        ulong was_pressed = *prev_btn & 1;
+        ulong is_pressed = buttons & 1;
+        *prev_btn = buttons;
+
+        // 左ボタン離した → ドラッグ終了
+        if (was_pressed != 0 && is_pressed == 0) {
+            ulong* drag_flag = DRAG_STATE_ADDR as ulong*;
+            *drag_flag = 0;
+        }
+
+        // 左ボタン押した → ヒットテスト
+        if (is_pressed != 0 && was_pressed == 0) {
+            ulong mx = Desktop::cursor_x();
+            ulong my = Desktop::cursor_y();
+
+            // ウィンドウヒットテスト (Z順序: 前面優先)
+            // アクティブウィンドウを最初にテスト（最前面に描画されているため）
+            ulong handled = 0;
+            ulong active = Wm::get_active();
+
+            // ヒットテスト対象の順序を構築: アクティブ → 他(逆順)
+            // 最大MAX_WINDOWS=8 なので固定配列で十分
+            ulong[8] test_order;
+            ulong test_count = 0;
+
+            // アクティブウィンドウを最初に
+            if (active < MAX_WINDOWS && Window::is_visible(active) != 0) {
+                test_order[test_count] = active;
+                test_count = test_count + 1;
+            }
+            // 他のウィンドウ（逆順 = 後に作成されたものが手前）
+            ulong ri = MAX_WINDOWS;
+            while (ri > 0) {
+                ri = ri - 1;
+                if (ri != active && Window::is_visible(ri) != 0) {
+                    test_order[test_count] = ri;
+                    test_count = test_count + 1;
+                }
+            }
+
+            // ヒットテスト実行
+            ulong ti = 0;
+            while (ti < test_count) {
+                ulong i = test_order[ti];
+                ulong btn = Window::hit_button(i, mx, my);
+                if (btn == WIN_BTN_CLOSE) {
+                    ulong ts = Terminal::find_by_window(i);
+                    if (ts < MAX_TERM_SLOTS) {
+                        Terminal::release(ts);
+                    }
+                    Window::close(i);
+                    Wm::compose();
+                    handled = 1;
+                    break;
+                } else if (btn == WIN_BTN_MINIMIZE) {
+                    ulong ts = Terminal::find_by_window(i);
+                    if (ts < MAX_TERM_SLOTS) {
+                        Terminal::release(ts);
+                    }
+                    Window::close(i);
+                    Wm::compose();
+                    handled = 1;
+                    break;
+                } else if (btn == WIN_BTN_MAXIMIZE) {
+                    Window::toggle_maximize(i);
+                    Wm::compose();
+                    handled = 1;
+                    break;
+                }
+
+                // ウィンドウ領域内クリック判定
+                ulong wx = Window::get_x(i);
+                ulong wy = Window::get_y(i);
+                ulong ww = Window::get_w(i);
+                ulong wh = Window::get_h(i);
+                if (mx >= wx && mx < wx + ww && my >= wy && my < wy + wh) {
+                    // ウィンドウ内クリック → アクティブ化
+                    if (Wm::get_active() != i) {
+                        Wm::set_active(i);
+                        Wm::compose();
+                    }
+
+                    // タイトルバー内ならドラッグ開始
+                    if (my < wy + TITLEBAR_HEIGHT) {
+                        ulong* drag_flag = DRAG_STATE_ADDR as ulong*;
+                        ulong* drag_win_p = (DRAG_STATE_ADDR + 8) as ulong*;
+                        ulong* drag_ox_p = (DRAG_STATE_ADDR + 0x10) as ulong*;
+                        ulong* drag_oy_p = (DRAG_STATE_ADDR + 0x18) as ulong*;
+                        *drag_flag = 1;
+                        *drag_win_p = i;
+                        *drag_ox_p = mx - wx;
+                        *drag_oy_p = my - wy;
+                    }
+                    handled = 1;
+                    break;
+                }
+                ti = ti + 1;
+            }
+
+            // Dockアイコンクリック
+            if (handled == 0) {
+                ulong dock_hit = Dock::hit_test(mx, my);
+                if (dock_hit == DOCK_HIT_TERMINAL) {
+                    // ターミナル: 空きスロットを検索
+                    ulong slot = Terminal::find_free_slot();
+                    if (slot < MAX_TERM_SLOTS) {
+                        // 各ウィンドウを少しずらして配置 (config.cm定数使用)
+                        ulong tx = DEFAULT_TERM_X + slot * 30;
+                        ulong ty = DEFAULT_TERM_Y + slot * 30;
+                        ulong win_id = Window::create(tx, ty, DEFAULT_TERM_W, DEFAULT_TERM_H, "Terminal" as void*, CONTENT_TERMINAL);
+                        if (win_id < MAX_WINDOWS) {
+                            Wm::set_active(win_id);
+                            Terminal::init(slot, win_id);
+                            Wm::compose();
+                            // ウェルカムメッセージ
+                            Terminal::puts(slot, "Welcome to Cosmo Linux v0.1.0" as void*);
+                            Terminal::putc(slot, 10);
+                            Terminal::prompt(slot);
+                            Fb::flip();
+                            Desktop::draw_cursor_direct();
+                        }
+                    }
+                } else if (dock_hit == DOCK_HIT_FILES) {
+                    Window::create(200, 80, 420, 340, "Files" as void*, CONTENT_EMPTY);
+                    Wm::compose();
+                } else if (dock_hit == DOCK_HIT_SETTINGS) {
+                    Window::create(250, 100, 380, 300, "Settings" as void*, CONTENT_EMPTY);
+                    Wm::compose();
+                } else if (dock_hit == DOCK_HIT_ABOUT) {
+                    Window::create(300, 120, 350, 260, "About Cosmo" as void*, CONTENT_EMPTY);
+                    Wm::compose();
+                } else if (dock_hit == DOCK_HIT_TRASH) {
+                    Window::create(280, 110, 360, 280, "Trash" as void*, CONTENT_EMPTY);
+                    Wm::compose();
+                }
+            }
+        }
+    }
+}

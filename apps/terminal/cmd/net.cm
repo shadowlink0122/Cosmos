@@ -1,0 +1,268 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::cmd::net - ネットワークコマンド
+//
+// CmdNet struct/impl — ping, parse_ip, print_ip。
+
+import ../../../include/types;
+import ../../../include/keycode;
+import ../../../include/net;
+import ../shell/defs;
+import ../mem;
+import ../shell/io;
+import ../../../drivers/serial;
+import ../../../drivers/timer/pit;
+import ../../../drivers/virtio/virtio_net;
+import ../../../net/core/ethernet;
+import ../../../net/core/ip;
+import ../../../net/transport/icmp;
+import ../../../net/core/arp;
+import ../../../net/app/dns;
+
+/// CmdNet — ネットワークコマンド群
+export struct CmdNet {}
+
+impl CmdNet {
+
+    /// IPアドレス文字列を32ビット値にパース
+    /// "10.0.2.2" → 0x0A000202
+    static ulong parse_ip(ulong str_addr) {
+        ulong result = 0;
+        ulong octet = 0;
+        ulong dot_count = 0;
+        ulong i = 0;
+
+        while (true) {
+            ulong ch = Mem::read_byte(str_addr + i);
+            if (ch == Key::Null as ulong || ch == Key::Space as ulong) {
+                result = (result << 8) | (octet & 0xFF);
+                break;
+            }
+            if (ch == Ascii::Period as ulong) {  // '.'
+                result = (result << 8) | (octet & 0xFF);
+                octet = 0;
+                dot_count = dot_count + 1;
+                if (dot_count > 3) { return 0; }
+            } else if (ch >= Ascii::Digit0 as ulong && ch <= Ascii::Digit9 as ulong) {
+                octet = octet * 10 + (ch - Ascii::Digit0 as ulong);
+            } else {
+                return 0;  // 不正な文字
+            }
+            i = i + 1;
+        }
+
+        if (dot_count != 3) { return 0; }
+        return result;
+    }
+
+    /// IPアドレスを表示
+    static void print_ip(ulong ip) {
+        Shell::print_dec((ip >> 24) & 0xFF);
+        Shell::putc(Ascii::Period as ulong);  // '.'
+        Shell::print_dec((ip >> 16) & 0xFF);
+        Shell::putc(Ascii::Period as ulong);
+        Shell::print_dec((ip >> 8) & 0xFF);
+        Shell::putc(Ascii::Period as ulong);
+        Shell::print_dec(ip & 0xFF);
+    }
+
+    /// ping コマンド: ICMP Echo Request送信 → Reply待機
+    static void ping(ulong arg_addr) {
+        if (arg_addr == 0) {
+            Shell::writeln("Usage: ping <ip-address>" as void*);
+            return;
+        }
+
+        if (VirtioNet::is_ready() == 0) {
+            Shell::writeln("ping: network not initialized" as void*);
+            return;
+        }
+
+        // IPアドレスをパース (例: "10.0.2.2")
+        ulong dst_ip = CmdNet::parse_ip(arg_addr);
+        ulong is_hostname = 0;
+        if (dst_ip == 0) {
+            // IPアドレスではない → ホスト名としてDNS解決
+            Shell::write("Resolving " as void*);
+            Shell::write(arg_addr as void*);
+            Shell::writeln("..." as void*);
+            dst_ip = Dns::resolve(arg_addr);
+            if (dst_ip == 0) {
+                Shell::writeln("ping: cannot resolve hostname" as void*);
+                return;
+            }
+            is_hostname = 1;
+        }
+
+        // PING表示
+        if (is_hostname != 0) {
+            Shell::write("PING " as void*);
+            Shell::write(arg_addr as void*);
+            Shell::write(" (" as void*);
+            CmdNet::print_ip(dst_ip);
+            Shell::writeln(")" as void*);
+        } else {
+            Shell::write("PING " as void*);
+            CmdNet::print_ip(dst_ip);
+            Shell::writeln("" as void*);
+        }
+
+        ulong src_ip = GUEST_IP;
+        ulong src_mac = VirtioNet::mac();
+
+        // 5回ping送信
+        ulong seq = 1;
+        ulong success = 0;
+        while (seq <= 5) {
+            // パケットバッファ (固定メモリ)
+            ulong pkt_buf = NET_PKT_BUF;
+            ulong pkt_pos = 0;
+
+            // 1. Ethernetヘッダ構築 (14バイト)
+            EthHeader eth = {
+                dst_hi: 0, dst_lo: 0,
+                src_hi: 0, src_lo: 0,
+                eth_type: ETH_TYPE_IP,
+                padding: 0
+            };
+            // ゲートウェイMACを設定
+            eth.dst_hi = (GATEWAY_MAC >> 16) & 0xFFFFFFFF;
+            eth.dst_lo = GATEWAY_MAC & 0xFFFF;
+            // 自分のMACを設定
+            eth.src_hi = (src_mac >> 16) & 0xFFFFFFFF;
+            eth.src_lo = src_mac & 0xFFFF;
+            pkt_pos = pkt_pos + Ethernet::build(pkt_buf, &eth);
+
+            // 2. IPv4ヘッダ構築 (20バイト)
+            // ICMPペイロード = 8(ICMPヘッダ) + 32(データ) = 40バイト
+            ulong icmp_total = 40;
+            IpHeader ip_hdr = {
+                version: 4, ihl: 5, tos: 0,
+                total_len: 20 + icmp_total,
+                id: 0, flags: 0, frag_off: 0,
+                ttl: 64, protocol: IP_PROTO_ICMP,
+                checksum: 0,
+                src_addr: src_ip,
+                dst_addr: dst_ip
+            };
+            pkt_pos = pkt_pos + Ip::build(pkt_buf + pkt_pos, &ip_hdr);
+
+            // 3. ICMPヘッダ構築 (8バイト)
+            ulong icmp_start = pkt_pos;
+            IcmpHeader icmp_hdr = {
+                icmp_type: ICMP_ECHO_REQUEST,
+                code: 0,
+                checksum: 0,
+                id: ICMP_ECHO_ID,
+                seq: seq
+            };
+            pkt_pos = pkt_pos + Icmp::build(pkt_buf + pkt_pos, &icmp_hdr);
+
+            // 4. ICMPペイロード (32バイト固定パターン)
+            ulong i = 0;
+            while (i < 32) {
+                Mem::write_byte(pkt_buf + pkt_pos + i, (i + 65) & 0xFF);
+                i = i + 1;
+            }
+            pkt_pos = pkt_pos + 32;
+
+            // 5. ICMPチェックサム計算
+            ulong icmp_cksum = Ip::checksum(pkt_buf + icmp_start, icmp_total);
+            Mem::write_byte(pkt_buf + icmp_start + 2, (icmp_cksum >> 8) & 0xFF);
+            Mem::write_byte(pkt_buf + icmp_start + 3, icmp_cksum & 0xFF);
+
+            // 6. 送信
+            ulong start_tick = PIT::get_ticks();
+            VirtioNet::send(pkt_buf, pkt_pos);
+
+            // 7. Reply待機 (最大1秒 = 100 ticks)
+            ulong timeout = start_tick + 100;
+            ulong replied = 0;
+
+            while (PIT::get_ticks() < timeout) {
+                ulong rx_buf = NET_RX_TMP_BUF;
+                ulong rx_len = VirtioNet::recv(rx_buf, 1500);
+                if (rx_len > 0) {
+                    // Ethernetヘッダ解析
+                    EthHeader rx_eth = {
+                        dst_hi: 0, dst_lo: 0,
+                        src_hi: 0, src_lo: 0,
+                        eth_type: 0, padding: 0
+                    };
+                    ulong eth_len = Ethernet::parse(rx_buf, &rx_eth);
+
+                    // ARP Request処理 (EtherType=0x0806)
+                    if (rx_eth.eth_type == ETH_TYPE_ARP) {
+                        ulong arp_data = rx_buf + eth_len;
+                        ulong arp_len = rx_len - eth_len;
+                        Arp::handle_packet(arp_data, arp_len);
+                        // ARP処理後、ICMPの到着を待ち続ける
+                    }
+
+                    if (rx_eth.eth_type == ETH_TYPE_IP) {
+                        // IPv4ヘッダ解析
+                        IpHeader rx_ip = {
+                            version: 0, ihl: 0, tos: 0,
+                            total_len: 0, id: 0, flags: 0, frag_off: 0,
+                            ttl: 0, protocol: 0, checksum: 0,
+                            src_addr: 0, dst_addr: 0
+                        };
+                        ulong ip_hdr_len = Ip::parse(rx_buf + eth_len, &rx_ip);
+                        if (rx_ip.protocol == IP_PROTO_ICMP) {
+                            // ICMPヘッダ解析
+                            IcmpHeader rx_icmp = {
+                                icmp_type: 0, code: 0, checksum: 0, id: 0, seq: 0
+                            };
+                            Icmp::parse(rx_buf + eth_len + ip_hdr_len, &rx_icmp);
+                            if (rx_icmp.icmp_type == ICMP_ECHO_REPLY && rx_icmp.id == ICMP_ECHO_ID) {
+                                ulong end_tick = PIT::get_ticks();
+                                ulong rtt_ms = (end_tick - start_tick) * 10;
+
+                                Shell::write("Reply from " as void*);
+                                CmdNet::print_ip(rx_ip.src_addr);
+                                Shell::write(": seq=" as void*);
+                                Shell::print_dec(rx_icmp.seq);
+                                Shell::write(" ttl=" as void*);
+                                Shell::print_dec(rx_ip.ttl);
+                                Shell::write(" time=" as void*);
+                                Shell::print_dec(rtt_ms);
+                                Shell::writeln("ms" as void*);
+
+                                replied = 1;
+                                success = success + 1;
+                            }
+                        }
+                    }
+                }
+                if (replied != 0) { break; }
+                // 短い待機 (ビジーウェイトを軽減)
+                __asm__(`pause`);
+            }
+
+            if (replied == 0) {
+                Shell::write("Request timed out: seq=" as void*);
+                Shell::print_dec(seq);
+                Shell::writeln("" as void*);
+            }
+
+            seq = seq + 1;
+
+            // 次のping前に500ms待機 (50 ticks)
+            if (seq <= 5) {
+                ulong wait_until = PIT::get_ticks() + 50;
+                while (PIT::get_ticks() < wait_until) {
+                    __asm__(`pause`);
+                }
+            }
+        }
+
+        // 統計表示
+        Shell::writeln("" as void*);
+        Shell::write("--- " as void*);
+        CmdNet::print_ip(dst_ip);
+        Shell::writeln(" ping statistics ---" as void*);
+        Shell::write("5 packets transmitted, " as void*);
+        Shell::print_dec(success);
+        Shell::writeln(" received" as void*);
+    }
+
+}

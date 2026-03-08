@@ -1,0 +1,150 @@
+//! platform: baremetal-x86
+// cosmo-linux::arch::x86_64::context - コンテキストスイッチ
+//
+// プロセス間のCPUレジスタ切り替え。
+// Context struct/impl パターンで実装。
+// 参照: linux/arch/x86/kernel/process_64.c
+
+import ../../include/types;
+import ../../include/scheduler;
+
+/// Context — コンテキストスイッチ管理
+export struct Context {}
+
+/// ユーザーモード遷移トランポリン
+/// switch_toのretから呼ばれ、iretqでRing3に遷移する
+///
+/// switch_toのretで戻った時点のRSPは、init_user_taskで設定した
+/// iretqフレームのRIP位置を指している。
+/// このため追加のスタック操作(leave等)は不要。
+///
+/// DS/ESをユーザーデータセグメント(0x1B)に設定し、
+/// FS_BASEをTLS_STORE_ADDRから読み出してMSRに設定した後、
+/// iretqでRing3に遷移する。
+void usermode_trampoline() {
+    __asm__(`
+        // Cmコンパイラのプロローグの影響を完全に排除
+        // switch_toのret直後のRSPを復元
+        // (Cmプロローグがpush rbpした場合に備えて)
+        movq %rbp, %rsp;
+        popq %rbp;
+
+        // DS/ESをユーザーデータセグメント(0x1B)に設定
+        movq $$0x1B, %rax;
+        movw %ax, %ds;
+        movw %ax, %es;
+
+        // FS_BASE MSRを設定
+        movl $$0xC0000100, %ecx;
+        movq 0x96100, %rax;
+        movq %rax, %rdx;
+        shrq $$32, %rdx;
+        wrmsr;
+
+        // iretqでRing3に遷移
+        iretq
+    `);
+}
+
+impl Context {
+    /// 2つのProcess間でコンテキストスイッチを実行
+    /// Linux __switch_to 同様、RFLAGS・FS_BASE も保存/復帰する。
+    /// FS_BASE: Linux process_64.c: x86_fsgsbase_load() 参照
+    /// 復帰後は必ず sti で割り込みを有効化する (Linux: local_irq_enable 相当)。
+    static void switch_to(Process* prev, Process* next) {
+        __asm__(`
+            movq ${r:prev}, %rdi;
+            addq $$48, %rdi;
+            movq ${r:next}, %rsi;
+            addq $$48, %rsi;
+
+            // 現在のレジスタを prev->context に保存
+            movq %rsp, (%rdi);
+            movq %rbp, 8(%rdi);
+            movq %rbx, 16(%rdi);
+            movq %r12, 24(%rdi);
+            movq %r13, 32(%rdi);
+            movq %r14, 40(%rdi);
+            movq %r15, 48(%rdi);
+
+            // RFLAGS保存 (offset 64 = rflags フィールド)
+            pushfq;
+            popq %rax;
+            movq %rax, 64(%rdi);
+
+            // next->context からレジスタ復帰
+            movq 48(%rsi), %r15;
+            movq 40(%rsi), %r14;
+            movq 32(%rsi), %r13;
+            movq 24(%rsi), %r12;
+            movq 16(%rsi), %rbx;
+            movq 8(%rsi), %rbp;
+            movq (%rsi), %rsp;
+
+            // RFLAGS復帰
+            movq 64(%rsi), %rax;
+            pushq %rax;
+            popfq;
+
+            // 安全策: 割り込みを必ず有効化 (Linux local_irq_enable 相当)
+            sti;
+
+            ret
+        `);
+    }
+
+    /// 新しいカーネルタスクのコンテキストを初期化
+    static void init_task(Process* proc, ulong stack_top, ulong entry_fn) {
+        ulong sp = stack_top - 8;
+        ulong* ret_addr = sp as ulong*;
+        *ret_addr = entry_fn;
+
+        proc->context.rsp = sp;
+        proc->context.rbp = sp;
+        proc->context.rbx = 0;
+        proc->context.r12 = 0;
+        proc->context.r13 = 0;
+        proc->context.r14 = 0;
+        proc->context.r15 = 0;
+        proc->context.rip = entry_fn;
+        proc->context.rflags = 0x200;
+    }
+
+    /// ユーザープロセス用コンテキスト初期化
+    /// iretqフレームでRing3+ユーザーRSPに直接遷移する
+    static void init_user_task(Process* proc, ulong stack_top, ulong entry_fn, ulong user_rsp) {
+        // カーネルスタック上にiretqフレームを構築
+        // iretqはスタックから以下を pop する:
+        //   [RSP+0]  RIP     (ユーザーエントリポイント)
+        //   [RSP+8]  CS      (ユーザーCS = 0x20 | 3 = 0x23)
+        //   [RSP+16] RFLAGS  (IF=1)
+        //   [RSP+24] RSP     (ユーザーRSP)
+        //   [RSP+32] SS      (ユーザーSS = 0x18 | 3 = 0x1B)
+
+        ulong sp = stack_top;
+
+        // iretqフレーム（逆順にpush）
+        sp = sp - 8; ulong* p_ss = sp as ulong*;     *p_ss = 0x1B;       // SS (User DS | RPL=3)
+        sp = sp - 8; ulong* p_rsp = sp as ulong*;    *p_rsp = user_rsp;  // User RSP
+        sp = sp - 8; ulong* p_rfl = sp as ulong*;    *p_rfl = 0x200;     // RFLAGS (IF=1)
+        sp = sp - 8; ulong* p_cs = sp as ulong*;     *p_cs = 0x23;       // CS (User CS | RPL=3)
+        sp = sp - 8; ulong* p_rip = sp as ulong*;    *p_rip = entry_fn;  // User RIP
+
+        // switch_toのretで呼ばれるトランポリンのアドレス
+        sp = sp - 8;
+        ulong* p_tramp = sp as ulong*;
+        *p_tramp = usermode_trampoline as ulong;
+
+        // switch_toのretでtrampolineにジャンプ
+        // trampolineは最初にpush rbpを元に戻してからiretqフレームに到達
+        proc->context.rsp = sp;
+        proc->context.rbp = sp;
+        proc->context.rbx = 0;
+        proc->context.r12 = 0;
+        proc->context.r13 = 0;
+        proc->context.r14 = 0;
+        proc->context.r15 = 0;
+        proc->context.rip = usermode_trampoline as ulong;
+        proc->context.rflags = 0x200;
+    }
+}

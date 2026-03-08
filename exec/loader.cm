@@ -1,0 +1,855 @@
+//! platform: baremetal-x86
+// cosmo-linux::exec::loader - ELF ローダー
+//
+// RamFS上のELFファイルをメモリにロードし、
+// カーネルスレッドとして実行する。
+// musl-libc対応: スタック上にargc/argv/envp/auxvを構築。
+//
+// 参照: linux/fs/binfmt_elf.c
+
+import ../include/types;
+import ../include/config;
+import ../include/errno;
+import ../include/result;
+import ../include/phys_addr;
+import ../include/scheduler;
+import ../include/page_alloc;
+import ../include/vfs;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ../fs/ramfs;
+import ../fs/ninepfs;
+import ../mm/pmm;
+import ../mm/vmm;
+import ../mm/mmap;
+import ../sched/process;
+import ../sched/scheduler;
+import ../arch/x86_64/context;
+import ../arch/x86_64/usermode;
+import ./elf;
+
+// ============================================================
+// ローダー定数
+// ============================================================
+
+/// ELFロード先仮想アドレス (ユーザー空間ベース)
+const VirtAddr ELF_LOAD_BASE = 0x400000;
+
+/// PIEのロード先ベースアドレス
+const VirtAddr PIE_LOAD_BASE = 0x400000;
+
+/// ELFデータ読み込み一時バッファ (DATA_POOLの後に配置)
+const PhysAddr ELF_TMP_BUF = 0x4000000;  // 64MB地点 (DATA_POOL=17-49MBと重ならない)
+// ELFバッファ最大サイズ (64MB — cc1/cmなど大型バイナリ対応)
+const ulong ELF_MAX_SIZE = 0x4000000;
+
+/// インタープリターELF読み込み一時バッファ (4MB)
+const PhysAddr INTERP_TMP_BUF = 0x8000000;  // 128MB地点 (ELF_TMP_BUFの64MB後)
+const ulong INTERP_MAX_SIZE = 0x400000;
+
+/// インタープリターロードベースアドレス
+/// ユーザー空間の上位アドレスに配置
+const VirtAddr INTERP_LOAD_BASE = 0x7F000000;
+
+/// ローダー用PMMポインタ: phys_addr.cmのPMM_GLOBAL_PTR_ADDRを使用
+
+// ============================================================
+// Auxiliary Vector (auxv) 定数
+// ============================================================
+
+/// AT_NULL: auxv終端
+const ulong AT_NULL   = 0;
+/// AT_PHDR: プログラムヘッダのアドレス
+const ulong AT_PHDR   = 3;
+/// AT_PHENT: プログラムヘッダエントリサイズ
+const ulong AT_PHENT  = 4;
+/// AT_PHNUM: プログラムヘッダ数
+const ulong AT_PHNUM  = 5;
+/// AT_PAGESZ: ページサイズ
+const ulong AT_PAGESZ = 6;
+/// AT_ENTRY: エントリポイント
+const ulong AT_ENTRY  = 9;
+/// AT_UID: 実UID
+const ulong AT_UID    = 11;
+/// AT_EUID: 実効UID
+const ulong AT_EUID   = 12;
+/// AT_GID: 実GID
+const ulong AT_GID    = 13;
+/// AT_EGID: 実効GID
+const ulong AT_EGID   = 14;
+/// AT_BASE: インタープリターベースアドレス
+const ulong AT_BASE   = 7;
+/// AT_RANDOM: ランダムバイトのアドレス（16バイト）
+const ulong AT_RANDOM = 25;
+/// AT_EXECFN: 実行ファイル名
+const ulong AT_EXECFN = 31;
+
+// ============================================================
+// Loader struct/impl
+// ============================================================
+
+/// Loader — ELFローダー
+export struct Loader {}
+
+impl Loader {
+    /// ELFファイルをcmdlineからロードしてプロセスとして実行
+    /// cmdline: "busybox echo hello" のようなコマンドライン文字列
+    /// 先頭ワードをファイル名として検索し、全体をargvとして構築
+    /// 戻り値: 新プロセスのPID（失敗時 -1）
+    static Result<long, long> exec(void* cmdline, SerialPort* w) {
+        // 注意: Mmap::cleanup_all() はELFヘッダ検証成功後に実行する
+        // ファイル未発見時にメモリ状態を破壊しないため
+
+        ulong fsize = 0;
+        ulong loaded_from_9p = 0;
+        ulong cmd = cmdline as ulong;
+
+        // cmdlineから先頭ワード（ファイル名）の長さを計算
+        ulong fname_len = 0;
+        while (true) {
+            ulong fch = Mem::read_byte(cmd + fname_len);
+            if (fch == 0 || fch == 32) { break; }
+            fname_len = fname_len + 1;
+        }
+        if (fname_len == 0) {
+            pr_err(w, "exec: empty command" as void*);
+            return Result::Err(EINVAL);
+        }
+
+        // ファイル名をNULL終端の一時バッファにコピー（検索用）
+        ulong fname_buf = 0x95200;  // 一時バッファ
+        ulong fi_copy = 0;
+        while (fi_copy < fname_len) {
+            Mem::write_byte(fname_buf + fi_copy, Mem::read_byte(cmd + fi_copy));
+            fi_copy = fi_copy + 1;
+        }
+        Mem::write_byte(fname_buf + fname_len, 0);  // NULL終端
+
+        // RamFSからファイル検索
+        Ino ino = RamFs::lookup(fname_buf as void*);
+        if (ino != 0) {
+            fsize = RamFs::file_size(ino);
+            if (fsize < 64) {
+                pr_err(w, "exec: file too small for ELF" as void*);
+                return Result::Err(ENOEXEC);
+            }
+            // inodeのデータポインタから直接コピー
+            ulong data_addr = RamFs::file_data(ino);
+            if (data_addr == 0) {
+                pr_err(w, "exec: no data pointer in inode" as void*);
+                return Result::Err(EIO);
+            }
+            ulong ci = 0;
+            while (ci < fsize) {
+                Mem::write_byte(ELF_TMP_BUF + ci, Mem::read_byte(data_addr + ci));
+                ci = ci + 1;
+            }
+        } else {
+            // 9pフォールバック
+            w->puts("[exec] Loading from 9p: " as void*);
+            w->println(fname_buf as void*);
+            ulong bytes_9p = NinePfs::read_file(fname_buf, ELF_TMP_BUF, ELF_MAX_SIZE);
+            if (bytes_9p == 0) {
+                pr_err(w, "exec: file not found (ramfs/9p)" as void*);
+                return Result::Err(ENOENT);
+            }
+            fsize = bytes_9p;
+            loaded_from_9p = 1;
+            w->puts("[exec] 9p read complete: " as void*);
+            print_dec(w, fsize);
+            w->println(" bytes" as void*);
+        }
+
+        // ELFヘッダ検証
+        w->println("[exec] Validating ELF header..." as void*);
+        if (Elf::validate(ELF_TMP_BUF) == 0) {
+            pr_err(w, "exec: invalid ELF64 binary" as void*);
+            return Result::Err(ENOEXEC);
+        }
+        w->println("[exec] ELF header valid" as void*);
+
+        // ELF検証成功後に前プロセスのユーザー空間ページを解放
+        // ここまでの早期returnではメモリ状態を破壊しない
+        Mmap::cleanup_all();
+
+        // エントリポイント取得
+        ulong entry = Elf::get_entry(ELF_TMP_BUF);
+        ulong phoff = Elf::get_phoff(ELF_TMP_BUF);
+        ulong phentsize = Elf::get_phentsize(ELF_TMP_BUF);
+        ulong phnum = Elf::get_phnum(ELF_TMP_BUF);
+
+        w->puts("[exec] entry=0x" as void*);
+        w->print_hex(entry);
+        w->puts(" phnum=" as void*);
+        print_dec(w, phnum);
+        w->println("" as void*);
+
+        // セグメント末尾を追跡（brk初期値用）
+        ulong data_end = 0;
+
+        // PIEの場合、ベースアドレスオフセットを計算
+        ulong load_bias = 0;
+        if (Elf::is_pie(ELF_TMP_BUF) != 0) {
+            load_bias = PIE_LOAD_BASE;
+            entry = entry + load_bias;
+            w->println("[exec] PIE detected, applying load bias" as void*);
+        }
+
+        // ============================================================
+        // PT_INTERP 検出: 動的リンカーのパスを取得
+        // ============================================================
+        ulong has_interp = 0;
+        ulong interp_entry = 0;
+        ulong interp_base = INTERP_LOAD_BASE;
+        ulong interp_phdr_addr = 0;
+        ulong interp_phnum = 0;
+        ulong interp_phentsize = 0;
+        ulong app_entry = entry;  // アプリの元のエントリー保存
+
+        // PT_INTERPセグメントを検索
+        ulong pi = 0;
+        while (pi < phnum) {
+            ulong pi_addr = ELF_TMP_BUF + phoff + pi * phentsize;
+            ulong pi_type = Elf::ph_type(pi_addr);
+            if (pi_type == PT_INTERP) {
+                // インタープリターパスを取得
+                ulong interp_offset = Elf::ph_offset(pi_addr);
+                ulong interp_size = Elf::ph_filesz(pi_addr);
+                ulong interp_path = ELF_TMP_BUF + interp_offset;
+
+                w->puts("[exec] PT_INTERP detected: " as void*);
+                w->println(interp_path as void*);
+
+                // インタープリターELFをロード
+                // まず9pFSから検索（/lib/xxx → ファイル名のみ）
+                // パスの最後の '/' 以降をファイル名として使用
+                ulong interp_fname = interp_path;
+                ulong ij = 0;
+                while (ij < interp_size) {
+                    ulong ich = Mem::read_byte(interp_path + ij);
+                    if (ich == 0) { break; }
+                    if (ich == 47) { interp_fname = interp_path + ij + 1; }  // '/'
+                    ij = ij + 1;
+                }
+
+                w->puts("[exec] Loading interpreter: " as void*);
+                w->println(interp_fname as void*);
+
+                // 9pFSからインタープリターを読み込み
+                // 1. まずファイル名のみで検索
+                ulong interp_bytes = NinePfs::read_file(
+                    interp_fname, INTERP_TMP_BUF, INTERP_MAX_SIZE);
+                // 2. 失敗時: フルパス(先頭/スキップ)で再検索
+                //    例: /lib/ld-musl-x86_64.so.1 → lib/ld-musl-x86_64.so.1
+                if (interp_bytes == 0) {
+                    ulong full_path = interp_path;
+                    ulong fp_ch = Mem::read_byte(full_path);
+                    if (fp_ch == 47) { full_path = full_path + 1; }  // 先頭'/'スキップ
+                    w->puts("[exec] Retry with full path: " as void*);
+                    w->println(full_path as void*);
+                    interp_bytes = NinePfs::read_file(
+                        full_path, INTERP_TMP_BUF, INTERP_MAX_SIZE);
+                }
+                if (interp_bytes == 0) {
+                    // RamFSからも検索
+                    Ino interp_ino = RamFs::lookup(interp_fname as void*);
+                    if (interp_ino != 0) {
+                        ulong interp_fsize = RamFs::file_size(interp_ino);
+                        Result<long, long> rr2 = RamFs::read(interp_ino, INTERP_TMP_BUF, 0, interp_fsize);
+                        match (rr2) {
+                            Result::Ok(v) => { interp_bytes = v as ulong; }
+                            Result::Err(e) => {}
+                        }
+                    }
+                }
+
+                if (interp_bytes > 0 && Elf::validate(INTERP_TMP_BUF) != 0) {
+                    has_interp = 1;
+                    interp_entry = Elf::get_entry(INTERP_TMP_BUF);
+                    interp_phentsize = Elf::get_phentsize(INTERP_TMP_BUF);
+                    interp_phnum = Elf::get_phnum(INTERP_TMP_BUF);
+
+                    w->puts("[exec] Interpreter loaded: entry=0x" as void*);
+                    w->print_hex(interp_entry);
+                    w->puts(" phnum=" as void*);
+                    print_dec(w, interp_phnum);
+                    w->println("" as void*);
+                } else {
+                    w->println("[exec] WARNING: interpreter not found, trying static" as void*);
+                }
+            }
+            pi = pi + 1;
+        }
+
+        // PMMを取得
+        ulong* pmm_ptr = PMM_GLOBAL_PTR_ADDR as ulong*;
+        BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+        // CR3取得
+        ulong cr3 = 0;
+        __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+        PageTable pt(cr3);
+
+        // PHDRのユーザー空間アドレス記録用
+        ulong phdr_addr = 0;
+
+        // PT_LOADセグメントをメモリにロード
+        ulong i = 0;
+        while (i < phnum) {
+            ulong ph_addr = ELF_TMP_BUF + phoff + i * phentsize;
+            ulong p_type = Elf::ph_type(ph_addr);
+
+            if (p_type == PT_LOAD) {
+                ulong p_offset = Elf::ph_offset(ph_addr);
+                ulong p_vaddr  = Elf::ph_vaddr(ph_addr) + load_bias;
+                ulong p_filesz = Elf::ph_filesz(ph_addr);
+                ulong p_memsz  = Elf::ph_memsz(ph_addr);
+
+                // デバッグ: セグメント情報出力
+                w->puts("[exec] LOAD seg: vaddr=0x" as void*);
+                w->print_hex(p_vaddr);
+                w->puts(" filesz=0x" as void*);
+                w->print_hex(p_filesz);
+                w->puts(" memsz=0x" as void*);
+                w->print_hex(p_memsz);
+                w->println("" as void*);
+
+                // 最初のPT_LOADにPHDRが含まれるか確認
+                if (phdr_addr == 0 && p_offset == 0) {
+                    phdr_addr = p_vaddr + phoff;
+                }
+
+                // ページマッピング（既存マッピングがあれば解放してから再マッピング）
+                ulong page_start = p_vaddr & PAGE_MASK;
+                ulong page_end = (p_vaddr + p_memsz + PAGE_OFFSET_MASK) & PAGE_MASK;
+                ulong num_pages = (page_end - page_start) / PAGE_SIZE;
+
+                w->puts("[exec]   pages: 0x" as void*);
+                w->print_hex(page_start);
+                w->puts("..0x" as void*);
+                w->print_hex(page_end);
+                w->puts(" (" as void*);
+                print_dec(w, num_pages);
+                w->println(" pages)" as void*);
+
+                ulong page = page_start;
+                ulong mapped = 0;
+                while (page < page_end) {
+                    // 100ページごとに進捗出力
+                    if (mapped % 100 == 0) {
+                        w->puts("[exec]   map page " as void*);
+                        print_dec(w, mapped);
+                        w->puts("/" as void*);
+                        print_dec(w, num_pages);
+                        w->puts(" vaddr=0x" as void*);
+                        w->print_hex(page);
+                        w->println("" as void*);
+                    }
+
+                    // 新規ページ割当
+                    // 注意: 既存マッピングのfree+unmapは行わない
+                    // カーネルidentity mapとユーザーvaddrが同じPDエントリを共有するため、
+                    // unmapするとカーネルのidentity mapが破壊される
+                    PhysAddr phys_page = pmm->alloc_pages(0);
+                    if (phys_page == 0) {
+                        w->puts("[exec] ERROR: out of pages at " as void*);
+                        print_dec(w, mapped);
+                        w->println("" as void*);
+                        return Result::Err(ENOMEM);
+                    }
+                    memzero(phys_page as void*, PAGE_SIZE);
+                    // ユーザープロセス用: PRESENT | WRITE | USER = 7
+                    pt.map_page(page, phys_page, 7, pmm);
+                    page = page + PAGE_SIZE;
+                    mapped = mapped + 1;
+                }
+                w->puts("[exec]   mapped " as void*);
+                print_dec(w, mapped);
+                w->println(" pages ok" as void*);
+
+                // TLBフラッシュ
+                __asm__(`movq %cr3, %rax; movq %rax, %cr3`);
+
+                // ファイルデータをコピー
+                ulong src = ELF_TMP_BUF + p_offset;
+                ulong dst = p_vaddr;
+
+                w->puts("[exec]   copy: src=0x" as void*);
+                w->print_hex(src);
+                w->puts(" dst=0x" as void*);
+                w->print_hex(dst);
+                w->puts(" len=0x" as void*);
+                w->print_hex(p_filesz);
+                w->println("" as void*);
+
+                ulong j = 0;
+                while (j < p_filesz) {
+                    ulong byte_val = 0;
+                    ulong s = src + j;
+                    __asm__(`
+                        movq ${r:s}, %rdi;
+                        xorq %rax, %rax;
+                        movb (%rdi), %al;
+                        movq %rax, ${=r:byte_val}
+                    `);
+                    ulong d = dst + j;
+                    __asm__(`
+                        movq ${r:d}, %rdi;
+                        movq ${r:byte_val}, %rax;
+                        movb %al, (%rdi)
+                    `);
+                    j = j + 1;
+                }
+
+                // data_end を更新
+                ulong seg_end = p_vaddr + p_memsz;
+                if (seg_end > data_end) { data_end = seg_end; }
+
+
+            }
+            i = i + 1;
+        }
+
+        // data_endをページアラインメント
+        data_end = (data_end + PAGE_OFFSET_MASK) & ~PAGE_OFFSET_MASK;
+
+        // ============================================================
+        // インタープリターのPT_LOADセグメントをロード
+        // ============================================================
+        if (has_interp != 0) {
+            ulong interp_phoff = Elf::get_phoff(INTERP_TMP_BUF);
+            ulong ii = 0;
+            while (ii < interp_phnum) {
+                ulong iph = INTERP_TMP_BUF + interp_phoff + ii * interp_phentsize;
+                ulong ip_type = Elf::ph_type(iph);
+
+                if (ip_type == PT_LOAD) {
+                    ulong ip_offset = Elf::ph_offset(iph);
+                    ulong ip_vaddr  = Elf::ph_vaddr(iph) + interp_base;
+                    ulong ip_filesz = Elf::ph_filesz(iph);
+                    ulong ip_memsz  = Elf::ph_memsz(iph);
+
+                    w->puts("[exec] INTERP LOAD: vaddr=0x" as void*);
+                    w->print_hex(ip_vaddr);
+                    w->puts(" filesz=0x" as void*);
+                    w->print_hex(ip_filesz);
+                    w->println("" as void*);
+
+                    // ページマッピング
+                    ulong ip_start = ip_vaddr & PAGE_MASK;
+                    ulong ip_end = (ip_vaddr + ip_memsz + PAGE_OFFSET_MASK) & PAGE_MASK;
+
+                    ulong ip_page = ip_start;
+                    while (ip_page < ip_end) {
+                        PhysAddr ip_phys = pmm->alloc_pages(0);
+                        if (ip_phys == 0) { break; }
+                        memzero(ip_phys as void*, PAGE_SIZE);
+                        pt.map_page(ip_page, ip_phys, 7, pmm);
+                        ip_page = ip_page + PAGE_SIZE;
+                    }
+
+                    // TLBフラッシュ
+                    __asm__(`movq %cr3, %rax; movq %rax, %cr3`);
+
+                    // データコピー
+                    ulong isrc = INTERP_TMP_BUF + ip_offset;
+                    ulong idst = ip_vaddr;
+                    ulong ij2 = 0;
+                    while (ij2 < ip_filesz) {
+                        ulong ibyte = 0;
+                        ulong is2 = isrc + ij2;
+                        __asm__(`
+                            movq ${r:is2}, %rdi;
+                            xorq %rax, %rax;
+                            movb (%rdi), %al;
+                            movq %rax, ${=r:ibyte}
+                        `);
+                        ulong id2 = idst + ij2;
+                        __asm__(`
+                            movq ${r:id2}, %rdi;
+                            movq ${r:ibyte}, %rax;
+                            movb %al, (%rdi)
+                        `);
+                        ij2 = ij2 + 1;
+                    }
+                }
+                ii = ii + 1;
+            }
+
+            // エントリーポイントをインタープリターに切り替え
+            entry = interp_entry + interp_base;
+            w->puts("[exec] Entry switched to interpreter: 0x" as void*);
+            w->print_hex(entry);
+            w->println("" as void*);
+        }
+
+        // プロセス作成
+        Pid new_pid = ProcessTable::alloc_pid();
+        // プロセス用メモリ確保（固定アドレスに配置）
+        PhysAddr proc_mem = pmm->alloc_pages(0);
+        if (proc_mem == 0) {
+            pr_err(w, "exec: failed to allocate process memory" as void*);
+            return Result::Err(ENOMEM);
+        }
+        memzero(proc_mem as void*, PAGE_SIZE);
+        Process* proc = proc_mem as Process*;
+
+        // プロセスフィールドを直接設定（構造体コピーの代わりに安全な方法）
+        proc->pid = new_pid;
+        proc->parent_pid = 1;  // parent=shell(PID 1)
+        proc->state = TASK_READY;
+        proc->exit_code = 0;
+        proc->time_slice = 10;
+        proc->priority = 20;
+        proc->pending_signal = 0;
+        proc->is_user = 0;
+
+        // カーネルスタック割り当て
+        proc->alloc_stack(pmm);
+        proc->page_table = cr3;
+
+        // ユーザースタック確保 (2ページ = 8KiB)
+        proc->is_user = 1;
+        proc->user_stack = Usermode::alloc_user_stack();
+
+        // brk初期値をDATAセグメント末尾に設定
+        // musl-libcのbrk(0)でヒープ開始アドレスとして返却される
+        proc->brk_addr = data_end;
+
+        // ============================================================
+        // 初期TLS領域の確保
+        // musl-libcはarch_prctl(SET_FS)でTLSを設定する前に、
+        // スタックカナリア(%fs:0x28)やTLSセルフポインタ(%fs:0)に
+        // アクセスする。初期TLS領域を確保してFS_BASE MSRを設定する。
+        //
+        // musl TLSレイアウト (x86_64):
+        //   [FS base + 0x00] = セルフポインタ (= FS base自身)
+        //   [FS base + 0x28] = スタックカナリア値
+        //   [FS base + 0x30] = その他TLSデータ
+        // ============================================================
+        ulong tls_base_vaddr = 0x7FFC0000;  // TLS用の固定仮想アドレス
+        PhysAddr tls_phys = pmm->alloc_pages(0);
+        if (tls_phys != 0) {
+            memzero(tls_phys as void*, PAGE_SIZE);
+            pt.map_page(tls_base_vaddr, tls_phys, 7, pmm);  // PRESENT|WRITE|USER
+            __asm__(`movq %cr3, %rax; movq %rax, %cr3`);    // TLBフラッシュ
+
+            // セルフポインタ: %fs:0 → TLSブロック自身のアドレス
+            ulong* tls_self = tls_base_vaddr as ulong*;
+            *tls_self = tls_base_vaddr;
+
+            // スタックカナリア: %fs:0x28 → 疑似乱数値
+            ulong* tls_canary = (tls_base_vaddr + 0x28) as ulong*;
+            *tls_canary = 0x5F3759DF5F3759DF;  // 固定カナリア値
+
+            // TLS_BASE値を固定アドレスに保存
+            // usermode_trampolineのiretq直前でwrmsr(FS_BASE)に使用
+            // コンテキストスイッチでMSR値が失われるため、毎回読み出して設定する
+            ulong* tls_store = TLS_STORE_ADDR as ulong*;
+            *tls_store = tls_base_vaddr;
+
+            // デバッグ: TLS_BASEストアの値を確認
+            ulong verify_store = *tls_store;
+            w->puts("[exec] TLS_BASE store @0x96100 = 0x" as void*);
+            w->print_hex(verify_store);
+            w->println("" as void*);
+
+            // FS_BASE MSRを設定 (arch_prctlが後で上書きする)
+            Cpu::wrmsr(0xC0000100, tls_base_vaddr);
+
+            // プロセス構造体にfsbaseを保存 (Linux thread.fsbase互換)
+            // switch_toでコンテキストスイッチ時にFS_BASEを復帰するために使用
+            proc->fsbase = tls_base_vaddr;
+
+            w->puts("[exec] TLS initialized at 0x" as void*);
+            w->print_hex(tls_base_vaddr);
+            w->println("" as void*);
+        }
+
+        // ============================================================
+        // ユーザースタック上にargc/argv/envp/auxvを構築
+        //
+        // Linux ABI準拠のスタックレイアウト:
+        // [高アドレス = スタックトップ]
+        //   ランダムバイト (16B, AT_RANDOM用)
+        //   argv文字列群 + envp文字列群
+        //   (アラインメントパディング)
+        //   auxv[]: { AT_PAGESZ:4096, ... AT_NULL:0 }
+        //   envp[env_count] = NULL
+        //   envp[0..env_count-1]
+        //   argv[argc] = NULL
+        //   argv[0..argc-1]
+        //   argc
+        // [低アドレス = RSP]
+        //
+        // 重要: musl-libcはスタック上の argc → argv[] → NULL →
+        //       envp[] → NULL → auxv[] の順序を厳密にチェックする。
+        //       auxvはenvp NULLの直後に連続して配置すること。
+        // ============================================================
+
+        ulong sp = proc->user_stack;
+
+        // ============================================================
+        // Phase 1: 文字列データ領域（スタック上位に配置）
+        // ============================================================
+
+        // --- ランダムバイト (16バイト) ---
+        sp = sp - 16;
+        ulong random_addr = sp;
+        ulong ri = 0;
+        while (ri < 16) {
+            ulong val = (ri * 7 + 0x42) & 0xFF;
+            ulong ra = random_addr + ri;
+            __asm__(`movq ${r:ra}, %rdi; movq ${r:val}, %rax; movb %al, (%rdi)`);
+            ri = ri + 1;
+        }
+
+        // --- cmdlineをスペースで分割し、各引数文字列をスタックにコピー ---
+        ulong argv_strs_buf = 0x95300;  // 一時ポインタ配列(16*8=128B)
+        ulong argc_val = 0;
+        ulong ci = 0;
+        while (argc_val < 16) {
+            // 先頭スペースをスキップ
+            while (Mem::read_byte(cmd + ci) == 32) { ci = ci + 1; }
+            ulong ch = Mem::read_byte(cmd + ci);
+            if (ch == 0) { break; }
+
+            // 引数の開始位置
+            ulong arg_start = ci;
+            // 引数の終了位置を探す
+            while (true) {
+                ch = Mem::read_byte(cmd + ci);
+                if (ch == 0 || ch == 32) { break; }
+                ci = ci + 1;
+            }
+            ulong arg_len = ci - arg_start;
+
+            // 引数文字列をスタックにコピー
+            sp = sp - (arg_len + 1);
+            sp = sp & ~7;  // 8バイトアラインメント
+            ulong arg_str = sp;
+            ulong ai = 0;
+            while (ai < arg_len) {
+                ulong src_ch = Mem::read_byte(cmd + arg_start + ai);
+                ulong dst_a = arg_str + ai;
+                __asm__(`movq ${r:dst_a}, %rdi; movq ${r:src_ch}, %rax; movb %al, (%rdi)`);
+                ai = ai + 1;
+            }
+            // NUL終端
+            ulong nul_a = arg_str + arg_len;
+            __asm__(`movq ${r:nul_a}, %rdi; xorq %rax, %rax; movb %al, (%rdi)`);
+
+            // ポインタを記録
+            ulong* argv_slot = (argv_strs_buf + argc_val * 8) as ulong*;
+            *argv_slot = arg_str;
+            argc_val = argc_val + 1;
+        }
+
+        // デバッグ: argv出力
+        w->puts("[exec] argc=" as void*);
+        print_dec(w, argc_val);
+        w->println("" as void*);
+        ulong dbg_i = 0;
+        while (dbg_i < argc_val) {
+            w->puts("[exec] argv[" as void*);
+            print_dec(w, dbg_i);
+            w->puts("]=\"" as void*);
+            ulong* dbg_p = (argv_strs_buf + dbg_i * 8) as ulong*;
+            w->puts(*dbg_p as void*);
+            w->println("\"" as void*);
+            dbg_i = dbg_i + 1;
+        }
+
+        // --- envp文字列をスタック上にコピー ---
+        ulong env_strs_buf = 0x95500;  // 一時ポインタ配列(16*8=128B)
+        ulong env_count = 0;
+
+        // PATH
+        sp = sp - 80;
+        sp = sp & ~7;
+        ulong env_path = sp;
+        Loader::copy_str(sp, "PATH=/usr/local/bin:/usr/bin:/bin:/sbin" as void*);
+        ulong* env_s0 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s0 = env_path;
+        env_count = env_count + 1;
+
+        // HOME
+        sp = sp - 16;
+        sp = sp & ~7;
+        ulong env_home = sp;
+        Loader::copy_str(sp, "HOME=/root" as void*);
+        ulong* env_s1 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s1 = env_home;
+        env_count = env_count + 1;
+
+        // SHELL
+        sp = sp - 24;
+        sp = sp & ~7;
+        ulong env_shell = sp;
+        Loader::copy_str(sp, "SHELL=/bin/sh" as void*);
+        ulong* env_s2 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s2 = env_shell;
+        env_count = env_count + 1;
+
+        // USER
+        sp = sp - 16;
+        sp = sp & ~7;
+        ulong env_user = sp;
+        Loader::copy_str(sp, "USER=root" as void*);
+        ulong* env_s3 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s3 = env_user;
+        env_count = env_count + 1;
+
+        // TERM
+        sp = sp - 24;
+        sp = sp & ~7;
+        ulong env_term = sp;
+        Loader::copy_str(sp, "TERM=linux" as void*);
+        ulong* env_s4 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s4 = env_term;
+        env_count = env_count + 1;
+
+        // LANG
+        sp = sp - 24;
+        sp = sp & ~7;
+        ulong env_lang = sp;
+        Loader::copy_str(sp, "LANG=C.UTF-8" as void*);
+        ulong* env_s5 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s5 = env_lang;
+        env_count = env_count + 1;
+
+        // PWD
+        sp = sp - 16;
+        sp = sp & ~7;
+        ulong env_pwd = sp;
+        Loader::copy_str(sp, "PWD=/" as void*);
+        ulong* env_s6 = (env_strs_buf + env_count * 8) as ulong*;
+        *env_s6 = env_pwd;
+        env_count = env_count + 1;
+
+        // ============================================================
+        // Phase 2: ポインタテーブル（文字列の後、低アドレス方向に配置）
+        // 順序: auxv → envp NULL → envp[] → argv NULL → argv[] → argc
+        // ============================================================
+
+        // 16バイトアラインメント
+        sp = sp & ~15;
+
+        // --- auxiliary vector (auxv) ---
+        // auxvは逆順にpush（AT_NULLが最初にpush＝最高アドレス）
+
+        // AT_NULL = 終端
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_NULL, 0);
+        // AT_RANDOM
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_RANDOM, random_addr);
+        // AT_PHNUM
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHNUM, phnum);
+        // AT_PHENT
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHENT, phentsize);
+        // AT_PHDR
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PHDR, phdr_addr);
+        // AT_ENTRY
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_ENTRY, app_entry);
+        // AT_EGID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_EGID, 0);
+        // AT_GID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_GID, 0);
+        // AT_EUID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_EUID, 0);
+        // AT_UID
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_UID, 0);
+        // AT_PAGESZ
+        sp = sp - 16;
+        Loader::write_auxv(sp, 0, AT_PAGESZ, 4096);
+        // AT_BASE (インタープリターベース)
+        if (has_interp != 0) {
+            sp = sp - 16;
+            Loader::write_auxv(sp, 0, AT_BASE, interp_base);
+        }
+
+        // --- envp NULL (終端) ---
+        sp = sp - 8;
+        ulong* envp_null = sp as ulong*;
+        *envp_null = 0;
+
+        // --- envp[env_count-1] ... envp[0] (逆順push) ---
+        ulong envi = env_count;
+        while (envi > 0) {
+            envi = envi - 1;
+            sp = sp - 8;
+            ulong* envp_ptr = sp as ulong*;
+            ulong* envp_src = (env_strs_buf + envi * 8) as ulong*;
+            *envp_ptr = *envp_src;
+        }
+
+        // --- argv[argc] = NULL ---
+        sp = sp - 8;
+        ulong* argv_null = sp as ulong*;
+        *argv_null = 0;
+
+        // --- argv[argc-1] ... argv[0] (逆順push) ---
+        ulong argi = argc_val;
+        while (argi > 0) {
+            argi = argi - 1;
+            sp = sp - 8;
+            ulong* argv_ptr = sp as ulong*;
+            ulong* argv_src = (argv_strs_buf + argi * 8) as ulong*;
+            *argv_ptr = *argv_src;
+        }
+
+        // --- argc ---
+        sp = sp - 8;
+        ulong* argc_ptr = sp as ulong*;
+        *argc_ptr = argc_val;
+
+        // ユーザースタックを構築済みのSPに更新
+        proc->user_stack = sp;
+
+        // syscall用カーネルRSPを設定（Ring3→Ring0のRSP切り替え用）
+        ulong* syscall_krsp = SYSCALL_KRSP_ADDR as ulong*;
+        *syscall_krsp = proc->kernel_stack;
+
+        // コンテキスト初期化（iretqでRing3+ユーザーRSPに直接遷移）
+        Context::init_user_task(proc, proc->kernel_stack, entry, sp);
+
+        // スケジューラに登録
+        Sched::add(proc);
+
+        return Result::Ok(new_pid as long);
+    }
+
+    /// auxvエントリを書き込むヘルパ
+    static void write_auxv(ulong base, ulong index, ulong atype, ulong value) {
+        ulong offset = index * 16;
+        ulong* type_ptr = (base + offset) as ulong*;
+        ulong* val_ptr = (base + offset + 8) as ulong*;
+        *type_ptr = atype;
+        *val_ptr = value;
+    }
+
+    /// 文字列をメモリにコピーするヘルパ (NULL終端含む)
+    static void copy_str(ulong dst, void* src) {
+        ulong s = src as ulong;
+        ulong i = 0;
+        while (true) {
+            ulong ch = 0;
+            ulong sa = s + i;
+            __asm__(`movq ${r:sa}, %rdi; xorq %rax,%rax; movzbl (%rdi),%eax; movq %rax, ${=r:ch}`);
+            ulong da = dst + i;
+            __asm__(`movq ${r:da}, %rdi; movq ${r:ch}, %rax; movb %al, (%rdi)`);
+            if (ch == 0) { break; }
+            i = i + 1;
+        }
+    }
+}

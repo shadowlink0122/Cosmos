@@ -1,0 +1,71 @@
+//! platform: baremetal-x86
+// tests/irq/test_irq.cm - 割り込み処理テスト
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../apps/terminal/mem;
+import ../../arch/x86_64/idt;
+import ../../drivers/timer/pit;
+import ../ktest;
+
+/// 割り込み処理テストスイート
+export struct TestIrq {}
+
+impl TestIrq {
+    /// IDTエントリ設定テスト
+    static void test_idt_entries() {
+        ulong idt_base = 0;
+        __asm__(`
+            subq $$16, %rsp;
+            sidt (%rsp);
+            movq 2(%rsp), %rax;
+            movq %rax, ${=r:idt_base};
+            addq $$16, %rsp
+        `);
+
+        ulong* idt32 = (idt_base + 32 * 16) as ulong*;
+        KTest::assert_nonzero(*idt32, "IDT[32] PIT IRQ0 set" as void*);
+        ulong* idt33 = (idt_base + 33 * 16) as ulong*;
+        KTest::assert_nonzero(*idt33, "IDT[33] Keyboard IRQ1 set" as void*);
+        ulong* idt44 = (idt_base + 44 * 16) as ulong*;
+        KTest::assert_nonzero(*idt44, "IDT[44] Mouse IRQ12 set" as void*);
+        ulong* idt14 = (idt_base + 14 * 16) as ulong*;
+        KTest::assert_nonzero(*idt14, "IDT[14] PageFault set" as void*);
+    }
+
+    /// PICマスクテスト
+    static void test_pic_masks() {
+        ulong master_mask = 0;
+        __asm__(`
+            inb $$0x21, %al;
+            movzbq %al, %rax;
+            movq %rax, ${=r:master_mask}
+        `);
+        KTest::assert_eq(master_mask & 1, 0, "PIC IRQ0 PIT enabled" as void*);
+        KTest::assert_eq((master_mask >> 1) & 1, 0, "PIC IRQ1 KB enabled" as void*);
+        KTest::assert_eq((master_mask >> 2) & 1, 0, "PIC IRQ2 cascade enabled" as void*);
+
+        ulong slave_mask = 0;
+        __asm__(`
+            inb $$0xA1, %al;
+            movzbq %al, %rax;
+            movq %rax, ${=r:slave_mask}
+        `);
+        KTest::assert_eq((slave_mask >> 4) & 1, 0, "PIC IRQ12 Mouse enabled" as void*);
+    }
+
+    /// PITタイマーテスト
+    static void test_pit_ticks() {
+        ulong ticks = PIT::get_ticks();
+        KTest::assert_nonzero(ticks, "PIT ticks > 0" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestIrq::test_idt_entries();
+        TestIrq::test_pic_masks();
+        TestIrq::test_pit_ticks();
+    }
+}

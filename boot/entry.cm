@@ -1,0 +1,291 @@
+//! platform: baremetal-x86
+// cosmo-linux::boot::entry - カーネルエントリポイント
+//
+// header.S → start_kernel() → 各サブシステム初期化 → shell
+// 参照: linux/init/main.c
+
+import ../include/types;
+import ../include/config;
+import ../include/scheduler;
+import ../drivers/serial;
+import ../drivers/timer/pit;
+import ../drivers/virtio/virtio_net;
+import ../drivers/virtio/virtio_9p;
+import ../net/core/arp;
+import ../net/core/ip;
+import ../include/net;
+import ../net/app/dns;
+
+import ../drivers/input/keyboard;
+import ../lib/kstring;
+import ../lib/printk;
+import ../arch/x86_64/cpu;
+import ../arch/x86_64/gdt;
+import ../arch/x86_64/idt;
+import ../arch/x86_64/context;
+import ./multiboot2;
+import ../mm/pmm;
+import ../mm/vmm;
+import ../mm/kmalloc;
+import ../sched/process;
+import ../sched/scheduler;
+import ../sys/syscall;
+import ../apps/terminal/shell;
+import ../fs/ramfs;
+import ../fs/fd_table;
+import ../fs/pipe;
+import ../fs/vfs;
+import ../fs/ninepfs;
+import ../init/init;
+import ../exec/loader;
+import ../init/init_rootfs;
+import ../drivers/video/framebuffer;
+import ../drivers/video/font;
+import ../apps/desktop/desktop;
+import ../apps/desktop/menubar;
+import ../apps/desktop/window;
+import ../apps/desktop/wm;
+import ../apps/terminal/terminal;
+import ../apps/desktop/dock;
+
+/// GUI画面更新ヘルパー (コールバック用)
+void gui_flush_helper() {
+    Fb::flip();
+    Desktop::draw_cursor_direct();
+}
+
+/// Terminal::putc ラッパー (コールバック用)
+void gui_term_putc(ulong slot, ulong ch) {
+    Terminal::putc(slot, ch);
+}
+
+/// Terminal::puts ラッパー (コールバック用)
+void gui_term_puts(ulong slot, void* str) {
+    Terminal::puts(slot, str);
+}
+
+/// Terminal::clear ラッパー (コールバック用)
+void gui_term_clear(ulong slot) {
+    Terminal::clear(slot);
+}
+
+/// Terminal::clear_buf ラッパー (コールバック用)
+void gui_term_clear_buf(ulong slot) {
+    Terminal::clear_buf(slot);
+}
+
+// ============================================================
+// start_kernel — エントリポイント
+// ============================================================
+
+void main(ulong mb2_info, ulong mb2_magic) {
+    // === 1. シリアルコンソール確立 ===
+    SerialPort serial(COM1);
+    DebugPort debug(DEBUGCON);
+
+    serial.println("" as void*);
+    serial.println("========================================" as void*);
+    serial.println("  Cosmo Linux v0.1.0" as void*);
+    serial.println("  Written in Cm - A Linux reimagined" as void*);
+    serial.println("========================================" as void*);
+    serial.println("" as void*);
+
+    pr_info(&serial, "start_kernel() entered" as void*);
+
+    // === 2. Multiboot1マジック検証 ===
+    if (mb2_magic != MB_MAGIC) {
+        pr_err(&serial, "Invalid Multiboot1 magic!" as void*);
+    }
+
+    // === 3. ブート情報解析 ===
+    BootInfo boot_info = {
+        mmap_addr: 0,
+        mmap_entry_size: 0,
+        mmap_count: 0,
+        fb_addr: 0,
+        fb_width: 0,
+        fb_height: 0,
+        fb_pitch: 0,
+        fb_bpp: 0,
+        total_memory: 0
+    };
+
+    if (mb2_magic == MB_MAGIC) {
+        Multiboot::parse(mb2_info, &boot_info, &serial);
+    }
+
+    // === 5. アーキテクチャ初期化 ===
+    pr_info(&serial, "Initializing architecture..." as void*);
+    Gdt::setup(&serial);
+    Idt::setup(&serial);
+
+    // SSE/SSE2有効化（musl-libc xorps等のSIMD命令サポート）
+    __asm__(`
+        movq %cr0, %rax;
+        andw $$0xFFFB, %ax;  // CR0.EM=0 (bit2 clear)
+        orw $$0x0002, %ax;   // CR0.MP=1 (bit1 set)
+        movq %rax, %cr0;
+        movq %cr4, %rax;
+        orw $$0x0600, %ax;  // CR4.OSFXSR=1 (bit9), CR4.OSXMMEXCPT=1 (bit10)
+        movq %rax, %cr4
+    `);
+    pr_info(&serial, "SSE/SSE2 enabled" as void*);
+
+    // === 6. メモリ管理初期化 ===
+    pr_info(&serial, "Initializing memory management..." as void*);
+
+    BuddyAllocator pmm();
+    if (boot_info.mmap_count > 0) {
+        Pmm::setup(&pmm, boot_info.mmap_addr, boot_info.mmap_entry_size,
+            boot_info.mmap_count, &serial);
+    }
+
+    ulong cr3_val = 0;
+    __asm__(`
+        movq %cr3, %rax;
+        movq %rax, ${=r:cr3_val}
+    `);
+    PageTable vmm(cr3_val);
+    vmm_init(&vmm, &serial);
+
+    KernelHeap heap();
+    if (pmm.total_pages > 0) {
+        kmalloc_init(&heap, &pmm, &serial);
+    }
+
+    // === 7. VFS初期化 ===
+    pr_info(&serial, "Initializing VFS..." as void*);
+    RamFs::setup(&serial);
+    FdTable::setup();
+    Cwd::setup();
+    Pipe::setup();
+    pr_info(&serial, "VFS initialized (ramfs + fd + cwd + pipe)" as void*);
+
+    // === 8. プロセス管理初期化 ===
+    pr_info(&serial, "Initializing process management..." as void*);
+
+    ProcessTable::setup(&serial);
+
+    Process idle(0, 0);
+    ProcessTable::create_idle(&idle, &serial);
+
+    RoundRobinScheduler sched();
+    Sched::setup(&sched, &idle, &serial);
+
+    // === 9. TSS初期化 ===
+    Gdt::setup_tss(READ_BUF, &serial);
+
+    // === 10. syscall初期化 ===
+    Syscall::setup(&serial);
+
+    // === 10. PIC/PIT/キーボード初期化 ===
+    pr_info(&serial, "Initializing hardware drivers..." as void*);
+    PIT::setup(&serial);
+    Kbd::setup(&serial);
+    Mouse::setup();
+    pr_info(&serial, "PS/2 mouse initialized (IRQ12)" as void*);
+
+    // === 11. ネットワーク初期化 ===
+    pr_info(&serial, "Initializing network..." as void*);
+    VirtioNet::init(&serial);
+
+    // === 11b. ホストFS (virtio-9p) 初期化 ===
+    pr_info(&serial, "Initializing host filesystem..." as void*);
+    Virtio9p::init(&serial);
+    NinePfs::setup(&serial);
+
+    // === 12. initプロセス & シェルタスク生成 ===
+    Init::banner(&serial);
+    pr_info(&serial, "Creating shell task..." as void*);
+
+    // GUIモードフラグを設定（Shell/VGA関数がテキストモード出力をスキップ）
+    // シェルタスク作成前に設定する必要がある
+    ulong* gui_mode_early = GUI_MODE_ADDR as ulong*;
+    *gui_mode_early = 1;
+
+    shell_init(&serial as ulong, &pmm as ulong);
+
+    Process shell(ProcessTable::alloc_pid(), 0);
+    shell.alloc_stack(&pmm);
+    if (shell.kernel_stack != 0) {
+        Context::init_task(&shell, shell.kernel_stack, shell_main as ulong);
+        Sched::add(&shell);
+        pr_info(&serial, "Shell task created" as void*);
+    }
+
+    // === 12. 初期化完了 ===
+    serial.puts("  Memory: " as void*);
+    print_dec(&serial, boot_info.total_memory / 1048576);
+    serial.println(" MiB" as void*);
+
+    pr_info(&serial, "Kernel initialization complete" as void*);
+
+    // === 初期rootfs構築: helloバイナリをRamFSに登録 ===
+    InitRootfs::setup(&pmm, &serial);
+
+    // === hello auto-execは省略（busyboxとvaddrが競合するため）===
+
+    // === 13. GUI 初期化 (BGA直接モード設定) ===
+    pr_info(&serial, "Initializing GUI desktop..." as void*);
+
+    // GUIモードフラグを設定（Shell::putcがVGA出力をスキップ）
+    ulong* gui_mode = GUI_MODE_ADDR as ulong*;
+    *gui_mode = 1;
+
+    Fb::init(&boot_info);
+    serial.puts("  FB: " as void*);
+    print_dec(&serial, Fb::width());
+    serial.puts("x" as void*);
+    print_dec(&serial, Fb::height());
+    serial.puts("x" as void*);
+    print_dec(&serial, Fb::bpp());
+    serial.println("" as void*);
+
+    Font::init();
+    Wm::init();
+    Desktop::init_cursor();
+
+    // GUI出力コールバック関数ポインタを設定
+    // shell_io.cmでTerminalを直接importできないため、関数ポインタ経由で接続
+    ulong* gui_putc_ptr = GUI_PUTC_ADDR as ulong*;
+    ulong* gui_puts_ptr = GUI_PUTS_ADDR as ulong*;
+    ulong* gui_flush_ptr = GUI_FLUSH_ADDR as ulong*;
+    ulong* gui_clear_ptr = GUI_CLEAR_ADDR as ulong*;
+    ulong* gui_clearbuf_ptr = GUI_CLEARBUF_ADDR as ulong*;
+    *gui_putc_ptr = gui_term_putc as ulong;
+    *gui_puts_ptr = gui_term_puts as ulong;
+    *gui_flush_ptr = gui_flush_helper as ulong;
+    *gui_clear_ptr = gui_term_clear as ulong;
+    *gui_clearbuf_ptr = gui_term_clear_buf as ulong;
+
+    // GUIモードフラグを設定 (VGAテキスト出力を無効化)
+    ulong* gui_flag = GUI_MODE_ADDR as ulong*;
+    *gui_flag = 1;
+
+    // ターミナルウィンドウを作成
+    ulong term_win = Wm::create_terminal();
+    Terminal::init(0, term_win);
+
+    // 初期画面描画
+    Wm::compose();
+
+    // ターミナルにウェルカムメッセージ (entry.cmが直接描画)
+    // shell_main のバナーはGUIモードではスキップされる
+    Fb::flip();
+    Desktop::draw_cursor_direct();
+
+    pr_info(&serial, "GUI desktop initialized" as void*);
+
+    pr_info(&serial, "Entering idle loop with scheduler..." as void*);
+
+    // 割り込み有効化
+    Cpu::sti();
+
+    // idle loop (hlt ベース — IRQ12 で即座にwakeup)
+    while (true) {
+        __asm__(`sti; hlt`);
+        // マウスイベント処理（VRAM直描画で高速）
+        Wm::process_mouse();
+        Sched::run();
+    }
+}

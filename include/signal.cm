@@ -1,0 +1,33 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::signal - シグナル定数
+//
+// Linux互換シグナル番号とマクロ。
+// 参照: linux/include/uapi/asm-generic/signal.h
+
+/// シグナル番号
+export const ulong SIGHUP  = 1;   // ハングアップ
+export const ulong SIGINT  = 2;   // 割り込み (Ctrl+C)
+export const ulong SIGQUIT = 3;   // 終了
+export const ulong SIGILL  = 4;   // 不正命令
+export const ulong SIGTRAP = 5;   // トレース
+export const ulong SIGABRT = 6;   // 中止
+export const ulong SIGBUS  = 7;   // バスエラー
+export const ulong SIGFPE  = 8;   // 浮動小数点例外
+export const ulong SIGKILL = 9;   // 強制終了（無視不可）
+export const ulong SIGUSR1 = 10;  // ユーザー定義1
+export const ulong SIGSEGV = 11;  // セグメンテーション違反
+export const ulong SIGUSR2 = 12;  // ユーザー定義2
+export const ulong SIGPIPE = 13;  // パイプ破損
+export const ulong SIGALRM = 14;  // アラーム
+export const ulong SIGTERM = 15;  // 終了要求
+export const ulong SIGCHLD = 17;  // 子プロセス状態変化
+export const ulong SIGCONT = 18;  // 継続
+export const ulong SIGSTOP = 19;  // 停止（無視不可）
+export const ulong SIGTSTP = 20;  // 端末停止 (Ctrl+Z)
+
+/// 最大シグナル番号
+export const ulong NSIG = 32;
+
+/// シグナルデフォルト動作
+export const ulong SIG_DFL = 0;  // デフォルト
+export const ulong SIG_IGN = 1;  // 無視

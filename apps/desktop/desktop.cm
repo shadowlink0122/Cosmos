@@ -1,0 +1,127 @@
+//! platform: baremetal-x86
+// cosmo-linux::ui::desktop - デスクトップ背景
+//
+// macOS Sonoma 風のグラデーション背景とマウスカーソル。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/video/framebuffer;
+import ../../drivers/video/font;
+import ../../include/color;
+
+/// カーソル状態アドレス
+const PhysAddr CURSOR_STATE_ADDR = 0xD80800;
+// レイアウト:
+//   0x00: x (8バイト)
+//   0x08: y (8バイト)
+//   0x10: old_x (8バイト)
+//   0x18: old_y (8バイト)
+
+/// Desktop — デスクトップ描画
+export struct Desktop {}
+
+impl Desktop {
+    /// デスクトップ背景を描画
+    static void draw_background() {
+        ulong w = Fb::width();
+        ulong h = Fb::height();
+        Fb::gradient_v(0, 0, w, h, DESKTOP_TOP, DESKTOP_BOTTOM);  // color.cmの定数
+    }
+
+    /// マウスカーソル初期化
+    static void init_cursor() {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+        *cx = Fb::width() / 2;
+        *cy = Fb::height() / 2;
+    }
+
+    /// マウスカーソル位置更新
+    static void move_cursor(long dx, long dy) {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+
+        long new_x = (*cx as long) + dx;
+        long new_y = (*cy as long) + dy;
+
+        if (new_x < 0) { new_x = 0; }
+        if (new_y < 0) { new_y = 0; }
+        if (new_x >= Fb::width() as long) { new_x = (Fb::width() - 1) as long; }
+        if (new_y >= Fb::height() as long) { new_y = (Fb::height() - 1) as long; }
+
+        *cx = new_x as ulong;
+        *cy = new_y as ulong;
+    }
+
+    /// マウスカーソル描画 (VRAM直接書き込み — 高速)
+    static void draw_cursor_direct() {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+        ulong x = *cx;
+        ulong y = *cy;
+        ulong sh = Fb::height();
+        ulong sw = Fb::width();
+
+        // 12×12 の矢印カーソル (VRAM直接描画)
+        ulong[12] widths;
+        widths[0] = 1;
+        widths[1] = 2;
+        widths[2] = 3;
+        widths[3] = 4;
+        widths[4] = 5;
+        widths[5] = 6;
+        widths[6] = 7;
+        widths[7] = 8;
+        widths[8] = 9;
+        widths[9] = 10;
+        widths[10] = 11;
+        widths[11] = 5;
+
+        ulong row = 0;
+        while (row < 12) {
+            // 画面下端クリッピング
+            if (y + row >= sh) { break; }
+
+            ulong w = widths[row];
+            // 画面右端クリッピング
+            ulong draw_w = w + 1;
+            if (x + draw_w > sw) { draw_w = sw - x; }
+
+            // 黒アウトライン → VRAM直接
+            Fb::vram_fill_rect(x, y + row, draw_w, 1, CURSOR_OUTLINE);
+            // 白内部 → VRAM直接
+            if (w > 1) {
+                ulong inner_w = w - 1;
+                if (x + 1 + inner_w > sw) {
+                    if (x + 1 < sw) {
+                        inner_w = sw - x - 1;
+                    } else {
+                        inner_w = 0;
+                    }
+                }
+                if (inner_w > 0) {
+                    Fb::vram_fill_rect(x + 1, y + row, inner_w, 1, CURSOR_FILL);
+                }
+            }
+            row = row + 1;
+        }
+    }
+
+    /// 旧カーソル位置のVRAMをバックバッファから復元
+    static void restore_cursor(ulong old_x, ulong old_y) {
+        // カーソルサイズ: 最大12×12 + マージン
+        Fb::blit_rect(old_x, old_y, 13, 13);
+    }
+
+    /// カーソルX座標取得
+    static ulong cursor_x() {
+        ulong* cx = CURSOR_STATE_ADDR as ulong*;
+        return *cx;
+    }
+
+    /// カーソルY座標取得
+    static ulong cursor_y() {
+        ulong* cy = (CURSOR_STATE_ADDR + 8) as ulong*;
+        return *cy;
+    }
+}

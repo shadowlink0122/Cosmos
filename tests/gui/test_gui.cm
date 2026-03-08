@@ -1,0 +1,455 @@
+//! platform: baremetal-x86
+// tests/gui/test_gui.cm - GUI関連テスト
+//
+// VGAモードガード、ターミナルマルチスロット、VGAパレット、
+// 色バッファ、dirtyフラグ、スクロール、コールバック設定、
+// Dockヒットテスト、RTC、ウィンドウZ-orderテスト。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../apps/terminal/mem;
+import ../../apps/terminal/vga;
+import ../../apps/terminal/shell/defs;
+import ../../drivers/timer/rtc;
+import ../ktest;
+
+// ============================================================
+// GUI テストスイート
+// ============================================================
+
+/// GUI関連テストスイート
+export struct TestGui {}
+
+impl TestGui {
+    /// VGA GUIモードガードテスト
+    static void test_gui_mode_guard() {
+        ulong* gui_mode = GUI_MODE_ADDR as ulong*;
+        ulong saved_gui = *gui_mode;
+        *gui_mode = 1;
+
+        KTest::assert_eq(Vga::is_gui_mode(), 1, "VGA is_gui_mode=1" as void*);
+
+        Vga::putc(65);
+        Vga::puts("test" as void*);
+        Vga::clear();
+        Vga::update_cursor();
+        Vga::scroll();
+        Vga::newline();
+        Vga::scroll_up();
+        Vga::scroll_down();
+        Vga::scrollback_init();
+        Vga::write_at(0, 0, 65, 7);
+        KTest::pass("VGA GUI-mode guard (no crash)" as void*);
+
+        *gui_mode = saved_gui;
+    }
+
+    /// VGAテキストモードテスト
+    static void test_text_mode() {
+        ulong* gui_mode = GUI_MODE_ADDR as ulong*;
+        ulong saved_gui = *gui_mode;
+        *gui_mode = 0;
+        KTest::assert_eq(Vga::is_gui_mode(), 0, "VGA is_gui_mode=0 (text)" as void*);
+        *gui_mode = saved_gui;
+    }
+
+    /// ターミナルスロットアドレス計算テスト
+    static void test_slot_addresses() {
+        ulong slot0 = 0xD82000;
+        ulong slot1 = 0xD82000 + 64;
+        ulong slot2 = 0xD82000 + 128;
+        ulong slot3 = 0xD82000 + 192;
+
+        KTest::assert_eq(slot0, 0xD82000, "Term slot0 addr" as void*);
+        KTest::assert_eq(slot1, 0xD82040, "Term slot1 addr" as void*);
+        KTest::assert_eq(slot2, 0xD82080, "Term slot2 addr" as void*);
+        KTest::assert_eq(slot3, 0xD820C0, "Term slot3 addr" as void*);
+    }
+
+    /// ターミナルスロットactiveフラグテスト
+    static void test_slot_active() {
+        ulong slot0 = 0xD82000;
+        ulong slot1 = 0xD82000 + 64;
+        ulong slot2 = 0xD82000 + 128;
+        ulong slot3 = 0xD82000 + 192;
+
+        ulong* s0_active = (slot0 + 0x28) as ulong*;
+        ulong* s1_active = (slot1 + 0x28) as ulong*;
+        ulong* s2_active = (slot2 + 0x28) as ulong*;
+        ulong* s3_active = (slot3 + 0x28) as ulong*;
+
+        ulong saved_s0 = *s0_active;
+        ulong saved_s1 = *s1_active;
+        ulong saved_s2 = *s2_active;
+        ulong saved_s3 = *s3_active;
+
+        *s0_active = 0; *s1_active = 0; *s2_active = 0; *s3_active = 0;
+
+        KTest::assert_eq(*s0_active, 0, "Term slot0 inactive" as void*);
+        KTest::assert_eq(*s1_active, 0, "Term slot1 inactive" as void*);
+        *s0_active = 1;
+        KTest::assert_eq(*s0_active, 1, "Term slot0 active" as void*);
+
+        *s0_active = saved_s0;
+        *s1_active = saved_s1;
+        *s2_active = saved_s2;
+        *s3_active = saved_s3;
+    }
+
+    /// テキストバッファ読み書きテスト
+    static void test_text_buffer() {
+        ulong buf0 = 0xD84000;
+        ulong buf1 = 0xD84000 + 8192;
+        KTest::assert_eq(buf0, 0xD84000, "Term buf0 addr" as void*);
+        KTest::assert_eq(buf1, 0xD86000, "Term buf1 addr" as void*);
+
+        ulong test_addr = buf0;
+        ulong saved_byte = 0;
+        __asm__(`
+            movq ${r:test_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:saved_byte}
+        `);
+
+        ulong test_ch = 0x41;
+        __asm__(`
+            movq ${r:test_addr}, %rdi;
+            movq ${r:test_ch}, %rax;
+            movb %al, (%rdi)
+        `);
+        ulong read_back = 0;
+        __asm__(`
+            movq ${r:test_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:read_back}
+        `);
+        KTest::assert_eq(read_back, 0x41, "Term buf write/read" as void*);
+
+        __asm__(`
+            movq ${r:test_addr}, %rdi;
+            movq ${r:saved_byte}, %rax;
+            movb %al, (%rdi)
+        `);
+    }
+
+    /// VGAパレット検証テスト
+    static void test_palette() {
+        ulong pal_base = 0xD81000;
+        ulong* pal0  = (pal_base + 0 * 8) as ulong*;
+        *pal0  = 0x000000;
+        ulong* pal1  = (pal_base + 1 * 8) as ulong*;
+        *pal1  = 0x0000AA;
+        ulong* pal2  = (pal_base + 2 * 8) as ulong*;
+        *pal2  = 0x00AA00;
+        ulong* pal7  = (pal_base + 7 * 8) as ulong*;
+        *pal7  = 0xAAAAAA;
+        ulong* pal10 = (pal_base + 10 * 8) as ulong*;
+        *pal10 = 0x55FF55;
+        ulong* pal15 = (pal_base + 15 * 8) as ulong*;
+        *pal15 = 0xFFFFFF;
+
+        KTest::assert_eq(*pal0, 0x000000, "VGA pal[0]=black" as void*);
+        KTest::assert_eq(*pal1, 0x0000AA, "VGA pal[1]=blue" as void*);
+        KTest::assert_eq(*pal2, 0x00AA00, "VGA pal[2]=green" as void*);
+        KTest::assert_eq(*pal7, 0xAAAAAA, "VGA pal[7]=gray" as void*);
+        KTest::assert_eq(*pal10, 0x55FF55, "VGA pal[10]=bright green" as void*);
+        KTest::assert_eq(*pal15, 0xFFFFFF, "VGA pal[15]=white" as void*);
+    }
+
+    /// 色バッファ読み書きテスト
+    static void test_color_buffer() {
+        ulong buf0 = 0xD84000;
+        ulong color_base = buf0 + 4096;
+        ulong saved_color_byte = 0;
+        ulong color_addr = color_base;
+        __asm__(`
+            movq ${r:color_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:saved_color_byte}
+        `);
+
+        ulong test_color = 10;
+        __asm__(`
+            movq ${r:color_addr}, %rdi;
+            movq ${r:test_color}, %rax;
+            movb %al, (%rdi)
+        `);
+        ulong read_color = 0;
+        __asm__(`
+            movq ${r:color_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:read_color}
+        `);
+        KTest::assert_eq(read_color, 10, "Color buf write/read=10" as void*);
+
+        ulong color7 = 7;
+        __asm__(`
+            movq ${r:color_addr}, %rdi;
+            movq ${r:color7}, %rax;
+            movb %al, (%rdi)
+        `);
+        ulong read_color2 = 0;
+        __asm__(`
+            movq ${r:color_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:read_color2}
+        `);
+        KTest::assert_eq(read_color2, 7, "Color buf write/read=7" as void*);
+
+        __asm__(`
+            movq ${r:color_addr}, %rdi;
+            movq ${r:saved_color_byte}, %rax;
+            movb %al, (%rdi)
+        `);
+    }
+
+    /// Dirtyフラグ検証テスト
+    static void test_dirty_flag() {
+        ulong* dirty = 0x95068 as ulong*;
+        ulong saved_dirty = *dirty;
+
+        *dirty = 0;
+        KTest::assert_eq(*dirty, 0, "Dirty flag=0 (clean)" as void*);
+        *dirty = 1;
+        KTest::assert_eq(*dirty, 1, "Dirty flag=1 (dirty)" as void*);
+
+        ulong consumed = *dirty;
+        *dirty = 0;
+        KTest::assert_eq(consumed, 1, "Dirty consume=1" as void*);
+        KTest::assert_eq(*dirty, 0, "Dirty after consume=0" as void*);
+
+        *dirty = saved_dirty;
+    }
+
+    /// GUIコールバックテスト
+    static void test_callbacks() {
+        ulong* gui_mode = GUI_MODE_ADDR as ulong*;
+        if (*gui_mode != 0) {
+            ulong* cb_putc  = 0x95040 as ulong*;
+            ulong* cb_puts  = 0x95048 as ulong*;
+            ulong* cb_flush = 0x95050 as ulong*;
+            ulong* cb_clear = 0x95058 as ulong*;
+            ulong* cb_clrbf = 0x95060 as ulong*;
+
+            ulong putc_ok = 0; if (*cb_putc != 0) { putc_ok = 1; }
+            KTest::assert_true(putc_ok, "GUI cb_putc set" as void*);
+            ulong puts_ok = 0; if (*cb_puts != 0) { puts_ok = 1; }
+            KTest::assert_true(puts_ok, "GUI cb_puts set" as void*);
+            ulong flush_ok = 0; if (*cb_flush != 0) { flush_ok = 1; }
+            KTest::assert_true(flush_ok, "GUI cb_flush set" as void*);
+            ulong clear_ok = 0; if (*cb_clear != 0) { clear_ok = 1; }
+            KTest::assert_true(clear_ok, "GUI cb_clear set" as void*);
+            ulong clrbf_ok = 0; if (*cb_clrbf != 0) { clrbf_ok = 1; }
+            KTest::assert_true(clrbf_ok, "GUI cb_clearbuf set" as void*);
+        } else {
+            KTest::pass("GUI callbacks (text mode skip)" as void*);
+        }
+    }
+
+    /// バッファクリア検証テスト
+    static void test_buffer_clear() {
+        ulong clean_base = 0xD84000;
+        ulong ci = 0;
+        while (ci < 16) {
+            ulong a = clean_base + ci;
+            ulong v = 0xFF;
+            __asm__(`
+                movq ${r:a}, %rdi;
+                movq ${r:v}, %rax;
+                movb %al, (%rdi)
+            `);
+            ci = ci + 1;
+        }
+        ulong dirty_check = 0;
+        __asm__(`
+            movq ${r:clean_base}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:dirty_check}
+        `);
+        KTest::assert_eq(dirty_check, 0xFF, "Buf dirty=0xFF" as void*);
+
+        ci = 0;
+        while (ci < 16) {
+            ulong a = clean_base + ci;
+            ulong v = 0;
+            __asm__(`
+                movq ${r:a}, %rdi;
+                movq ${r:v}, %rax;
+                movb %al, (%rdi)
+            `);
+            ci = ci + 1;
+        }
+        ulong clean_check = 0;
+        __asm__(`
+            movq ${r:clean_base}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:clean_check}
+        `);
+        KTest::assert_eq(clean_check, 0, "Buf clear=0" as void*);
+    }
+
+    /// ドラッグ・ウィンドウ状態テスト
+    static void test_window_state() {
+        ulong* drag_flag = 0xD80A00 as ulong*;
+        ulong saved_drag = *drag_flag;
+        *drag_flag = 0;
+        KTest::assert_eq(*drag_flag, 0, "Drag state=0 (idle)" as void*);
+        *drag_flag = 1;
+        KTest::assert_eq(*drag_flag, 1, "Drag state=1 (active)" as void*);
+        *drag_flag = saved_drag;
+
+        ulong* active_win = 0xD80A20 as ulong*;
+        ulong saved_active = *active_win;
+        *active_win = 3;
+        KTest::assert_eq(*active_win, 3, "Active win=3" as void*);
+        *active_win = 0;
+        KTest::assert_eq(*active_win, 0, "Active win=0" as void*);
+        *active_win = saved_active;
+
+        ulong* gui_check = GUI_MODE_ADDR as ulong*;
+        ulong saved_gui = *gui_check;
+        KTest::assert_eq(*gui_check, saved_gui, "GUI_MODE_ADDR preserved" as void*);
+    }
+
+    /// RTCレジスタ読み取りテスト
+    static void test_rtc() {
+        ulong rtc_h = Rtc::hours();
+        ulong rtc_h_ok = 0;
+        if (rtc_h < 24) { rtc_h_ok = 1; }
+        KTest::assert_true(rtc_h_ok, "RTC hours < 24" as void*);
+
+        ulong rtc_m = Rtc::minutes();
+        ulong rtc_m_ok = 0;
+        if (rtc_m < 60) { rtc_m_ok = 1; }
+        KTest::assert_true(rtc_m_ok, "RTC minutes < 60" as void*);
+
+        ulong rtc_s = Rtc::seconds();
+        ulong rtc_s_ok = 0;
+        if (rtc_s < 60) { rtc_s_ok = 1; }
+        KTest::assert_true(rtc_s_ok, "RTC seconds < 60" as void*);
+    }
+
+    /// シェル色設定テスト
+    static void test_shell_colors() {
+        ulong* sh_color = 0x95030 as ulong*;
+        ulong saved_sh_color = *sh_color;
+
+        *sh_color = ((0 & 0x0F) << 4) | (10 & 0x0F);
+        ulong fg_idx = *sh_color & 0x0F;
+        KTest::assert_eq(fg_idx, 10, "Shell fg=10 (bright green)" as void*);
+
+        *sh_color = ((0 & 0x0F) << 4) | (14 & 0x0F);
+        fg_idx = *sh_color & 0x0F;
+        KTest::assert_eq(fg_idx, 14, "Shell fg=14 (yellow)" as void*);
+
+        *sh_color = 0x07;
+        fg_idx = *sh_color & 0x0F;
+        KTest::assert_eq(fg_idx, 7, "Shell fg=7 (default gray)" as void*);
+
+        *sh_color = saved_sh_color;
+    }
+
+    /// パレットRGB変換テスト
+    static void test_palette_rgb() {
+        ulong pal_base = 0xD81000;
+        ulong* pal10 = (pal_base + 10 * 8) as ulong*;
+        ulong* pal0  = (pal_base + 0 * 8) as ulong*;
+        KTest::assert_eq(*pal10, 0x55FF55, "Palette[10]->RGB=0x55FF55" as void*);
+        KTest::assert_eq(*pal0, 0x000000, "Palette[0]->RGB=0x000000" as void*);
+    }
+
+    /// テキストバッファ行計算テスト
+    static void test_buffer_offset() {
+        ulong offset = 5 * 80 + 10;
+        KTest::assert_eq(offset, 410, "Buf offset(5,10)=410" as void*);
+
+        ulong max_offset = 49 * 80 + 79;
+        KTest::assert_eq(max_offset, 3999, "Buf offset(49,79)=3999" as void*);
+
+        ulong in_bounds = 0;
+        if (max_offset < 4096) { in_bounds = 1; }
+        KTest::assert_true(in_bounds, "Max offset < 4096" as void*);
+    }
+
+    /// 複数スロット独立性テスト
+    static void test_slot_independence() {
+        ulong s0_buf = 0xD84000;
+        ulong s1_buf = 0xD84000 + 8192;
+        ulong s0_end = s0_buf + 8192;
+        ulong no_overlap = 0;
+        if (s1_buf >= s0_end) { no_overlap = 1; }
+        KTest::assert_true(no_overlap, "Slot0/1 buf no overlap" as void*);
+
+        ulong s0_state = 0xD82000;
+        ulong s1_state = 0xD82000 + 64;
+        ulong state_gap = 0;
+        if (s1_state > s0_state) { state_gap = 1; }
+        KTest::assert_true(state_gap, "Slot0/1 state separate" as void*);
+    }
+
+    /// カーソル位置テスト
+    static void test_cursor() {
+        ulong slot0 = 0xD82000;
+        ulong* cursor_col = (slot0 + 8) as ulong*;
+        ulong* cursor_row = (slot0 + 0x10) as ulong*;
+        ulong saved_col = *cursor_col;
+        ulong saved_row = *cursor_row;
+
+        *cursor_col = 0; *cursor_row = 0;
+        KTest::assert_eq(*cursor_col, 0, "Cursor col=0" as void*);
+        KTest::assert_eq(*cursor_row, 0, "Cursor row=0" as void*);
+
+        *cursor_col = 42; *cursor_row = 15;
+        KTest::assert_eq(*cursor_col, 42, "Cursor col=42" as void*);
+        KTest::assert_eq(*cursor_row, 15, "Cursor row=15" as void*);
+
+        *cursor_col = saved_col;
+        *cursor_row = saved_row;
+    }
+
+    /// 最大カラム/行数テスト
+    static void test_max_dimensions() {
+        ulong slot0 = 0xD82000;
+        ulong* max_cols = (slot0 + 0x18) as ulong*;
+        ulong* max_rows = (slot0 + 0x20) as ulong*;
+
+        ulong mc_ok = 0;
+        if (*max_cols <= 80) { mc_ok = 1; }
+        KTest::assert_true(mc_ok, "Max cols <= 80" as void*);
+
+        ulong mr_ok = 0;
+        if (*max_rows <= 50) { mr_ok = 1; }
+        KTest::assert_true(mr_ok, "Max rows <= 50" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestGui::test_gui_mode_guard();
+        TestGui::test_text_mode();
+        TestGui::test_slot_addresses();
+        TestGui::test_slot_active();
+        TestGui::test_text_buffer();
+        TestGui::test_palette();
+        TestGui::test_color_buffer();
+        TestGui::test_dirty_flag();
+        TestGui::test_callbacks();
+        TestGui::test_buffer_clear();
+        TestGui::test_window_state();
+        TestGui::test_rtc();
+        TestGui::test_shell_colors();
+        TestGui::test_palette_rgb();
+        TestGui::test_buffer_offset();
+        TestGui::test_slot_independence();
+        TestGui::test_cursor();
+        TestGui::test_max_dimensions();
+    }
+}

@@ -1,0 +1,52 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::signal::test_signal - Signal テスト
+//
+// シグナル定数と pending/clear の動作を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/scheduler;
+import ../../include/signal;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../sched/process;
+import ../../sys/signal;
+import ../test_io;
+import ../ktest;
+
+/// Signal テストスイート
+export struct TestSignal {}
+
+impl TestSignal {
+    /// シグナル定数テスト
+    static void test_constants() {
+        KTest::assert_eq(SIGKILL, 9, "SIGKILL = 9" as void*);
+        KTest::assert_eq(SIGTERM, 15, "SIGTERM = 15" as void*);
+        KTest::assert_eq(SIGCHLD, 17, "SIGCHLD = 17" as void*);
+    }
+
+    /// pending/clearテスト
+    static void test_pending_clear() {
+        Process* cur = Sched::current();
+        ulong cur_addr = cur as ulong;
+        if (cur_addr != 0) {
+            cur->pending_signal = 0;  // クリア
+            KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 0,
+                "no pending SIGUSR1" as void*);
+            // SIGUSR1をセット
+            cur->pending_signal = cur->pending_signal | (1 << SIGUSR1);
+            KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 1,
+                "SIGUSR1 pending after set" as void*);
+            // クリア
+            Signal::clear(cur, SIGUSR1);
+            KTest::assert_eq(Signal::is_pending(cur, SIGUSR1), 0,
+                "SIGUSR1 cleared" as void*);
+        }
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestSignal::test_constants();
+        TestSignal::test_pending_clear();
+    }
+}

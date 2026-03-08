@@ -1,0 +1,205 @@
+//! platform: baremetal-x86
+// cosmo-linux::exec::elf - ELF64 バイナリパーサ
+//
+// ELF64ヘッダとプログラムヘッダの解析。
+// 参照: linux/include/uapi/linux/elf.h
+
+import ../include/types;
+
+// ============================================================
+// ELF マジックナンバー
+// ============================================================
+
+/// ELFマジック: 0x7F 'E' 'L' 'F'
+export const ulong ELF_MAGIC = 0x464C457F;
+
+// ============================================================
+// ELF クラスとタイプ
+// ============================================================
+
+/// ELF64
+export const ulong ELFCLASS64 = 2;
+
+/// リトルエンディアン
+export const ulong ELFDATA2LSB = 1;
+
+/// 実行可能ファイル
+export const ulong ET_EXEC = 2;
+
+/// 共有オブジェクト (PIE)
+export const ulong ET_DYN = 3;
+
+/// x86_64
+export const ulong EM_X86_64 = 62;
+
+/// PT_LOAD (ロード可能セグメント)
+export const ulong PT_LOAD = 1;
+
+/// PT_INTERP (動的リンカーパス)
+export const ulong PT_INTERP = 3;
+
+/// PT_PHDR (プログラムヘッダテーブル)
+export const ulong PT_PHDR = 6;
+
+// ============================================================
+// ELF64 ヘッダ構造（64バイト）
+// ============================================================
+// オフセット:
+//   0x00: e_ident[16]   (マジック + クラス + データ + ...)
+//   0x10: e_type(2) + e_machine(2) + e_version(4)
+//   0x18: e_entry(8)
+//   0x20: e_phoff(8)
+//   0x28: e_shoff(8)
+//   0x30: e_flags(4) + e_ehsize(2) + e_phentsize(2)
+//   0x38: e_phnum(2) + ...
+
+/// Elf — ELF64 パーサ
+export struct Elf {}
+
+impl Elf {
+    /// ELFマジックを検証
+    static ulong check_magic(ulong data_addr) {
+        ulong* magic_ptr = data_addr as ulong*;
+        ulong magic = *magic_ptr & 0xFFFFFFFF;  // 下位32ビット
+        if (magic == ELF_MAGIC) { return 1; }
+        return 0;
+    }
+
+    /// ELFクラスを取得 (EI_CLASS, offset 4)
+    static ulong get_class(ulong data_addr) {
+        ulong byte_addr = data_addr + 4;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:byte_addr}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// e_type を取得 (offset 0x10, 2バイト)
+    static ulong get_type(ulong data_addr) {
+        ulong addr = data_addr + 0x10;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movzwl (%rdi), %eax;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// e_machine を取得 (offset 0x12, 2バイト)
+    static ulong get_machine(ulong data_addr) {
+        ulong addr = data_addr + 0x12;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movzwl (%rdi), %eax;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// e_entry を取得 (offset 0x18, 8バイト)
+    static ulong get_entry(ulong data_addr) {
+        ulong* ptr = (data_addr + 0x18) as ulong*;
+        return *ptr;
+    }
+
+    /// e_phoff を取得 (offset 0x20, 8バイト)
+    static ulong get_phoff(ulong data_addr) {
+        ulong* ptr = (data_addr + 0x20) as ulong*;
+        return *ptr;
+    }
+
+    /// e_phentsize を取得 (offset 0x36, 2バイト)
+    static ulong get_phentsize(ulong data_addr) {
+        ulong addr = data_addr + 0x36;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movzwl (%rdi), %eax;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// e_phnum を取得 (offset 0x38, 2バイト)
+    static ulong get_phnum(ulong data_addr) {
+        ulong addr = data_addr + 0x38;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movzwl (%rdi), %eax;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// プログラムヘッダの p_type を取得 (offset 0, 4バイト)
+    static ulong ph_type(ulong ph_addr) {
+        ulong* ptr = ph_addr as ulong*;
+        return *ptr & 0xFFFFFFFF;
+    }
+
+    /// プログラムヘッダの p_offset を取得 (offset 8, 8バイト)
+    static ulong ph_offset(ulong ph_addr) {
+        ulong* ptr = (ph_addr + 8) as ulong*;
+        return *ptr;
+    }
+
+    /// プログラムヘッダの p_vaddr を取得 (offset 0x10, 8バイト)
+    static ulong ph_vaddr(ulong ph_addr) {
+        ulong* ptr = (ph_addr + 0x10) as ulong*;
+        return *ptr;
+    }
+
+    /// プログラムヘッダの p_filesz を取得 (offset 0x20, 8バイト)
+    static ulong ph_filesz(ulong ph_addr) {
+        ulong* ptr = (ph_addr + 0x20) as ulong*;
+        return *ptr;
+    }
+
+    /// プログラムヘッダの p_memsz を取得 (offset 0x28, 8バイト)
+    static ulong ph_memsz(ulong ph_addr) {
+        ulong* ptr = (ph_addr + 0x28) as ulong*;
+        return *ptr;
+    }
+
+    /// プログラムヘッダの p_flags を取得 (offset 0x04, 4バイト)
+    static ulong ph_flags(ulong ph_addr) {
+        ulong addr = ph_addr + 4;
+        ulong val = 0;
+        __asm__(`
+            movq ${r:addr}, %rdi;
+            xorq %rax, %rax;
+            movl (%rdi), %eax;
+            movq %rax, ${=r:val}
+        `);
+        return val;
+    }
+
+    /// ELF64ヘッダの完全検証
+    /// 戻り値: 1=有効, 0=無効
+    static ulong validate(ulong data_addr) {
+        if (Elf::check_magic(data_addr) == 0) { return 0; }
+        if (Elf::get_class(data_addr) != ELFCLASS64) { return 0; }
+        // ET_EXEC (静的リンク) または ET_DYN (PIE) を受け入れ
+        ulong etype = Elf::get_type(data_addr);
+        if (etype != ET_EXEC && etype != ET_DYN) { return 0; }
+        if (Elf::get_machine(data_addr) != EM_X86_64) { return 0; }
+        return 1;
+    }
+
+    /// ELFがPIEかどうかチェック
+    static ulong is_pie(ulong data_addr) {
+        if (Elf::get_type(data_addr) == ET_DYN) { return 1; }
+        return 0;
+    }
+}

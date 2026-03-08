@@ -1,0 +1,101 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::pipe::test_pipe - Pipe テスト
+//
+// パイプの作成、読み書き、データ整合性を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../include/result;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../lib/kstring;
+import ../../fs/pipe;
+import ../test_io;
+import ../ktest;
+import ../../apps/terminal/mem;
+
+/// Pipe テストスイート
+export struct TestPipe {}
+
+impl TestPipe {
+    /// パイプ作成テスト
+    static void test_create() {
+        long pipe_id = 0;
+        Result<ulong, long> cr = Pipe::create();
+        match (cr) {
+            Result::Ok(id) => { pipe_id = id as long; }
+            Result::Err(e) => { pipe_id = 0 - e; }
+        }
+        if (pipe_id >= 0) {
+            KTest::assert_true(1, "pipe create succeeds" as void*);
+        } else {
+            KTest::assert_true(0, "pipe create succeeds" as void*);
+        }
+    }
+
+    /// 空パイプ読み込みテスト
+    static void test_empty_read() {
+        long pipe_id = 0;
+        Result<ulong, long> cr = Pipe::create();
+        match (cr) {
+            Result::Ok(id) => { pipe_id = id as long; }
+            Result::Err(e) => { pipe_id = 0 - e; }
+        }
+        ulong buf = 0x9D100;
+        long n = 0;
+        Result<ulong, long> rr = Pipe::read(pipe_id as ulong, buf, 32);
+        match (rr) {
+            Result::Ok(v) => { n = v as long; }
+            Result::Err(e) => { n = 0 - e; }
+        }
+        KTest::assert_eq(n as ulong, 0, "empty pipe read returns 0" as void*);
+        Pipe::destroy(pipe_id as ulong);
+    }
+
+    /// 読み書きテスト
+    static void test_read_write() {
+        long pipe_id = 0;
+        Result<ulong, long> cr = Pipe::create();
+        match (cr) {
+            Result::Ok(id) => { pipe_id = id as long; }
+            Result::Err(e) => { pipe_id = 0 - e; }
+        }
+
+        ulong msg_addr = "Hello" as ulong;
+        long n = 0;
+        Result<ulong, long> wr = Pipe::write(pipe_id as ulong, msg_addr, 5);
+        match (wr) {
+            Result::Ok(v) => { n = v as long; }
+            Result::Err(e) => { n = 0 - e; }
+        }
+        KTest::assert_eq(n as ulong, 5, "pipe write 5 bytes" as void*);
+
+        ulong buf = 0x9D100;
+        memzero(buf as void*, 32);
+        Result<ulong, long> rr2 = Pipe::read(pipe_id as ulong, buf, 32);
+        match (rr2) {
+            Result::Ok(v) => { n = v as long; }
+            Result::Err(e) => { n = 0 - e; }
+        }
+        KTest::assert_eq(n as ulong, 5, "pipe read returns 5 bytes" as void*);
+
+        ulong first = 0;
+        __asm__(`
+            movq ${r:buf}, %rdi;
+            xorq %rax, %rax;
+            movb (%rdi), %al;
+            movq %rax, ${=r:first}
+        `);
+        KTest::assert_eq(first, 72, "pipe data integrity (H=72)" as void*);
+
+        Pipe::destroy(pipe_id as ulong);
+        KTest::pass("pipe destroy" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestPipe::test_create();
+        TestPipe::test_empty_read();
+        TestPipe::test_read_write();
+    }
+}

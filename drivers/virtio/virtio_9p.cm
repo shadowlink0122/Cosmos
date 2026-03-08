@@ -1,0 +1,906 @@
+//! platform: baremetal-x86
+// cosmo-linux::drivers::virtio_9p - virtio-9p ファイルシステムドライバ
+//
+// QEMUのvirtfsを通じてホストディレクトリをゲストにマウントする。
+// virtio legacy PCI + 9P2000.L プロトコル。
+// 参照: virtio-v1.0 §5.4, Plan 9 from User Space
+
+import ../../include/types;
+import ../../include/net;
+import ../../lib/kstring;
+import ../serial;
+import ../pci;
+import ./virtio;
+
+// ============================================================
+// virtio-9p PCI識別子
+// ============================================================
+
+// virtio legacy: Vendor=0x1AF4, Device=0x1009 (9P transport)
+const ulong VIRTIO_9P_DEVICE_ID = 0x1009;
+
+// ============================================================
+// 9P2000.L メッセージタイプ
+// ============================================================
+
+const ulong P9_TVERSION = 100;
+const ulong P9_RVERSION = 101;
+const ulong P9_TATTACH  = 104;
+const ulong P9_RATTACH  = 105;
+const ulong P9_TWALK    = 110;
+const ulong P9_RWALK    = 111;
+const ulong P9_TOPEN    = 112;
+const ulong P9_ROPEN    = 113;
+const ulong P9_TREAD    = 116;
+const ulong P9_RREAD    = 117;
+const ulong P9_TCLUNK   = 120;
+const ulong P9_RCLUNK   = 121;
+const ulong P9_TREADDIR = 40;
+const ulong P9_RREADDIR = 41;
+// 9P2000.L拡張
+const ulong P9_TLOPEN   = 12;
+const ulong P9_RLOPEN   = 13;
+const ulong P9_TLCREATE = 14;
+const ulong P9_RLCREATE = 15;
+const ulong P9_TGETATTR = 24;
+const ulong P9_RGETATTR = 25;
+const ulong P9_TMKDIR   = 72;
+const ulong P9_RMKDIR   = 73;
+const ulong P9_TUNLINKAT = 76;
+const ulong P9_RUNLINKAT = 77;
+// 9P write (番号はreadと同じだが別メッセージ)
+const ulong P9_TWRITE   = 118;
+const ulong P9_RWRITE   = 119;
+
+// 9Pオープンモード
+const ulong P9_O_RDONLY = 0;
+export const ulong P9_O_WRONLY = 1;
+export const ulong P9_O_RDWR   = 2;
+export const ulong P9_O_CREAT  = 0x40;
+export const ulong P9_O_TRUNC  = 0x200;
+
+// ============================================================
+// ドライバ状態 (固定メモリ)
+// ============================================================
+
+const ulong V9P_STATE_BASE = 0x1400000;  // ドライバ状態 (ELFバッファ/RamFS後)
+// offset 0: io_base
+// offset 8: initialized (1=ready)
+// offset 16: tag_len (マウントタグ長)
+// offset 24-87: mount_tag (最大64バイト)
+
+const ulong V9P_VQ_STATE = 0x1400100;  // virtqueue状態保存
+const ulong V9P_VQ_BASE = 0x1500000;   // virtqueue メモリ
+const ulong V9P_TX_BUF = 0x1600000;    // 送信バッファ
+const ulong V9P_RX_BUF = 0x1610000;    // 受信バッファ
+
+const ulong V9P_MSIZE = 8192;  // 最大メッセージサイズ
+
+// ============================================================
+// Virtio9p ドライバ
+// ============================================================
+
+export struct Virtio9p {}
+
+impl Virtio9p {
+    /// 初期化: PCI検索→virtio初期化→9Pバージョンネゴシエーション
+    static ulong init(SerialPort* serial) {
+        serial->println("[9p] Scanning PCI for virtio-9p..." as void*);
+
+        // 1. PCI検索
+        PciDevice dev = {
+            bus: 0, slot: 0, func: 0,
+            vendor_id: 0, device_id: 0,
+            bar0: 0, irq: 0, found: 0
+        };
+        Pci::find_device(0x1AF4, VIRTIO_9P_DEVICE_ID, &dev);
+
+        if (dev.found == 0) {
+            serial->println("[9p] virtio-9p device not found" as void*);
+            return 0;
+        }
+
+        serial->puts("[9p] Found virtio-9p at PCI " as void*);
+        print_dec(serial, dev.bus);
+        serial->puts(":" as void*);
+        print_dec(serial, dev.slot);
+        serial->puts("." as void*);
+        print_dec(serial, dev.func);
+        serial->puts(" BAR0=" as void*);
+        serial->print_hex(dev.bar0);
+        serial->println("" as void*);
+
+        // 2. Bus Master有効化
+        Pci::enable_bus_master(dev.bus, dev.slot, dev.func);
+
+        // 3. I/Oポートベースアドレス
+        ulong io_base = dev.bar0 & PCI_IO_BASE_MASK;
+        ulong* io_ptr = V9P_STATE_BASE as ulong*;
+        *io_ptr = io_base;
+
+        // 4. virtioデバイス初期化 (legacy)
+        outb(io_base + VIRTIO_PCI_STATUS, 0);  // リセット
+        outb(io_base + VIRTIO_PCI_STATUS, VIRTIO_STATUS_ACK);
+        ulong status = inb(io_base + VIRTIO_PCI_STATUS);
+        outb(io_base + VIRTIO_PCI_STATUS, status | VIRTIO_STATUS_DRIVER);
+
+        // Feature negotiation (特に必要なfeatureなし)
+        ulong host_features = inl(io_base + VIRTIO_PCI_HOST_FEATURES);
+        outl(io_base + VIRTIO_PCI_GUEST_FEATURES, 0);
+
+        // 5. マウントタグ読み取り (Config Space offset 20)
+        // tag_len: offset 20-21 (16bit LE)
+        ulong tag_len_lo = inb(io_base + VIRTIO_PCI_CONFIG);
+        ulong tag_len_hi = inb(io_base + VIRTIO_PCI_CONFIG + 1);
+        ulong tag_len = tag_len_lo | (tag_len_hi << 8);
+        if (tag_len > 64) { tag_len = 64; }
+
+        ulong* tag_len_ptr = (V9P_STATE_BASE + 16) as ulong*;
+        *tag_len_ptr = tag_len;
+
+        // タグ文字列読み取り: offset 22〜
+        ulong ti = 0;
+        while (ti < tag_len) {
+            ulong ch = inb(io_base + VIRTIO_PCI_CONFIG + 2 + ti);
+            Mem::write_byte(V9P_STATE_BASE + 24 + ti, ch);
+            ti = ti + 1;
+        }
+        Mem::write_byte(V9P_STATE_BASE + 24 + tag_len, 0);  // null終端
+
+        serial->puts("[9p] Mount tag: " as void*);
+        serial->puts((V9P_STATE_BASE + 24) as void*);
+        serial->println("" as void*);
+
+        // 6. Virtqueue 0 初期化 (request queue)
+        outw(io_base + VIRTIO_PCI_QUEUE_SEL, 0);
+        ulong qsize = inw(io_base + VIRTIO_PCI_QUEUE_SIZE);
+        if (qsize == 0) {
+            serial->println("[9p] Queue size is 0" as void*);
+            return 0;
+        }
+        if (qsize > VQ_SIZE) { qsize = VQ_SIZE; }
+
+        Virtqueue vq = {
+            desc_base: 0, avail_base: 0, used_base: 0,
+            size: 0, free_head: 0, num_free: 0,
+            avail_idx: 0, last_used_idx: 0
+        };
+        Vq::init(&vq, V9P_VQ_BASE, qsize);
+
+        ulong pfn = V9P_VQ_BASE / 4096;
+        outl(io_base + VIRTIO_PCI_QUEUE_PFN, pfn);
+
+        // VQ状態保存
+        Virtio9p::save_vq(&vq);
+
+        // 7. DRIVER_OK
+        status = inb(io_base + VIRTIO_PCI_STATUS);
+        outb(io_base + VIRTIO_PCI_STATUS, status | VIRTIO_STATUS_DRIVER_OK);
+
+        // 初期化完了
+        ulong* init_ptr = (V9P_STATE_BASE + 8) as ulong*;
+        *init_ptr = 1;
+
+        serial->println("[9p] virtio-9p initialized" as void*);
+
+        // 8. 9Pバージョンネゴシエーション
+        ulong ver_ok = Virtio9p::do_version();
+        if (ver_ok == 0) {
+            serial->println("[9p] Version negotiation failed" as void*);
+            return 0;
+        }
+        serial->println("[9p] 9P2000.L version negotiated" as void*);
+
+        // 9. ルートFIDにattach
+        ulong att_ok = Virtio9p::do_attach();
+        if (att_ok == 0) {
+            serial->println("[9p] Attach failed" as void*);
+            return 0;
+        }
+        serial->println("[9p] Attached to root (fid=0)" as void*);
+
+        return 1;
+    }
+
+    /// 準備完了か確認
+    static ulong is_ready() {
+        ulong* init_ptr = (V9P_STATE_BASE + 8) as ulong*;
+        return *init_ptr;
+    }
+
+    // ============================================================
+    // 9P メッセージ送受信
+    // ============================================================
+
+    /// 9Pメッセージを送信して応答を受信
+    /// tx_buf: 送信データ, tx_len: 送信長
+    /// rx_buf: 受信データ, rx_max: 受信最大長
+    /// 返り値: 受信データ長 (0=失敗)
+    static ulong transact(ulong tx_buf, ulong tx_len, ulong rx_buf, ulong rx_max) {
+        ulong* io_ptr = V9P_STATE_BASE as ulong*;
+        ulong io_base = *io_ptr;
+
+        Virtqueue vq = {
+            desc_base: 0, avail_base: 0, used_base: 0,
+            size: 0, free_head: 0, num_free: 0,
+            avail_idx: 0, last_used_idx: 0
+        };
+        Virtio9p::load_vq(&vq);
+
+        // 使用済みdescriptor回収
+        ulong ud = Vq::poll_used(&vq);
+        while (ud != INVALID_U32) {
+            Vq::free_desc(&vq, ud);
+            ud = Vq::poll_used(&vq);
+        }
+
+        // TXデスクリプタ (device-readable)
+        ulong tx_desc = Vq::alloc_desc(&vq, tx_buf, tx_len, 0);
+        if (tx_desc == INVALID_U32) {
+            Virtio9p::save_vq(&vq);
+            return 0;
+        }
+
+        // RXデスクリプタ (device-writable) — チェイン
+        ulong rx_desc = Vq::alloc_desc(&vq, rx_buf, rx_max, VRING_DESC_F_WRITE);
+        if (rx_desc == INVALID_U32) {
+            Vq::free_desc(&vq, tx_desc);
+            Virtio9p::save_vq(&vq);
+            return 0;
+        }
+
+        // TX → RX チェイン (nextポインタを設定)
+        ulong tx_desc_addr = vq.desc_base + tx_desc * 16;
+        // flags: VRING_DESC_F_NEXT (1)
+        Mem::write_byte(tx_desc_addr + 12, 1);
+        Mem::write_byte(tx_desc_addr + 13, 0);
+        // next = rx_desc
+        Mem::write_byte(tx_desc_addr + 14, rx_desc & 0xFF);
+        Mem::write_byte(tx_desc_addr + 15, (rx_desc >> 8) & 0xFF);
+
+        // Available Ringに追加 (先頭のTXデスクリプタのみ)
+        Vq::submit(&vq, tx_desc);
+        Virtio9p::save_vq(&vq);
+
+        // デバイスに通知
+        outw(io_base + VIRTIO_PCI_QUEUE_NOTIFY, 0);
+
+        // 応答待機
+        ulong timeout = 1000000;
+        while (timeout > 0) {
+            Virtio9p::load_vq(&vq);
+            ulong done = Vq::poll_used(&vq);
+            if (done != INVALID_U32) {
+                // 応答受信完了
+                ulong resp_len = Vq::get_used_len(&vq, vq.last_used_idx - 1);
+                Vq::free_desc(&vq, done);
+                // RXデスクリプタも明示的に解放
+                // (virtio chainではheadのみused ringに返却されるため)
+                Vq::free_desc(&vq, rx_desc);
+                Virtio9p::save_vq(&vq);
+
+                // 応答のサイズはメッセージヘッダから取得
+                ulong r0 = Mem::read_byte(rx_buf);
+                ulong r1 = Mem::read_byte(rx_buf + 1);
+                ulong r2 = Mem::read_byte(rx_buf + 2);
+                ulong r3 = Mem::read_byte(rx_buf + 3);
+                ulong msg_size = r0 | (r1 << 8) | (r2 << 16) | (r3 << 24);
+                return msg_size;
+            }
+            Virtio9p::save_vq(&vq);
+            timeout = timeout - 1;
+        }
+
+        return 0;
+    }
+
+    // ============================================================
+    // 9P プロトコル操作
+    // ============================================================
+
+    /// Tversion: バージョンネゴシエーション
+    static ulong do_version() {
+        ulong tx = V9P_TX_BUF;
+        ulong pos = 0;
+
+        // 9Pメッセージ: size(4) + type(1) + tag(2) + msize(4) + version_len(2) + version
+        ulong version_str = "9P2000.L" as ulong;
+        ulong ver_len = 8;
+
+        ulong msg_size = 4 + 1 + 2 + 4 + 2 + ver_len;
+        // size (LE32)
+        Mem::write_byte(tx, msg_size & 0xFF);
+        Mem::write_byte(tx + 1, (msg_size >> 8) & 0xFF);
+        Mem::write_byte(tx + 2, (msg_size >> 16) & 0xFF);
+        Mem::write_byte(tx + 3, (msg_size >> 24) & 0xFF);
+        // type
+        Mem::write_byte(tx + 4, P9_TVERSION);
+        // tag (NOTAG = 0xFFFF)
+        Mem::write_byte(tx + 5, 0xFF);
+        Mem::write_byte(tx + 6, 0xFF);
+        // msize
+        ulong msize = V9P_MSIZE;
+        Mem::write_byte(tx + 7, msize & 0xFF);
+        Mem::write_byte(tx + 8, (msize >> 8) & 0xFF);
+        Mem::write_byte(tx + 9, (msize >> 16) & 0xFF);
+        Mem::write_byte(tx + 10, (msize >> 24) & 0xFF);
+        // version string: len(2) + data
+        Mem::write_byte(tx + 11, ver_len & 0xFF);
+        Mem::write_byte(tx + 12, (ver_len >> 8) & 0xFF);
+        ulong vi = 0;
+        while (vi < ver_len) {
+            Mem::write_byte(tx + 13 + vi, Mem::read_byte(version_str + vi));
+            vi = vi + 1;
+        }
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        // Rversion確認
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RVERSION) { return 0; }
+
+        return 1;
+    }
+
+    /// Tattach: ルートFID(0)にアタッチ
+    static ulong do_attach() {
+        ulong tx = V9P_TX_BUF;
+
+        // Tattach: size(4) + type(1) + tag(2) + fid(4) + afid(4) + uname_len(2) + uname + aname_len(2) + aname + n_uname(4)
+        ulong uname = "root" as ulong;
+        ulong uname_len = 4;
+        ulong aname_len = 0;  // 空文字列
+
+        ulong msg_size = 4 + 1 + 2 + 4 + 4 + 2 + uname_len + 2 + aname_len + 4;
+
+        Virtio9p::write_le32(tx, msg_size);
+        Mem::write_byte(tx + 4, P9_TATTACH);
+        Virtio9p::write_le16(tx + 5, 0);            // tag=0
+        Virtio9p::write_le32(tx + 7, 0);            // fid=0 (ルート)
+        Virtio9p::write_le32(tx + 11, 0xFFFFFFFF);  // afid=NOFID
+        // uname
+        Virtio9p::write_le16(tx + 15, uname_len);
+        ulong ui = 0;
+        while (ui < uname_len) {
+            Mem::write_byte(tx + 17 + ui, Mem::read_byte(uname + ui));
+            ui = ui + 1;
+        }
+        // aname (空)
+        Virtio9p::write_le16(tx + 17 + uname_len, aname_len);
+        // n_uname (9P2000.L拡張: uid=0)
+        Virtio9p::write_le32(tx + 19 + uname_len, 0);
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RATTACH) { return 0; }
+
+        return 1;
+    }
+
+    /// Twalk: パスをウォーク (fid → newfid)
+    /// path: "/"区切りパス文字列
+    /// fid: 元FID, newfid: 新FID
+    /// 返り値: 1=成功, 0=失敗
+    static ulong walk(ulong fid, ulong newfid, ulong path) {
+        ulong tx = V9P_TX_BUF;
+        ulong pos = 7;  // ヘッダ後
+
+        // fid(4) + newfid(4)
+        Virtio9p::write_le32(tx + pos, fid);
+        pos = pos + 4;
+        Virtio9p::write_le32(tx + pos, newfid);
+        pos = pos + 4;
+
+        // パスをコンポーネントに分割してnwname計算
+        // 一旦コンポーネント数をカウント
+        ulong nwname = 0;
+        ulong comp_starts = V9P_TX_BUF + 4096;  // 一時領域
+        ulong pi = 0;
+        ulong comp_start = 0;
+
+        // 先頭の'/'をスキップ
+        ulong ch = Mem::read_byte(path);
+        if (ch == 47) { pi = 1; }
+        comp_start = pi;
+
+        while (true) {
+            ch = Mem::read_byte(path + pi);
+            if (ch == 0 || ch == 32) {
+                if (pi > comp_start) {
+                    // コンポーネント記録
+                    Virtio9p::write_le32(comp_starts + nwname * 8, comp_start);
+                    Virtio9p::write_le32(comp_starts + nwname * 8 + 4, pi - comp_start);
+                    nwname = nwname + 1;
+                }
+                break;
+            }
+            if (ch == 47) {  // '/'
+                if (pi > comp_start) {
+                    Virtio9p::write_le32(comp_starts + nwname * 8, comp_start);
+                    Virtio9p::write_le32(comp_starts + nwname * 8 + 4, pi - comp_start);
+                    nwname = nwname + 1;
+                }
+                comp_start = pi + 1;
+            }
+            pi = pi + 1;
+        }
+
+        // nwname(2)
+        Virtio9p::write_le16(tx + pos, nwname);
+        pos = pos + 2;
+
+        // 各コンポーネント: len(2) + data
+        ulong ci = 0;
+        while (ci < nwname) {
+            ulong cs = Virtio9p::read_le32(comp_starts + ci * 8);
+            ulong cl = Virtio9p::read_le32(comp_starts + ci * 8 + 4);
+            Virtio9p::write_le16(tx + pos, cl);
+            pos = pos + 2;
+            ulong cj = 0;
+            while (cj < cl) {
+                Mem::write_byte(tx + pos + cj, Mem::read_byte(path + cs + cj));
+                cj = cj + 1;
+            }
+            pos = pos + cl;
+            ci = ci + 1;
+        }
+
+        // ヘッダ書き込み
+        Virtio9p::write_le32(tx, pos);
+        Mem::write_byte(tx + 4, P9_TWALK);
+        Virtio9p::write_le16(tx + 5, 1);  // tag=1
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, pos, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RWALK) { return 0; }
+
+        return 1;
+    }
+
+    /// Tlopen: FIDをオープン (9P2000.L)
+    static ulong lopen(ulong fid, ulong flags) {
+        ulong tx = V9P_TX_BUF;
+        ulong msg_size = 4 + 1 + 2 + 4 + 4;
+
+        Virtio9p::write_le32(tx, msg_size);
+        Mem::write_byte(tx + 4, P9_TLOPEN);
+        Virtio9p::write_le16(tx + 5, 2);  // tag=2
+        Virtio9p::write_le32(tx + 7, fid);
+        Virtio9p::write_le32(tx + 11, flags);
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RLOPEN) { return 0; }
+
+        return 1;
+    }
+
+    /// Tread: FIDからデータ読み取り
+    /// buf: 読み取り先バッファ
+    /// offset: ファイル内オフセット
+    /// count: 読み取り最大バイト数
+    /// 返り値: 読み取ったバイト数 (0=EOF or エラー)
+    static ulong read(ulong fid, ulong buf, ulong offset, ulong count) {
+        // デバッグ
+        SerialPort dbg(COM1);
+        dbg.puts("[9p-read] fid=" as void*);
+        print_dec(&dbg, fid);
+        dbg.puts(" off=" as void*);
+        print_dec(&dbg, offset);
+        dbg.puts(" cnt=" as void*);
+        print_dec(&dbg, count);
+        dbg.puts(" buf=0x" as void*);
+        dbg.print_hex(buf);
+        dbg.println("" as void*);
+
+        ulong tx = V9P_TX_BUF;
+        // Tread: size(4) + type(1) + tag(2) + fid(4) + offset(8) + count(4)
+        ulong msg_size = 4 + 1 + 2 + 4 + 8 + 4;
+
+        dbg.println("[9p-read] building msg..." as void*);
+        Virtio9p::write_le32(tx, msg_size);
+        Mem::write_byte(tx + 4, P9_TREAD);
+        Virtio9p::write_le16(tx + 5, 3);  // tag=3
+        Virtio9p::write_le32(tx + 7, fid);
+        // offset (64bit LE)
+        Virtio9p::write_le32(tx + 11, offset);
+        Virtio9p::write_le32(tx + 15, 0);  // upper 32bits = 0
+        // count
+        ulong max_read = count;
+        if (max_read > V9P_MSIZE - 32) { max_read = V9P_MSIZE - 32; }
+        Virtio9p::write_le32(tx + 19, max_read);
+
+        dbg.println("[9p-read] calling transact..." as void*);
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) {
+            dbg.println("[9p-read] transact failed" as void*);
+            return 0;
+        }
+        dbg.println("[9p-read] transact ok" as void*);
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RREAD) { return 0; }
+
+        // Rread: size(4) + type(1) + tag(2) + count(4) + data[count]
+        ulong rcount = Virtio9p::read_le32(rx + 7);
+
+        dbg.puts("[9p-read] copying " as void*);
+        print_dec(&dbg, rcount);
+        dbg.println(" bytes" as void*);
+
+        // データをコピー
+        ulong ci = 0;
+        while (ci < rcount && ci < count) {
+            Mem::write_byte(buf + ci, Mem::read_byte(rx + 11 + ci));
+            ci = ci + 1;
+        }
+
+        dbg.println("[9p-read] done" as void*);
+        return rcount;
+    }
+
+    /// Treaddir: ディレクトリ読み取り (9P2000.L)
+    /// buf: 読み取り先バッファ
+    /// offset: ディレクトリ内オフセット
+    /// count: 読み取りバイト数
+    /// 返り値: 読み取ったバイト数
+    static ulong readdir(ulong fid, ulong buf, ulong offset, ulong count) {
+        ulong tx = V9P_TX_BUF;
+        ulong msg_size = 4 + 1 + 2 + 4 + 8 + 4;
+
+        Virtio9p::write_le32(tx, msg_size);
+        Mem::write_byte(tx + 4, P9_TREADDIR);
+        Virtio9p::write_le16(tx + 5, 4);  // tag=4
+        Virtio9p::write_le32(tx + 7, fid);
+        Virtio9p::write_le32(tx + 11, offset);
+        Virtio9p::write_le32(tx + 15, 0);
+        ulong max_r = count;
+        if (max_r > V9P_MSIZE - 32) { max_r = V9P_MSIZE - 32; }
+        Virtio9p::write_le32(tx + 19, max_r);
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RREADDIR) { return 0; }
+
+        ulong rcount = Virtio9p::read_le32(rx + 7);
+        ulong ci = 0;
+        while (ci < rcount && ci < count) {
+            Mem::write_byte(buf + ci, Mem::read_byte(rx + 11 + ci));
+            ci = ci + 1;
+        }
+
+        return rcount;
+    }
+
+    /// Tclunk: FIDを解放
+    static ulong clunk(ulong fid) {
+        ulong tx = V9P_TX_BUF;
+        ulong msg_size = 4 + 1 + 2 + 4;
+
+        Virtio9p::write_le32(tx, msg_size);
+        Mem::write_byte(tx + 4, P9_TCLUNK);
+        Virtio9p::write_le16(tx + 5, 5);  // tag=5
+        Virtio9p::write_le32(tx + 7, fid);
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RCLUNK) { return 0; }
+
+        return 1;
+    }
+
+    /// Tgetattr: ファイル属性取得 (9P2000.L)
+    /// size_out: ファイルサイズ出力先
+    /// 返り値: 1=成功, 0=失敗
+    static ulong getattr(ulong fid, ulong* size_out) {
+        ulong tx = V9P_TX_BUF;
+        // Tgetattr: size(4) + type(1) + tag(2) + fid(4) + request_mask(8)
+        ulong msg_size = 4 + 1 + 2 + 4 + 8;
+
+        Virtio9p::write_le32(tx, msg_size);
+        Mem::write_byte(tx + 4, P9_TGETATTR);
+        Virtio9p::write_le16(tx + 5, 6);  // tag=6
+        Virtio9p::write_le32(tx + 7, fid);
+        // request_mask: P9_GETATTR_BASIC = 0x000007FF (全基本属性)
+        Virtio9p::write_le32(tx + 11, 0x7FF);
+        Virtio9p::write_le32(tx + 15, 0);
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RGETATTR) { return 0; }
+
+        // Rgetattr: size(4) + type(1) + tag(2) + valid(8) + qid(13) + mode(4) + uid(4) + gid(4) + nlink(8) + rdev(8) + size(8)
+        // offset of size: 7 + 8 + 13 + 4 + 4 + 4 + 8 + 8 = 56
+        ulong file_size = Virtio9p::read_le32(rx + 56);
+        *size_out = file_size;
+
+        return 1;
+    }
+
+    // ============================================================
+    // 9P 書き込み系操作 (9P2000.L)
+    // ============================================================
+
+    /// Twrite: FIDにデータ書き込み
+    /// buf: 書き込みデータバッファ
+    /// offset: ファイル内オフセット
+    /// count: 書き込みバイト数
+    /// 返り値: 書き込んだバイト数 (0=エラー)
+    static ulong write_data(ulong fid, ulong buf, ulong offset, ulong count) {
+        ulong tx = V9P_TX_BUF;
+        // Twrite: size(4) + type(1) + tag(2) + fid(4) + offset(8) + count(4) + data[count]
+        ulong max_write = count;
+        // メッセージサイズ制限: ヘッダ(23) + データ がmsizeを超えてはならない
+        if (max_write > V9P_MSIZE - 32) { max_write = V9P_MSIZE - 32; }
+
+        ulong msg_size = 4 + 1 + 2 + 4 + 8 + 4 + max_write;
+
+        Virtio9p::write_le32(tx, msg_size);
+        Mem::write_byte(tx + 4, P9_TWRITE);
+        Virtio9p::write_le16(tx + 5, 7);  // tag=7
+        Virtio9p::write_le32(tx + 7, fid);
+        // offset (64bit LE)
+        Virtio9p::write_le32(tx + 11, offset);
+        Virtio9p::write_le32(tx + 15, 0);  // upper 32bits = 0
+        // count
+        Virtio9p::write_le32(tx + 19, max_write);
+        // データコピー
+        ulong ci = 0;
+        while (ci < max_write) {
+            Mem::write_byte(tx + 23 + ci, Mem::read_byte(buf + ci));
+            ci = ci + 1;
+        }
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, msg_size, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RWRITE) { return 0; }
+
+        // Rwrite: size(4) + type(1) + tag(2) + count(4)
+        ulong wcount = Virtio9p::read_le32(rx + 7);
+        return wcount;
+    }
+
+    /// Tlcreate: ファイル新規作成+オープン (9P2000.L)
+    /// fid: 親ディレクトリのFID（操作後このFIDは新ファイルを指す）
+    /// name: ファイル名
+    /// flags: オープンフラグ (P9_O_WRONLY等)
+    /// mode: パーミッション (0644等)
+    /// gid: グループID
+    /// 返り値: 1=成功, 0=失敗
+    static ulong lcreate(ulong fid, ulong name, ulong flags, ulong mode, ulong gid) {
+        ulong tx = V9P_TX_BUF;
+        ulong pos = 7;  // ヘッダ後
+
+        // fid(4)
+        Virtio9p::write_le32(tx + pos, fid);
+        pos = pos + 4;
+
+        // name: len(4) + data
+        ulong name_len = strlen(name as void*);
+        Virtio9p::write_le32(tx + pos, name_len);
+        pos = pos + 4;
+        ulong ni = 0;
+        while (ni < name_len) {
+            Mem::write_byte(tx + pos + ni, Mem::read_byte(name + ni));
+            ni = ni + 1;
+        }
+        pos = pos + name_len;
+
+        // flags(4)
+        Virtio9p::write_le32(tx + pos, flags);
+        pos = pos + 4;
+
+        // mode(4)
+        Virtio9p::write_le32(tx + pos, mode);
+        pos = pos + 4;
+
+        // gid(4)
+        Virtio9p::write_le32(tx + pos, gid);
+        pos = pos + 4;
+
+        // ヘッダ書き込み
+        Virtio9p::write_le32(tx, pos);
+        Mem::write_byte(tx + 4, P9_TLCREATE);
+        Virtio9p::write_le16(tx + 5, 8);  // tag=8
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, pos, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RLCREATE) { return 0; }
+
+        // Rlcreate: size(4) + type(1) + tag(2) + qid(13) + iounit(4)
+        return 1;
+    }
+
+    /// Tmkdir: ディレクトリ作成 (9P2000.L)
+    /// dfid: 親ディレクトリのFID
+    /// name: 新ディレクトリ名
+    /// mode: パーミッション (0755等)
+    /// gid: グループID
+    /// 返り値: 1=成功, 0=失敗
+    static ulong mkdir_9p(ulong dfid, ulong name, ulong mode, ulong gid) {
+        ulong tx = V9P_TX_BUF;
+        ulong pos = 7;
+
+        // dfid(4)
+        Virtio9p::write_le32(tx + pos, dfid);
+        pos = pos + 4;
+
+        // name: len(4) + data
+        ulong name_len = strlen(name as void*);
+        Virtio9p::write_le32(tx + pos, name_len);
+        pos = pos + 4;
+        ulong ni = 0;
+        while (ni < name_len) {
+            Mem::write_byte(tx + pos + ni, Mem::read_byte(name + ni));
+            ni = ni + 1;
+        }
+        pos = pos + name_len;
+
+        // mode(4)
+        Virtio9p::write_le32(tx + pos, mode);
+        pos = pos + 4;
+
+        // gid(4)
+        Virtio9p::write_le32(tx + pos, gid);
+        pos = pos + 4;
+
+        // ヘッダ書き込み
+        Virtio9p::write_le32(tx, pos);
+        Mem::write_byte(tx + 4, P9_TMKDIR);
+        Virtio9p::write_le16(tx + 5, 9);  // tag=9
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, pos, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RMKDIR) { return 0; }
+
+        // Rmkdir: size(4) + type(1) + tag(2) + qid(13)
+        return 1;
+    }
+
+    /// Tunlinkat: ファイル/ディレクトリ削除 (9P2000.L)
+    /// dfid: 親ディレクトリのFID
+    /// name: 削除対象の名前
+    /// flags: 0=ファイル, AT_REMOVEDIR=ディレクトリ
+    /// 返り値: 1=成功, 0=失敗
+    static ulong unlinkat(ulong dfid, ulong name, ulong flags) {
+        ulong tx = V9P_TX_BUF;
+        ulong pos = 7;
+
+        // dfid(4)
+        Virtio9p::write_le32(tx + pos, dfid);
+        pos = pos + 4;
+
+        // name: len(4) + data
+        ulong name_len = strlen(name as void*);
+        Virtio9p::write_le32(tx + pos, name_len);
+        pos = pos + 4;
+        ulong ni = 0;
+        while (ni < name_len) {
+            Mem::write_byte(tx + pos + ni, Mem::read_byte(name + ni));
+            ni = ni + 1;
+        }
+        pos = pos + name_len;
+
+        // flags(4)
+        Virtio9p::write_le32(tx + pos, flags);
+        pos = pos + 4;
+
+        // ヘッダ書き込み
+        Virtio9p::write_le32(tx, pos);
+        Mem::write_byte(tx + 4, P9_TUNLINKAT);
+        Virtio9p::write_le16(tx + 5, 10);  // tag=10
+
+        ulong rx = V9P_RX_BUF;
+        ulong resp = Virtio9p::transact(tx, pos, rx, V9P_MSIZE);
+        if (resp == 0) { return 0; }
+
+        ulong rtype = Mem::read_byte(rx + 4);
+        if (rtype != P9_RUNLINKAT) { return 0; }
+
+        return 1;
+    }
+
+    // ============================================================
+    // ヘルパー: LE読み書き
+    // ============================================================
+
+    static void write_le32(ulong addr, ulong val) {
+        Mem::write_byte(addr, val & 0xFF);
+        Mem::write_byte(addr + 1, (val >> 8) & 0xFF);
+        Mem::write_byte(addr + 2, (val >> 16) & 0xFF);
+        Mem::write_byte(addr + 3, (val >> 24) & 0xFF);
+    }
+
+    static void write_le16(ulong addr, ulong val) {
+        Mem::write_byte(addr, val & 0xFF);
+        Mem::write_byte(addr + 1, (val >> 8) & 0xFF);
+    }
+
+    static ulong read_le32(ulong addr) {
+        ulong b0 = Mem::read_byte(addr);
+        ulong b1 = Mem::read_byte(addr + 1);
+        ulong b2 = Mem::read_byte(addr + 2);
+        ulong b3 = Mem::read_byte(addr + 3);
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    }
+
+    static ulong read_le16(ulong addr) {
+        ulong b0 = Mem::read_byte(addr);
+        ulong b1 = Mem::read_byte(addr + 1);
+        return b0 | (b1 << 8);
+    }
+
+    // ============================================================
+    // VQ状態保存/復元
+    // ============================================================
+
+    static void save_vq(Virtqueue* vq) {
+        ulong base = V9P_VQ_STATE;
+        ulong* p0 = base as ulong*;
+        *p0 = vq->desc_base;
+        ulong* p1 = (base + 8) as ulong*;
+        *p1 = vq->avail_base;
+        ulong* p2 = (base + 16) as ulong*;
+        *p2 = vq->used_base;
+        ulong* p3 = (base + 24) as ulong*;
+        *p3 = vq->size;
+        ulong* p4 = (base + 32) as ulong*;
+        *p4 = vq->free_head;
+        ulong* p5 = (base + 40) as ulong*;
+        *p5 = vq->num_free;
+        ulong* p6 = (base + 48) as ulong*;
+        *p6 = vq->avail_idx;
+        ulong* p7 = (base + 56) as ulong*;
+        *p7 = vq->last_used_idx;
+    }
+
+    static void load_vq(Virtqueue* vq) {
+        ulong base = V9P_VQ_STATE;
+        ulong* p0 = base as ulong*;
+        vq->desc_base = *p0;
+        ulong* p1 = (base + 8) as ulong*;
+        vq->avail_base = *p1;
+        ulong* p2 = (base + 16) as ulong*;
+        vq->used_base = *p2;
+        ulong* p3 = (base + 24) as ulong*;
+        vq->size = *p3;
+        ulong* p4 = (base + 32) as ulong*;
+        vq->free_head = *p4;
+        ulong* p5 = (base + 40) as ulong*;
+        vq->num_free = *p5;
+        ulong* p6 = (base + 48) as ulong*;
+        vq->avail_idx = *p6;
+        ulong* p7 = (base + 56) as ulong*;
+        vq->last_used_idx = *p7;
+    }
+}

@@ -1,0 +1,136 @@
+//! platform: baremetal-x86
+// cosmo-linux::mm::page_fault - ページフォルトハンドラ
+//
+// IDTベクタ14 (#PF) の拡張ハンドラ。
+// CR2（フォルト仮想アドレス）とエラーコードを解析し、
+// VMAテーブルを確認してDemand Pagingを実行する。
+//
+// 参照: linux/arch/x86/mm/fault.c
+
+import ../include/types;
+import ../include/config;
+import ../include/page_alloc;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+import ./vmm;
+import ./pmm;
+import ./mmap;
+import ../include/result;
+
+// ============================================================
+// ページフォルトエラーコードビット
+// ============================================================
+
+export const ulong PF_PRESENT   = 1;   // 0=非存在, 1=権限違反
+export const ulong PF_WRITE     = 2;   // 0=読み込み, 1=書き込み
+export const ulong PF_USER      = 4;   // 0=カーネル, 1=ユーザー
+export const ulong PF_RESERVED  = 8;   // 予約ビット違反
+export const ulong PF_INSN      = 16;  // 命令フェッチ
+
+// ============================================================
+// ページフォルト情報
+// ============================================================
+
+/// ページフォルト情報構造体
+export struct PageFaultInfo {
+    VirtAddr fault_addr;  // CR2: フォルトアドレス
+    ulong error_code;     // エラーコード
+    ulong is_present;     // 存在ビット
+    ulong is_write;       // 書き込みフォルトか
+    ulong is_user;        // ユーザーモードか
+}
+
+// ============================================================
+// ページフォルトハンドラ
+// ============================================================
+
+/// PMMポインタアドレス
+const PhysAddr PF_PMM_PTR = 0x95010;
+
+/// 拡張ページフォルトハンドラ（IDTから呼ばれる）
+export void handle_page_fault(ulong error_code) {
+    // CR2取得
+    VirtAddr cr2 = 0;
+    __asm__(`
+        movq %cr2, %rax;
+        movq %rax, ${=r:cr2}
+    `);
+
+    // フォルト情報構築
+    PageFaultInfo info = {
+        fault_addr: cr2,
+        error_code: error_code,
+        is_present: error_code & PF_PRESENT,
+        is_write: (error_code >> 1) & 1,
+        is_user: (error_code >> 2) & 1
+    };
+
+    // 非存在ページフォルト: Demand Paging を試行
+    if (info.is_present == 0) {
+        // VMAテーブルでこのアドレスがマッピング予約済みか確認
+        Vma* vma = 0 as Vma*;
+        Option<ulong> vma_opt = Mmap::find_vma(cr2);
+        match (vma_opt) {
+            Option::Some(v) => { vma = v as Vma*; }
+            Option::None => {}
+        }
+        ulong vma_addr = vma as ulong;
+        if (vma_addr != 0) {
+            // VMA内 → 物理ページを割り当ててマッピング
+            ulong* pmm_ptr = PF_PMM_PTR as ulong*;
+            BuddyAllocator* pmm = (*pmm_ptr) as BuddyAllocator*;
+
+            ulong page_virt = cr2 & ~0xFFF;  // ページアラインメント
+            PhysAddr page_phys = pmm->alloc_pages(0);
+            if (page_phys != 0) {
+                memzero(page_phys as void*, PAGE_SIZE);
+
+                ulong cr3 = 0;
+                __asm__(`movq %cr3, %rax; movq %rax, ${=r:cr3}`);
+                PageTable pt(cr3);
+                // ユーザープロセス用: PRESENT | WRITE | USER = 7
+                pt.map_page(page_virt, page_phys, 7, pmm);
+                return;  // 正常復帰
+            }
+        }
+    }
+
+    // リカバリ不可 → カーネルパニック
+    SerialPort serial(COM1);
+    serial.println("" as void*);
+    pr_err(&serial, "PAGE FAULT (#PF)" as void*);
+
+    serial.puts("  Address: " as void*);
+    serial.print_hex(info.fault_addr);
+    serial.println("" as void*);
+
+    serial.puts("  Error:   " as void*);
+    serial.print_hex(info.error_code);
+    serial.puts("  [" as void*);
+
+    if (info.is_present != 0) {
+        serial.puts("PROTECTION" as void*);
+    } else {
+        serial.puts("NOT-PRESENT" as void*);
+    }
+    serial.putc(32 as utiny);
+
+    if (info.is_write != 0) {
+        serial.puts("WRITE" as void*);
+    } else {
+        serial.puts("READ" as void*);
+    }
+    serial.putc(32 as utiny);
+
+    if (info.is_user != 0) {
+        serial.puts("USER" as void*);
+    } else {
+        serial.puts("KERNEL" as void*);
+    }
+    serial.putc(93 as utiny);
+    serial.println("" as void*);
+
+    pr_err(&serial, "Kernel panic - not syncing: unhandled page fault" as void*);
+    __asm__(`cli; 1: hlt; jmp 1b`);
+}

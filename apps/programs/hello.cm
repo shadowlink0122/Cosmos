@@ -1,0 +1,31 @@
+//! platform: baremetal-x86
+// Cosmo Linux ユーザープログラム: hello
+// ビルド: make cm-build SRC=programs/hello.cm
+
+// Linux syscall ABI: rax=nr, rdi=arg0, rsi=arg1, rdx=arg2
+
+void sys_write(ulong fd, void* buf, ulong len) {
+    ulong nr = 1;  // SYS_write
+    ulong ptr = buf as ulong;
+    __asm__(`
+        movq ${r:nr}, %rax;
+        movq ${r:fd}, %rdi;
+        movq ${r:ptr}, %rsi;
+        movq ${r:len}, %rdx;
+        syscall
+    `);
+}
+
+void sys_exit(ulong code) {
+    ulong nr = 60;  // SYS_exit
+    __asm__(`
+        movq ${r:nr}, %rax;
+        movq ${r:code}, %rdi;
+        syscall
+    `);
+}
+
+export void _start() {
+    sys_write(1, "Hello from Cm on Cosmo Linux!\n" as void*, 30);
+    sys_exit(0);
+}

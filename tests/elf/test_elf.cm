@@ -1,0 +1,83 @@
+//! platform: baremetal-x86
+// cosmo-linux::tests::elf::test_elf - ELF テスト
+//
+// ELFマジック検証、ヘッダパース、validate を検証。
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+import ../../exec/elf;
+import ../test_io;
+import ../ktest;
+import ../../apps/terminal/mem;
+
+/// ELF テストスイート
+export struct TestELF {}
+
+impl TestELF {
+    /// テスト用ELFヘッダをメモリに構築
+    static void setup_header(ulong hdr) {
+        ulong[16] ident;
+        ident[0] = 0x7F; ident[1] = 0x45; ident[2] = 0x4C; ident[3] = 0x46;
+        ident[4] = 2; ident[5] = 1; ident[6] = 1; ident[7] = 0;
+        ulong i = 8;
+        while (i < 16) { ident[i] = 0; i = i + 1; }
+
+        i = 0;
+        while (i < 16) { Mem::write_byte(hdr + i, ident[i]); i = i + 1; }
+
+        Mem::write_byte(hdr + 0x10, 2); Mem::write_byte(hdr + 0x11, 0);  // ET_EXEC
+        Mem::write_byte(hdr + 0x12, 62); Mem::write_byte(hdr + 0x13, 0); // EM_X86_64
+        ulong* entry_ptr = (hdr + 0x18) as ulong*; *entry_ptr = 0x401000;
+        ulong* phoff_ptr = (hdr + 0x20) as ulong*; *phoff_ptr = 64;
+        Mem::write_byte(hdr + 0x36, 56); Mem::write_byte(hdr + 0x37, 0); // phentsize
+        Mem::write_byte(hdr + 0x38, 2); Mem::write_byte(hdr + 0x39, 0);  // phnum
+    }
+
+    /// マジック検証テスト
+    static void test_magic() {
+        ulong hdr = 0x9D600;
+        TestELF::setup_header(hdr);
+
+        KTest::assert_eq(Elf::check_magic(hdr), 1, "ELF check_magic valid" as void*);
+        Mem::write_byte(hdr, 0x00);
+        KTest::assert_eq(Elf::check_magic(hdr), 0, "ELF check_magic invalid" as void*);
+        Mem::write_byte(hdr, 0x7F);
+    }
+
+    /// ヘッダフィールドテスト
+    static void test_header_fields() {
+        ulong hdr = 0x9D600;
+        KTest::assert_eq(Elf::get_class(hdr), ELFCLASS64, "ELF class=ELFCLASS64" as void*);
+        KTest::assert_eq(Elf::get_type(hdr), ET_EXEC, "ELF type=ET_EXEC" as void*);
+        KTest::assert_eq(Elf::get_machine(hdr), EM_X86_64, "ELF machine=EM_X86_64" as void*);
+        KTest::assert_eq(Elf::get_entry(hdr), 0x401000, "ELF entry=0x401000" as void*);
+        KTest::assert_eq(Elf::get_phoff(hdr), 64, "ELF phoff=64" as void*);
+        KTest::assert_eq(Elf::get_phentsize(hdr), 56, "ELF phentsize=56" as void*);
+        KTest::assert_eq(Elf::get_phnum(hdr), 2, "ELF phnum=2" as void*);
+    }
+
+    /// validate・PIEテスト
+    static void test_validate() {
+        ulong hdr = 0x9D600;
+        KTest::assert_eq(Elf::validate(hdr), 1, "ELF validate valid" as void*);
+        KTest::assert_eq(Elf::is_pie(hdr), 0, "ELF is_pie ET_EXEC=0" as void*);
+
+        // ET_DYN に変更
+        Mem::write_byte(hdr + 0x10, 3); Mem::write_byte(hdr + 0x11, 0);
+        KTest::assert_eq(Elf::is_pie(hdr), 1, "ELF is_pie ET_DYN=1" as void*);
+        KTest::assert_eq(Elf::validate(hdr), 1, "ELF validate ET_DYN valid" as void*);
+
+        // 不正なmachine
+        Mem::write_byte(hdr + 0x12, 0); Mem::write_byte(hdr + 0x13, 0);
+        KTest::assert_eq(Elf::validate(hdr), 0, "ELF validate bad machine=0" as void*);
+    }
+
+    /// 全テスト実行
+    static void run() {
+        TestELF::test_magic();
+        TestELF::test_header_fields();
+        TestELF::test_validate();
+    }
+}

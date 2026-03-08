@@ -1,0 +1,102 @@
+//! platform: baremetal-x86
+// cosmo-linux::arch::x86_64::cpu - CPU制御・情報取得
+//
+// I/O操作、CPUID、MSR、割り込み制御のラッパー。
+// Cpu struct/impl パターンで実装。
+// 参照: linux/arch/x86/kernel/cpu/common.c
+
+import ../../include/types;
+import ../../include/config;
+import ../../drivers/serial;
+import ../../lib/printk;
+
+/// Cpu — CPU制御・情報取得
+export struct Cpu {}
+
+/// CPUID結果
+export struct CpuIdResult {
+    ulong eax;
+    ulong ebx;
+    ulong ecx;
+    ulong edx;
+}
+
+impl Cpu {
+    /// 割り込み有効化
+    static void sti() { __asm__(`sti`); }
+
+    /// 割り込み無効化
+    static void cli() { __asm__(`cli`); }
+
+    /// CPU一時停止
+    static void hlt() { __asm__(`hlt`); }
+
+    /// CPUID命令実行
+    static CpuIdResult cpuid(ulong leaf) {
+        ulong a = 0;
+        ulong b = 0;
+        ulong c = 0;
+        ulong d = 0;
+        __asm__(`
+            movq ${r:leaf}, %rax;
+            xorq %rcx, %rcx;
+            cpuid;
+            movq %rax, ${=r:a};
+            movq %rbx, ${=r:b};
+            movq %rcx, ${=r:c};
+            movq %rdx, ${=r:d}
+        `);
+        CpuIdResult result = { eax: a, ebx: b, ecx: c, edx: d };
+        return result;
+    }
+
+    /// CPUベンダ文字列をシリアルに出力
+    static void print_vendor(SerialPort* w) {
+        CpuIdResult r = Cpu::cpuid(0);
+        w->puts("  CPU Vendor: " as void*);
+        ulong i = 0;
+        while (i < 4) {
+            AsciiChar ch = (r.ebx >> (i * 8)) & 0xFF;
+            w->putc(ch);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 4) {
+            AsciiChar ch = (r.edx >> (i * 8)) & 0xFF;
+            w->putc(ch);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 4) {
+            AsciiChar ch = (r.ecx >> (i * 8)) & 0xFF;
+            w->putc(ch);
+            i = i + 1;
+        }
+        w->println("" as void*);
+    }
+
+    /// MSR読み取り
+    static ulong rdmsr(ulong msr_addr) {
+        ulong low = 0;
+        ulong high = 0;
+        __asm__(`
+            movq ${r:msr_addr}, %rcx;
+            rdmsr;
+            movq %rax, ${=r:low};
+            movq %rdx, ${=r:high}
+        `);
+        return (high << 32) | low;
+    }
+
+    /// MSR書き込み
+    static void wrmsr(ulong msr_addr, ulong value) {
+        ulong low = value & 0xFFFFFFFF;
+        ulong high = (value >> 32) & 0xFFFFFFFF;
+        __asm__(`
+            movq ${r:msr_addr}, %rcx;
+            movq ${r:low}, %rax;
+            movq ${r:high}, %rdx;
+            wrmsr
+        `);
+    }
+}

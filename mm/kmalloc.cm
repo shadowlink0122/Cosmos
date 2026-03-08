@@ -1,0 +1,237 @@
+//! platform: baremetal-x86
+// cosmo-linux::mm::kmalloc - カーネルヒープアロケータ
+//
+// サイズクラス別フリーリスト方式の簡易SLABアロケータ。
+// PMMからページを取得し、小さなブロックに分割して管理する。
+//
+// impl KernelHeap for Allocator
+//
+// 参照: linux/mm/slab.c, linux/mm/slub.c
+
+import ../include/types;
+import ../include/config;
+import ../include/allocator;
+import ../include/page_alloc;
+import ../drivers/serial;
+import ../lib/printk;
+import ../lib/kstring;
+
+// ============================================================
+// サイズクラス定数
+// ============================================================
+
+/// サイズクラス数
+const ulong NUM_SIZE_CLASSES = 8;
+
+/// サイズクラス: 16, 32, 64, 128, 256, 512, 1024, 2048 バイト
+const Size CLASS_0 = 16;
+const Size CLASS_1 = 32;
+const Size CLASS_2 = 64;
+const Size CLASS_3 = 128;
+const Size CLASS_4 = 256;
+const Size CLASS_5 = 512;
+const Size CLASS_6 = 1024;
+const Size CLASS_7 = 2048;
+
+// ============================================================
+// KernelHeap 構造体
+// ============================================================
+
+/// カーネルヒープアロケータ
+export struct KernelHeap {
+    // 各サイズクラスのフリーリストヘッド
+    VirtAddr free_list_0;  // 16B
+    VirtAddr free_list_1;  // 32B
+    VirtAddr free_list_2;  // 64B
+    VirtAddr free_list_3;  // 128B
+    VirtAddr free_list_4;  // 256B
+    VirtAddr free_list_5;  // 512B
+    VirtAddr free_list_6;  // 1024B
+    VirtAddr free_list_7;  // 2048B
+
+    // 統計
+    ulong total_allocs;
+    ulong total_frees;
+}
+
+// ============================================================
+// impl KernelHeap — 固有メソッド
+// ============================================================
+
+impl KernelHeap {
+    /// コンストラクタ
+    overload self() {
+        self.free_list_0 = 0;
+        self.free_list_1 = 0;
+        self.free_list_2 = 0;
+        self.free_list_3 = 0;
+        self.free_list_4 = 0;
+        self.free_list_5 = 0;
+        self.free_list_6 = 0;
+        self.free_list_7 = 0;
+        self.total_allocs = 0;
+        self.total_frees = 0;
+    }
+
+}
+
+/// サイズからサイズクラスインデックスを取得
+export ulong heap_size_to_class(Size size) {
+    if (size <= CLASS_0) { return 0; }
+    if (size <= CLASS_1) { return 1; }
+    if (size <= CLASS_2) { return 2; }
+    if (size <= CLASS_3) { return 3; }
+    if (size <= CLASS_4) { return 4; }
+    if (size <= CLASS_5) { return 5; }
+    if (size <= CLASS_6) { return 6; }
+    if (size <= CLASS_7) { return 7; }
+    return 8;  // ページ単位
+}
+
+/// サイズクラスからブロックサイズを取得
+export Size heap_class_to_size(ulong cls) {
+    if (cls == 0) { return CLASS_0; }
+    if (cls == 1) { return CLASS_1; }
+    if (cls == 2) { return CLASS_2; }
+    if (cls == 3) { return CLASS_3; }
+    if (cls == 4) { return CLASS_4; }
+    if (cls == 5) { return CLASS_5; }
+    if (cls == 6) { return CLASS_6; }
+    if (cls == 7) { return CLASS_7; }
+    return PAGE_SIZE;
+}
+
+impl KernelHeap {
+
+    /// フリーリストからヘッド取得
+    VirtAddr get_free_head(ulong cls) {
+        if (cls == 0) { return self.free_list_0; }
+        if (cls == 1) { return self.free_list_1; }
+        if (cls == 2) { return self.free_list_2; }
+        if (cls == 3) { return self.free_list_3; }
+        if (cls == 4) { return self.free_list_4; }
+        if (cls == 5) { return self.free_list_5; }
+        if (cls == 6) { return self.free_list_6; }
+        if (cls == 7) { return self.free_list_7; }
+        return 0;
+    }
+
+    /// フリーリストヘッド設定
+    void set_free_head(ulong cls, VirtAddr addr) {
+        if (cls == 0) { self.free_list_0 = addr; }
+        if (cls == 1) { self.free_list_1 = addr; }
+        if (cls == 2) { self.free_list_2 = addr; }
+        if (cls == 3) { self.free_list_3 = addr; }
+        if (cls == 4) { self.free_list_4 = addr; }
+        if (cls == 5) { self.free_list_5 = addr; }
+        if (cls == 6) { self.free_list_6 = addr; }
+        if (cls == 7) { self.free_list_7 = addr; }
+    }
+
+    /// PMMからページを取得して、サイズクラスのブロックに分割
+    void refill(ulong cls, BuddyAllocator* pmm) {
+        PhysAddr page = pmm->alloc_pages(0);
+        if (page == 0) { return; }
+
+        Size block_size = heap_class_to_size(cls);
+        ulong blocks = PAGE_SIZE / block_size;
+
+        // ページをブロックに分割し、フリーリスト構築
+        ulong i = 0;
+        while (i < blocks) {
+            VirtAddr block = page + i * block_size;
+            VirtAddr old_head = self.get_free_head(cls);
+            ulong* next_ptr = block as ulong*;
+            *next_ptr = old_head;
+            self.set_free_head(cls, block);
+            i = i + 1;
+        }
+    }
+}
+
+// ============================================================
+// impl KernelHeap for Allocator
+// ============================================================
+
+impl KernelHeap for Allocator {
+    /// メモリ割り当て
+    VirtAddr alloc(Size size) {
+        if (size == 0) { return 0; }
+
+        ulong cls = heap_size_to_class(size);
+
+        // ページ単位以上はPMMから直接（未実装、0を返す）
+        if (cls >= NUM_SIZE_CLASSES) { return 0; }
+
+        VirtAddr head = self.get_free_head(cls);
+        if (head == 0) { return 0; }  // refillはpmm参照が必要
+
+        // フリーリストから取り出し
+        ulong* next_ptr = head as ulong*;
+        VirtAddr next = *next_ptr;
+        self.set_free_head(cls, next);
+        self.total_allocs = self.total_allocs + 1;
+        return head;
+    }
+
+    /// メモリ解放
+    void free(VirtAddr ptr) {
+        if (ptr == 0) { return; }
+        // 簡易版: 最小クラスのフリーリストに返す
+        // 本来はブロックサイズをメタデータから取得する
+        VirtAddr old_head = self.free_list_0;
+        ulong* next_ptr = ptr as ulong*;
+        *next_ptr = old_head;
+        self.free_list_0 = ptr;
+        self.total_frees = self.total_frees + 1;
+    }
+}
+
+// ============================================================
+// kmalloc / kfree — グローバル関数
+// ============================================================
+
+/// グローバルkmalloc（KernelHeap + BuddyAllocator を使用）
+export VirtAddr kmalloc(KernelHeap* heap, BuddyAllocator* pmm, Size size) {
+    if (size == 0) { return 0; }
+
+    ulong cls = heap_size_to_class(size);
+    if (cls >= NUM_SIZE_CLASSES) {
+        // ページ単位: PMMから直接
+        ulong order = 0;
+        Size needed = size;
+        while ((PAGE_SIZE << order) < needed) { order = order + 1; }
+        return pmm->alloc_pages(order);
+    }
+
+    // フリーリストが空ならrefill
+    VirtAddr head = heap->get_free_head(cls);
+    if (head == 0) {
+        heap->refill(cls, pmm);
+    }
+
+    return heap->alloc(size);
+}
+
+/// グローバルkfree
+export void kfree(KernelHeap* heap, VirtAddr ptr) {
+    heap->free(ptr);
+}
+
+// ============================================================
+// 初期化
+// ============================================================
+
+/// カーネルヒープ初期化
+export void kmalloc_init(KernelHeap* heap, BuddyAllocator* pmm, SerialPort* w) {
+    pr_info(w, "Initializing kernel heap (SLAB-like)..." as void*);
+
+    // 各サイズクラスをprefill
+    ulong cls = 0;
+    while (cls < NUM_SIZE_CLASSES) {
+        heap->refill(cls, pmm);
+        cls = cls + 1;
+    }
+
+    pr_info(w, "Kernel heap initialized (8 size classes)" as void*);
+}

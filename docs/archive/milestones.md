@@ -1,0 +1,86 @@
+# Cosmo Linux マイルストーン
+
+## 完了済み
+
+### v0.0.1 — カーネルブートストラップ
+- [x] Multiboot1 ブート
+- [x] GDT/IDT セットアップ
+- [x] シリアルコンソール
+- [x] PMM (Buddy System)
+- [x] VMM (4-level paging)
+- [x] kmalloc (SLAB-like)
+
+### v0.0.2 — マルチタスクとUI
+- [x] PIC/PIT タイマー
+- [x] ラウンドロビンスケジューラ
+- [x] コンテキストスイッチ
+- [x] VGA テキストモード
+- [x] PS/2 キーボードドライバ
+- [x] 対話的シェル
+
+### v0.0.3 — ファイルシステムとシェル拡張
+- [x] RamFS (メモリ上FS)
+- [x] VFS レイヤー
+- [x] FD テーブル
+- [x] ProcFS (/proc)
+- [x] シェルコマンド 28個
+- [x] Tab補完、履歴、パイプ
+
+### v0.0.4 — struct/impl リファクタリング (完了)
+- [x] 全モジュール struct/impl 化 (Batch 1-4)
+- [x] 互換ラッパー整備
+
+---
+
+## 計画中
+
+### v0.0.5 — ファイル分割リファクタリング
+- [x] shell.cm を 9ファイルに分割 (1 struct/impl = 1ファイル)
+- [x] 各 struct/impl を独立ファイルに
+
+### v0.0.6 — シグナルとプロセス拡張
+- [x] シグナルインフラ (SIGKILL/SIGTERM/SIGINT)
+- [x] プロセスライフサイクル (do_exit/do_wait/find_by_pid)
+- [x] syscall追加 (getppid/kill/wait4)
+- [x] kill コマンド
+
+### v0.0.7 — ページフォルト対応と仮想メモリ拡張
+- [x] Demand Paging (VMA連携)
+- [x] mmap/munmap syscall (匿名マッピング)
+- [x] brk syscall (ヒープ管理)
+- [x] vmstat コマンド
+
+---
+
+## 計画中
+
+### v0.0.8 — DevFS + パイプ + I/Oリダイレクト
+- [x] /dev/null, /dev/zero, /dev/random
+- [x] DevFS 実装
+- [x] pipe() syscall
+- [x] dup2() syscall
+
+### v0.1.0 — ELF ローダーとTSS
+- [x] ELF64 バイナリパーサ
+- [x] ELFローダー (RamFS→プロセス生成)
+- [x] TSS初期化 (RSP0設定)
+- [x] exec コマンド
+
+---
+
+## 計画中
+
+### v0.2.0 — ユーザー空間とRing3遷移
+- [x] GDT再配置 (sysret互換: User DS=0x18, User CS=0x20)
+- [x] STAR MSR修正 (sysret base=0x10)
+- [x] usermode.cm (iretq遷移, ユーザースタック確保)
+- [x] Process拡張 (user_stack, is_user)
+
+---
+
+## 計画中
+
+### v0.3.0 — ネットワークとソケット
+- [ ] ループバックデバイス
+- [ ] TCP/IPスタック基盤
+- [ ] socket/bind/listen/accept syscall

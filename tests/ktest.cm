@@ -1,0 +1,351 @@
+//! platform: baremetal-x86
+// cosmo-linux::test::ktest - カーネルテストフレームワーク
+//
+// テストアサーション・統計記録を提供する共用フレームワーク。
+// スイート単位の結果集計と失敗スイート名表示をサポート。
+// 各テストスイートは tests/CATEGORY/test_FUNC.cm に分割。
+// テスト実行のオーケストレーションは test_entry.cm で行う。
+// 参照: linux/lib/kunit
+
+import ../include/types;
+import ../include/config;
+import ../drivers/serial;
+import ../lib/printk;
+import ./test_io;
+import ../apps/terminal/mem;
+
+// ============================================================
+// テスト結果カウンタ・スイート管理用メモリレイアウト
+// ============================================================
+
+/// グローバル統計 (pass/fail/total)
+const PhysAddr KTEST_STATS = 0x9C000;
+
+/// スイート内pass数
+const PhysAddr SUITE_PASS = 0x9C018;
+/// スイート内fail数
+const PhysAddr SUITE_FAIL = 0x9C020;
+/// 現在のスイート名ポインタ
+const PhysAddr SUITE_NAME_PTR = 0x9C028;
+/// 失敗スイート数
+const PhysAddr FAILED_SUITE_COUNT = 0x9C030;
+/// 総スイート数
+const PhysAddr TOTAL_SUITE_COUNT = 0x9C038;
+/// 失敗スイート名バッファ (最大32スイート × 32文字 = 1KB)
+const PhysAddr FAILED_NAMES_BUF = 0x9C100;
+/// 失敗スイート名の最大文字数
+const ulong SUITE_NAME_MAX = 32;
+/// 記録可能な最大失敗スイート数
+const ulong MAX_FAILED_SUITES = 32;
+
+/// KTest — カーネルテストフレームワーク
+export struct KTest {}
+
+impl KTest {
+    /// テスト統計初期化
+    static void reset() {
+        ulong* pass  = KTEST_STATS as ulong*;
+        ulong* fail  = (KTEST_STATS + 8) as ulong*;
+        ulong* total = (KTEST_STATS + 16) as ulong*;
+        *pass  = 0;
+        *fail  = 0;
+        *total = 0;
+        // スイート管理リセット
+        ulong* sp = SUITE_PASS as ulong*;
+        ulong* sf = SUITE_FAIL as ulong*;
+        ulong* sn = SUITE_NAME_PTR as ulong*;
+        ulong* fc = FAILED_SUITE_COUNT as ulong*;
+        ulong* tc = TOTAL_SUITE_COUNT as ulong*;
+        *sp = 0;
+        *sf = 0;
+        *sn = 0;
+        *fc = 0;
+        *tc = 0;
+        // 失敗スイート名バッファクリア
+        memzero(FAILED_NAMES_BUF as void*, MAX_FAILED_SUITES * SUITE_NAME_MAX);
+    }
+
+    // ============================================================
+    // スイート管理API
+    // ============================================================
+
+    /// スイート開始: スイート名を出力し、スイート内統計をリセット
+    static void begin_suite(void* name) {
+        // スイート内統計リセット
+        ulong* sp = SUITE_PASS as ulong*;
+        ulong* sf = SUITE_FAIL as ulong*;
+        ulong* sn = SUITE_NAME_PTR as ulong*;
+        *sp = 0;
+        *sf = 0;
+        *sn = name as ulong;
+        // 総スイート数インクリメント
+        ulong* tc = TOTAL_SUITE_COUNT as ulong*;
+        *tc = *tc + 1;
+        // VGA出力
+        TestIO::set_color(14, 0);  // 黄色
+        TestIO::write("[" as void*);
+        TestIO::write(name);
+        TestIO::writeln("]" as void*);
+        TestIO::set_color(7, 0);
+        // シリアル出力
+        SerialPort s(COM1);
+        s.putc(27); s.puts("[33m" as void*);  // ESC[33m = 黄色
+        s.puts("[" as void*);
+        s.puts(name);
+        s.println("]" as void*);
+        s.putc(27); s.puts("[0m" as void*);
+    }
+
+    /// スイート終了: スイート内結果を集計・表示し、失敗なら記録
+    static void end_suite() {
+        ulong* sp = SUITE_PASS as ulong*;
+        ulong* sf = SUITE_FAIL as ulong*;
+        ulong* sn = SUITE_NAME_PTR as ulong*;
+
+        SerialPort s(COM1);
+
+        if (*sf == 0) {
+            // スイートPASS
+            TestIO::set_color(10, 0);
+            TestIO::write("  → " as void*);
+            TestIO::print_dec(*sp);
+            TestIO::writeln(" passed" as void*);
+            TestIO::set_color(7, 0);
+            // シリアル
+            s.putc(27); s.puts("[32m" as void*);
+            s.puts("  → " as void*);
+            KTest::serial_dec(&s, *sp);
+            s.println(" passed" as void*);
+            s.putc(27); s.puts("[0m" as void*);
+        } else {
+            // スイートFAIL — 失敗スイート名を記録
+            TestIO::set_color(12, 0);
+            TestIO::write("  → " as void*);
+            TestIO::print_dec(*sf);
+            TestIO::write(" FAILED, " as void*);
+            TestIO::print_dec(*sp);
+            TestIO::writeln(" passed" as void*);
+            TestIO::set_color(7, 0);
+            // シリアル
+            s.putc(27); s.puts("[31m" as void*);
+            s.puts("  → " as void*);
+            KTest::serial_dec(&s, *sf);
+            s.puts(" FAILED, " as void*);
+            KTest::serial_dec(&s, *sp);
+            s.println(" passed" as void*);
+            s.putc(27); s.puts("[0m" as void*);
+
+            // 失敗スイート名をバッファに記録
+            ulong* fc = FAILED_SUITE_COUNT as ulong*;
+            if (*fc < MAX_FAILED_SUITES) {
+                ulong dest = FAILED_NAMES_BUF + (*fc) * SUITE_NAME_MAX;
+                ulong src = *sn;
+                ulong i = 0;
+                while (i < SUITE_NAME_MAX - 1) {
+                    ulong ch = Mem::read_byte(src + i);
+                    if (ch == 0) { break; }
+                    Mem::write_byte(dest + i, ch);
+                    i = i + 1;
+                }
+                Mem::write_byte(dest + i, 0);  // ヌル終端
+                *fc = *fc + 1;
+            }
+        }
+        TestIO::writeln("" as void*);
+    }
+
+    // ============================================================
+    // テストアサーションAPI
+    // ============================================================
+
+    /// テストパス記録
+    static void pass(void* name) {
+        ulong* p = KTEST_STATS as ulong*;
+        ulong* t = (KTEST_STATS + 16) as ulong*;
+        *p = *p + 1;
+        *t = *t + 1;
+        // スイート内統計もインクリメント
+        ulong* sp = SUITE_PASS as ulong*;
+        *sp = *sp + 1;
+        TestIO::set_color(10, 0);  // 緑
+        TestIO::write("  [PASS] " as void*);
+        TestIO::set_color(7, 0);
+        TestIO::writeln(name);
+        // シリアルにも出力 (ANSI緑)
+        SerialPort s(COM1);
+        s.putc(27); s.puts("[32m" as void*);  // ESC[32m = 緑
+        s.puts("  [PASS] " as void*);
+        s.putc(27); s.puts("[0m" as void*);  // ESC[0m = リセット
+        s.println(name);
+    }
+
+    /// テストフェイル記録
+    static void fail(void* name) {
+        ulong* f = (KTEST_STATS + 8) as ulong*;
+        ulong* t = (KTEST_STATS + 16) as ulong*;
+        *f = *f + 1;
+        *t = *t + 1;
+        // スイート内統計もインクリメント
+        ulong* sf = SUITE_FAIL as ulong*;
+        *sf = *sf + 1;
+        TestIO::set_color(12, 0);  // 赤
+        TestIO::write("  [FAIL] " as void*);
+        TestIO::set_color(7, 0);
+        TestIO::writeln(name);
+        // シリアルにも出力 (ANSI赤)
+        SerialPort s(COM1);
+        s.putc(27); s.puts("[31m" as void*);  // ESC[31m = 赤
+        s.puts("  [FAIL] " as void*);
+        s.putc(27); s.puts("[0m" as void*);  // ESC[0m = リセット
+        s.println(name);
+    }
+
+    /// アサート: 条件が真であることを検証
+    static void assert_true(ulong cond, void* name) {
+        if (cond != 0) {
+            KTest::pass(name);
+        } else {
+            KTest::fail(name);
+        }
+    }
+
+    /// アサート: 値が等しいことを検証
+    static void assert_eq(ulong actual, ulong expected, void* name) {
+        if (actual == expected) {
+            KTest::pass(name);
+        } else {
+            KTest::fail(name);
+            TestIO::write("    expected=" as void*);
+            TestIO::print_dec(expected);
+            TestIO::write(" actual=" as void*);
+            TestIO::print_dec(actual);
+            TestIO::putc(10);
+            // シリアルにも値を出力 (10進)
+            SerialPort s(COM1);
+            s.puts("    expected=" as void*);
+            KTest::serial_dec(&s, expected);
+            s.puts(" actual=" as void*);
+            KTest::serial_dec(&s, actual);
+            s.putc(10);
+        }
+    }
+
+    /// アサート: 値がゼロでないことを検証
+    static void assert_nonzero(ulong val, void* name) {
+        if (val != 0) {
+            KTest::pass(name);
+        } else {
+            KTest::fail(name);
+        }
+    }
+
+    /// シリアルポートに10進数出力
+    static void serial_dec(SerialPort* s, ulong val) {
+        if (val == 0) { s->putc(48); return; }
+        ulong buf_addr = 0x9FE00;
+        ulong pos = 0;
+        ulong v = val;
+        while (v > 0) {
+            ulong digit = v - (v / 10) * 10;
+            Mem::write_byte(buf_addr + pos, digit + 48);
+            pos = pos + 1;
+            v = v / 10;
+        }
+        while (pos > 0) {
+            pos = pos - 1;
+            ulong ch = Mem::read_byte(buf_addr + pos);
+            s->putc(ch);
+        }
+    }
+
+    /// テスト結果サマリ表示（失敗スイート名一覧付き）
+    static void summary() {
+        ulong* pass  = KTEST_STATS as ulong*;
+        ulong* fail  = (KTEST_STATS + 8) as ulong*;
+        ulong* total = (KTEST_STATS + 16) as ulong*;
+        ulong* fc    = FAILED_SUITE_COUNT as ulong*;
+        ulong* tc    = TOTAL_SUITE_COUNT as ulong*;
+
+        TestIO::writeln("" as void*);
+        SerialPort serial(COM1);
+
+        // スイート統計
+        TestIO::write("Suites: " as void*);
+        serial.puts("Suites: " as void*);
+        if (*fc == 0) {
+            TestIO::set_color(10, 0);
+            TestIO::print_dec(*tc);
+            TestIO::writeln(" passed" as void*);
+            TestIO::set_color(7, 0);
+            KTest::serial_dec(&serial, *tc);
+            serial.println(" passed" as void*);
+        } else {
+            ulong passed_suites = *tc - *fc;
+            TestIO::set_color(12, 0);
+            TestIO::print_dec(*fc);
+            TestIO::write(" FAILED" as void*);
+            TestIO::set_color(7, 0);
+            TestIO::write(", " as void*);
+            TestIO::print_dec(passed_suites);
+            TestIO::write("/" as void*);
+            TestIO::print_dec(*tc);
+            TestIO::writeln(" passed" as void*);
+            // シリアル
+            KTest::serial_dec(&serial, *fc);
+            serial.puts(" FAILED, " as void*);
+            KTest::serial_dec(&serial, passed_suites);
+            serial.puts("/" as void*);
+            KTest::serial_dec(&serial, *tc);
+            serial.println(" passed" as void*);
+        }
+
+        // テスト統計
+        if (*fail == 0) {
+            TestIO::set_color(10, 0);
+            TestIO::write("Tests:  " as void*);
+            TestIO::print_dec(*pass);
+            TestIO::write("/" as void*);
+            TestIO::print_dec(*total);
+            TestIO::writeln(" passed" as void*);
+            TestIO::set_color(7, 0);
+        } else {
+            TestIO::set_color(12, 0);
+            TestIO::write("Tests:  " as void*);
+            TestIO::print_dec(*fail);
+            TestIO::write(" FAILED" as void*);
+            TestIO::set_color(7, 0);
+            TestIO::write(", " as void*);
+            TestIO::print_dec(*pass);
+            TestIO::write("/" as void*);
+            TestIO::print_dec(*total);
+            TestIO::writeln(" passed" as void*);
+        }
+
+        // 失敗スイート名一覧
+        if (*fc > 0) {
+            TestIO::writeln("" as void*);
+            TestIO::set_color(12, 0);
+            TestIO::writeln("Failed suites:" as void*);
+            TestIO::set_color(7, 0);
+            serial.println("Failed suites:" as void*);
+            ulong i = 0;
+            while (i < *fc) {
+                ulong name_addr = FAILED_NAMES_BUF + i * SUITE_NAME_MAX;
+                TestIO::write("  - " as void*);
+                TestIO::writeln(name_addr as void*);
+                serial.puts("  - " as void*);
+                serial.println(name_addr as void*);
+                i = i + 1;
+            }
+        }
+
+        TestIO::writeln("" as void*);
+
+        // シリアル出力: Makefile結果判定用マーカー
+        if (*fail == 0) {
+            serial.println("KTEST_RESULT:PASS" as void*);
+        } else {
+            serial.println("KTEST_RESULT:FAIL" as void*);
+        }
+    }
+}

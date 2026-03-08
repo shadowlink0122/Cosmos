@@ -1,0 +1,184 @@
+//! platform: baremetal-x86
+// cosmo-linux::include::net - ネットワーク型定義
+//
+// TCP/IPスタック全体で使用する型・定数・バッファ構造体。
+// 参照: linux/include/linux/if_ether.h, linux/include/net/ip.h
+
+import ./types;
+
+// ============================================================
+// MACアドレス (6バイト)
+// ============================================================
+
+/// MACアドレス — 6バイトをulong×1で管理（下位48bit使用）
+export struct MacAddr {
+    ulong bytes;  // 下位48ビット = MAC
+}
+
+// ============================================================
+// IPv4アドレス (4バイト)
+// ============================================================
+
+/// IPv4アドレス — 32ビットをulongで管理
+export struct IpAddr {
+    ulong addr;  // ネットワークバイトオーダー (ビッグエンディアン)
+}
+
+// ============================================================
+// ネットワークポート
+// ============================================================
+
+/// ポート番号（16ビット、ulongで管理）
+export typedef Port = ulong;
+
+// ============================================================
+// プロトコル定数
+// ============================================================
+
+// Ethernet Type フィールド
+export const ulong ETH_TYPE_IP   = 0x0800;
+export const ulong ETH_TYPE_ARP  = 0x0806;
+export const ulong ETH_TYPE_IPV6 = 0x86DD;
+
+// IP Protocol フィールド
+export const ulong IP_PROTO_ICMP = 1;
+export const ulong IP_PROTO_TCP  = 6;
+export const ulong IP_PROTO_UDP  = 17;
+
+// ICMP Type
+export const ulong ICMP_ECHO_REPLY   = 0;
+export const ulong ICMP_ECHO_REQUEST = 8;
+
+// TCP Flags
+export const ulong TCP_FIN = 0x01;
+export const ulong TCP_SYN = 0x02;
+export const ulong TCP_RST = 0x04;
+export const ulong TCP_PSH = 0x08;
+export const ulong TCP_ACK = 0x10;
+export const ulong TCP_URG = 0x20;
+
+// Socket Domain
+export const ulong AF_INET = 2;
+
+// Socket Type
+export const ulong SOCK_STREAM = 1;  // TCP
+export const ulong SOCK_DGRAM  = 2;  // UDP
+export const ulong SOCK_RAW    = 3;
+
+// TCP State
+/// TCP接続状態 — match式でパターンマッチ可能
+export enum TcpState {
+    Closed      = 0,
+    Listen      = 1,
+    SynSent     = 2,
+    SynRcvd     = 3,
+    Established = 4,
+    FinWait1    = 5,
+    FinWait2    = 6,
+    CloseWait   = 7,
+    Closing     = 8,
+    LastAck     = 9,
+    TimeWait    = 10,
+}
+
+// TCP State (後方互換用const — 既存コードとの互換性維持)
+export const ulong TCP_CLOSED      = 0;
+export const ulong TCP_LISTEN      = 1;
+export const ulong TCP_SYN_SENT    = 2;
+export const ulong TCP_SYN_RCVD    = 3;
+export const ulong TCP_ESTABLISHED = 4;
+export const ulong TCP_FIN_WAIT_1  = 5;
+export const ulong TCP_FIN_WAIT_2  = 6;
+export const ulong TCP_CLOSE_WAIT  = 7;
+export const ulong TCP_CLOSING     = 8;
+export const ulong TCP_LAST_ACK    = 9;
+export const ulong TCP_TIME_WAIT   = 10;
+
+// FS Type (ソケット/epoll用)
+export const ulong FS_SOCKET = 4;
+export const ulong FS_EPOLL  = 5;
+
+// ============================================================
+// ローカルアドレス定数
+// ============================================================
+
+// ループバック: 127.0.0.1 = 0x7F000001
+export const ulong LOOPBACK_ADDR = 0x7F000001;
+
+// QEMU SLIRP ネットワーク設定
+// ゲストIP: 10.0.2.15 = 0x0A00020F
+export const ulong GUEST_IP = 0x0A00020F;
+
+// ゲートウェイ: 10.0.2.2 = 0x0A000202
+export const ulong GATEWAY_IP = 0x0A000202;
+
+// DNS: 10.0.2.3 = 0x0A000203
+export const ulong DNS_IP = 0x0A000203;
+
+// QEMU SLIRPゲートウェイMAC: 52:55:0a:00:02:02
+export const ulong GATEWAY_MAC = 0x52550A000202;
+
+// ============================================================
+// ネットワークバッファ
+// ============================================================
+
+/// パケットバッファプール基底アドレス
+export const ulong NET_BUF_BASE = 0x1920000;  // 25MB+128KB地点 (High Mem)
+
+/// パケットバッファ1つの最大サイズ
+export const ulong NET_BUF_SIZE = 2048;
+
+/// パケットバッファ数
+export const ulong NET_BUF_COUNT = 32;
+
+/// パケットバッファ
+export struct NetBuf {
+    ulong data;      // バッファデータ先頭
+    ulong len;       // 有効データ長
+    ulong capacity;  // バッファ容量
+    ulong protocol;  // ETH_TYPE_IP 等
+    ulong head;      // ヘッダ先頭オフセット
+    ulong tail;      // テール位置
+    ulong used;      // 使用中フラグ
+    ulong reserved;  // アラインメント用
+}
+
+// ============================================================
+// Socket アドレス
+// ============================================================
+
+/// ソケットアドレス (sockaddr_in 互換)
+export struct SockAddr {
+    ulong family;   // AF_INET
+    ulong port;     // ポート番号
+    ulong addr;     // IPv4アドレス
+    ulong padding;  // アラインメント
+}
+
+// ============================================================
+// ヘルパー: バイトオーダー変換
+// ============================================================
+
+/// 16ビット ホスト→ネットワーク変換
+export void htons_val(ulong host, ulong* out) {
+    *out = ((host & 0xFF) << 8) | ((host >> 8) & 0xFF);
+}
+
+/// 16ビット ネットワーク→ホスト変換
+export void ntohs_val(ulong net, ulong* out) {
+    *out = ((net & 0xFF) << 8) | ((net >> 8) & 0xFF);
+}
+
+/// 32ビット ホスト→ネットワーク変換
+export void htonl_val(ulong host, ulong* out) {
+    ulong b0 = (host >> 24) & 0xFF;
+    ulong b1 = (host >> 16) & 0xFF;
+    ulong b2 = (host >> 8) & 0xFF;
+    ulong b3 = host & 0xFF;
+    *out = (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+}
+
+/// 32ビット ネットワーク→ホスト変換
+export void ntohl_val(ulong net, ulong* out) {
+    htonl_val(net, out);  // 同じ操作
+}

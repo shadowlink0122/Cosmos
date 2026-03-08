@@ -1,0 +1,163 @@
+//! platform: baremetal-x86
+// cosmo-linux::net::http_server - 簡易HTTPサーバ
+//
+// ループバック上で動作するHTTPサーバ。
+// ルートハンドラ登録とリクエストディスパッチを提供。
+// 参照: linux/net/ipv4/tcp.c (概念的参照)
+
+import ../../include/types;
+import ../../lib/kstring;
+import ./http;
+
+// ============================================================
+// ルートテーブル
+// ============================================================
+
+/// 最大ルート数
+const ulong MAX_ROUTES = 8;
+
+/// ルートテーブル基底アドレス
+const ulong ROUTE_TABLE_BASE = 0xA62000;
+
+// ルートエントリサイズ: method(8) + path_addr(8) + path_len(8) +
+//                       response_addr(8) + response_len(8) + content_type(8) +
+//                       status(8) + used(8) = 64バイト
+const ulong ROUTE_ENTRY_SIZE = 64;
+
+// ============================================================
+// HTTP サーバ
+// ============================================================
+
+export struct HttpServer {}
+
+impl HttpServer {
+    /// ルートテーブル初期化
+    static void setup() {
+        ulong i = 0;
+        while (i < MAX_ROUTES) {
+            ulong base = ROUTE_TABLE_BASE + i * ROUTE_ENTRY_SIZE;
+            ulong j = 0;
+            while (j < ROUTE_ENTRY_SIZE) {
+                ulong* ptr = (base + j) as ulong*;
+                *ptr = 0;
+                j = j + 8;
+            }
+            i = i + 1;
+        }
+    }
+
+    /// 静的ルートを登録
+    /// method: HTTP_GET等, path: パス文字列, path_len: パス長
+    /// body: レスポンスボディ, body_len: ボディ長
+    /// content_type: 0=text/plain, 1=text/html, 2=application/json
+    static long add_route(ulong method, void* path, ulong path_len,
+        void* body, ulong body_len, ulong content_type) {
+        ulong i = 0;
+        while (i < MAX_ROUTES) {
+            ulong base = ROUTE_TABLE_BASE + i * ROUTE_ENTRY_SIZE;
+            ulong* used_ptr = (base + 56) as ulong*;
+            if (*used_ptr == 0) {
+                ulong* method_ptr  = base as ulong*;
+                ulong* path_ptr   = (base + 8) as ulong*;
+                ulong* plen_ptr   = (base + 16) as ulong*;
+                ulong* resp_ptr   = (base + 24) as ulong*;
+                ulong* rlen_ptr   = (base + 32) as ulong*;
+                ulong* ctype_ptr  = (base + 40) as ulong*;
+                ulong* status_ptr = (base + 48) as ulong*;
+
+                *method_ptr = method;
+                *path_ptr = path as ulong;
+                *plen_ptr = path_len;
+                *resp_ptr = body as ulong;
+                *rlen_ptr = body_len;
+                *ctype_ptr = content_type;
+                *status_ptr = HTTP_200_OK;
+                *used_ptr = 1;
+
+                return i as long;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /// リクエストを処理してレスポンスを生成
+    /// req_data: リクエスト文字列, req_len: リクエスト長
+    /// resp_buf: レスポンス書き込み先
+    /// 戻り値: レスポンスバイト数
+    static ulong handle_request(ulong req_data, ulong req_len, ulong resp_buf) {
+        // リクエスト解析
+        HttpRequest req = {
+            method: 0, path_addr: 0, path_len: 0,
+            body_addr: 0, body_len: 0, content_len: 0,
+            valid: 0, padding: 0
+        };
+        Http::parse_request(req_data, req_len, &req);
+
+        if (req.valid == 0) {
+            // 不正なリクエスト
+            HttpResponse bad = {
+                status: HTTP_400_BAD_REQUEST,
+                body_addr: "Bad Request" as ulong,
+                body_len: 11,
+                content_type: 0,
+                padding1: 0, padding2: 0, padding3: 0, padding4: 0
+            };
+            return Http::build_response(resp_buf, &bad);
+        }
+
+        // ルートテーブルからマッチするルートを検索
+        ulong i = 0;
+        while (i < MAX_ROUTES) {
+            ulong base = ROUTE_TABLE_BASE + i * ROUTE_ENTRY_SIZE;
+            ulong* used_ptr   = (base + 56) as ulong*;
+            ulong* method_ptr = base as ulong*;
+            ulong* path_ptr   = (base + 8) as ulong*;
+            ulong* plen_ptr   = (base + 16) as ulong*;
+
+            if (*used_ptr == 1) {
+                if (*method_ptr == req.method) {
+                    // パス比較
+                    if (*plen_ptr == req.path_len) {
+                        ulong is_match = 1;
+                        ulong j = 0;
+                        while (j < req.path_len) {
+                            ulong a = Mem::read_byte(*path_ptr + j);
+                            ulong b = Mem::read_byte(req.path_addr + j);
+                            if (a != b) { is_match = 0; }
+                            j = j + 1;
+                        }
+
+                        if (is_match == 1) {
+                            ulong* resp_ptr  = (base + 24) as ulong*;
+                            ulong* rlen_ptr  = (base + 32) as ulong*;
+                            ulong* ctype_ptr = (base + 40) as ulong*;
+                            ulong* status_ptr= (base + 48) as ulong*;
+
+                            HttpResponse resp = {
+                                status: *status_ptr,
+                                body_addr: *resp_ptr,
+                                body_len: *rlen_ptr,
+                                content_type: *ctype_ptr,
+                                padding1: 0, padding2: 0,
+                                padding3: 0, padding4: 0
+                            };
+                            return Http::build_response(resp_buf, &resp);
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        // ルート未発見 → 404
+        HttpResponse not_found = {
+            status: HTTP_404_NOT_FOUND,
+            body_addr: "Not Found" as ulong,
+            body_len: 9,
+            content_type: 0,
+            padding1: 0, padding2: 0, padding3: 0, padding4: 0
+        };
+        return Http::build_response(resp_buf, &not_found);
+    }
+}
