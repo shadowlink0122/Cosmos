@@ -52,34 +52,34 @@ _start:
     ;   0x5000: PD2 (2-3GiB)
     ;   0x6000: PD3 (3-4GiB)
 
-    ; PML4[0] → PDPT
+    ; PML4[0] → PDPT (ユーザーアクセス許可)
     mov eax, 0x2000
-    or eax, 0x03
+    or eax, 0x07                  ; Present + Write + User
     mov [0x1000], eax
 
-    ; PDPT[0] → PD0 (0-1GiB)
+    ; PDPT[0] → PD0 (0-1GiB) (ユーザーアクセス許可)
     mov eax, 0x3000
-    or eax, 0x03
+    or eax, 0x07                  ; Present + Write + User
     mov [0x2000], eax
 
     ; PDPT[1] → PD1 (1-2GiB)
     mov eax, 0x4000
-    or eax, 0x03
+    or eax, 0x07
     mov [0x2008], eax
 
     ; PDPT[2] → PD2 (2-3GiB)
     mov eax, 0x5000
-    or eax, 0x03
+    or eax, 0x07
     mov [0x2010], eax
 
     ; PDPT[3] → PD3 (3-4GiB)
     mov eax, 0x6000
-    or eax, 0x03
+    or eax, 0x07
     mov [0x2018], eax
 
     ; PD0: 512 × 2MiB ページ (0x00000000 - 0x3FFFFFFF)
     mov ecx, 0
-    mov eax, 0x83                 ; Present + Write + 2MiB
+    mov eax, 0x87                 ; Present + Write + User + 2MiB
 .fill_pd0:
     mov [0x3000 + ecx * 8], eax
     add eax, 0x200000
@@ -89,7 +89,7 @@ _start:
 
     ; PD1: 512 × 2MiB ページ (0x40000000 - 0x7FFFFFFF)
     mov ecx, 0
-    mov eax, 0x40000083           ; 1GiB + Present + Write + 2MiB
+    mov eax, 0x40000087           ; 1GiB + Present + Write + User + 2MiB
 .fill_pd1:
     mov [0x4000 + ecx * 8], eax
     add eax, 0x200000
@@ -99,7 +99,7 @@ _start:
 
     ; PD2: 512 × 2MiB ページ (0x80000000 - 0xBFFFFFFF)
     mov ecx, 0
-    mov eax, 0x80000083           ; 2GiB + Present + Write + 2MiB
+    mov eax, 0x80000087           ; 2GiB + Present + Write + User + 2MiB
 .fill_pd2:
     mov [0x5000 + ecx * 8], eax
     add eax, 0x200000
@@ -109,7 +109,7 @@ _start:
 
     ; PD3: 512 × 2MiB ページ (0xC0000000 - 0xFFFFFFFF)
     mov ecx, 0
-    mov eax, 0xC0000083           ; 3GiB + Present + Write + 2MiB
+    mov eax, 0xC0000087           ; 3GiB + Present + Write + User + 2MiB
 .fill_pd3:
     mov [0x6000 + ecx * 8], eax
     add eax, 0x200000

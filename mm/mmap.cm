@@ -423,8 +423,8 @@ impl Mmap {
                         // 元の2MB huge page PDエントリを復元
                         // identity mapping: phys == virt (2MBアラインメント)
                         PhysAddr huge_phys = va & ~0x1FFFFF;
-                        // Present + Write + HugePage = 0x83
-                        pt->write_entry(pd, pd_idx, huge_phys | 0x83);
+                        // Present + Write + User + HugePage = 0x87
+                        pt->write_entry(pd, pd_idx, huge_phys | 0x87);
                     }
                 }
             }
